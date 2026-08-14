@@ -59,6 +59,13 @@ struct MainWindow : MainWindowT<MainWindow> {
   urnw::WindowReveal reveal_;
   urnw::kit::PaneSearchRow search_{};
   bool wide_ = false;
+  // Whether ApplyBreakpoint has ever actually WRITTEN the layout. Without it,
+  // the first pass early-outs whenever the initial width is narrow (wide_
+  // already being false), and the window is only correct because the markup
+  // defaults happen to spell the narrow state. That is an invariant nothing
+  // enforces, living in two files — the VPN client carries the same flag for
+  // the same reason. The early-out has to test every state it applies.
+  bool breakpointApplied_ = false;
 };
 
 }  // namespace winrt::URmessage::implementation

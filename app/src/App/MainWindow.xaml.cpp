@@ -168,8 +168,14 @@ void MainWindow::ApplyBreakpoint() {
   if (width <= 0) return;
 
   const bool wide = urnw::kit::kWideBreakpointDip <= width;
-  if (wide == wide_) return;  // nothing to do until the state actually changes
+  // breakpointApplied_, and not just `wide == wide_`: on the very first pass
+  // wide_ is already false, so a narrow start early-outs having written
+  // NOTHING, and the window is then correct only because the markup defaults
+  // happen to spell the narrow state — an invariant living in two files that
+  // nothing enforces. Write it once for real, then early-out on genuine no-ops.
+  if (breakpointApplied_ && wide == wide_) return;
   wide_ = wide;
+  breakpointApplied_ = true;
 
   // Wide: a fixed 320dip list rail and the thread takes what is left — the
   // reading a two-pane messenger wants, and the reason the list column is not a
