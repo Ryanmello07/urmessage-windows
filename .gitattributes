@@ -1,0 +1,97 @@
+# URmessage — line-ending and diff policy for the whole tree.
+#
+# THIS FILE IS THE FIRST FILE IN THE REPOSITORY, ON PURPOSE.
+#
+# `core.autocrlf=true` is set at SYSTEM scope on the development box, which
+# means git will happily rewrite LF -> CRLF on checkout for anything it decides
+# is "text". Its decision is a heuristic over the first 8000 bytes. An OpenType
+# or TrueType font that trips that heuristic is silently corrupted on checkout —
+# and a corrupt font produces NO error anywhere: DirectWrite simply fails to
+# register the family, XAML falls back to a system face, and the app renders in
+# the wrong typeface with a clean build log. The URnetwork VPN repo learned this
+# with an Assets/-only .gitattributes; that scope is not enough, so this one is
+# top-level and explicit in both directions.
+#
+# Policy:
+#   1. Default is NO conversion (`-text`). An unrecognised file is never
+#      rewritten. This is the safe default: the failure mode of leaving a text
+#      file alone is cosmetic, the failure mode of rewriting a binary is silent
+#      corruption.
+#   2. Source text is named explicitly and normalised to LF in the repository.
+#   3. Binaries are named explicitly as `binary` (= `-text -diff`), so they can
+#      never be converted and never be diffed as text.
+#
+# Verify after any clone/checkout on Windows with:
+#   git ls-files --eol
+# Fonts and icons must read `w/-text` (no working-tree eol conversion).
+
+# ---- 1. default: touch nothing -------------------------------------------
+*                   -text
+
+# ---- 2. text sources: LF in the repo and in the working tree --------------
+*.c                 text eol=lf
+*.cc                text eol=lf
+*.cpp               text eol=lf
+*.h                 text eol=lf
+*.hpp               text eol=lf
+*.idl               text eol=lf
+*.rc                text eol=lf diff=cpp
+*.xaml              text eol=lf
+*.xml               text eol=lf
+*.resw              text eol=lf
+*.manifest          text eol=lf
+*.vcxproj           text eol=lf
+*.vcxproj.filters   text eol=lf
+*.props             text eol=lf
+*.targets           text eol=lf
+*.config            text eol=lf
+*.sln               text eol=lf
+*.ps1               text eol=lf
+*.psm1              text eol=lf
+*.sh                text eol=lf
+*.py                text eol=lf
+*.md                text eol=lf
+*.txt               text eol=lf
+*.json              text eol=lf
+*.yml               text eol=lf
+*.yaml              text eol=lf
+*.gitattributes     text eol=lf
+*.gitignore         text eol=lf
+.gitattributes      text eol=lf
+.gitignore          text eol=lf
+
+# ---- 3. binaries: never converted, never diffed as text -------------------
+# Brand faces. These are the reason this file exists (see the header) and they
+# are ALSO commercially licensed — do not redistribute them outside the app.
+*.otf               binary
+*.ttf               binary
+*.ttc               binary
+*.woff              binary
+*.woff2             binary
+*.eot               binary
+# Icons and images
+*.ico               binary
+*.png               binary
+*.jpg               binary
+*.jpeg              binary
+*.gif               binary
+*.bmp               binary
+*.webp              binary
+*.svgz              binary
+*.icns              binary
+# Compiled / packaged / archived
+*.pri               binary
+*.exe               binary
+*.dll               binary
+*.lib               binary
+*.pdb               binary
+*.winmd             binary
+*.msi               binary
+*.msix              binary
+*.nupkg             binary
+*.zip               binary
+*.7z                binary
+*.gz                binary
+*.pfx               binary
+*.cer               binary
+*.snk               binary
