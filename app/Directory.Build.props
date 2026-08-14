@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Shared MSBuild settings for every project in the URmessage Windows solution.
+  Imported automatically by MSBuild from the solution directory.
+
+  Adapted from the URnetwork Windows VPN client's app/Directory.Build.props.
+  Gone with the tunnel: the vendored URnetwork SDK (UrnSdkDir), wintun, and the
+  WiX installer's OutDir scoping. Kept, because each one is a bug someone
+  already paid for:
+
+    * C++20 in an ItemDefinitionGroup, NOT a PropertyGroup.
+    * BARE version tokens, stringized in a header, never \"-escaped literals.
+    * /utf-8, because the sources carry non-ascii in narrow literals.
+    * ResourceCompile's own PreprocessorDefinitions list.
+
+  SPDX-License-Identifier: MPL-2.0
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <PropertyGroup Label="Globals">
+    <UrmRepoRoot>$(MSBuildThisFileDirectory)</UrmRepoRoot>
+    <!-- One output dir for both projects, so URmessage.exe, Common.lib,
+         resources.pri, the Windows App Runtime binaries and Assets\Fonts all
+         land together and "run the app" means running one folder.
+
+         Scoped to .vcxproj because this file is imported by EVERY project under
+         app\; the VPN repo learned that the hard way when an unconditional
+         OutDir redirected its WiX MSI into the directory the portable packager
+         zips. There is no third project here yet, and the scoping stays anyway:
+         the day one appears is not the day to rediscover this. -->
+    <OutDir Condition="'$(MSBuildProjectExtension)'=='.vcxproj'">$(UrmRepoRoot)build\$(Platform)\$(Configuration)\</OutDir>
+    <WindowsTargetPlatformVersion>10.0.22621.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformMinVersion>10.0.19041.0</WindowsTargetPlatformMinVersion>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Configuration">
+    <!-- Overridable: tools\build-local.ps1 passes whatever this box actually
+         has (v145 on a VS18-only machine). Overriding it changes which toolset
+         BUILDS the app, not its runtime floor - WindowsTargetPlatformMinVersion
+         above is untouched. -->
+    <PlatformToolset Condition="'$(PlatformToolset)'==''">v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+
+  <!-- The build's version identity. CI will derive the android-format version
+       and pass it in as
+         /p:UrVersion=2026.8.13-<code>-beta /p:UrVersionCode=<code>
+         /p:UrVersionMajor=2026 /p:UrVersionMinor=8 /p:UrVersionPatch=13
+       Local builds pass nothing and get these defaults - which is not
+       cosmetic: code 0 is the value that DISABLES an update checker, so a build
+       that was never released can never try to replace itself with one that
+       was. -->
+  <PropertyGroup Label="UrVersion">
+    <UrVersion Condition="'$(UrVersion)'==''">0.0.0-dev</UrVersion>
+    <UrVersionCode Condition="'$(UrVersionCode)'==''">0</UrVersionCode>
+    <UrVersionMajor Condition="'$(UrVersionMajor)'==''">0</UrVersionMajor>
+    <UrVersionMinor Condition="'$(UrVersionMinor)'==''">0</UrVersionMinor>
+    <UrVersionPatch Condition="'$(UrVersionPatch)'==''">0</UrVersionPatch>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <!-- LanguageStandard is ClCompile *metadata*, not a global property: set
+           in a <PropertyGroup> it is silently ignored and MSVC falls back to
+           C++14 (std::filesystem/format/string_view then vanish, with error
+           messages that name none of that). Keep it here. -->
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(UrmRepoRoot)third_party\vendor-include;$(UrmRepoRoot)src\Common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <!-- UR_VERSION_RAW is the BARE version token; Common/Version.h stringizes
+           it into UR_VERSION_STRING. A \" escaped literal here does NOT survive
+           MSBuild's command-line quoting on this toolchain - verified in the
+           VPN repo, where cl saw the value end at the `L` and the TU died with
+           C2065 'L': undeclared identifier. The four numeric parts pass
+           straight through as integers. -->
+      <PreprocessorDefinitions>UR_VERSION_RAW=$(UrVersion);UR_VERSION_CODE=$(UrVersionCode);UR_VER_MAJOR=$(UrVersionMajor);UR_VER_MINOR=$(UrVersionMinor);UR_VER_PATCH=$(UrVersionPatch);NOMINMAX;WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <WarningLevel>Level3</WarningLevel>
+      <!-- The sources are utf-8 and narrow literals carry non-ascii (the em
+           dashes in the diagnostics, for one). Without /utf-8 MSVC reads them
+           in the system code page and mojibakes the strings. -->
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ResourceCompile>
+      <!-- The same five definitions for rc.exe, so App.rc's VERSIONINFO is
+           compiled from the identical values the code sees. ResourceCompile is
+           its own tool with its own definition list - the ClCompile ones above
+           never reach it. -->
+      <PreprocessorDefinitions>UR_VERSION_RAW=$(UrVersion);UR_VERSION_CODE=$(UrVersionCode);UR_VER_MAJOR=$(UrVersionMajor);UR_VER_MINOR=$(UrVersionMinor);UR_VER_PATCH=$(UrVersionPatch);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ResourceCompile>
+  </ItemDefinitionGroup>
+
+</Project>

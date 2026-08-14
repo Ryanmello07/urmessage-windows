@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- URmessage app manifest. Per-monitor-v2 DPI, UTF-8, and Win10 21H2+/Win11
+     compatibility.
+
+     PerMonitorV2 is not cosmetic here and it has a harness consequence: the app
+     works in PHYSICAL pixels, so a test harness that is not itself DPI-aware
+     reads a different window rect than the app logs (1536x875 where the app
+     says 1920x1094 at 125%). Any harness must call
+     SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2) before it measures
+     anything.
+
+     assemblyIdentity name is URmessage.Desktop, NOT URnetwork.Desktop — see
+     Common/Ids.h for the identities that must not collide with the VPN client.
+     SPDX-License-Identifier: MPL-2.0 -->
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity type="win32" name="URmessage.Desktop" version="0.0.1.0" />
+
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+    </windowsSettings>
+  </application>
+
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 and 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
+    </application>
+  </compatibility>
+
+  <!-- Runs unprivileged. URmessage has no service and no driver; there is
+       nothing here that needs elevation, and asking for it would be the kind of
+       privilege a messenger has to be able to say it never takes. -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+</assembly>

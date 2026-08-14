@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- URmessage UI strings, en.
+
+     Deliberately SMALL and hand-written. The URnetwork VPN client ships 1206
+     entries generated from the shared store (@urnetwork/localizations) across
+     28 locales; copying that here would import a thousand keys about tunnels,
+     wallets and providers that this product will never render, and would make
+     the first genuinely missing URmessage key impossible to spot.
+
+     When URmessage strings land in the shared store, this file becomes
+     generated like the VPN client's and the other locales appear beside it.
+     Until then it is hand-edited, and it is the ONLY locale: DefaultLanguage=en
+     in App.vcxproj must name a folder that exists here, or every lookup falls
+     back to the key id.
+
+     NOTE ON NON-LATIN TEXT (scaffold brief, owner question 2): all four brand
+     faces are Latin-only. For the VPN client that only affects chrome; for a
+     messenger it will affect user-typed MESSAGE CONTENT, which is the product.
+     A deliberate fallback-face choice is still owed here — right now anything
+     outside Latin renders through whatever DirectWrite picks.
+     SPDX-License-Identifier: MPL-2.0 -->
+<root>
+  <xsd:schema id="root" xmlns="" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:msdata="urn:schemas-microsoft-com:xml-msdata">
+    <xsd:import namespace="http://www.w3.org/XML/1998/namespace" />
+    <xsd:element name="root" msdata:IsDataSet="true">
+      <xsd:complexType>
+        <xsd:choice maxOccurs="unbounded">
+          <xsd:element name="data">
+            <xsd:complexType>
+              <xsd:sequence>
+                <xsd:element name="value" type="xsd:string" minOccurs="0" msdata:Ordinal="1" />
+                <xsd:element name="comment" type="xsd:string" minOccurs="0" msdata:Ordinal="2" />
+              </xsd:sequence>
+              <xsd:attribute name="name" type="xsd:string" use="required" msdata:Ordinal="1" />
+              <xsd:attribute name="type" type="xsd:string" msdata:Ordinal="3" />
+              <xsd:attribute name="mimetype" type="xsd:string" msdata:Ordinal="4" />
+              <xsd:attribute ref="xml:space" />
+            </xsd:complexType>
+          </xsd:element>
+          <xsd:element name="resheader">
+            <xsd:complexType>
+              <xsd:sequence>
+                <xsd:element name="value" type="xsd:string" minOccurs="0" msdata:Ordinal="1" />
+              </xsd:sequence>
+              <xsd:attribute name="name" type="xsd:string" use="required" />
+            </xsd:complexType>
+          </xsd:element>
+        </xsd:choice>
+      </xsd:complexType>
+    </xsd:element>
+  </xsd:schema>
+  <resheader name="resmimetype">
+    <value>text/microsoft-resx</value>
+  </resheader>
+  <resheader name="version">
+    <value>2.0</value>
+  </resheader>
+  <resheader name="reader">
+    <value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <resheader name="writer">
+    <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+
+  <data name="app_name" xml:space="preserve">
+    <value>URmessage</value>
+    <comment>The product name, drawn as the title-bar wordmark in PP NeueBit Bold. Also the key Startup.cpp's ResourceProbe asks for: if the UI shows the literal "app_name", the resource stack did not load.</comment>
+  </data>
+
+  <data name="nav_chats" xml:space="preserve">
+    <value>Chats</value>
+    <comment>Navigation rail: the conversation list.</comment>
+  </data>
+  <data name="nav_contacts" xml:space="preserve">
+    <value>Contacts</value>
+    <comment>Navigation rail.</comment>
+  </data>
+  <data name="nav_settings" xml:space="preserve">
+    <value>Settings</value>
+    <comment>Navigation rail footer.</comment>
+  </data>
+
+  <data name="pane_conversations" xml:space="preserve">
+    <value>CONVERSATIONS</value>
+    <comment>The 40px header strip of the list pane. Upper case because the pane-title style is small and letterspaced chrome that names a column, not a page title.</comment>
+  </data>
+  <data name="pane_thread" xml:space="preserve">
+    <value>THREAD</value>
+    <comment>The 40px header strip of the thread pane. Same voice as pane_conversations.</comment>
+  </data>
+  <data name="group_recent" xml:space="preserve">
+    <value>RECENT</value>
+    <comment>The 28px group header that opens the conversation list.</comment>
+  </data>
+  <data name="search_conversations" xml:space="preserve">
+    <value>Search conversations</value>
+    <comment>Placeholder text of the search field at the top of the list pane. Also its accessible name.</comment>
+  </data>
+
+  <data name="thread_none_selected" xml:space="preserve">
+    <value>Select a conversation to read it.</value>
+    <comment>The thread pane's empty state, shown when no conversation is open.</comment>
+  </data>
+  <data name="destination_not_built" xml:space="preserve">
+    <value>This part of URmessage has not been built yet.</value>
+    <comment>Stands in for Contacts and Settings at checkpoint 1. Says "not built" rather than "nothing here": an empty pane cannot distinguish the two, and this scaffold must not read as a working feature.</comment>
+  </data>
+</root>

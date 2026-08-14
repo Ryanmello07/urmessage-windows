@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: MPL-2.0
+namespace URmessage
+{
+    [default_interface]
+    runtimeclass App : Microsoft.UI.Xaml.Application
+    {
+        App();
+    }
+}

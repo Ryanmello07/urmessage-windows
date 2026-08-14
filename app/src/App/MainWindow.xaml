@@ -1,0 +1,204 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- URmessage main window — CHECKPOINT 1 shell.
+
+     WRITTEN FRESH, not copied. The VPN client's MainWindow.xaml is 2461 lines
+     of destination markup for a product this one is not; what was worth taking
+     from it is the SHAPE, and that is what is here: the extended title bar with
+     the wordmark, the adaptive NavigationView, and the WindowPlate/RevealRoot
+     wrapper the window reveal needs.
+
+     LAYOUT MODEL: PANES, NOT CARDS. App.xaml carries two incompatible layout
+     vocabularies and says so (read the block at its foot). The card model is
+     rounded islands with margins and a max-width cap — the phone reading. The
+     pane model is floor-to-ceiling columns that touch the window edge, divided
+     by 1px rules rather than gaps, every row in a list the same height. A
+     conversation list beside a thread IS the pane model, so this window uses
+     nothing from the card vocabulary.
+
+     No user-facing text lives in this file: every label is named and set from
+     the localization store in MainWindow::ApplyStrings (Localization.h). Tags
+     ("chats", "contacts", ...) are internal identifiers, not UI text.
+
+     NO SYSTEM BACKDROP. Not an omission — see WindowShell.cpp. Mica draws
+     BEHIND the XAML tree, so the only way to see it is to clear this root's
+     opaque #101010, at which point the desktop wallpaper REPLACES the brand
+     colour rather than tinting it.
+     SPDX-License-Identifier: MPL-2.0 -->
+<Window
+    x:Class="URmessage.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:muxc="using:Microsoft.UI.Xaml.Controls">
+
+    <!-- WindowPlate is opaque and NEVER moves or animates itself — it is what
+         stays behind RevealRoot while the latter springs into place, so there
+         is never a gap to the desktop behind it. See WindowReveal.cpp. -->
+    <Grid x:Name="WindowPlate" Background="{StaticResource UrBackgroundBrush}">
+    <Grid x:Name="RevealRoot">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- The title bar. ExtendsContentIntoTitleBar puts the content under
+             the system caption buttons; SetTitleBar(AppTitleBar) is what makes
+             this strip the DRAG region, which is the difference between a
+             wordmark drawn where a title bar would be and an actual title bar.
+             48epx, so the caption buttons (32 tall, drawn by the system top
+             right) stay clear of the wordmark's descenders.
+
+             The wordmark is PP NeueBit Bold at 24. The file carries only a Bold
+             face, so the weight is STATED rather than left to be synthesised.
+             IsHitTestVisible=False on the content, or the icon and the text
+             swallow the drag region. -->
+        <Grid x:Name="AppTitleBar" Grid.Row="0" Height="48" Background="Transparent">
+            <StackPanel Orientation="Horizontal" Margin="16,0" Spacing="8"
+                        VerticalAlignment="Center" IsHitTestVisible="False">
+                <Image x:Name="BrandIcon" Width="20" Height="20"
+                       VerticalAlignment="Center"
+                       Source="ms-appx:///Assets/app.ico" />
+                <TextBlock x:Name="BrandText" VerticalAlignment="Center"
+                           FontFamily="{StaticResource UrWordmarkFontFamily}"
+                           FontSize="24" FontWeight="Bold" />
+            </StackPanel>
+        </Grid>
+
+        <!-- PaneDisplayMode="Auto" is the native adaptivity:
+               >=1008 epx  expanded pane, icon + label  (OpenPaneLength 220)
+                641-1007   compact icon rail
+               <=640       overlay pane behind the toggle
+             IsSettingsVisible="False" is load-bearing: NavigationView otherwise
+             adds its OWN settings gear IN ADDITION to the explicit Settings
+             item below, and that gear's Tag matches no destination, so
+             selecting it shows an empty window with no way back. -->
+        <muxc:NavigationView x:Name="HomeNav" Grid.Row="1"
+                             AlwaysShowHeader="False"
+                             FontFamily="{StaticResource UrBodyFontFamily}"
+                             IsBackButtonVisible="Collapsed" PaneDisplayMode="Auto"
+                             OpenPaneLength="220" IsPaneToggleButtonVisible="True"
+                             IsSettingsVisible="False"
+                             SelectionChanged="OnNavSelectionChanged">
+            <muxc:NavigationView.Resources>
+                <x:Double x:Key="NavigationViewItemOnLeftMinHeight">44</x:Double>
+            </muxc:NavigationView.Resources>
+            <!-- The destination title, in the brand DISPLAY face at Title scale
+                 (ABC Gravity — titles, hero and wordmark only). The default
+                 header renders a plain sans. -->
+            <muxc:NavigationView.HeaderTemplate>
+                <DataTemplate>
+                    <TextBlock Text="{Binding}" Style="{StaticResource UrTitleTextStyle}"
+                               Margin="4,4,0,0" />
+                </DataTemplate>
+            </muxc:NavigationView.HeaderTemplate>
+            <muxc:NavigationView.MenuItems>
+                <!-- Glyphs are Segoe Fluent Icons, named explicitly via
+                     UrIconFontFamily: FontIcon otherwise defaults to the older
+                     Segoe MDL2 Assets, whose metrics differ. -->
+                <muxc:NavigationViewItem x:Name="ChatsNavItem" Tag="chats" IsSelected="True">
+                    <muxc:NavigationViewItem.Icon>
+                        <FontIcon FontFamily="{StaticResource UrIconFontFamily}" FontSize="20" Glyph="&#xE8BD;" />
+                    </muxc:NavigationViewItem.Icon>
+                </muxc:NavigationViewItem>
+                <muxc:NavigationViewItem x:Name="ContactsNavItem" Tag="contacts">
+                    <muxc:NavigationViewItem.Icon>
+                        <FontIcon FontFamily="{StaticResource UrIconFontFamily}" FontSize="20" Glyph="&#xE77B;" />
+                    </muxc:NavigationViewItem.Icon>
+                </muxc:NavigationViewItem>
+            </muxc:NavigationView.MenuItems>
+            <muxc:NavigationView.FooterMenuItems>
+                <muxc:NavigationViewItem x:Name="SettingsNavItem" Tag="settings">
+                    <muxc:NavigationViewItem.Icon>
+                        <FontIcon FontFamily="{StaticResource UrIconFontFamily}" FontSize="20" Glyph="&#xE713;" />
+                    </muxc:NavigationViewItem.Icon>
+                </muxc:NavigationViewItem>
+            </muxc:NavigationView.FooterMenuItems>
+            <muxc:NavigationView.PaneFooter>
+                <Border Height="8" />
+            </muxc:NavigationView.PaneFooter>
+
+            <!-- ==== the destinations ==================================== -->
+            <Grid>
+
+                <!-- CHATS. Two panes: the conversation list, a 1px vertical
+                     rule, and the thread. Below the one desktop breakpoint
+                     (kWideBreakpointDip = 1000, UrComponents.h) the rule and
+                     the thread column collapse and the list fills the window —
+                     the flyout reading. ApplyBreakpoint is the one place in
+                     this app that decides what "wide" means. -->
+                <Grid x:Name="ChatsPage" Style="{StaticResource UrPaneStyle}">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition x:Name="ListColumn" Width="*" />
+                        <ColumnDefinition x:Name="RuleColumn" Width="Auto" />
+                        <ColumnDefinition x:Name="ThreadColumn" Width="0" />
+                    </Grid.ColumnDefinitions>
+
+                    <!-- the list pane -->
+                    <Grid Grid.Column="0" Style="{StaticResource UrPaneStyle}">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <!-- the 40px strip every pane opens with -->
+                        <Border Grid.Row="0" Style="{StaticResource UrPaneHeaderStyle}">
+                            <Grid>
+                                <TextBlock x:Name="ListPaneTitle"
+                                           Style="{StaticResource UrPaneTitleStyle}" />
+                                <TextBlock x:Name="ListPaneCount"
+                                           Style="{StaticResource UrPaneMetaStyle}"
+                                           HorizontalAlignment="Right" />
+                            </Grid>
+                        </Border>
+                        <!-- MakePaneSearchRow lands here (code-behind) -->
+                        <Grid x:Name="SearchHost" Grid.Row="1" />
+                        <ScrollViewer Grid.Row="2" HorizontalScrollBarVisibility="Disabled"
+                                      VerticalScrollBarVisibility="Auto">
+                            <!-- Every row is one MakePaneTwoLineRowButton call,
+                                 which is what stops a list acquiring a 52px row
+                                 the day someone adds a second line to one of
+                                 them. -->
+                            <StackPanel x:Name="ConversationList" />
+                        </ScrollViewer>
+                    </Grid>
+
+                    <Border x:Name="PaneRule" Grid.Column="1"
+                            Style="{StaticResource UrPaneVRuleStyle}"
+                            Visibility="Collapsed" />
+
+                    <!-- the thread pane -->
+                    <Grid x:Name="ThreadPane" Grid.Column="2" Visibility="Collapsed"
+                          Style="{StaticResource UrPaneStyle}">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <Border Grid.Row="0" Style="{StaticResource UrPaneHeaderStyle}">
+                            <TextBlock x:Name="ThreadPaneTitle"
+                                       Style="{StaticResource UrPaneTitleStyle}" />
+                        </Border>
+                        <Grid x:Name="ThreadBody" Grid.Row="1" />
+                    </Grid>
+                </Grid>
+
+                <!-- The two destinations that do not exist yet. A pane with one
+                     honest line in the middle of it, not an empty Grid: "there
+                     is nothing here" and "this failed to load" must not look
+                     the same. -->
+                <Grid x:Name="StubPage" Visibility="Collapsed"
+                      Style="{StaticResource UrPaneStyle}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Border Grid.Row="0" Style="{StaticResource UrPaneHeaderStyle}">
+                        <TextBlock x:Name="StubPaneTitle"
+                                   Style="{StaticResource UrPaneTitleStyle}" />
+                    </Border>
+                    <Grid x:Name="StubBody" Grid.Row="1" />
+                </Grid>
+
+            </Grid>
+        </muxc:NavigationView>
+    </Grid>
+    </Grid>
+</Window>

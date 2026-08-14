@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: MPL-2.0
+#include "resource.h"
+
+// App icon (taskbar, alt-tab).
+IDI_APP ICON "Assets\\app.ico"
+
+// The version stamp. UR_VER_* / UR_VERSION_STRING come from Version.h, which
+// takes them from the UR_* definitions Directory.Build.props feeds rc.exe —
+// the exact values the code compiles against, so Explorer's Details tab and any
+// in-app About row can never drift apart. ResourceCompile has its OWN
+// PreprocessorDefinitions list; the ClCompile ones never reach it, which is why
+// Directory.Build.props repeats them.
+//
+// The fourth numeric field is a permanent 0: the date parts alone name a
+// release, and the code lives in the ProductVersion STRING.
+#include <winresrc.h>
+#include "..\Common\Version.h"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION    UR_VER_MAJOR,UR_VER_MINOR,UR_VER_PATCH,0
+ PRODUCTVERSION UR_VER_MAJOR,UR_VER_MINOR,UR_VER_PATCH,0
+ FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+ FILEFLAGS      0x0L
+ FILEOS         VOS_NT_WINDOWS32
+ FILETYPE       VFT_APP
+ FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        // 040904B0 = en-US, Unicode — must agree with the Translation value
+        // below or Explorer finds no strings at all.
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "URnetwork"
+            VALUE "FileDescription",  "URmessage"
+            VALUE "FileVersion",      UR_VERSION_STRING
+            VALUE "InternalName",     "URmessage"
+            VALUE "LegalCopyright",   "URnetwork. Licensed under MPL-2.0."
+            VALUE "OriginalFilename", "URmessage.exe"
+            VALUE "ProductName",      "URmessage"
+            VALUE "ProductVersion",   UR_VERSION_STRING
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

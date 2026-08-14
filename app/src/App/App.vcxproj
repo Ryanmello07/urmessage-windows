@@ -1,0 +1,336 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- URmessage: WinUI 3 (Windows App SDK), C++/WinRT, unpackaged.
+
+     Adapted from the URnetwork Windows VPN client's App.vcxproj. Everything
+     VPN is gone: no vendored SDK import lib, no wintun, no WebView2, no
+     PostBuildEvent copying a dll, no Service ProjectReference, no 28-locale
+     PRIResource list. Everything the VPN build learned the hard way is kept
+     verbatim and is commented where it sits — the self-contained runtime, the
+     three hand-written XAML targets, the PRI triple, and the bare-token
+     preprocessor definition.
+
+     SPDX-License-Identifier: MPL-2.0 -->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- One place for the Windows App SDK version: it drives the PackageReference
+       below AND is compiled into the binary (URM_WINDOWSAPPSDK_VERSION, printed
+       by the diagnose switch, beside the runtime that actually loaded, since an
+       XML comment may not contain a double hyphen and so cannot spell it). A
+       major.minor
+       mismatch has no symptom of its own, so the version the app was BUILT
+       against has to be readable FROM the app. -->
+  <PropertyGroup>
+    <UrmWindowsAppSdkVersion>2.2.0</UrmWindowsAppSdkVersion>
+  </PropertyGroup>
+
+  <!-- SELF-CONTAINED, unconditionally. With WindowsPackageType=None the App SDK
+       bootstrapper runs from a CRT INITIALIZER, ahead of wWinMain, and with no
+       options set it defaults to show-UI-then-exit(hr): a missing machine-wide
+       runtime produces no log line at all and the process exit code IS the
+       HRESULT. Self-contained defuses that by deploying the WindowsAppRuntime
+       binaries next to the exe, so there is nothing machine-wide to be missing.
+       Not release-only: a dev build that resolved its runtime differently from
+       the shipped one would make every runtime-resolution bug unreproducible
+       locally. -->
+  <PropertyGroup>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Windows.CppWinRT" Version="3.0.260520.1" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="$(UrmWindowsAppSdkVersion)" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2270" GeneratePathProperty="true" />
+  </ItemGroup>
+
+  <!-- C++ vcxproj + PackageReference: disable the LEGACY managed NuGet asset
+       resolver (Microsoft.NuGet.targets ResolveNuGetPackageAssets). It resolves
+       lib/ref assets by a managed TargetFramework, which a native project has
+       none of, so it dies with "Sequence contains no elements /
+       GiveErrorForMissingFramework". These packages are consumed purely via
+       their build\native props/targets (auto-imported from
+       obj\*.nuget.g.props/.nuget.g.targets), not lib/ assets. -->
+  <PropertyGroup>
+    <ResolveNuGetPackages>false</ResolveNuGetPackages>
+  </PropertyGroup>
+
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|ARM64"><Configuration>Debug</Configuration><Platform>ARM64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|ARM64"><Configuration>Release</Configuration><Platform>ARM64</Platform></ProjectConfiguration>
+  </ItemGroup>
+
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{C1D2E3F4-0003-4A5B-9C8D-000000000003}</ProjectGuid>
+    <RootNamespace>URmessage</RootNamespace>
+    <TargetName>URmessage</TargetName>
+    <ConfigurationType>Application</ConfigurationType>
+    <UseWinUI>true</UseWinUI>
+    <WindowsPackageType>None</WindowsPackageType>
+    <AppxPackage>false</AppxPackage>
+    <AppContainerApplication>false</AppContainerApplication>
+    <!-- MrtCore names the project PRI $(TargetName).pri by default. The app
+         loads "resources.pri" by path from next to the exe (unpackaged, there
+         is no package to carry it), so pin the output filename. First of the
+         three coupled PRI settings; the failure mode when they are wrong is
+         every string in the UI rendering as its key id. -->
+    <ProjectPriFileName>resources.pri</ProjectPriFileName>
+    <CppWinRTOptimized>true</CppWinRTOptimized>
+    <CppWinRTRootNamespaceAutoMerge>true</CppWinRTRootNamespaceAutoMerge>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <!-- Third of the three. An unpackaged app has no appxmanifest to carry the
+         default language, so the PRI config takes it from here; it must name a
+         folder that EXISTS under Strings\ (Strings\en\Resources.resw) or the
+         resources have no default candidate and every lookup falls back to the
+         key id. -->
+    <DefaultLanguage>en</DefaultLanguage>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+
+  <PropertyGroup Label="Configuration">
+    <UseDebugLibraries Condition="'$(Configuration)'=='Debug'">true</UseDebugLibraries>
+    <UseDebugLibraries Condition="'$(Configuration)'=='Release'">false</UseDebugLibraries>
+    <WholeProgramOptimization Condition="'$(Configuration)'=='Release'">true</WholeProgramOptimization>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+
+  <!-- Second of the three PRI settings, and its POSITION is part of it: it must
+       come immediately after Microsoft.Cpp.props. MakePri then indexes this
+       project's resources at the ROOT of the app's resource map, so a resw
+       entry lands at ms-resource:///Resources/<id> — what MRT Core asks for
+       (Localization.cpp). Without the EMPTY initial path an unpackaged C++
+       WinUI app prefixes the URIs and the runtime resolves nothing. -->
+  <PropertyGroup>
+    <AppxPriInitialPath></AppxPriInitialPath>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <!-- $(IntDir) (the intermediate ROOT): the WinUI markup compiler writes
+           App.xaml.g.h / MainWindow.xaml.g.h (+ their .g.hpp, and XamlTypeInfo/
+           XamlBindingInfo) to $(XamlGeneratedOutputPath) = $(IntDir), but
+           cppwinrt only adds $(IntDir)Generated Files\ (one level down) to the
+           include path -> App.xaml.h's #include "App.xaml.g.h" would C1083
+           without it.
+           $(MSBuildProjectDirectory): the markup-generated impl units
+           (XamlTypeInfo.g.cpp etc.) live in $(IntDir) but #include the AUTHORED
+           "App.xaml.h" / "MainWindow.xaml.h", which sit here; MSVC resolves a
+           quoted include relative to the INCLUDING file's own dir (=$(IntDir))
+           then /I, so without the project dir on /I XamlTypeInfo.g.cpp fails
+           C1083. Our hand-authored .cpp do not hit this only because they
+           physically sit next to those headers. -->
+      <AdditionalIncludeDirectories>$(MSBuildProjectDirectory);$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <!-- DISABLE_XAML_GENERATED_MAIN: the markup compiler emits an app
+           bootstrap (wWinMain + its winrt module glue, guarded by
+           #ifndef DISABLE_XAML_GENERATED_MAIN) into the generated
+           XamlTypeInfo.g.cpp unit. This app ships its OWN entry point in
+           main.cpp (single-instance AppInstance redirect + AppUserModelId +
+           Application::Start). Once UrmCompileGeneratedXamlImpl adds
+           XamlTypeInfo.g.cpp to the build, that generated wWinMain collides
+           with main.obj (LNK2005) and its bootstrap references
+           WINRT_GetActivationFactory / WINRT_CanUnloadNow (LNK2001, normally
+           defined by the module.g.cpp we DO compile) - defining this compiles
+           the whole block out and both errors clear.
+
+           URM_WINDOWSAPPSDK_VERSION_RAW is the BARE token (2.2.0); Startup.cpp
+           stringizes it. A `\"`-escaped literal does NOT survive MSBuild's
+           command-line quoting here - verified in the VPN repo: cl then sees
+           the value end at `L` and the TU fails with C2065 'L': undeclared
+           identifier. -->
+      <PreprocessorDefinitions>DISABLE_XAML_GENERATED_MAIN;URM_WINDOWSAPPSDK_VERSION_RAW=$(UrmWindowsAppSdkVersion);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary Condition="'$(Configuration)'=='Debug'">MultiThreadedDebugDLL</RuntimeLibrary>
+      <RuntimeLibrary Condition="'$(Configuration)'=='Release'">MultiThreadedDLL</RuntimeLibrary>
+      <Optimization Condition="'$(Configuration)'=='Release'">MaxSpeed</Optimization>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <AdditionalDependencies>shell32.lib;advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <Manifest>
+      <AdditionalManifestFiles>app.manifest</AdditionalManifestFiles>
+    </Manifest>
+  </ItemDefinitionGroup>
+
+  <!-- XAML -->
+  <ItemGroup>
+    <ApplicationDefinition Include="App.xaml"><SubType>Designer</SubType></ApplicationDefinition>
+    <Page Include="MainWindow.xaml"><SubType>Designer</SubType></Page>
+    <Midl Include="App.idl" />
+    <Midl Include="MainWindow.idl" />
+  </ItemGroup>
+
+  <!-- UI strings. ONE locale for now, hand-written (see the file header).
+       MakePri takes the language qualifier from the FOLDER name, indexes the
+       resw into the "Resources" map, and writes resources.pri; MRT Core picks
+       the right one for the user's display language at run time, falling back
+       to en. Adding a locale = adding one line here and one folder. -->
+  <ItemGroup>
+    <PRIResource Include="Strings\en\Resources.resw" />
+  </ItemGroup>
+
+  <!-- Native sources -->
+  <ItemGroup>
+    <ClCompile Include="pch.cpp"><PrecompiledHeader>Create</PrecompiledHeader></ClCompile>
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="App.xaml.cpp"><DependentUpon>App.xaml</DependentUpon></ClCompile>
+    <ClCompile Include="MainWindow.xaml.cpp"><DependentUpon>MainWindow.xaml</DependentUpon></ClCompile>
+    <ClCompile Include="Localization.cpp" />
+    <ClCompile Include="Startup.cpp" />
+    <ClCompile Include="UrComponents.cpp" />
+    <ClCompile Include="UrMotion.cpp" />
+    <ClCompile Include="WindowReveal.cpp" />
+    <ClCompile Include="WindowShell.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="pch.h" />
+    <ClInclude Include="App.xaml.h"><DependentUpon>App.xaml</DependentUpon></ClInclude>
+    <ClInclude Include="MainWindow.xaml.h"><DependentUpon>MainWindow.xaml</DependentUpon></ClInclude>
+    <ClInclude Include="Localization.h" />
+    <ClInclude Include="Startup.h" />
+    <ClInclude Include="UrColors.h" />
+    <ClInclude Include="UrComponents.h" />
+    <ClInclude Include="UrMotion.h" />
+    <ClInclude Include="WindowReveal.h" />
+    <ClInclude Include="WindowShell.h" />
+    <ClInclude Include="resource.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="App.rc" />
+  </ItemGroup>
+
+  <!-- The app icon, copied next to the exe so it is resolvable as
+       ms-appx:///Assets/app.ico from the title bar's Image. It is already the
+       ApplicationIcon resource; that is a different consumer. -->
+  <ItemGroup>
+    <CopyFileToFolders Include="Assets\app.ico">
+      <DestinationFolders>$(OutDir)Assets</DestinationFolders>
+    </CopyFileToFolders>
+  </ItemGroup>
+
+  <!-- Brand faces (Assets/README.md). An unpackaged app resolves
+       ms-appx:///Assets/Fonts/<file>#<family> against the EXE's own folder, so
+       the files have to BE there. App.xaml references them by the fonts'
+       internal OpenType family names, not by file name, and a wrong family name
+       produces NO error - just silent fallback to a system face. These are
+       licensed commercial faces: do not redistribute them outside the app. -->
+  <ItemGroup>
+    <CopyFileToFolders Include="Assets\Fonts\abcgravity_extended.otf">
+      <DestinationFolders>$(OutDir)Assets\Fonts</DestinationFolders>
+    </CopyFileToFolders>
+    <CopyFileToFolders Include="Assets\Fonts\abcgravity_extra_condensed.otf">
+      <DestinationFolders>$(OutDir)Assets\Fonts</DestinationFolders>
+    </CopyFileToFolders>
+    <CopyFileToFolders Include="Assets\Fonts\pp_neue_bit_bold.ttf">
+      <DestinationFolders>$(OutDir)Assets\Fonts</DestinationFolders>
+    </CopyFileToFolders>
+    <CopyFileToFolders Include="Assets\Fonts\pp_neue_montreal_regular.ttf">
+      <DestinationFolders>$(OutDir)Assets\Fonts</DestinationFolders>
+    </CopyFileToFolders>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Common\Common.vcxproj">
+      <Project>{C1D2E3F4-0001-4A5B-9C8D-000000000001}</Project>
+    </ProjectReference>
+  </ItemGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+
+  <!-- The app loads resources.pri by path, from next to the exe. If MakePri
+       never ran, or dropped it somewhere else, every string in the UI renders
+       as its key id ("app_name") — a silent, shipping-grade failure. Say so at
+       build time instead. Warning, not Error: never break a build over it. -->
+  <Target Name="UrmVerifyResourcesPri" AfterTargets="Build">
+    <Copy Condition="!Exists('$(OutDir)resources.pri') and Exists('$(OutDir)$(TargetName).pri')"
+          SourceFiles="$(OutDir)$(TargetName).pri" DestinationFiles="$(OutDir)resources.pri" SkipUnchangedFiles="true" />
+    <Warning Condition="!Exists('$(OutDir)resources.pri')"
+             Text="resources.pri is missing from $(OutDir): the app will render resource ids instead of localized strings. Check that the Strings\*\Resources.resw PRIResource items were indexed by MakePri." />
+  </Target>
+
+  <!-- ==================================================================
+       THE THREE HAND-WRITTEN TARGETS THAT MAKE A CLASSIC C++ .vcxproj
+       BUILD XAML AT ALL. None of this is optional and none of it is
+       inherited: remove any one and the build fails in a way that names
+       something else entirely.
+       ================================================================== -->
+
+  <!-- (1) The Windows App SDK and C++/WinRT targets DEFINE
+       MarkupCompilePass1/Pass2 (they generate App.xaml.g.h /
+       MainWindow.xaml.g.h and the x:Name accessors + InitializeComponent) and
+       even augment their *DependsOn lists, but they only auto-INVOKE them for
+       the MANAGED build, via $(PrepareResourcesDependsOn) — which the WinUI
+       targets comment as "used only for the Managed build". For a classic
+       C++/WinRT .vcxproj built from the command line, nothing runs the passes
+       before ClCompile, so cppwinrt's projection (App.g.h) is produced but the
+       markup output (App.xaml.g.h) is not, giving C1083 'App.xaml.g.h' plus a
+       cascade of x:Name "identifier not found". Inject the passes into
+       $(BeforeClCompileTargets) — the same native pre-compile hook C++/WinRT
+       uses for its own projection — so they run after MIDL/WinMD-merge/cppwinrt
+       and before ClCompile. -->
+  <PropertyGroup>
+    <BeforeClCompileTargets>$(BeforeClCompileTargets);MarkupCompilePass1;MarkupCompilePass2</BeforeClCompileTargets>
+  </PropertyGroup>
+
+  <!-- (2) The NATIVE markup compiler takes its winmd references from
+       @(WinMDReferenceToCompile) — "a filtered Item that eliminates any Managed
+       Assemblies on the ReferencePath" per
+       Microsoft.UI.Xaml.Markup.Compiler.interop.targets. Nothing in a
+       hand-authored C++/WinRT project populates that item: neither CppWinRT nor
+       the WinUI targets do it, and the C++ project system only provides it for
+       its RECOGNIZED XAML project types. So the markup compiler receives ZERO
+       winmd references and fails with "XamlCompiler error WMC1007: Cannot
+       resolve metadata for WinUI types." Populate it from the winmds already
+       resolved onto @(ReferencePath) (the same set cppwinrt used to generate
+       App.g.h), and only if nothing else did; fall back to the Windows App SDK
+       package winmds if ReferencePath happened to carry none. -->
+  <Target Name="UrmPopulateWinMDReferenceToCompile" BeforeTargets="MarkupCompilePass1;MarkupCompilePass2">
+    <ItemGroup Condition="'@(WinMDReferenceToCompile)' == ''">
+      <WinMDReferenceToCompile Include="@(ReferencePath)" Condition="'%(ReferencePath.Extension)' == '.winmd'" />
+    </ItemGroup>
+    <ItemGroup Condition="'@(WinMDReferenceToCompile)' == '' and '$(MicrosoftWindowsAppSDKPackageDir)' != ''">
+      <WinMDReferenceToCompile Include="$(MicrosoftWindowsAppSDKPackageDir)lib\uap10.0\*.winmd" />
+      <WinMDReferenceToCompile Include="$(MicrosoftWindowsAppSDKPackageDir)lib\uap10.0.18362\*.winmd" />
+    </ItemGroup>
+  </Target>
+
+  <!-- (3) Compile the generated IMPLEMENTATION units the normal WinUI/cppwinrt
+       project system would add to @(ClCompile) but this forced-early markup
+       wiring bypasses. Two families:
+       (A) MARKUP units in the intermediate ROOT ($(IntDir)*.g.cpp =
+           XamlTypeInfo.g.cpp / XamlTypeInfo.Impl.g.cpp /
+           XamlLibMetadataProvider.g.cpp) + the generated
+           XamlMetaDataProvider.cpp — these carry
+           XamlMetaDataProvider::GetXamlType/GetXmlnsDefinitions and the
+           per-page InitializeComponent/Connect (LNK2001/LNK1120 without them).
+       (B) The cppwinrt MODULE unit 'Generated Files\module.g.cpp' — a
+           STANDALONE compiland (it starts with its own #include "pch.h") that
+           DEFINES the module activation exports WINRT_GetActivationFactory /
+           WINRT_CanUnloadNow plus the by-name activation table XAML uses to
+           activate our runtime classes at startup, which XamlTypeInfo.g.obj
+           references (LNK2001 without it).
+       NOT here: the per-class cppwinrt projections (App.g.cpp /
+           MainWindow.g.cpp / XamlMetaDataProvider.g.cpp). Those are generated
+           #include FRAGMENTS with no pch.h of their own — compiled standalone
+           they C1010 ('unexpected EOF looking for pch'). Each must be #included
+           by a host TU that already pulled in pch.h and the class's impl
+           header: MainWindow.g.cpp <- MainWindow.xaml.cpp,
+           XamlMetaDataProvider.g.cpp <- the generated XamlMetaDataProvider.cpp.
+           App.g.cpp has NO host and must not get one: cppwinrt emits no
+           factory_implementation::App for an Application subclass, so App.g.cpp
+           references symbols App.g.h never declares. App.xaml.cpp defines the
+           global ::winrt_make_URmessage_App() instead, which is the only symbol
+           module.g.cpp actually needs from it. -->
+  <Target Name="UrmCompileGeneratedXamlImpl" BeforeTargets="ClCompile" DependsOnTargets="MarkupCompilePass1;MarkupCompilePass2">
+    <ItemGroup>
+      <_UrmGenXamlCpp Include="$(IntDir)*.g.cpp" />
+      <_UrmGenXamlCpp Include="$(MSBuildProjectDirectory)\XamlMetaDataProvider.cpp" Condition="Exists('$(MSBuildProjectDirectory)\XamlMetaDataProvider.cpp')" />
+      <_UrmGenXamlCpp Include="$(GeneratedFilesDir)XamlMetaDataProvider.cpp"         Condition="Exists('$(GeneratedFilesDir)XamlMetaDataProvider.cpp')" />
+      <_UrmGenXamlCpp Include="$(GeneratedFilesDir)module.g.cpp"                     Condition="Exists('$(GeneratedFilesDir)module.g.cpp')" />
+      <ClCompile Include="@(_UrmGenXamlCpp)" />
+    </ItemGroup>
+  </Target>
+
+</Project>
