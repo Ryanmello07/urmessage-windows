@@ -60,7 +60,7 @@ it will one day show real ones.
 | **D4** | **Connect indicator + Network page.** A non-intrusive status strip (state, server, lock), a preview drawer on activation, and the full node map only on the Network page. | Matches the desktop reference class already fixed for this product line (ProtonVPN / Portmaster; persistent bottom strip). Explicitly **not** a permanent network readout — the owner ruled the strip must not be intrusive. |
 | **D5** | **Expressive motion.** Spring entrances, 40 ms row stagger, breathing typing indicator, delivery-state morph, pulsing connect dot. | Every animation carries a state change rather than decorating one. The delivery morph in particular teaches Spec C §5.3's delivery model, which is the subtlest thing the product has to say. |
 | **D6** | **Cinematic relay animation is quarantined to the Network page, behind Advanced Mode.** | A packet visibly flying the relay path on send animates a protocol that does not exist. On a diagram an audience reads it as a diagram; attached to a send it reads as a claim. This is the one place the demo could overstate what is built. |
-| **D7** | **Demo mode opens at 1560×900 DIP; a normal launch keeps Spec C §1.2's 1100×760.** | The third pane exists only at ≥1500 DIP (§1.3). The rail must be live on launch, both for the demo itself and because it is the only way the agent can see that state. The spec default is untouched for non-demo launches. |
+| **D7** | **Demo mode opens at 1560×900 DIP. A normal launch is left exactly as it is today — 480×760.** | The third pane exists only at ≥1500 DIP (§1.3). The rail must be live on launch, both for the demo itself and because it is the only way the agent can see that state. **Measured, not assumed:** `WindowShell.h:21-22` is `kDefaultWidthDips = 480; kDefaultHeightDips = 760;` and the minimum is `400×480` (`:24-25`). Spec C §1.2 *specifies* 1100×760 and 560×480, but **that was never implemented** — the constants are still the VPN client's flyout. Moving the non-demo default to 1100 is Spec C's work, not this demo's, so this work changes only what `--demo` does and leaves the normal launch alone. |
 | **D8** | **View modules, not a growing `MainWindow`.** | Spec C §0.2 W1 records that the VPN client's `MainWindow.xaml.cpp` reached 2,128 lines and became the collision point for parallel UI work. Ours is 219 lines and this work adds five surfaces. |
 
 ---
@@ -206,9 +206,16 @@ This is a deliberate demo limitation, not a defect, and it is the reason D7 fixe
 ### 6.6 Settings, Advanced Mode, Developer
 
 Settings renders enough groups to look real, with Appearance, Privacy and Security populated and
-the rest present but inert. **Advanced Mode** is a single persisted toggle using the
-`advanced_mode` key already established in `Common/AppPrefs.h`. It is not a destination — it
-changes what existing surfaces show:
+the rest present but inert. **Advanced Mode** is a single persisted toggle written through
+`Common/AppPrefs.h`'s existing `LoadAppPrefs()` / `SaveAppPref()`.
+
+**Correction, measured:** the *mechanism* exists, but the `advanced_mode` **key does not exist in
+this repository**. `git grep advanced_mode` returns one hit, in a provenance comment at
+`AppPrefs.h:5` describing the *VPN client's* `SdkHost.cpp`. So this work introduces the key here;
+it does not inherit it. The name is kept identical to the VPN client's on purpose, so the two
+products read the same preference vocabulary.
+
+It is not a destination — it changes what existing surfaces show:
 
 | Surface | Normal | Advanced |
 |---|---|---|
@@ -314,13 +321,42 @@ change, build with `app/tools/build-local.ps1`, launch with the relevant `--demo
 capture with `app/tools/verify-render.ps1`, and *look at the image*. CI-green and "it launched"
 are not UI verification — a process that paints garbage still exits 0.
 
-`verify-render.ps1` gains an `-Args` passthrough so it can reach the deep-linked states. It
-already handles the traps that matter: PerMonitorV2 DPI, `EnumWindows` + `GetClassNameW` rather
-than `FindWindow`, process selection by executable path, and screen capture rather than
-`PrintWindow`.
-
 `--demo=<screen>` therefore serves two purposes — the agent's only way to see a given state, since
 it may not synthesise input, and a convenience for jumping straight to a surface when presenting.
+
+**`verify-render.ps1` cannot pass arguments today, and this is a hard prerequisite.** Measured:
+its parameter block is `[CmdletBinding()] param($Configuration, $Platform, $SettleMs)` and line
+156 is `$proc = Start-Process -FilePath $exe -PassThru`. **Two** defects, not one — there is no
+parameter to accept switches, *and* nothing would forward them if there were. Because the script
+is `[CmdletBinding()]`, passing an undeclared `-Args` is a terminating parameter-binding error,
+not a silently ignored one, so every pixel gate in this work fails at the command line until it
+is fixed.
+
+It must therefore be the **first task in the plan**, before any view work depends on it, and the
+new parameter must not be named `$Args` — that shadows PowerShell's automatic `$args` variable.
+Everything else about the script is sound and must be preserved: PerMonitorV2 DPI, `EnumWindows` +
+`GetClassNameW` rather than `FindWindow`, process selection by executable path, and screen capture
+rather than `PrintWindow`.
+
+### 9.4 Ground truth
+
+Facts about this repository as it stands, measured rather than assumed, because earlier drafts of
+this document asserted three of them wrongly and the errors propagated into seven task briefs.
+
+| Fact | Value | Source |
+|---|---|---|
+| Default window | **480×760 DIP**, min **400×480** | `WindowShell.h:21-25` |
+| Wide breakpoint | 1000 DIP | `UrComponents.h:75` |
+| Storage root | `%URMESSAGE_APP_ROOT%`, else `%LOCALAPPDATA%\URmessage\app` | `Paths.cpp:35-50` |
+| Log file | `<root>/logs/urmessage-app.log` | `Paths.cpp:52`, `Ids.h` |
+| Prefs file | `<root>/app_prefs.json` | `Paths.cpp:54` |
+| `Resources.resw` | **GENERATED — never hand-edit.** Source is `urnetwork/localizations`, `npm run gen` | `Localization.h:3-4` |
+| `advanced_mode` pref | Does **not** exist here; one provenance comment only | `git grep advanced_mode` |
+| `verify-render.ps1` | No argument passthrough at all | `verify-render.ps1:30-35, 156` |
+
+**On strings:** because the `.resw` is generated from another repository, this work does not add
+localization keys. Demo copy is English literals in the view modules, which is honest for a demo
+and keeps the generated file untouched. Localization is out of scope (§2).
 
 ---
 
