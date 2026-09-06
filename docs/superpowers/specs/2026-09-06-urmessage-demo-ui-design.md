@@ -16,15 +16,16 @@ the right document for the product.
 It is the wrong document for **this** job, and using it as the working spec is how this work loses
 focus. This document is scoped to one deliverable and one audience:
 
-> **A UI demo of URmessage that a team or an investor can be shown, and that survives being
-> screenshotted and recorded, while no message protocol exists.**
+> **A UI demo of URmessage that the owner can open, click through in front of a team or an
+> investor, and capture from — while no message protocol exists.**
 
 Spec C remains the reference for anything this document does not decide — palette, row anatomy,
 delivery-state vocabulary, the closed set of message states. Where this document differs from
 Spec C it says so explicitly and says why. Nothing here amends Spec C.
 
-**Success is not "it compiles."** Success is a set of screenshots and a short video that look like
-a finished, modern, unmistakably-URnetwork encrypted messenger.
+**Success is not "it compiles."** Success is that the owner opens the app, clicks through it, and
+it reads as a finished, modern, unmistakably-URnetwork encrypted messenger — with every surface
+responding to a click and nothing on screen that looks live but isn't.
 
 ---
 
@@ -251,7 +252,7 @@ Parsed in the shape of the existing `WantsDiagnose()` — `CommandLineToArgvW`, 
 |---|---|
 | `--demo` | Enable the demo world. Window opens 1560×900 (D7). Without it the app behaves exactly as it does today. |
 | `--demo=<screen>` | Deep-link straight to a surface: `chats`, `thread`, `inspect`, `network`, `settings`, `developer`. Implies `--demo`. `inspect` is not a separate screen — it opens `thread` with a specific message pre-selected and the rail already in message mode, which is the state a screenshot needs. |
-| `--demo-autoplay` | Run the scripted sequence on a timer. Implies `--demo`. |
+| `--demo-autoplay` | Enable ambient activity (§9.2) — occasional typing indicator and incoming message. Off by default; never moves the selection or the destination. Implies `--demo`. |
 | `--demo-advanced` | Start with Advanced Mode on, without writing the preference. |
 | `--demo-watermark=off` | Suppress the `DEMO` chip for clean capture. |
 
@@ -265,24 +266,55 @@ status strip drawer opens showing nodes → the Network page → back to the thr
 
 ---
 
-## 9. Verification
+## 9. Interaction and verification
 
-Two gates, both run by the main agent and never delegated.
+### 9.1 The deliverable is an app the owner drives
 
-**Screenshots.** After every substantive UI change: build with `app/tools/build-local.ps1`,
-launch with the relevant `--demo=<screen>`, capture with `app/tools/verify-render.ps1`, and *look
-at the image*. CI-green and "it launched" are not UI verification — a process that paints garbage
-still exits 0. `verify-render.ps1` gains an `-Args` passthrough so it can drive the deep-links; it
-already handles the traps that matter (PerMonitorV2 DPI, `EnumWindows` + `GetClassNameW` rather
-than `FindWindow`, process selection by executable path, screen capture rather than `PrintWindow`).
+**The demo is operated by a person clicking it, not by a script.** The owner runs the build,
+clicks through it, and captures whatever screenshots or video they want for a presentation
+themselves. This document produces **no screenshot set, no video file, and no recording tool.**
 
-**Video.** `ffmpeg` is present on the box with `gdigrab`, `libx264` and `gif`. The app animates
-itself under `--demo-autoplay`, so a recording is passive observation of a window — no input is
-synthesised at any point. A new `app/tools/record-demo.ps1` launches with autoplay, records the
-window region for a bounded duration, and writes an MP4 plus an optional GIF.
+That makes full interactivity a first-class requirement rather than a nice-to-have. Everything the
+demo shows must be reachable by clicking:
 
-**Deliverable.** A screenshot set covering each surface in Normal and Advanced, and one short
-video of the autoplay loop.
+| Action | Result |
+|---|---|
+| Click a conversation row | Opens that thread; the rail shows conversation details |
+| Click a message bubble | Rail swaps to message inspect for that message; bubble takes the selection outline |
+| Click empty thread space | Deselects; rail returns to conversation details |
+| Click a nav destination | Chats / Contacts / Network / Settings, and Developer under Advanced |
+| Click the status strip | Raises and dismisses the node preview drawer |
+| Toggle Advanced Mode | Every affected surface re-renders live, without a restart |
+| Click a failed message | Shows its reason and a `[ Try again ]` affordance |
+| Resize the window | Crosses the 1500 and 1000 DIP breakpoints correctly |
+
+Anything on screen that cannot be clicked must be visibly inert — no affordance that looks live
+and does nothing. A dead-looking button is a demo bug.
+
+### 9.2 Live activity, not a scripted tour
+
+`--demo-autoplay` is reduced from a scripted run-through to **ambient activity**: while the demo
+is open, a typing indicator occasionally appears and an incoming message arrives, so the app feels
+alive while the owner is talking over it. It never moves the selection, never changes destination,
+and never fights the person driving. Off by default; the Developer surface can pause it.
+
+This exists so a presenter can show typing indicators and the delivery-state morph without needing
+a second device — not to replace clicking.
+
+### 9.3 How the agent verifies its own work
+
+Separately, and for the agent's benefit rather than as a deliverable: after every substantive UI
+change, build with `app/tools/build-local.ps1`, launch with the relevant `--demo=<screen>`,
+capture with `app/tools/verify-render.ps1`, and *look at the image*. CI-green and "it launched"
+are not UI verification — a process that paints garbage still exits 0.
+
+`verify-render.ps1` gains an `-Args` passthrough so it can reach the deep-linked states. It
+already handles the traps that matter: PerMonitorV2 DPI, `EnumWindows` + `GetClassNameW` rather
+than `FindWindow`, process selection by executable path, and screen capture rather than
+`PrintWindow`.
+
+`--demo=<screen>` therefore serves two purposes — the agent's only way to see a given state, since
+it may not synthesise input, and a convenience for jumping straight to a surface when presenting.
 
 ---
 
