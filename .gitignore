@@ -27,3 +27,6 @@ app/msbuild-local-*.log
 # The app icon (.ico) and the four brand faces ARE committed — they are needed
 # at build time. See .gitattributes: they must never go through CRLF
 # translation.
+
+# brainstorming visual companion (local only)
+.superpowers/
