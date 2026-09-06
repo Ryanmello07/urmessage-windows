@@ -60,7 +60,7 @@ it will one day show real ones.
 | **D4** | **Connect indicator + Network page.** A non-intrusive status strip (state, server, lock), a preview drawer on activation, and the full node map only on the Network page. | Matches the desktop reference class already fixed for this product line (ProtonVPN / Portmaster; persistent bottom strip). Explicitly **not** a permanent network readout — the owner ruled the strip must not be intrusive. |
 | **D5** | **Expressive motion.** Spring entrances, 40 ms row stagger, breathing typing indicator, delivery-state morph, pulsing connect dot. | Every animation carries a state change rather than decorating one. The delivery morph in particular teaches Spec C §5.3's delivery model, which is the subtlest thing the product has to say. |
 | **D6** | **Cinematic relay animation is quarantined to the Network page, behind Advanced Mode.** | A packet visibly flying the relay path on send animates a protocol that does not exist. On a diagram an audience reads it as a diagram; attached to a send it reads as a claim. This is the one place the demo could overstate what is built. |
-| **D7** | **Demo mode opens at 1560×900 DIP; a normal launch keeps Spec C §1.2's 1100×760.** | The third pane exists only at ≥1500 DIP (§1.3). The rail must be live on launch for screenshots and video. The spec default is untouched for non-demo launches. |
+| **D7** | **Demo mode opens at 1560×900 DIP; a normal launch keeps Spec C §1.2's 1100×760.** | The third pane exists only at ≥1500 DIP (§1.3). The rail must be live on launch, both for the demo itself and because it is the only way the agent can see that state. The spec default is untouched for non-demo launches. |
 | **D8** | **View modules, not a growing `MainWindow`.** | Spec C §0.2 W1 records that the VPN client's `MainWindow.xaml.cpp` reached 2,128 lines and became the collision point for parallel UI work. Ours is 219 lines and this work adds five surfaces. |
 
 ---
@@ -72,7 +72,7 @@ app/src/App/
   MainWindow.xaml(.cpp/.h)     thin composer: breakpoint, nav, hosts the views
   Demo/
     DemoWorld.h/.cpp           the entire fabricated world, one seeded generator
-    DemoAutoplay.h/.cpp        the scripted sequence and its timer
+    DemoAutoplay.h/.cpp        ambient activity (§9.2) and its timer
     DemoSwitches.h/.cpp        --demo parsing, in the shape of WantsDiagnose()
   Views/
     ConversationListView.*     the list pane
@@ -106,7 +106,8 @@ key/value rows, the relay-path element, and the status strip.
 ## 5. The demo world
 
 One module, one **seeded** generator, no runtime randomness. Identical pixels on every launch is
-what makes a screenshot diff meaningful and a re-recorded video cut together.
+what lets the owner re-open the app and find the same conversation they demoed yesterday, and what
+makes an agent-side screenshot diff mean a real change.
 
 **Contents.**
 
@@ -217,7 +218,7 @@ changes what existing surfaces show:
 | Network page | static relay path | + animated wires, per-hop timings |
 | Nav | Chats, Contacts, Network, Settings | + **Developer** |
 
-**Developer** carries a demo-state inspector, an autoplay transport (play/pause/step), a motion
+**Developer** carries a demo-state inspector, an ambient-activity pause switch, a motion
 switch, and a `DemoWorld` dump. It is the honest place to put things that would otherwise tempt
 their way into the product surfaces.
 
@@ -259,10 +260,15 @@ Parsed in the shape of the existing `WantsDiagnose()` — `CommandLineToArgvW`, 
 `--demo=<screen>` is what makes verification possible at all: it reaches every surface without
 synthesising a single click.
 
-**Autoplay sequence** (~28 s, loops): thread visible → typing indicator appears → an incoming
-message springs in → the list reorders → an outgoing message sends and morphs
-queued→sent→delivered→read → a bubble is selected and the rail swaps to message inspect → the
-status strip drawer opens showing nodes → the Network page → back to the thread.
+**Ambient activity**, when `--demo-autoplay` is on (§9.2). Not a tour — a slow background loop
+that only ever adds to the conversation currently open:
+
+- every ~40 s, a typing indicator appears in the open thread for 3–6 s, then an incoming message
+  springs in and the list row reorders;
+- the most recent outgoing message advances one delivery state, up to `read`, then stops.
+
+It never changes destination, never moves the selection, and never opens or closes the rail or the
+drawer. Everything else in the demo happens because a person clicked it.
 
 ---
 
