@@ -19,6 +19,7 @@
 #include "Log.h"
 #include "Paths.h"
 #include "Strings.h"
+#include "Views/ConversationRowModel.h"
 #include "Demo/DemoShellState.h"
 #include "Demo/AdvancedMode.h"
 #include "Demo/DemoWorld.h"
@@ -553,6 +554,14 @@ std::vector<std::wstring> CollectDiagnostics() {
   }
   lines.push_back(DemoLayoutCheck());
   lines.push_back(DemoDeepLinkCheck());
+  // The demo surfaces' own invariants. One collector per surface, and every one
+  // of them must be pure C++: this function runs before winrt::init_apartment
+  // (main.cpp:168 vs :180), so a WinRT object built from here would die on the
+  // line that constructs it, inside the code whose job is to explain deaths.
+  // Unconditional on purpose -- these assert a pure function of seeded data, not
+  // app state, so they are as true on a plain launch as under --demo.
+  for (auto const& line : urmsg::views::CollectConversationListDiagnostics())
+    lines.push_back(line);
   return lines;
 }
 
