@@ -1,6 +1,21 @@
 // SPDX-License-Identifier: MPL-2.0
-#include "pch.h"
-
+//
+// NO pch.h include, and App.vcxproj compiles this unit with
+// PrecompiledHeader=NotUsing: the project pch pulls in every winrt/ header,
+// and this file is reachable from CollectDiagnostics before init_apartment.
+// See Demo/DemoWorld.cpp/.h for the pattern.
+//
+// UrMotion.h below still drags in winrt/Microsoft.UI.Composition.h and
+// winrt/Microsoft.UI.Xaml.Media.Animation.h on its own account -- it needs
+// those for Bezier and the spring types, which this file never touches. This
+// file reads exactly two plain integers off it (kStaggerMs,
+// kMaxStaggerSteps) and constructs nothing from either header. Confirmed by
+// building this TU standalone (its .obj deleted, forcing a from-scratch
+// compile, no pch.h) after switching to NotUsing: it compiles clean, so the
+// projection being textually reachable here is not the same thing as a WinRT
+// type actually being instantiated on this path -- that stays true only
+// because nothing in this file names one, which is still a review
+// obligation, not a compiler one (see the header's own comment).
 #include "Views/ConversationRowModel.h"
 
 #include <algorithm>
@@ -94,6 +109,24 @@ std::vector<std::wstring> CollectConversationListDiagnostics() {
   const std::size_t total = world.conversations.size();
   std::vector<std::wstring> lines;
 
+  // A second disappearing conversation, built LOCALLY rather than added to
+  // DemoWorld -- F3 fingerprints the world's exact bytes and asserts
+  // determinism against a hardcoded constant (I10), so changing the seed data
+  // would ripple backwards into a completed task. conv-marta is DemoWorld's
+  // ONLY disappearing row, so without a second data point the timer and
+  // search-leak checks below have a population of one: they cannot tell
+  // MakeConversationRowModel gating on c.disappearing (correct) from a mutant
+  // gating on c.id == L"conv-marta" (wrong) -- both produce identical output
+  // against the world alone. Different id, name and preview from conv-marta,
+  // so nothing below can be satisfied by an identity match standing in for
+  // the flag. Purely a stack local: never touches demo::MutableWorld(), so
+  // WorldFingerprint/I10 is untouched by its existence.
+  demo::Conversation ghost{};
+  ghost.id = L"diag-ghost-disappearing";
+  ghost.name = L"Diagnostic second disappearing row";
+  ghost.preview = L"a preview this row must refuse to show";
+  ghost.disappearing = true;
+
   // 1. Every row says who it is and when.
   bool rowsOk = (0 < total);
   for (auto const& c : world.conversations) {
@@ -121,6 +154,19 @@ std::vector<std::wstring> CollectConversationListDiagnostics() {
     if (!m.preview.empty()) timerOk = false;
     if (!c.preview.empty()) ++dropped;
   }
+  // The second, non-conv-marta disappearing row (see the top of this
+  // function): same logic, same counters, so a model keyed on identity rather
+  // than the flag shows up here as a FAIL instead of passing vacuously.
+  {
+    const ConversationRowModel m = MakeConversationRowModel(ghost);
+    if (!m.showTimer || !m.preview.empty()) timerOk = false;
+    ++timerRows;
+    if (!ghost.preview.empty()) ++dropped;
+  }
+  // Zero-guard, matching demo.list.search's leakChecks==0 and
+  // demo.list.group's chips==0: without it, a world with no disappearing
+  // conversation at all would report "(0 checked)" and still PASS.
+  if (timerRows == 0) timerOk = false;
   if (dropped != timerRows) timerOk = false;
   lines.push_back(Line(L"demo.list.timer", timerOk,
                        std::format(L"{} of {} rows show the timer; each dropped a "
@@ -137,14 +183,26 @@ std::vector<std::wstring> CollectConversationListDiagnostics() {
     if (m.unread.empty() != (c.unread <= 0)) unreadOk = false;
     if (!m.unread.empty()) ++unreadRows;
   }
+  // Boundary, not just a deep value: 99 is the last un-clamped count and 100
+  // is the first clamped one. A single point at 120 cannot see an off-by-one
+  // at the actual clamp edge -- it would still render "99+" whether the
+  // threshold were 99, 100 or 105.
+  demo::Conversation atCap{};
+  atCap.unread = 99;
+  demo::Conversation firstOver{};
+  firstOver.unread = 100;
   demo::Conversation loud{};
   loud.unread = 120;
-  const bool clampOk = (MakeConversationRowModel(loud).unread == L"99+");
+  const bool clampOk = (MakeConversationRowModel(atCap).unread == L"99") &&
+                       (MakeConversationRowModel(firstOver).unread == L"99+") &&
+                       (MakeConversationRowModel(loud).unread == L"99+");
   if (!clampOk) unreadOk = false;
   lines.push_back(Line(L"demo.list.unread", unreadOk,
-                       std::format(L"pill shown iff unread > 0 ({} of {} rows); 120 "
-                                   L"unread renders \"{}\"",
+                       std::format(L"pill shown iff unread > 0 ({} of {} rows); unread "
+                                   L"99/100/120 render \"{}\"/\"{}\"/\"{}\"",
                                    unreadRows, total,
+                                   MakeConversationRowModel(atCap).unread,
+                                   MakeConversationRowModel(firstOver).unread,
                                    MakeConversationRowModel(loud).unread)));
 
   // 4. Selection reaches a screen reader, and a group says how many PEOPLE are
@@ -195,6 +253,15 @@ std::vector<std::wstring> CollectConversationListDiagnostics() {
     if (!c.disappearing || c.preview.empty()) continue;
     ++leakChecks;
     if (ConversationRowMatches(c, c.preview)) searchOk = false;
+  }
+  // The second, non-conv-marta disappearing row (see the top of this
+  // function): kept out of matchAll/total (it is not one of the world's rows)
+  // so only the leak check itself runs against it, for the same reason the
+  // timer check above adds it -- a population of one cannot tell a leak check
+  // keyed on the flag from one keyed on conv-marta's identity.
+  if (!ghost.preview.empty()) {
+    ++leakChecks;
+    if (ConversationRowMatches(ghost, ghost.preview)) searchOk = false;
   }
   if (matchAll != total || leakChecks == 0) searchOk = false;
   lines.push_back(Line(L"demo.list.search", searchOk,

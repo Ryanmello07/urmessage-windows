@@ -193,7 +193,7 @@
     <ClCompile Include="Startup.cpp" />
     <ClCompile Include="UrComponents.cpp" />
     <ClCompile Include="UrMotion.cpp" />
-    <ClCompile Include="Views\ConversationRowModel.cpp" />
+    <ClCompile Include="Views\ConversationRowModel.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="WindowReveal.cpp" />
     <ClCompile Include="WindowShell.cpp" />
   </ItemGroup>
