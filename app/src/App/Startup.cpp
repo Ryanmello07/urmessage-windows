@@ -24,6 +24,7 @@
 #include "Strings.h"
 #include "UrMotion.h"
 #include "Views/ConversationRowModel.h"
+#include "Views/InspectRailFields.h"
 #include "Demo/DemoShellState.h"
 #include "Demo/AdvancedMode.h"
 #include "Demo/DemoWorld.h"
@@ -1507,6 +1508,18 @@ std::vector<std::wstring> CollectDiagnostics() {
         bits(naive), naiveWrong, bits(msgOnly), msgOnlyWrong, bits(head),
         bits(rebuilt.header), headWrong, headFalseWrong, removals, additions, failedKept,
         runs, runEndReadings, stray, failedExtras, clusters));
+  }
+
+  // GUARDED, and the guard is not a nicety. CollectDiagnostics() is NOT the
+  // --diagnose path: it runs on EVERY launch, before winrt::init_apartment and
+  // before WantsDiagnose(), inside the try/catch in wWinMain whose failure path
+  // shows "URmessage could not start" and returns 1 with NO WINDOW AT ALL
+  // (main.cpp:161-177). These two lines build the whole demo world. Behind the
+  // guard, a defect in DemoWorld costs the --diagnose run a line; in front of
+  // it, the same defect costs every launch its window.
+  if (WantsDiagnose()) {
+    lines.push_back(urmsg::views::InspectRailFieldsProbe());
+    lines.push_back(urmsg::views::InspectRailDeviceProbe());
   }
 
   return lines;

@@ -123,6 +123,20 @@
            C1083. Our hand-authored .cpp do not hit this only because they
            physically sit next to those headers. -->
       <AdditionalIncludeDirectories>$(MSBuildProjectDirectory);$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <!-- NO ObjectFileName HERE, AND IT IS NOT AN OVERSIGHT. Every .obj lands
+           flat in $(IntDir) whatever subdirectory its source came from, so the
+           first Demo\X.cpp / Views\X.cpp pair to share a basename would get
+           MSB8027 or a silently stale object. There is no such pair today. The
+           obvious fix - <ObjectFileName>$(IntDir)%(RelativeDir)</ObjectFileName>
+           in this ItemDefinitionGroup - was tried here and FAILS the build, with
+           two MSB3191 "the given path's format is not supported": the Windows App
+           SDK targets contribute ClCompile items whose Include is an ABSOLUTE
+           path into %USERPROFILE%\.nuget, %(RelativeDir) on those is an absolute
+           directory, and $(IntDir) + that is a path with a drive letter in the
+           middle. An item definition reaches those items too. If a basename
+           collision ever does appear, put <ObjectFileName>$(IntDir)Views\</...>
+           on the individual ClCompile items below, where the Include is known to
+           be relative - not here. -->
       <!-- DISABLE_XAML_GENERATED_MAIN: the markup compiler emits an app
            bootstrap (wWinMain + its winrt module glue, guarded by
            #ifndef DISABLE_XAML_GENERATED_MAIN) into the generated
@@ -195,6 +209,11 @@
     <ClCompile Include="UrMotion.cpp" />
     <ClCompile Include="Views\ConversationListView.cpp" />
     <ClCompile Include="Views\ConversationRowModel.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <!-- NotUsing for the same reason as Demo\DemoWorld.cpp above: the two
+         probes in this unit are called from CollectDiagnostics(), which runs
+         before winrt::init_apartment (main.cpp:168 vs :183), so this TU must
+         not pull in the pch and its winrt/ headers. -->
+    <ClCompile Include="Views\InspectRailFields.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="Views\ThreadLayout.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="Views\ThreadView.cpp" />
     <ClCompile Include="WindowReveal.cpp" />
@@ -219,6 +238,7 @@
     <ClInclude Include="UrMotion.h" />
     <ClInclude Include="Views\ConversationListView.h" />
     <ClInclude Include="Views\ConversationRowModel.h" />
+    <ClInclude Include="Views\InspectRailFields.h" />
     <ClInclude Include="WindowReveal.h" />
     <ClInclude Include="WindowShell.h" />
     <ClInclude Include="resource.h" />
