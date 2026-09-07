@@ -8,6 +8,7 @@
 #include <shellapi.h>  // CommandLineToArgvW
 
 #include <atomic>
+#include <cmath>
 #include <filesystem>
 #include <format>
 #include <optional>
@@ -23,6 +24,7 @@
 #include "Demo/DemoShellState.h"
 #include "Demo/AdvancedMode.h"
 #include "Demo/DemoWorld.h"
+#include "Demo/ThreadLayout.h"
 #include "Demo/DemoSwitches.h"
 
 // The Windows App SDK version this binary was BUILT against, injected from the
@@ -562,6 +564,100 @@ std::vector<std::wstring> CollectDiagnostics() {
   // app state, so they are as true on a plain launch as under --demo.
   for (auto const& line : urmsg::views::CollectConversationListDiagnostics())
     lines.push_back(line);
+
+  // ---- thread layout rules (Demo/ThreadLayout.h) ---------------------------
+  {
+    namespace demo = urmsg::demo;
+    namespace views = urmsg::views;
+    auto const& world = demo::GetWorld();
+
+    // 1. Width. The probes bracket the cap crossover (640 / 0.68 = 941.18), so
+    //    neither `return 640;` nor `return 0.68 * w;` survives, and 0 proves the
+    //    unmeasured-column guard.
+    struct WidthProbe { double column; double expect; };
+    static constexpr WidthProbe kProbes[] = {
+        {0.0, 640.0}, {400.0, 272.0}, {941.0, 639.88}, {942.0, 640.0}, {1560.0, 640.0}};
+    int widthOk = 0;
+    for (auto const& p : kProbes)
+      if (std::fabs(views::BubbleMaxWidthDip(p.column) - p.expect) < 0.01) ++widthOk;
+    lines.push_back(std::format(
+        L"  thread T1 width  : {} - {}/5 probes at 0/400/941/942/1560 dip",
+        widthOk == 5 ? L"PASS" : L"FAIL", widthOk));
+
+    // 2. Sender header. The view rule must agree with DemoWorld's own
+    //    run-continuation rule on EVERY message row: senderName is non-empty
+    //    exactly when the bubble draws a name and an identicon.
+    int msgRows = 0, headers = 0, disagree = 0;
+    for (auto const& c : world.conversations) {
+      const bool group = (c.kind == demo::ConversationKind::Group);
+      for (std::size_t i = 0; i < c.rows.size(); ++i) {
+        auto const& row = c.rows[i];
+        if (row.kind != demo::RowKind::Message) continue;
+        ++msgRows;
+        demo::MessageRow const* prev = (i > 0) ? &c.rows[i - 1] : nullptr;
+        const bool shows = views::ShowsSenderHeader(prev, row, group);
+        if (shows) ++headers;
+        if (shows != !row.senderName.empty()) ++disagree;
+      }
+    }
+    lines.push_back(std::format(
+        L"  thread T1 header : {} - {} message rows, {} draw a sender header, "
+        L"{} disagree with DemoWorld::senderName",
+        (disagree == 0 && headers > 0) ? L"PASS" : L"FAIL", msgRows, headers, disagree));
+
+    // 3. Delivery glyph. runStarts is counted from the run TRANSITION, i.e.
+    //    independently of CarriesDeliveryGlyph, so `return true` (carriers ==
+    //    outgoing) and a rule that forgot the Failed exception both fail.
+    int outgoing = 0, runStarts = 0, carriers = 0, failed = 0, failedMidRun = 0,
+        failedCarrying = 0;
+    for (auto const& c : world.conversations) {
+      bool inRun = false;
+      for (std::size_t i = 0; i < c.rows.size(); ++i) {
+        auto const& row = c.rows[i];
+        const bool isOut = (row.kind == demo::RowKind::Message && row.outgoing);
+        if (isOut && !inRun) ++runStarts;
+        inRun = isOut;
+        if (!isOut) continue;
+        ++outgoing;
+        demo::MessageRow const* next = (i + 1 < c.rows.size()) ? &c.rows[i + 1] : nullptr;
+        const bool lastOfRun =
+            !(next && next->kind == demo::RowKind::Message && next->outgoing);
+        const bool isFailed = (row.state == demo::DeliveryState::Failed);
+        if (isFailed) { ++failed; if (!lastOfRun) ++failedMidRun; }
+        if (views::CarriesDeliveryGlyph(row, next)) {
+          ++carriers;
+          if (isFailed) ++failedCarrying;
+        }
+      }
+    }
+    const bool glyphOk = (carriers == runStarts + failedMidRun) && (failed > 0) &&
+                         (failedCarrying == failed) && (outgoing > runStarts);
+    lines.push_back(std::format(
+        L"  thread T1 glyph  : {} - {} outgoing rows in {} runs, {} carry a glyph, "
+        L"{}/{} failed carry one ({} mid-run)",
+        glyphOk ? L"PASS" : L"FAIL", outgoing, runStarts, carriers, failedCarrying,
+        failed, failedMidRun));
+
+    // 4. Day separators. Never unlabelled, never doubled, never last.
+    views::DaySeparatorAudit total;
+    int convsWithSeparators = 0;
+    for (auto const& c : world.conversations) {
+      const auto a = views::AuditDaySeparators(c.rows);
+      if (a.separators > 0) ++convsWithSeparators;
+      total.separators += a.separators;
+      total.unlabelled += a.unlabelled;
+      total.adjacent += a.adjacent;
+      total.trailing += a.trailing;
+    }
+    const bool daysOk = total.separators >= 2 && total.unlabelled == 0 &&
+                        total.adjacent == 0 && total.trailing == 0;
+    lines.push_back(std::format(
+        L"  thread T1 days   : {} - {} separators across {} conversations; "
+        L"{} unlabelled, {} adjacent, {} trailing",
+        daysOk ? L"PASS" : L"FAIL", total.separators, convsWithSeparators,
+        total.unlabelled, total.adjacent, total.trailing));
+  }
+
   return lines;
 }
 
