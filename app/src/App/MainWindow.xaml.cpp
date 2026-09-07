@@ -269,6 +269,26 @@ void MainWindow::DrainDeepLink() {
   // stepping PaneDisplayMode away from Auto and back re-measures against the
   // CURRENT item set and CURRENT window width, rather than whatever it cached
   // before the Visibility flip.
+  //
+  // WORKAROUND, not a design choice - fix round 2. This is a platform defect in
+  // Windows App SDK 2.2.0 (the version this build logs under "built against"
+  // at startup): a NavigationViewItem's Collapsed -> Visible transition
+  // corrupts NavigationView's Auto pane-mode resolution in that version,
+  // independent of timing (test (1)/(2) above already ruled out both "set
+  // Visibility in XAML from the start" and "build the items only after the
+  // demo options are known" as fixes, since even a pre-layout, pre-any-window
+  // flip in the constructor reproduced it). RE-TEST SIGNAL: if a future
+  // Windows App SDK bump makes this cycle look removable, do not delete it
+  // because it looks redundant - delete it, then rebuild and confirm the nav
+  // still shows TEXT LABELS beside Chats/Contacts/Network/Developer/Settings
+  // at 1560x900 under `--demo=network --demo-advanced`. If it does not, the
+  // defect is still present and the cycle stays. UNTRIED CLEANER ROUTE, noted
+  // for whoever picks this up next but NOT attempted and NOT proven: building
+  // NetworkNavItem/DeveloperNavItem in code and Append/InsertAt-ing them into
+  // HomeNav().MenuItems()/FooterMenuItems() only inside EnterDemoMode, instead
+  // of declaring them Collapsed in XAML and toggling Visibility here, would
+  // never perform the corrupting transition at all - a candidate, not a
+  // verified fix.
   NetworkNavItem().Visibility(Visibility::Visible);
   DeveloperNavItem().Visibility(advanced_ ? Visibility::Visible
                                           : Visibility::Collapsed);
