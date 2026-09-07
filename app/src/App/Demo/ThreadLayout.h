@@ -157,7 +157,7 @@ inline std::wstring DeliveryWord(demo::DeliveryState s) {
 //   incoming, group : "Bo Nakamura, 14:22. Slide 4 is the one."
 //   incoming, DM    : "14:22. Slide 4 is the one."
 //   outgoing        : "You, 14:22, Read. On it."
-//   outgoing failed : "You, 14:22, Failed: no route to recipient. On it."
+//   outgoing failed : "You, 14:22, Not sent: no route to recipient. On it."
 inline std::wstring BubbleAutomationName(demo::MessageRow const& row, bool group) {
   std::wstring name;
   if (row.outgoing) {

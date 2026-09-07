@@ -58,7 +58,7 @@ struct ThreadRowPlan {
   // ANY Failed row wherever it sits. The shipped world contains exactly that
   // case - DemoWorld.cpp:277 is an outgoing Failed row followed at :279 by an
   // outgoing Pending row - so endsOutgoingRun is FALSE there while the row must
-  // still show its reading. It is the red circle and the word "Failed" on the
+  // still show its reading. It is the red circle and the words "Not sent" on
   // 12:09 row in the capture; hanging the cluster on this field alone deletes
   // it, and a silently swallowed failure is the one delivery state this surface
   // must never lose. endsOutgoingRun is not a substitute for that rule.

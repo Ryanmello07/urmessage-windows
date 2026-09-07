@@ -648,11 +648,12 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
   // already-measured column at a different conversation: there ScrollableHeight
   // is real and this is the jump. disableAnimation is true because it is a jump
   // to a position, not a motion the user asked for.
-  // Nothing is selected in a freshly built thread, and the RESTING edge of every
-  // bubble is written here by the one function that owns the edge outright —
-  // rather than by MakeBubbleRow and then again by the selection path, which is
-  // how an edge goes stale. Spec C §5.2: a 1px UrBorderBrush edge on an outgoing
-  // bubble, none on an incoming one.
+  // Nothing is selected in a freshly built thread, so this settles every bubble
+  // onto its RESTING edge. It reaches that edge through SetBubbleEdge, the same
+  // single writer MakeBubbleRow used when it built each bubble — one function
+  // with two callers, not two functions writing the same two properties, which
+  // is how an edge goes stale. Spec C §5.2: a 1px UrBorderBrush edge on an
+  // outgoing bubble, none on an incoming one.
   SetThreadSelectedMessage(v, L"");
 
   parts->scroller.UpdateLayout();
