@@ -1,5 +1,5 @@
 // The --demo family, parsed in the shape of urnw::WantsDiagnose()
-// (Startup.cpp:280): CommandLineToArgvW, and --x / -x / /x / bare x all
+// (Startup.cpp:464): CommandLineToArgvW, and --x / -x / /x / bare x all
 // accepted, because a switch that works one way and not another is a bug
 // report waiting to be filed.
 //

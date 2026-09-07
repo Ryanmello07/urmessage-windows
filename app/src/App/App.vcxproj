@@ -181,7 +181,11 @@
          (main.cpp:168 vs :183). Compiling it standalone is what makes "pure C++"
          a property of the build rather than a comment someone can delete. -->
     <ClCompile Include="Demo\DemoWorld.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
-    <ClCompile Include="Demo\DemoSwitches.cpp" />
+    <!-- NotUsing for the same reason as DemoWorld.cpp above: this TU runs
+         before winrt::init_apartment, so it must not pull in the pch's
+         winrt/ headers even though (unlike DemoWorld.cpp) it needs Win32
+         (<windows.h>, <shellapi.h>) for CommandLineToArgvW. -->
+    <ClCompile Include="Demo\DemoSwitches.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="MainWindow.xaml.cpp"><DependentUpon>MainWindow.xaml</DependentUpon></ClCompile>
     <ClCompile Include="Localization.cpp" />
     <ClCompile Include="Startup.cpp" />

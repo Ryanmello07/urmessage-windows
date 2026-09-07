@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
-#include "pch.h"
+//
+// NO pch.h include, and App.vcxproj compiles this unit with
+// PrecompiledHeader=NotUsing: the project pch pulls in every winrt/ header,
+// and ParseDemoOptions runs from CollectDiagnostics before init_apartment.
+// See DemoWorld.cpp/.h. <windows.h> is included directly instead — it is
+// already required by <shellapi.h> below, so this costs nothing.
+#include <windows.h>
 
 #include "Demo/DemoSwitches.h"
 
@@ -92,16 +98,54 @@ static_assert(!ParseArgs({L"--demo=nope"}).enabled);
 static_assert(ParseArgs({L"--demo-autoplay"}).autoplay);
 static_assert(ParseArgs({L"--demo-autoplay"}).enabled);
 static_assert(!ParseArgs({L"--demo"}).autoplay);
+// Cross-field non-contamination: --demo-autoplay touches ONLY autoplay
+// (+ enabled). A mutant that also flips advanced, or clears watermark,
+// must fail one of these.
+static_assert(ParseArgs({L"--demo-autoplay"}).screen == DemoScreen::None);
+static_assert(ParseArgs({L"--demo-autoplay"}).watermark);
+static_assert(!ParseArgs({L"--demo-autoplay"}).advanced);
 
 static_assert(ParseArgs({L"--demo-advanced"}).advanced);
 static_assert(ParseArgs({L"--demo-advanced"}).enabled);
 static_assert(!ParseArgs({L"--demo"}).advanced);
+// Cross-field non-contamination: --demo-advanced touches ONLY advanced
+// (+ enabled).
+static_assert(ParseArgs({L"--demo-advanced"}).screen == DemoScreen::None);
+static_assert(ParseArgs({L"--demo-advanced"}).watermark);
+static_assert(!ParseArgs({L"--demo-advanced"}).autoplay);
 
 static_assert(!ParseArgs({L"--demo-watermark=off"}).watermark);
 static_assert(ParseArgs({L"--demo-watermark=off"}).enabled);
 static_assert(ParseArgs({L"--demo-watermark=maybe"}).watermark);
+// Cross-field non-contamination: --demo-watermark=off touches ONLY
+// watermark (+ enabled).
+static_assert(ParseArgs({L"--demo-watermark=off"}).screen == DemoScreen::None);
+static_assert(!ParseArgs({L"--demo-watermark=off"}).autoplay);
+static_assert(!ParseArgs({L"--demo-watermark=off"}).advanced);
 
 static_assert(!ParseArgs({L"--diagnose"}).enabled);
+
+// Combinations. The single-switch rows above each prove what one switch does
+// to its own field and (as of the cross-field rows) what it leaves alone;
+// these prove the loop in ApplyArg composes them the way a real command line
+// would.
+//
+// Two switches together: both flags land, neither's cross-field claim above
+// is undone by the other running in the same pass.
+static_assert(ParseArgs({L"--demo-advanced", L"--demo-autoplay"}).advanced);
+static_assert(ParseArgs({L"--demo-advanced", L"--demo-autoplay"}).autoplay);
+static_assert(ParseArgs({L"--demo-advanced", L"--demo-autoplay"}).screen ==
+              DemoScreen::None);
+
+// A repeated switch: last one on the command line wins, because ApplyArg
+// runs left-to-right over argv and simply overwrites. Documenting the
+// behaviour, not prescribing it.
+static_assert(ParseArgs({L"--demo=chats", L"--demo=network"}).screen ==
+              DemoScreen::Network);
+
+// An unrecognised demo-* spelling is not a demo switch, same carve-out as
+// --demo=nope above: a typo must never light up the demo.
+static_assert(!ParseArgs({L"--demo-foo"}).enabled);
 
 DemoOptions ParseDemoOptions() {
   DemoOptions out = kDefaults;
