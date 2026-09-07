@@ -123,10 +123,16 @@ byte-level replacement and verifying afterwards.
    identical when one of them is invisible. This settles it:
 
    ```
-   python -c "t=open(r'<file>',encoding='utf-8').read(); print([hex(ord(c)) for c in t if 0xE000<=ord(c)<=0xF8FF])"
+   python -c "t=open(r'<file>',encoding='utf-8').read(); print(sorted({hex(ord(c)) for c in t if ord(c)>127}))"
    ```
 
-   An **empty list** is the passing result. Anything else means a raw character survived.
+   An **empty list** is the passing result. Anything else means a non-ASCII character
+   survived. **Scan the whole non-ASCII range, not just the Private Use Area.** An
+   earlier version of this rule checked only `0xE000-0xF8FF`; a reviewer pointed out it
+   would sail past a pasted em-dash, curly quote or non-breaking space, which are the
+   non-ASCII characters an editor is *most* likely to introduce silently. If a file
+   legitimately contains non-ASCII (an existing comment, say), diff the scan against the
+   same scan before your change rather than weakening it.
 3. Where the glyph is load-bearing, confirm the **runtime** value, not the source text: a
    one-character `std::wstring` carrying the expected codepoint. Source text proves what you
    typed; only the runtime value proves what the compiler produced.
