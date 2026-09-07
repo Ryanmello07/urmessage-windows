@@ -60,8 +60,8 @@ Media::FontFamily IconFont() { return Media::FontFamily(L"Segoe Fluent Icons"); 
 
 namespace anim = winrt::Microsoft::UI::Xaml::Media::Animation;
 
-// design S7: fade + 10 DIP rise + 0.96 -> 1.0 scale, kBaseMs, standard curve.
-// Four timelines in ONE Storyboard so they finish on the same frame - two
+// design §7: fade + 10 DIP rise + 0.96 -> 1.0 scale, kBaseMs, standard curve.
+// Four timelines in ONE Storyboard so they finish on the same frame — two
 // independent storyboards can land a frame apart, which reads as a hitch
 // exactly when the bubble settles (the same reason CrossfadePageSwap shares one
 // storyboard, UrMotion.cpp).
@@ -69,10 +69,16 @@ namespace anim = winrt::Microsoft::UI::Xaml::Media::Animation;
 // EntranceTimelineCount() (Views/ThreadLayout.h) is the pure statement of the
 // count below, and --diagnose asserts it, INCLUDING the zero: "motion off"
 // here means the four timelines are never created at all, not that they run
-// short. Keep the two in step - four `add(...)` calls, four from the counter.
+// short. Keep the two in step — four `add(...)` calls, four from the counter.
 void RunBubbleEntrance(FrameworkElement const& el) {
   if (!el) return;
-  if (!urnw::motion::ShouldAnimate()) {
+
+  // ShouldAnimate() is consulted ONCE and its answer goes straight into the
+  // pure table, so "is motion on" and "which timelines exist" cannot disagree.
+  // An empty table IS the reduce-motion path — there is no second branch that
+  // could be deleted while the count kept saying four.
+  const auto plan = EntranceTimelines(urnw::motion::ShouldAnimate());
+  if (plan.empty()) {
     // Motion GONE, not reduced: the final pose, immediately, and no transform
     // left on the element for a later layout pass to trip over.
     el.Opacity(1.0);
@@ -89,23 +95,21 @@ void RunBubbleEntrance(FrameworkElement const& el) {
   el.RenderTransformOrigin(winrt::Windows::Foundation::Point{0.5f, 1.0f});
   el.Opacity(0.0);
 
+  // ONE Storyboard for all four so they finish on the same frame — two
+  // independent storyboards can land a frame apart, which reads as a hitch
+  // exactly when the bubble settles (the same reason CrossfadePageSwap shares
+  // one storyboard, UrMotion.cpp).
   anim::Storyboard sb;
-  auto add = [&sb, &el](anim::DoubleAnimationUsingKeyFrames const& a, wchar_t const* path) {
+  for (auto const& spec : plan) {
+    auto a = urnw::motion::MakeSplineDouble(spec.from, spec.to, urnw::motion::kBaseMs,
+                                            spec.beginMs, urnw::motion::kStandardP1,
+                                            urnw::motion::kStandardP2);
+    if (spec.autoReverse) a.AutoReverse(true);
+    if (spec.forever) a.RepeatBehavior(anim::RepeatBehaviorHelper::Forever());
     anim::Storyboard::SetTarget(a, el);
-    anim::Storyboard::SetTargetProperty(a, path);
+    anim::Storyboard::SetTargetProperty(a, spec.path);
     sb.Children().Append(a);
-  };
-  using urnw::motion::kBaseMs;
-  using urnw::motion::kStandardP1;
-  using urnw::motion::kStandardP2;
-  using urnw::motion::MakeSplineDouble;
-  add(MakeSplineDouble(0.0, 1.0, kBaseMs, 0, kStandardP1, kStandardP2), L"Opacity");
-  add(MakeSplineDouble(kBubbleRiseDip, 0.0, kBaseMs, 0, kStandardP1, kStandardP2),
-      L"(UIElement.RenderTransform).(CompositeTransform.TranslateY)");
-  add(MakeSplineDouble(kBubbleFromScale, 1.0, kBaseMs, 0, kStandardP1, kStandardP2),
-      L"(UIElement.RenderTransform).(CompositeTransform.ScaleX)");
-  add(MakeSplineDouble(kBubbleFromScale, 1.0, kBaseMs, 0, kStandardP1, kStandardP2),
-      L"(UIElement.RenderTransform).(CompositeTransform.ScaleY)");
+  }
   sb.Begin();
 }
 
@@ -250,7 +254,7 @@ FrameworkElement MakeDeliveryCluster(demo::MessageRow const& row) {
 // SetThreadConversation builds a whole column at once and every row's `next` is
 // known, so until T6 a cluster was only ever created. AppendThreadRow changes
 // that: the row that WAS newest stops being last-of-run the moment another
-// outgoing row lands under it, and design S6.2's one-reading-per-run then
+// outgoing row lands under it, and design §6.2's one-reading-per-run then
 // requires its cluster to GO. So the element needs an identity the remover can
 // find.
 //
@@ -282,6 +286,13 @@ int DeliveryClusterIndex(Controls::Panel const& rowRoot) {
 
 // Make this row's cluster match `carries`, whatever it was before. Idempotent
 // in both directions, so the caller may hand it the answer unconditionally.
+//
+// The ADD branch is unreachable from the append path today and is kept on
+// purpose — AppendClusterPlan::prevMustGain carries the one-line proof of why
+// (Views/ThreadLayout.h), and `T6 append cluster` asserts the zero rather than
+// printing it. This stays a total "make it match" rather than a one-way clear
+// so it is still correct the day CarriesDeliveryGlyph grows a clause that can
+// turn a reading ON.
 void SetRowCluster(FrameworkElement const& rowRoot, demo::MessageRow const& row,
                    bool carries) {
   if (!rowRoot) return;
@@ -420,13 +431,13 @@ struct ThreadParts {
   double columnWidth = 0.0;
 
   // ---- T6: what AppendThreadRow needs and ThreadBubble cannot carry -------
-  // ThreadBubble is fixed by contract S4 (an id and a Button) and ThreadView
+  // ThreadBubble is fixed by contract §4 (an id and a Button) and ThreadView
   // holds no MessageRows, but appending a row is a decision ABOUT THE ROW
   // ABOVE IT: CarriesDeliveryGlyph() takes a row and its successor, so the
   // previous row's DATA has to still be here to be re-asked the question, and
   // the element that owns its cluster has to be reachable to answer it.
   //
-  // EVERY row is recorded, not only the message rows - a day separator or a
+  // EVERY row is recorded, not only the message rows — a day separator or a
   // system row is a legitimate `prev`, and CarriesDeliveryGlyph returns false
   // for one, which is exactly the answer that KEEPS an outgoing row's cluster
   // when a system line lands under it. clusterHost is null for those.
@@ -437,7 +448,7 @@ struct ThreadParts {
   std::vector<RenderedRow> rows;
   bool group = false;
 
-  // The typing indicator (design S7). typingStory is stopped and dropped on
+  // The typing indicator (design §7). typingStory is stopped and dropped on
   // every state change so two waves can never run over one another.
   FrameworkElement typingRow{nullptr};
   std::vector<winrt::Microsoft::UI::Xaml::Shapes::Ellipse> typingDots;
@@ -602,10 +613,10 @@ FrameworkElement MakeKeyChangeRecord(winrt::hstring const& text) {
   return root;
 }
 
-// ---- the typing indicator (T6, design S7) --------------------------------
+// ---- the typing indicator (T6, design §7) --------------------------------
 // Three pulsing dots AND a word. The word is not decoration: with "Show
 // animations in Windows" off the dots do not move at all, and three motionless
-// grey dots say nothing - this line is what carries the state in that case, and
+// grey dots say nothing — this line is what carries the state in that case, and
 // it is also the only thing a screen reader gets (the dots are Raw).
 //
 // It says "Typing", which is the one thing this demo can honestly claim about a
@@ -652,14 +663,14 @@ FrameworkElement MakeTypingIndicator(std::shared_ptr<ThreadParts> const& parts) 
   return row;
 }
 
-// ---- the composer (T6, design S9.1) --------------------------------------
+// ---- the composer (T6, design §9.1) --------------------------------------
 // = App.xaml's UrBorderStrongBrush (#38FFFFFF). Written as a literal rather
-// than derived from kText, which would give #38F8F8F8 - near enough to look
+// than derived from kText, which would give #38F8F8F8 — near enough to look
 // right and wrong enough to be a second edge token.
 constexpr winrt::Windows::UI::Color kBorderStrong{0x38, 0xFF, 0xFF, 0xFF};
 
 // Entrance kFastMs on the standard curve, exit one step faster on the exit
-// curve - UrMotion's own rule ("exits run one step faster than entrances"), no
+// curve — UrMotion's own rule ("exits run one step faster than entrances"), no
 // new token. Instant in both directions when motion is off.
 void FadeFocusRule(FrameworkElement const& rule, bool on) {
   if (!rule) return;
@@ -679,7 +690,7 @@ void FadeFocusRule(FrameworkElement const& rule, bool on) {
   sb.Begin();
 }
 
-// design S9.1: a control that cannot act is DISABLED, so the platform draws it
+// design §9.1: a control that cannot act is DISABLED, so the platform draws it
 // at 0.38 opacity and it never takes focus. An enabled-looking button that eats
 // a click is the demo bug that rule exists to stop.
 Button MakeInertIconButton(wchar_t const* glyph, wchar_t const* name) {
@@ -759,7 +770,7 @@ FrameworkElement MakeComposer() {
 
   // The ONE live control. Focus and typing are things this demo can honestly
   // do, so they are not taken away. The placeholder is the word "Message" and
-  // nothing more - a placeholder that promised anything about what happens to
+  // nothing more — a placeholder that promised anything about what happens to
   // what you type would be the claim G4 forbids.
   TextBox box;
   box.PlaceholderText(L"Message");
@@ -775,7 +786,7 @@ FrameworkElement MakeComposer() {
 
   // UrAccentBrush's one legitimate home on this surface (the selection outline
   // is the other). AccentButtonStyle is what spends App.xaml's
-  // AccentButtonBackground* keys, which are already the pale yellow - and
+  // AccentButtonBackground* keys, which are already the pale yellow — and
   // DISABLED it resolves to AccentButtonBackgroundDisabled #33EFF7BB, so the
   // pill reads as faint rather than as a live call to action.
   Button send;
@@ -794,14 +805,14 @@ FrameworkElement MakeComposer() {
   }
   send.MinWidth(40);
   send.Padding(ThicknessHelper::FromLengths(10, 6, 10, 6));
-  send.IsEnabled(false);  // design S9.1 - the disabled accent reads as inert
+  send.IsEnabled(false);  // design §9.1 — the disabled accent reads as inert
   Automation::AutomationProperties::SetName(send, L"Send (not available in the demo)");
   Grid::SetColumn(send, 4);
   row.Children().Append(send);
   column.Children().Append(row);
 
-  // The focus channel. Not the accent - that is the send button and the
-  // selection outline only - so focus lifts a 1px rule from nothing to
+  // The focus channel. Not the accent — that is the send button and the
+  // selection outline only — so focus lifts a 1px rule from nothing to
   // UrBorderStrongBrush, which is the same edge step UrCardButtonStyle's hover
   // state already spends.
   Border focusRule;
@@ -828,7 +839,7 @@ FrameworkElement MakeComposer() {
   bar.Child(column);
   // A click in the composer is NOT a click in empty thread space. Without this
   // it bubbles to MakeThread's root.Tapped and deselects the message the rail
-  // is showing, the moment you go to type - the same reason a bubble marks its
+  // is showing, the moment you go to type — the same reason a bubble marks its
   // own Tapped handled.
   bar.Tapped([](auto const&, auto const& args) { args.Handled(true); });
   return bar;
@@ -846,7 +857,7 @@ ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
   Grid root;
   root.Background(BrushByKey(L"UrBackgroundBrush", urnw::colors::kBackground));
   // THREE rows: the scrolling backlog, the typing indicator, the composer.
-  // Star / Auto / Auto - the two bottom rows keep their measured height and the
+  // Star / Auto / Auto — the two bottom rows keep their measured height and the
   // backlog takes what is left, so the composer cannot be scrolled off and a
   // typing indicator appearing SHORTENS the backlog rather than covering its
   // last bubble.
@@ -910,10 +921,10 @@ ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
   // resize - this handler fires on width-only changes too and yanks them back.
   //
   // T6 GAVE IT A SECOND JOB, and it is the more important one now. Appending a
-  // row adds a child to this stack, so this handler fires and re-pins - which
+  // row adds a child to this stack, so this handler fires and re-pins — which
   // is what keeps an arriving message visible and is why AppendThreadRow writes
   // no scroll offset of its own (two writers of one property, and the later one
-  // wins by accident of ordering). It also means design S9.2's "do not yank a
+  // wins by accident of ordering). It also means design §9.2's "do not yank a
   // reader who has scrolled away" is unimplemented on the APPEND path too, not
   // only across a resize, and for the same reason: the guard belongs here.
   //
@@ -931,7 +942,7 @@ ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
   });
 
   // Design 9.1: a click in empty thread space deselects. A Button handles its
-  // own pointer events, so a bubble click does not reach this - and since T6
+  // own pointer events, so a bubble click does not reach this — and since T6
   // this root also holds the COMPOSER, which is not a Button and is not empty
   // thread space, so MakeComposer marks its own Tapped handled rather than
   // letting a click into the message box throw away the selection the rail is
@@ -941,7 +952,7 @@ ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
   });
 
   // --demo is the ONLY way an agent can reach a state without synthesising
-  // input (design S9.3), and the typing indicator is otherwise unreachable
+  // input (design §9.3), and the typing indicator is otherwise unreachable
   // until an ambient loop that does not exist yet decides to raise it. So
   // --demo-autoplay SEEDS it on: a presenter sees the indicator immediately
   // instead of waiting out a minute of silence, and the capture that proves it
@@ -949,7 +960,7 @@ ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
   // Collapsed and costs nothing.
   //
   // The WAVE starts here too, from the window constructor and before this root
-  // is mounted into ThreadHost - and that works, which is not what a lifecycle
+  // is mounted into ThreadHost — and that works, which is not what a lifecycle
   // rule of thumb would predict. It was not taken on trust: a Loaded-armed
   // variant was built and swept across a whole 1500 ms cycle at 150 ms steps,
   // and this version was then sampled at the steps where that sweep showed the
@@ -1067,8 +1078,8 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
     // EVERY row, including the unlabelled separator that drew nothing: the
     // append path asks CarriesDeliveryGlyph() about the row IMMEDIATELY above
     // the one it is adding, and skipping a row here would hand it the wrong
-    // one. That would be invisible except in the one case it matters - an
-    // outgoing bubble under a system line - which is precisely the case a
+    // one. That would be invisible except in the one case it matters — an
+    // outgoing bubble under a system line — which is precisely the case a
     // "message rows only" list gets wrong.
     parts->rows.push_back(ThreadParts::RenderedRow{row, clusterHost});
   }
@@ -1144,15 +1155,15 @@ void SetThreadSelectedMessage(ThreadView& v, std::wstring const& id) {
   }
 }
 
-// Contract S4. design S7's typing indicator, as a state rather than as an
+// Contract §4. design §7's typing indicator, as a state rather than as an
 // animation: the ROW is what says someone is typing, and the wave is how it
 // says it when the machine is allowed to move.
 //
 // The reduce-motion path is not a shorter wave, it is NO wave: the dots are
 // left at full opacity (not the 0.30 they rest at, which would read as three
 // dots frozen mid-fade) and the word beside them carries the state on its own.
-// TypingTimelineCount() is the pure statement of that - kTypingDots timelines
-// with motion on, ZERO with it off - and --diagnose asserts both halves.
+// TypingTimelineCount() is the pure statement of that — kTypingDots timelines
+// with motion on, ZERO with it off — and --diagnose asserts both halves.
 void SetThreadTyping(ThreadView& v, bool typing) {
   auto parts = Find(v.root);
   if (!parts || !parts->typingRow) return;
@@ -1165,37 +1176,49 @@ void SetThreadTyping(ThreadView& v, bool typing) {
     parts->typingStory.Stop();
     parts->typingStory = nullptr;
   }
-  // Full opacity when still, so the reduce-motion reading is three solid dots
-  // and a word rather than three dots frozen mid-fade at 30%.
-  for (auto const& d : parts->typingDots) d.Opacity(typing ? 1.0 : 0.30);
-  if (!typing || !urnw::motion::ShouldAnimate()) return;
+
+  // The same table --diagnose asserts, and one call to the reduce-motion gate.
+  const auto plan = typing ? TypingTimelines(urnw::motion::ShouldAnimate())
+                           : std::vector<TimelineSpec>{};
+
+  // THE RESTING VALUE, and it is not one number. With motion off the dots do
+  // not move at all, so they must read as three SOLID dots beside the word -
+  // 0.30 there would be three dots frozen mid-fade. With motion on they must
+  // rest at 0.30, which is where every timeline STARTS: dots 2 and 3 sit out a
+  // 140 / 280 ms BeginTime before their own timeline takes over, and leaving
+  // them at 1.0 for that made them POP 1.0 -> 0.30 as their turn arrived, which
+  // is the opposite of the wave the offset exists to draw.
+  const bool animating = !plan.empty();
+  for (auto const& d : parts->typingDots) d.Opacity((typing && !animating) ? 1.0 : 0.30);
+  if (!animating) return;
 
   anim::Storyboard sb;
-  for (int i = 0; i < kTypingDots; ++i) {
+  for (std::size_t i = 0; i < plan.size() && i < parts->typingDots.size(); ++i) {
+    auto const& spec = plan[i];
     // Half a cycle out, AutoReverse back = kPulseMs per dot, offset by design
-    // S7's 140 ms so the three read as a wave rather than as one blink.
-    auto a = urnw::motion::MakeSplineDouble(0.30, 1.0, urnw::motion::kPulseMs / 2,
-                                            TypingDotPhaseMs(i), urnw::motion::kStandardP1,
+    // §7's 140 ms so the three read as a wave rather than as one blink.
+    auto a = urnw::motion::MakeSplineDouble(spec.from, spec.to, urnw::motion::kPulseMs / 2,
+                                            spec.beginMs, urnw::motion::kStandardP1,
                                             urnw::motion::kStandardP2);
-    a.AutoReverse(true);
-    a.RepeatBehavior(anim::RepeatBehaviorHelper::Forever());
-    anim::Storyboard::SetTarget(a, parts->typingDots[static_cast<std::size_t>(i)]);
-    anim::Storyboard::SetTargetProperty(a, L"Opacity");
+    if (spec.autoReverse) a.AutoReverse(true);
+    if (spec.forever) a.RepeatBehavior(anim::RepeatBehaviorHelper::Forever());
+    anim::Storyboard::SetTarget(a, parts->typingDots[i]);
+    anim::Storyboard::SetTargetProperty(a, spec.path);
     sb.Children().Append(a);
   }
   parts->typingStory = sb;
   sb.Begin();
 }
 
-// Contract S4. Ambient activity's one entry point (design S9.2): ONE row,
+// Contract §4. Ambient activity's one entry point (design §9.2): ONE row,
 // arriving at the foot of a column that is already built.
 //
 // TWO ROWS CHANGE, NOT ONE, and the second is the whole difficulty. The row
 // being appended is the newest, so its `next` is nullptr and
 // CarriesDeliveryGlyph() gives it a cluster whenever it is outgoing. But the
 // row that WAS newest was judged under the same rule with the same nullptr, and
-// an outgoing one got a cluster for being last of its run - which it now is
-// not. Leave it alone and the run shows TWO readings, which design S6.2 gives
+// an outgoing one got a cluster for being last of its run — which it now is
+// not. Leave it alone and the run shows TWO readings, which design §6.2 gives
 // exactly one of, and which every earlier draft of this function did.
 //
 // Not "clear the previous cluster" either: CarriesDeliveryGlyph fires on any
@@ -1228,12 +1251,21 @@ void AppendThreadRow(ThreadView& v, demo::MessageRow const& row) {
                                   : MakeSystemLine(winrt::hstring{row.systemText});
       break;
     case demo::RowKind::Message: {
-      // showSenderHeader is FALSE by construction, not by rule: a row that
-      // arrives on its own has no conversation and no plan around it, and an
-      // arriving message is a continuation in practice. ShowsSenderHeader()
-      // needs the row above and the conversation kind to say otherwise, and a
-      // header guessed wrong here would name a speaker mid-run.
-      auto built = MakeBubbleRow(row, parts->group, /*showSenderHeader=*/false,
+      // THE RULE, not a guess. An earlier version hard-coded false here on the
+      // grounds that "an arriving message has no conversation around it" — but
+      // it does: `prev` is the row this function just re-decided the cluster
+      // for, and parts->group was recorded by SetThreadConversation for exactly
+      // this call. ShowsSenderHeader() is the app's ONE definition of "starts a
+      // run" for the sender name, the same one PlanThreadRows delegates to.
+      //
+      // It matters because showSenderHeader gates BOTH the sender name and the
+      // identicon: an ambient INCOMING message that starts a run in a group
+      // rendered with neither, while a full rebuild of the same conversation
+      // showed both. That is the incremental-equals-rebuild property this
+      // surface is gated on, broken in an attribute the gate was not looking
+      // at — so `T6 append cluster` now compares the header per row too.
+      const bool showSenderHeader = ShowsSenderHeader(prev, row, parts->group);
+      auto built = MakeBubbleRow(row, parts->group, showSenderHeader,
                                  plan.appendedCarries);
       built.bubble.root.Click([parts, id = row.id](auto const&, auto const&) {
         if (parts->onSelect) parts->onSelect(id);
@@ -1246,7 +1278,7 @@ void AppendThreadRow(ThreadView& v, demo::MessageRow const& row) {
     }
   }
 
-  // Recorded even when it drew nothing - see SetThreadConversation.
+  // Recorded even when it drew nothing — see SetThreadConversation.
   parts->rows.push_back(ThreadParts::RenderedRow{row, clusterHost});
   if (!added) return;
 
@@ -1258,12 +1290,12 @@ void AppendThreadRow(ThreadView& v, demo::MessageRow const& row) {
   RunBubbleEntrance(added);
 
   // NO SCROLL WRITE HERE, deliberately. MakeThread's stack.SizeChanged pin
-  // already fires on this append - a new child changes the stack's height - and
+  // already fires on this append — a new child changes the stack's height — and
   // it re-pins to the foot unconditionally, which is what keeps the arriving
   // message visible. A second ChangeView from here would be a second writer of
   // one property, and the one that ran last would win by accident of ordering.
   //
-  // So design S9.2's "do not yank a reader who has scrolled away" is NOT
+  // So design §9.2's "do not yank a reader who has scrolled away" is NOT
   // implemented, here or anywhere: a conditional follow written here would be
   // overridden by that unconditional pin a moment later, which would look
   // implemented and not be. The guard belongs on the pin, and T3's comment on

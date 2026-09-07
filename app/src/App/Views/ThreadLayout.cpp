@@ -121,8 +121,39 @@ int64_t TypingDotPhaseMs(int dot) {
   return kTypingPhaseMs * dot;
 }
 
-int EntranceTimelineCount(bool animate) { return animate ? 4 : 0; }
-int TypingTimelineCount(bool animate) { return animate ? kTypingDots : 0; }
+// The four channels of design §7's bubble entrance, in the order they are
+// started. RunBubbleEntrance walks exactly this vector, so deleting an entry
+// here deletes the timeline there and the --diagnose count follows.
+std::vector<TimelineSpec> EntranceTimelines(bool animate) {
+  if (!animate) return {};  // motion GONE, not shortened
+  return {
+      {L"Opacity", 0.0, 1.0, 0, false, false},
+      {L"(UIElement.RenderTransform).(CompositeTransform.TranslateY)", kBubbleRiseDip, 0.0,
+       0, false, false},
+      {L"(UIElement.RenderTransform).(CompositeTransform.ScaleX)", kBubbleFromScale, 1.0, 0,
+       false, false},
+      {L"(UIElement.RenderTransform).(CompositeTransform.ScaleY)", kBubbleFromScale, 1.0, 0,
+       false, false},
+  };
+}
+
+// One per dot, in dot order. Half a cycle out and AutoReverse back, repeated
+// forever, each offset by design §7's 140 ms so the three read as a wave.
+std::vector<TimelineSpec> TypingTimelines(bool animate) {
+  if (!animate) return {};
+  std::vector<TimelineSpec> out;
+  out.reserve(static_cast<std::size_t>(kTypingDots));
+  for (int i = 0; i < kTypingDots; ++i)
+    out.push_back({L"Opacity", 0.30, 1.0, TypingDotPhaseMs(i), true, true});
+  return out;
+}
+
+int EntranceTimelineCount(bool animate) {
+  return static_cast<int>(EntranceTimelines(animate).size());
+}
+int TypingTimelineCount(bool animate) {
+  return static_cast<int>(TypingTimelines(animate).size());
+}
 
 // The whole decision an append makes about the delivery cluster, on BOTH rows.
 // One call to CarriesDeliveryGlyph per question, and no second rule: the row

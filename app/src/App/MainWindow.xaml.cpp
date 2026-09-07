@@ -464,19 +464,29 @@ void MainWindow::DrainDeepLink() {
   if (pendingLink_.selectMessage && thread_.root)
     urmsg::views::SetThreadSelectedMessage(thread_, urmsg::demo::kInspectTargetRowId);
 
-  // The AMBIENT-APPEND seed (T6). AppendThreadRow is design S9.2's one entry
+  // The AMBIENT-APPEND seed (T6). AppendThreadRow is design §9.2's one entry
   // point for ambient activity and the loop that will drive it is not built
-  // (design S2), so without a seed the append path is unreachable in a running
+  // (design §2), so without a seed the append path is unreachable in a running
   // window: its one-reading-per-run rule could be asserted in --diagnose and
   // never SEEN, and every capture of this surface would photograph a column
   // nothing had ever been appended to.
   //
-  // So --demo-autoplay sends exactly ONE row through the REAL function, from
-  // the place the real loop will call it from - here, holding the ThreadView
-  // the contract's setters take by reference. It lands on c0, whose last two
-  // rows are the 12:09 Failed one and the 12:11 Pending one, which is the case
-  // worth looking at: 12:11 stops being last of its run and must lose its
-  // reading, 12:09 keeps its own because it FAILED.
+  // So --demo-autoplay sends TWO rows through the REAL function, from the place
+  // the real loop will call it from — here, holding the ThreadView the
+  // contract's setters take by reference. Two, because the two halves of what
+  // AppendThreadRow decides need different rows to be visible at all:
+  //
+  //   the OUTGOING one lands on c0, whose last two rows are the 12:09 Failed
+  //   one and the 12:11 Pending one. 12:11 stops being last of its run and must
+  //   LOSE its reading; 12:09 keeps its own because it FAILED. That is the
+  //   delivery-cluster half.
+  //
+  //   the INCOMING one lands under that outgoing row, so it STARTS a run in a
+  //   group and must draw a sender NAME and an IDENTICON. That is the
+  //   sender-header half, and it is the half that rendered blank until fix
+  //   round 1 — AppendThreadRow hard-coded showSenderHeader to false. It also
+  //   leaves the outgoing row's cluster alone, because an incoming row does not
+  //   end an outgoing run.
   //
   // HERE and not in the constructor, for the same reason the message selection
   // above is here: this runs from the content root's first SizeChanged, i.e.
@@ -487,18 +497,46 @@ void MainWindow::DrainDeepLink() {
   // (DemoWorld.h) and this is a capture seed, not the loop.
   if (options_.autoplay && options_.screen == urmsg::demo::DemoScreen::Thread &&
       thread_.root) {
-    urmsg::demo::MessageRow row{};
-    row.kind = urmsg::demo::RowKind::Message;
-    row.id = L"c0-ambient-1";
-    row.body = L"Measurements are in the branch now.";
-    row.timeLabel = L"12:14";
-    row.outgoing = true;
-    row.state = urmsg::demo::DeliveryState::Sent;
-    // Contract S1 guarantees this is always populated, and the bubble's
-    // automation name falls back to it on a run continuation.
-    row.inspect.senderDisplayName = L"You";
-    urmsg::views::AppendThreadRow(thread_, row);
-    urnw::LogInfo("thread: ambient seed appended 1 row -> {} bubbles",
+    urmsg::demo::MessageRow out{};
+    out.kind = urmsg::demo::RowKind::Message;
+    out.id = L"c0-ambient-1";
+    out.body = L"Measurements are in the branch now.";
+    out.timeLabel = L"12:14";
+    out.outgoing = true;
+    out.state = urmsg::demo::DeliveryState::Sent;
+    // Contract §1 guarantees this is populated on every row. On an OUTGOING
+    // row nothing reads it — BubbleAutomationName says "You" — but a row that
+    // left it empty would be the first in the world to do so.
+    out.inspect.senderDisplayName = L"You";
+    urmsg::views::AppendThreadRow(thread_, out);
+
+    // The sender is LIFTED from the conversation rather than invented: the
+    // identicon is a hash of senderKey, so a made-up key would draw a person
+    // who appears nowhere else in the thread and the capture could not be
+    // checked against anything. The last incoming row of c0 is Elena Vasquez at
+    // 12:02, whose identicon is still on screen a few rows up — so "the same
+    // face twice" is the concrete thing to look for.
+    auto const& world = urmsg::demo::GetWorld();
+    urmsg::demo::MessageRow const* speaker = nullptr;
+    if (!world.conversations.empty())
+      for (auto const& r : world.conversations.front().rows)
+        if (r.kind == urmsg::demo::RowKind::Message && !r.outgoing) speaker = &r;
+    if (speaker) {
+      urmsg::demo::MessageRow in{};
+      in.kind = urmsg::demo::RowKind::Message;
+      in.id = L"c0-ambient-2";
+      in.senderKey = speaker->senderKey;
+      // senderName is what the bubble PRINTS; inspect.senderDisplayName is what
+      // a screen reader gets on a continuation. Both, and the same words.
+      in.senderName = speaker->inspect.senderDisplayName;
+      in.inspect.senderDisplayName = speaker->inspect.senderDisplayName;
+      in.body = L"Got them, thanks. Reviewing now.";
+      in.timeLabel = L"12:16";
+      in.outgoing = false;
+      in.state = urmsg::demo::DeliveryState::Sent;
+      urmsg::views::AppendThreadRow(thread_, in);
+    }
+    urnw::LogInfo("thread: ambient seed appended {} rows -> {} bubbles", speaker ? 2 : 1,
                   thread_.bubbles.size());
   }
 
