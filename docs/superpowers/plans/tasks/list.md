@@ -1235,7 +1235,13 @@ powershell -ExecutionPolicy Bypass -Command "Add-Type -AssemblyName System.Drawi
 
 - [ ] **Step 9: LOOK at `.verify\urmessage-window.png` and check four.**
 
-  1. A **2px pale-yellow vertical bar** runs the full height of **row 1 and no other row**, sitting
+  1. A **2px pale-yellow vertical bar** appears on **row 1 and no other row**, vertically CENTRED
+     rather than full-height -- about 40 dip of the 64 dip row. That is house style, not a
+     defect: `UrPaneRowButtonStyle` sets `VerticalContentAlignment="Center"`, so the content
+     Grid measures to its natural height and a Stretch bar inside it reaches only that far.
+     The kit marker `SetPaneListRowSelected` paints is built by the identical mechanism, and
+     the NavigationView's own selection indicator is a short centred bar too. Do not change
+     the row geometry to make the bar taller -- that would diverge from the kit. Sitting
      **2 dip in from the row's left edge** — the same x `kit::SetPaneListRowSelected` draws it at,
      because both grids sit inside `UrPaneRowButtonStyle`'s 12-dip padding and both bars carry the
      same −10 offset.
