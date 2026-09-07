@@ -270,12 +270,27 @@ void MainWindow::BuildThread() {
   if (world.conversations.empty()) return;
   auto const& open = world.conversations.front();
 
-  // Both callbacks are seams. The rail does not exist yet, so they log and
-  // return; the click-graph task replaces them with SelectMessage /
-  // ClearMessageSelection without touching this file's structure.
+  // Both callbacks now DO the selection half of their job: SetThreadSelectedMessage
+  // owns the bubble edge (T5), so a click paints the accent outline and a click
+  // in empty thread space takes it away. What is still a seam is the RAIL - it
+  // does not exist yet, so nothing opens beside the selected bubble; the rail
+  // task adds that here without touching this file's structure.
+  //
+  // get_weak(), not `this`: MakeThread stores these for the window's life, and a
+  // raw capture would outlive a closed window.
   thread_ = urmsg::views::MakeThread(
-      [](std::wstring id) { urnw::LogInfo("thread: bubble selected {}", winrt::to_string(id)); },
-      []() { urnw::LogInfo("thread: deselected"); });
+      [weak = get_weak()](std::wstring id) {
+        auto self = weak.get();
+        if (!self) return;
+        urmsg::views::SetThreadSelectedMessage(self->thread_, id);
+        urnw::LogInfo("thread: bubble selected {}", winrt::to_string(id));
+      },
+      [weak = get_weak()]() {
+        auto self = weak.get();
+        if (!self) return;
+        urmsg::views::SetThreadSelectedMessage(self->thread_, L"");
+        urnw::LogInfo("thread: deselected");
+      });
 
   // ThreadHost, NOT ThreadBody. ApplyBreakpoint gives exactly one of the two
   // thread surfaces to a run: under --demo it collapses ThreadPane outright
@@ -434,6 +449,21 @@ void MainWindow::DrainDeepLink() {
   HomeNav().PaneDisplayMode(NavigationViewPaneDisplayMode::Auto);
 
   SelectNavTag(pendingLink_.navTag);
+
+  // The MESSAGE half of the deep link, which used to be logged and not done.
+  // DemoShellState.h defines --demo=inspect as "thread PLUS a message
+  // pre-selected", and DemoWorld::kInspectTargetRowId names it: c0-r12, an
+  // outgoing row in state Read.
+  //
+  // IT HAS TO HAPPEN HERE, not in the constructor. A property written during
+  // construction is written against a template that has not been applied and a
+  // tree that has not been laid out, so the border it sets never repaints. This
+  // runs from the content root's first SizeChanged, after ApplyBreakpoint - i.e.
+  // post-layout on a realized tree - which is the same reason the nav selection
+  // was moved here.
+  if (pendingLink_.selectMessage && thread_.root)
+    urmsg::views::SetThreadSelectedMessage(thread_, urmsg::demo::kInspectTargetRowId);
+
   urnw::LogInfo("window: demo deep link -> tag={} conversation={} message={} (rail={})",
                 urnw::Narrow(std::wstring{pendingLink_.navTag}),
                 pendingLink_.selectConversation, pendingLink_.selectMessage,

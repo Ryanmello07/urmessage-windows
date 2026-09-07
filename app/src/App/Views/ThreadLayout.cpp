@@ -73,4 +73,45 @@ std::vector<ThreadRowPlan> PlanThreadRows(demo::Conversation const& c) {
   return plan;
 }
 
+// The rendered delivery cluster, as a table.
+//
+// Codepoints verified against C:\Windows\Fonts\SegoeIcons.ttf and rendered at
+// 13px on #101010 before being written here. E930/EC61 are the font's only
+// outline/filled check pair; bare checks (E10B, E001, E0E7, E73E, E8FB) are
+// indistinguishable from each other at this size, so "outline vs filled" cannot
+// be carried by choosing between two of THOSE. Substituting a codepoint here
+// breaks the SHAPE channel, and the "T5 delivery badges" line in
+// CollectDiagnostics() is what says so out loud.
+//
+// Three channels, never colour:
+//   COUNT  Sent vs Delivered  — same glyph (E930), repeat 1 vs 2
+//   SHAPE  Delivered vs Read  — same repeat (2), ring (E930) vs disc (EC61)
+//   WORD   all six distinct, and it is what survives a greyscale screenshot
+DeliveryBadge BadgeFor(demo::DeliveryState s) {
+  switch (s) {
+    case demo::DeliveryState::Pending:
+      return {DeliveryCue::Clock, L"\uE121", 1, L"Sending", false, false};  // "Clock"
+    case demo::DeliveryState::Sent:
+      return {DeliveryCue::OneCheck, L"\uE930", 1, L"Sent", false, false};  // "Completed" — check in a ring
+    case demo::DeliveryState::Delivered:
+      return {DeliveryCue::TwoOutlineChecks, L"\uE930", 2, L"Delivered", false, false};  // "Completed"
+    case demo::DeliveryState::Read:
+      return {DeliveryCue::TwoFilledChecks, L"\uEC61", 2, L"Read", false, true};  // "CompletedSolid" — check in a disc
+    case demo::DeliveryState::Failed:
+      return {DeliveryCue::Alert, L"\uE783", 1, L"Not sent", true, true};  // "Error" — exclamation in a ring
+    case demo::DeliveryState::Expired:
+      // Demo/ThreadLayout.h names this same codepoint "Stopwatch"; it is the
+      // one drawing, under two of the font's own aliases.
+      return {DeliveryCue::Timer, L"\uE916", 1, L"Expired", false, false};  // "Timer"
+  }
+  return {DeliveryCue::Clock, L"\uE121", 1, L"Sending", false, false};  // "Clock"
+}
+
+int SelectedBubbleIndex(std::vector<std::wstring> const& ids, std::wstring const& id) {
+  if (id.empty()) return -1;
+  for (std::size_t i = 0; i < ids.size(); ++i)
+    if (ids[i] == id) return static_cast<int>(i);
+  return -1;
+}
+
 }  // namespace urmsg::views

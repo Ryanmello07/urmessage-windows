@@ -7,11 +7,13 @@
 
 #include <shellapi.h>  // CommandLineToArgvW
 
+#include <algorithm>  // sort/unique, for the T5 badge-table assertion
 #include <atomic>
 #include <cmath>
 #include <filesystem>
 #include <format>
 #include <optional>
+#include <string_view>
 
 #include "AppPrefs.h"
 #include "Ids.h"
@@ -934,6 +936,176 @@ std::vector<std::wstring> CollectDiagnostics() {
         (headerDisagree == 0 && 1 <= headerByRule && 1 <= headerByPlan) ? L"PASS"
                                                                        : L"FAIL",
         headerByRule, headerByPlan, msgRows, headerDisagree));
+  }
+
+
+  // ---- T5: the delivery cluster and bubble selection ----------------------
+  // Everything asserted here is pure C++ (Views/ThreadLayout.h, Demo/ThreadLayout.h),
+  // which is why it can run from wWinMain before winrt::init_apartment().
+  //
+  // WHAT THESE THREE LINES CANNOT SEE, said plainly: none of them looks at a
+  // XAML tree, so no gate here can catch a RENDER that reads the wrong field.
+  // What they do catch is the rule and the table underneath it going wrong, and
+  // line 1 in particular is built so that the rule collapsing into
+  // ThreadRowPlan::endsOutgoingRun — the exact mutation that would delete the
+  // 12:09 cluster from the shipped thread — is a FAIL rather than a silence.
+  {
+    using DState = urmsg::demo::DeliveryState;
+
+    // 1. WHICH ROWS CARRY A CLUSTER — per row, and against the field the
+    //    renderer must NOT use.
+    //
+    //    CarriesDeliveryGlyph() and ThreadRowPlan::endsOutgoingRun are NOT the
+    //    same function: the first additionally fires on ANY Failed row wherever
+    //    it sits. This line asserts that the difference is REAL on the shipped
+    //    world (`divergent >= 1`) and that every divergence is exactly that case
+    //    (rule says carry, plan field says no, the row is Failed and is not last
+    //    of its run).
+    //
+    //    MUTATION CAUGHT: dropping the Failed exception from CarriesDeliveryGlyph,
+    //    or endsOutgoingRun growing one — either collapses `divergent` to 0 and
+    //    FAILS. THE ROW THAT EXERCISES IT: DemoWorld.cpp:277, c0-r22, outgoing
+    //    Failed at 12:09, followed at :279 by an outgoing Pending row. If the
+    //    fixture ever loses that row the gate FAILS rather than going quietly
+    //    vacuous, which is the whole reason `divergent >= 1` is required rather
+    //    than merely reported.
+    std::size_t outRows = 0, byRule = 0, byPlanField = 0, divergent = 0,
+                divergentFailedMidRun = 0, convsWithCluster = 0, convsWithOutgoing = 0;
+    for (auto const& c : urmsg::demo::GetWorld().conversations) {
+      bool anyOut = false, anyCluster = false;
+      for (auto const& p : urmsg::views::PlanThreadRows(c)) {
+        auto const& r = c.rows[p.rowIndex];
+        urmsg::demo::MessageRow const* next =
+            (p.rowIndex + 1 < c.rows.size()) ? &c.rows[p.rowIndex + 1] : nullptr;
+        const bool rule = urmsg::views::CarriesDeliveryGlyph(r, next);
+        if (r.kind == urmsg::demo::RowKind::Message && r.outgoing) {
+          ++outRows;
+          anyOut = true;
+        }
+        if (rule) {
+          ++byRule;
+          anyCluster = true;
+        }
+        if (p.endsOutgoingRun) ++byPlanField;
+        if (rule != p.endsOutgoingRun) {
+          ++divergent;
+          const bool lastOfRun = !(next && next->kind == urmsg::demo::RowKind::Message &&
+                                   next->outgoing);
+          if (rule && !p.endsOutgoingRun && r.state == DState::Failed && !lastOfRun)
+            ++divergentFailedMidRun;
+        }
+      }
+      if (anyOut) ++convsWithOutgoing;
+      if (anyCluster) ++convsWithCluster;
+    }
+    lines.push_back(std::format(
+        L"  T5 cluster rows      : {} — {} outgoing rows; rule {} vs endsOutgoingRun {}, "
+        L"{} disagree ({} Failed mid-run); {} of {} conversations carry one",
+        (1 <= byRule && byRule == byPlanField + divergent && 1 <= divergent &&
+         divergent == divergentFailedMidRun && convsWithCluster == convsWithOutgoing)
+            ? L"PASS"
+            : L"FAIL",
+        outRows, byRule, byPlanField, divergent, divergentFailedMidRun, convsWithCluster,
+        convsWithOutgoing));
+
+    // 2. THE BADGE TABLE — per state and per CHANNEL, not a census.
+    //
+    //    Spec C §5.3 carries delivery state on three channels and colour is
+    //    never one of them:
+    //      COUNT  Sent and Delivered share a glyph and differ ONLY in repeat;
+    //      SHAPE  Delivered and Read share a repeat and differ ONLY in glyph
+    //             (E930 ring vs EC61 disc — the font's only true outline/filled
+    //             check pair; the bare checks E10B/E001/E0E7/E73E/E8FB are
+    //             indistinguishable from one another at 13px);
+    //      WORD   all six distinct, which is what a greyscale screenshot keeps.
+    //
+    //    MUTATION CAUGHT, and why a census would not: substituting a bare check
+    //    for E930 on Sent leaves "6 distinct badges" and "1 danger" untouched,
+    //    and so does moving `danger` from Failed onto Expired — permuting two
+    //    categories leaves every total identical (the lesson T4's shape gate
+    //    paid for). So every flag is compared against the STATE it belongs to,
+    //    and the two shared-attribute properties are asserted by name.
+    const DState kBadgeStates[] = {DState::Pending, DState::Sent,   DState::Delivered,
+                                   DState::Read,    DState::Failed, DState::Expired};
+    std::vector<std::wstring> keys;
+    int emptyGlyph = 0, emptyWord = 0, flagWrong = 0, repeatWrong = 0;
+    for (auto s : kBadgeStates) {
+      const auto b = urmsg::views::BadgeFor(s);
+      if (b.glyph == nullptr || *b.glyph == L'\0') ++emptyGlyph;
+      if (b.word == nullptr || *b.word == L'\0') ++emptyWord;
+      if (b.danger != (s == DState::Failed)) ++flagWrong;
+      if (b.solid != (s == DState::Read || s == DState::Failed)) ++flagWrong;
+      if (b.repeat != ((s == DState::Delivered || s == DState::Read) ? 2 : 1)) ++repeatWrong;
+      keys.push_back(std::format(L"{}x{}|{}", b.glyph ? b.glyph : L"", b.repeat,
+                                 b.word ? b.word : L""));
+    }
+    std::sort(keys.begin(), keys.end());
+    const std::size_t distinct =
+        std::size_t(std::unique(keys.begin(), keys.end()) - keys.begin());
+
+    const auto bSent = urmsg::views::BadgeFor(DState::Sent);
+    const auto bDeliv = urmsg::views::BadgeFor(DState::Delivered);
+    const auto bRead = urmsg::views::BadgeFor(DState::Read);
+    // wstring_view, not the raw pointers: comparing wchar_t const* with == is a
+    // comparison of ADDRESSES, which the compiler's string pooling can make
+    // accidentally true.
+    const bool countChannel =
+        std::wstring_view{bSent.glyph} == std::wstring_view{bDeliv.glyph} &&
+        bSent.repeat != bDeliv.repeat;
+    const bool shapeChannel =
+        bDeliv.repeat == bRead.repeat &&
+        std::wstring_view{bDeliv.glyph} != std::wstring_view{bRead.glyph};
+    lines.push_back(std::format(
+        L"  T5 delivery badges   : {} — 6 states -> {} distinct (glyph,count,word); "
+        L"{} empty glyph(s), {} empty word(s), {} flag(s) and {} count(s) on the wrong "
+        L"state; count channel {} shape channel {}",
+        (distinct == 6 && emptyGlyph == 0 && emptyWord == 0 && flagWrong == 0 &&
+         repeatWrong == 0 && countChannel && shapeChannel)
+            ? L"PASS"
+            : L"FAIL",
+        distinct, emptyGlyph, emptyWord, flagWrong, repeatWrong, countChannel,
+        shapeChannel));
+
+    // 3. THE SELECTION INDEX. -1 for "no match" is the point of the function:
+    //    an index of 0 would silently paint bubble 0 on every deselect, and in
+    //    any screenshot where bubble 0 was the selected one that would look
+    //    exactly right.
+    //
+    //    MUTATIONS CAUGHT: returning 0 rather than -1 for a miss (`deselects`);
+    //    an off-by-one (`hits`); a substring implementation — `find` in either
+    //    direction — which would resolve the PREFIX "m-" or the EXTENSION
+    //    "m-1x" to a real bubble.
+    //
+    //    And then the same three questions asked of the REAL ids the thread will
+    //    hand it. That last count is not decoration: SelectedBubbleIndex returns
+    //    the FIRST match, so a world with two message rows sharing an id would
+    //    resolve the later one to the earlier index and select the wrong bubble.
+    //    `worldHits == worldIds.size()` is that uniqueness stated as a property.
+    const std::vector<std::wstring> ids{L"m-1", L"m-2", L"m-3"};
+    int hits = 0;
+    for (int i = 0; i < 3; ++i)
+      if (urmsg::views::SelectedBubbleIndex(ids, ids[std::size_t(i)]) == i) ++hits;
+    const bool deselects = urmsg::views::SelectedBubbleIndex(ids, L"") == -1 &&
+                           urmsg::views::SelectedBubbleIndex(ids, L"nope") == -1 &&
+                           urmsg::views::SelectedBubbleIndex(ids, L"m-") == -1 &&
+                           urmsg::views::SelectedBubbleIndex(ids, L"m-1x") == -1;
+
+    std::vector<std::wstring> worldIds;
+    for (auto const& c : urmsg::demo::GetWorld().conversations)
+      for (auto const& r : c.rows)
+        if (r.kind == urmsg::demo::RowKind::Message) worldIds.push_back(r.id);
+    std::size_t worldHits = 0;
+    for (std::size_t i = 0; i < worldIds.size(); ++i)
+      if (urmsg::views::SelectedBubbleIndex(worldIds, worldIds[i]) == static_cast<int>(i))
+        ++worldHits;
+    lines.push_back(std::format(
+        L"  T5 selection index   : {} — {} of 3 synthetic ids resolve to their own index; "
+        L"empty/unknown/prefix/extension -> {}; {} of {} world bubble ids resolve to "
+        L"their own index (so no two share one)",
+        (hits == 3 && deselects && !worldIds.empty() && worldHits == worldIds.size())
+            ? L"PASS"
+            : L"FAIL",
+        hits, deselects ? L"-1" : L"NOT -1", worldHits, worldIds.size()));
   }
 
   return lines;

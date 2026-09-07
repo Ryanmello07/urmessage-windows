@@ -46,8 +46,10 @@ inline constexpr double kThreadGutterDip = 36.0;
 inline constexpr double kThreadIdenticonDip = 28.0;
 
 // One row of the thread stack for a MESSAGE row: the identicon gutter, the
-// bubble Button, and — when this row carries it — the delivery glyph under the
-// bubble. Two elements come back because they have different owners: `root`
+// bubble Button, and — when this row carries it — the delivery CLUSTER under
+// the bubble, which is the ONE element on a row that draws a delivery
+// indication (the bubble itself draws none).
+// Two elements come back because they have different owners: `root`
 // goes into ThreadView::stack, `bubble` goes into ThreadView::bubbles, and
 // ThreadBubble::root stays the Button exactly as the contract requires (the
 // identicon must sit OUTSIDE it, or the bubble's fill would paint the gutter).

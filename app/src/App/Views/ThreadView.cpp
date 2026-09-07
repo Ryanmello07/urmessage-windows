@@ -56,44 +56,111 @@ void MarkRaw(UIElement const& e) {
 // different drawing - or on nothing - if the family is left to the default.
 Media::FontFamily IconFont() { return Media::FontFamily(L"Segoe Fluent Icons"); }
 
-// The delivery reading under the last outgoing bubble of a run. Right-aligned,
-// 12px, and for the one state that must never rest on a 12px glyph the word
-// is beside it in the danger brush — colour is a second channel here, never
-// the only one.
-FrameworkElement MakeDeliveryLine(demo::MessageRow const& row) {
-  StackPanel line;
-  line.Orientation(Orientation::Horizontal);
-  line.Spacing(4);
-  line.HorizontalAlignment(HorizontalAlignment::Right);
-  line.Margin(ThicknessHelper::FromLengths(0, 2, 2, 0));
+// THE delivery cluster. design §6.2: right-aligned, under the last bubble that
+// CarriesDeliveryGlyph() marks — which is the last of an outgoing run, PLUS any
+// Failed row wherever it sits.
+//
+// THIS IS THE ONLY ELEMENT ON A ROW THAT DRAWS A DELIVERY INDICATION. It
+// replaces MakeDeliveryLine (T2), which drew a 12px glyph and printed a word
+// only for Failed. It is a SIBLING of the bubble Button inside BubbleRow::root,
+// never a child of the Button: a delivery reading is about the message rather
+// than part of it, and putting it inside would make it part of the bubble's
+// fill and of its click target. If a second drawer is ever added anywhere, that
+// is the bug — two readings of one state is worse than none.
+//
+// Nothing here is carried by colour alone. Sent -> Delivered is a COUNT change
+// (one ring, two rings); Delivered -> Read is a SHAPE change (rings to discs);
+// and every state prints its own word, which is what survives a greyscale
+// screenshot. BadgeFor() (Views/ThreadLayout.h) holds the table, so --diagnose
+// asserts the three channels instead of a screenshot having to be believed.
+FrameworkElement MakeDeliveryCluster(demo::MessageRow const& row) {
+  const DeliveryBadge badge = BadgeFor(row.state);
+  Media::Brush brush = badge.danger ? urnw::colors::DangerBrush()
+                                    : (badge.solid ? urnw::colors::TextBrush()
+                                                   : urnw::colors::MutedBrush());
 
-  const bool failed = (row.state == demo::DeliveryState::Failed);
+  StackPanel cluster;
+  cluster.Orientation(Orientation::Horizontal);
+  cluster.Spacing(4);
+  cluster.HorizontalAlignment(HorizontalAlignment::Right);
+  cluster.Margin(ThicknessHelper::FromLengths(0, 2, 2, 6));
 
-  FontIcon icon;
-  icon.FontFamily(IconFont());
-  icon.FontSize(12);
-  icon.Glyph(winrt::hstring{DeliveryGlyph(row.state)});
-  icon.Foreground(failed ? urnw::colors::DangerBrush()
-                         : (row.state == demo::DeliveryState::Read
-                                ? urnw::colors::TextBrush()
-                                : urnw::colors::MutedBrush()));
-  icon.VerticalAlignment(VerticalAlignment::Center);
-  // the bubble's automation name already says the delivery WORD; announcing
-  // the glyph again would put a second item beside the thing it describes
-  MarkRaw(icon);
-  line.Children().Append(icon);
-
-  if (failed) {
-    TextBlock word;
-    word.Text(winrt::hstring{DeliveryWord(row.state)});
-    if (auto s = StyleByKey(L"UrCaptionTextStyle")) word.Style(s);
-    word.FontSize(11);
-    word.Foreground(urnw::colors::DangerBrush());
-    word.VerticalAlignment(VerticalAlignment::Center);
-    MarkRaw(word);
-    line.Children().Append(word);
+  StackPanel glyphs;
+  glyphs.Orientation(Orientation::Horizontal);
+  // Spacing 0: a 13px Segoe Fluent icon's own advance already puts the two
+  // rings ~13 DIP apart, which is where the pair reads as two. Overlapping them
+  // turns it into a blot — measured at 8 DIP before this was settled.
+  glyphs.Spacing(0);
+  glyphs.VerticalAlignment(VerticalAlignment::Center);
+  for (int i = 0; i < badge.repeat; ++i) {
+    FontIcon g;
+    g.FontFamily(IconFont());
+    g.Glyph(winrt::hstring{badge.glyph});
+    g.FontSize(13);
+    g.Foreground(brush);
+    // The bubble's automation name already carries the delivery WORD
+    // (BubbleAutomationName), so announcing the glyph as well would put a second
+    // item beside the thing it describes — and a repeat of 2 would say it twice.
+    MarkRaw(g);
+    glyphs.Children().Append(g);
   }
-  return line;
+  cluster.Children().Append(glyphs);
+
+  TextBlock word;
+  word.Text(winrt::hstring{badge.word});
+  // UrCaptionTextStyle first, for the reason MakeSystemLine gives: the style is
+  // what pins the BODY face to this line from the app's own resources. Size and
+  // colour are then set explicitly, so a missing resource key cannot silently
+  // resize or recolour it.
+  if (auto st = StyleByKey(L"UrCaptionTextStyle")) word.Style(st);
+  word.FontSize(11);
+  word.Foreground(brush);
+  word.VerticalAlignment(VerticalAlignment::Center);
+  // Raw for the same reason as the glyph: the bubble's own name already says
+  // "Read" / "Not sent". This word is the SIGHTED reader's non-colour channel.
+  MarkRaw(word);
+  cluster.Children().Append(word);
+
+  if (row.state != demo::DeliveryState::Failed) return cluster;
+
+  // Spec C §5.3: failed carries a Reason and a retry. Both render INLINE rather
+  // than behind a tap — the sheet the product would open is not built (design
+  // §2), and a tap target that opens nothing is exactly what design §9.1 bans.
+  StackPanel column;
+  column.HorizontalAlignment(HorizontalAlignment::Right);
+  column.Spacing(3);
+  column.Margin(ThicknessHelper::FromLengths(0, 0, 2, 6));
+  cluster.Margin(ThicknessHelper::FromUniformLength(0));
+  column.Children().Append(cluster);
+
+  TextBlock reason;
+  reason.Text(winrt::hstring{row.failureReason});
+  if (auto st = StyleByKey(L"UrCaptionTextStyle")) reason.Style(st);
+  reason.FontSize(11);
+  reason.Foreground(urnw::colors::DangerBrush());
+  reason.TextWrapping(TextWrapping::Wrap);
+  reason.TextAlignment(TextAlignment::Right);
+  reason.MaxWidth(320);
+  // BubbleAutomationName already appends ": <failureReason>" to the bubble's own
+  // name, so leaving this line in the tree would announce the reason twice.
+  MarkRaw(reason);
+  column.Children().Append(reason);
+
+  // Retry would have to mutate the world, and CONTRACT-V2 §1 gives ambient
+  // activity the only key to MutableWorld(). So it cannot act, and per design
+  // §9.1 it is disabled rather than live-but-dead. The composer's one honest
+  // line (T6) is where the demo says why, once, instead of five times.
+  Button retry;
+  retry.Content(winrt::box_value(winrt::hstring{L"Try again"}));
+  retry.HorizontalAlignment(HorizontalAlignment::Right);
+  retry.FontSize(11);
+  retry.Padding(ThicknessHelper::FromLengths(10, 2, 10, 2));
+  retry.MinHeight(24);
+  retry.IsEnabled(false);
+  Automation::AutomationProperties::SetName(
+      retry, winrt::hstring{L"Try again: resend this message (not available in the demo)"});
+  column.Children().Append(retry);
+  return column;
 }
 
 }  // namespace
@@ -158,6 +225,12 @@ BubbleRow MakeBubbleRow(demo::MessageRow const& row, bool group, bool showSender
   // A Button whose Content is a Panel gets NO automatic name.
   Automation::AutomationProperties::SetName(
       bubble, winrt::hstring{BubbleAutomationName(row, group)});
+  // Belt and braces: ButtonBase already marks the pointer events handled, so a
+  // click on a bubble does not generate a Tapped for the column behind it.
+  // Saying so explicitly means the deselect handler in MakeThread cannot start
+  // firing on bubble clicks because of a style change three months from now -
+  // which would select and immediately deselect, and read as "nothing happened".
+  bubble.Tapped([](auto const&, auto const& args) { args.Handled(true); });
   out.bubble.root = bubble;
 
   // ---- the gutter + bubble row -------------------------------------------
@@ -184,7 +257,10 @@ BubbleRow MakeBubbleRow(demo::MessageRow const& row, bool group, bool showSender
   StackPanel rowRoot;
   rowRoot.Spacing(0);
   rowRoot.Children().Append(gutterRow);
-  if (carriesDeliveryGlyph) rowRoot.Children().Append(MakeDeliveryLine(row));
+  // ONE cluster, or none. The CALLER decides, with CarriesDeliveryGlyph()
+  // (Demo/ThreadLayout.h) - never with ThreadRowPlan::endsOutgoingRun, which is
+  // direction-only and is FALSE on the shipped world's mid-run Failed row.
+  if (carriesDeliveryGlyph) rowRoot.Children().Append(MakeDeliveryCluster(row));
   out.root = rowRoot;
   return out;
 }
@@ -261,8 +337,8 @@ FrameworkElement MakeSystemLine(winrt::hstring const& text) {
   // Without it the face is only whatever ContentControlThemeFontFamily happens
   // to be - correct today, but a framework default is not a guarantee. FontSize
   // and Foreground are still set explicitly after it, the same belt-and-braces
-  // MakeDeliveryLine uses, so a missing resource key cannot silently resize or
-  // recolour the line.
+  // MakeDeliveryCluster uses, so a missing resource key cannot silently resize
+  // or recolour the line.
   if (auto st = StyleByKey(L"UrCaptionTextStyle")) line.Style(st);
   line.FontSize(12);
   line.Foreground(urnw::colors::MutedBrush());
@@ -486,7 +562,6 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
   // substitute for CarriesDeliveryGlyph - see Views/ThreadLayout.h.
   for (auto const& p : PlanThreadRows(c)) {
     demo::MessageRow const& row = c.rows[p.rowIndex];
-    demo::MessageRow const* prev = (p.rowIndex > 0) ? &c.rows[p.rowIndex - 1] : nullptr;
     demo::MessageRow const* next =
         (p.rowIndex + 1 < c.rows.size()) ? &c.rows[p.rowIndex + 1] : nullptr;
 
@@ -505,7 +580,17 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
         break;
       case ThreadRowShape::IncomingBubble:
       case ThreadRowShape::OutgoingBubble: {
-        auto built = MakeBubbleRow(row, group, ShowsSenderHeader(prev, row, group),
+        // p.showSenderHeader, because T4's planner DELEGATES that field to
+        // ShowsSenderHeader() and `T4 sender headers` gates the two staying
+        // equal over every message row.
+        //
+        // CarriesDeliveryGlyph(row, next) for the cluster, because the plan has
+        // no field that means it. endsOutgoingRun is direction-only and is FALSE
+        // on DemoWorld.cpp:277 - the 12:09 "Attaching the rail measurements now."
+        // row, which is Failed and is followed at :279 by another outgoing row.
+        // Gating the cluster on that field deletes the one delivery state this
+        // surface must never swallow.
+        auto built = MakeBubbleRow(row, group, p.showSenderHeader,
                                    CarriesDeliveryGlyph(row, next));
         built.bubble.root.Click([parts, id = row.id](auto const&, auto const&) {
           if (parts->onSelect) parts->onSelect(id);
@@ -534,8 +619,68 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
   // already-measured column at a different conversation: there ScrollableHeight
   // is real and this is the jump. disableAnimation is true because it is a jump
   // to a position, not a motion the user asked for.
+  // Nothing is selected in a freshly built thread, and the RESTING edge of every
+  // bubble is written here by the one function that owns the edge outright —
+  // rather than by MakeBubbleRow and then again by the selection path, which is
+  // how an edge goes stale. Spec C §5.2: a 1px UrBorderBrush edge on an outgoing
+  // bubble, none on an incoming one.
+  SetThreadSelectedMessage(v, L"");
+
   parts->scroller.UpdateLayout();
   parts->scroller.ChangeView(nullptr, parts->scroller.ScrollableHeight(), nullptr, true);
+}
+
+// Contract §4. Selection is a PROPERTY WRITE, never a synthesized click: the
+// --demo=inspect deep link writes it after the first layout pass, MakeThread's
+// onSelectMessage callback writes it on a real click, and the rail task will
+// write it too. One function owns the edge, so there is no second opinion about
+// what a bubble looks like at rest.
+//
+// v.bubbles is the contract's own list, so this reads no private state and needs
+// no registry lookup — which is also why it works on a ThreadView copy.
+void SetThreadSelectedMessage(ThreadView& v, std::wstring const& id) {
+  std::vector<std::wstring> ids;
+  ids.reserve(v.bubbles.size());
+  for (auto const& b : v.bubbles) ids.push_back(b.id);
+  const int selected = SelectedBubbleIndex(ids, id);
+
+  for (std::size_t i = 0; i < v.bubbles.size(); ++i) {
+    auto const& b = v.bubbles[i];
+    if (!b.root) continue;
+    const bool on = (static_cast<int>(i) == selected);
+    // Direction comes from the ALIGNMENT, which Spec C §5.2 fixes and which
+    // MakeBubbleRow sets as a LOCAL value (so no Style setter can win it back).
+    // ThreadBubble is fixed by contract §4 and cannot grow a field to carry it.
+    const bool outgoing = (b.root.HorizontalAlignment() == HorizontalAlignment::Right);
+
+    // Three channels, the same rule SetPaneListRowSelected already follows
+    // (UrComponents.h): the accent EDGE, a 1px -> 2px thickness (a SHAPE change,
+    // so selection survives colour being taken away), and the automation name.
+    // UrAccentBrush #EFF7BB is the selection OUTLINE and the send button, and
+    // nothing else on this surface — it is never a bubble fill.
+    b.root.BorderThickness(ThicknessHelper::FromUniformLength(on ? 2.0 : (outgoing ? 1.0 : 0.0)));
+    // A local rather than a nested ternary: the arms would be a SolidColorBrush
+    // and a nullptr, and letting the compiler pick a common type for those is
+    // how a null edge quietly becomes a transparent one.
+    Media::Brush edge{nullptr};
+    if (on) {
+      edge = urnw::colors::AccentBrush();
+    } else if (outgoing) {
+      edge = urnw::colors::BorderBrush();
+    }
+    b.root.BorderBrush(edge);
+
+    // The name is a channel too, and it is idempotent: the suffix is stripped
+    // before it is re-applied, so calling this twice cannot leave
+    // "..., selected, selected" behind.
+    auto name = Automation::AutomationProperties::GetName(b.root);
+    std::wstring base{name};
+    const std::wstring mark = L", selected";
+    if (base.size() >= mark.size() &&
+        base.compare(base.size() - mark.size(), mark.size(), mark) == 0)
+      base.erase(base.size() - mark.size());
+    Automation::AutomationProperties::SetName(b.root, winrt::hstring{on ? base + mark : base});
+  }
 }
 
 }  // namespace urmsg::views

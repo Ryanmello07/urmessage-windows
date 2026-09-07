@@ -21,6 +21,7 @@
 #pragma once
 
 #include <cstddef>
+#include <string>
 #include <vector>
 
 #include "Demo/DemoWorld.h"
@@ -66,5 +67,35 @@ struct ThreadRowPlan {
 
 // One entry per row, in order, always. Never throws.
 std::vector<ThreadRowPlan> PlanThreadRows(demo::Conversation const& c);
+
+// ---- the delivery badge (T5) --------------------------------------------
+// What the cluster under the last outgoing bubble of a run DRAWS, as data.
+// Pure, so --diagnose can walk the whole closed set of Spec C §5.3 rather
+// than a screenshot having to be believed.
+//
+// Not the same table as DeliveryGlyph()/DeliveryWord() in Demo/ThreadLayout.h,
+// and deliberately so: that one is the six states as six DISTINCT glyphs, which
+// is what a bubble's automation name and the T2 gate are built on. This one is
+// the RENDERED cluster, where Sent and Delivered share a glyph on purpose and
+// are told apart by how many of it there are.
+enum class DeliveryCue { Clock, OneCheck, TwoOutlineChecks, TwoFilledChecks, Alert, Timer };
+
+struct DeliveryBadge {
+  DeliveryCue cue;
+  wchar_t const* glyph;  // ONE Segoe Fluent codepoint, never empty
+  int repeat;            // 1 or 2 — "two checks" (Spec C §5.3) is a COUNT
+  wchar_t const* word;   // the non-colour channel: the state says itself
+  bool danger;           // UrDangerBrush
+  bool solid;            // UrTextBrush rather than UrTextMutedBrush
+};
+
+// Total over the closed set of Spec C §5.3. Pure, so --diagnose can walk it.
+DeliveryBadge BadgeFor(demo::DeliveryState s);
+
+// -1 when `id` is empty or matches nothing. Deselection is a real state and
+// must not fall through to bubble 0 — which is what an index of 0 for "no
+// match" would do, and it would be invisible in every screenshot where bubble 0
+// happened to be the selected one.
+int SelectedBubbleIndex(std::vector<std::wstring> const& ids, std::wstring const& id);
 
 }  // namespace urmsg::views
