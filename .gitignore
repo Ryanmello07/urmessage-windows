@@ -22,7 +22,7 @@ app/msbuild-local-*.log
 .localstate*/
 
 # scratch: screenshots and harness output from verification runs
-.verify/
+.verify*/
 
 # The app icon (.ico) and the four brand faces ARE committed — they are needed
 # at build time. See .gitattributes: they must never go through CRLF
