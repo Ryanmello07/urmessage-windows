@@ -13,6 +13,7 @@
 #include <optional>
 
 #include "Ids.h"
+#include "Identicon.h"
 #include "Localization.h"
 #include "Log.h"
 #include "Paths.h"
@@ -398,6 +399,49 @@ std::vector<std::wstring> CollectDiagnostics() {
         o.watermark ? L"on" : L"off"));
   }
   for (auto& line : DemoWorldAssertions()) lines.push_back(std::move(line));
+  {
+    using namespace urmsg::demo;
+    World const& w = GetWorld();
+    std::vector<Seed> seeds;
+    for (auto const& c : w.conversations) {
+      seeds.push_back(c.identityKey);
+      for (auto const& m : c.members) seeds.push_back(m.identityKey);
+    }
+    size_t stable = 0, symmetric = 0, inRange = 0;
+    std::vector<std::array<bool, 25>> patterns;
+    for (auto const& s : seeds) {
+      const auto a = urmsg::MakeIdenticonPattern(s);
+      const auto b = urmsg::MakeIdenticonPattern(s);
+      if (a.cells == b.cells && a.colorIndex == b.colorIndex) ++stable;
+      bool mirrored = true;
+      size_t on = 0;
+      for (int row = 0; row < 5; ++row)
+        for (int col = 0; col < 5; ++col) {
+          const bool v = a.cells[static_cast<size_t>(row * 5 + col)];
+          if (v) ++on;
+          if (v != a.cells[static_cast<size_t>(row * 5 + (4 - col))]) mirrored = false;
+        }
+      if (mirrored) ++symmetric;
+      if (1 <= on && on <= 23) ++inRange;
+      patterns.push_back(a.cells);
+    }
+    size_t distinct = 0;
+    for (size_t i = 0; i < patterns.size(); ++i) {
+      bool seen = false;
+      for (size_t j = 0; j < i; ++j) if (patterns[j] == patterns[i]) seen = true;
+      if (!seen) ++distinct;
+    }
+    const size_t n = seeds.size();
+    lines.push_back(std::format(L"  identicons       : {} seeds from the demo world", n));
+    lines.push_back(std::format(L"    P1  deterministic       {}  {}/{} seeds identical on a second call",
+                                n && stable == n ? L"PASS" : L"FAIL", stable, n));
+    lines.push_back(std::format(L"    P2  mirrored            {}  {}/{} patterns symmetric",
+                                n && symmetric == n ? L"PASS" : L"FAIL", symmetric, n));
+    lines.push_back(std::format(L"    P3  density in range    {}  {}/{} have 1..23 cells set",
+                                n && inRange == n ? L"PASS" : L"FAIL", inRange, n));
+    lines.push_back(std::format(L"    P4  distinguishable     {}  {} distinct of {} patterns",
+                                distinct * 4 >= n * 3 ? L"PASS" : L"FAIL", distinct, n));
+  }
   return lines;
 }
 

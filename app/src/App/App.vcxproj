@@ -186,6 +186,7 @@
          winrt/ headers even though (unlike DemoWorld.cpp) it needs Win32
          (<windows.h>, <shellapi.h>) for CommandLineToArgvW. -->
     <ClCompile Include="Demo\DemoSwitches.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="Identicon.cpp" />
     <ClCompile Include="MainWindow.xaml.cpp"><DependentUpon>MainWindow.xaml</DependentUpon></ClCompile>
     <ClCompile Include="Localization.cpp" />
     <ClCompile Include="Startup.cpp" />
@@ -199,6 +200,7 @@
     <ClInclude Include="App.xaml.h"><DependentUpon>App.xaml</DependentUpon></ClInclude>
     <ClInclude Include="Demo\DemoWorld.h" />
     <ClInclude Include="Demo\DemoSwitches.h" />
+    <ClInclude Include="Identicon.h" />
     <ClInclude Include="MainWindow.xaml.h"><DependentUpon>MainWindow.xaml</DependentUpon></ClInclude>
     <ClInclude Include="Localization.h" />
     <ClInclude Include="Startup.h" />
