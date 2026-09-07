@@ -176,6 +176,11 @@
     <ClCompile Include="pch.cpp"><PrecompiledHeader>Create</PrecompiledHeader></ClCompile>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="App.xaml.cpp"><DependentUpon>App.xaml</DependentUpon></ClCompile>
+    <!-- NotUsing is load-bearing, not a preference: pch.h pulls in windows.h and
+         every winrt/ header, and DemoWorld runs before winrt::init_apartment
+         (main.cpp:168 vs :183). Compiling it standalone is what makes "pure C++"
+         a property of the build rather than a comment someone can delete. -->
+    <ClCompile Include="Demo\DemoWorld.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="MainWindow.xaml.cpp"><DependentUpon>MainWindow.xaml</DependentUpon></ClCompile>
     <ClCompile Include="Localization.cpp" />
     <ClCompile Include="Startup.cpp" />
@@ -187,6 +192,7 @@
   <ItemGroup>
     <ClInclude Include="pch.h" />
     <ClInclude Include="App.xaml.h"><DependentUpon>App.xaml</DependentUpon></ClInclude>
+    <ClInclude Include="Demo\DemoWorld.h" />
     <ClInclude Include="MainWindow.xaml.h"><DependentUpon>MainWindow.xaml</DependentUpon></ClInclude>
     <ClInclude Include="Localization.h" />
     <ClInclude Include="Startup.h" />
