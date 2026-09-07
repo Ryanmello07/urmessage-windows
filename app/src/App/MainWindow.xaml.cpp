@@ -464,6 +464,44 @@ void MainWindow::DrainDeepLink() {
   if (pendingLink_.selectMessage && thread_.root)
     urmsg::views::SetThreadSelectedMessage(thread_, urmsg::demo::kInspectTargetRowId);
 
+  // The AMBIENT-APPEND seed (T6). AppendThreadRow is design S9.2's one entry
+  // point for ambient activity and the loop that will drive it is not built
+  // (design S2), so without a seed the append path is unreachable in a running
+  // window: its one-reading-per-run rule could be asserted in --diagnose and
+  // never SEEN, and every capture of this surface would photograph a column
+  // nothing had ever been appended to.
+  //
+  // So --demo-autoplay sends exactly ONE row through the REAL function, from
+  // the place the real loop will call it from - here, holding the ThreadView
+  // the contract's setters take by reference. It lands on c0, whose last two
+  // rows are the 12:09 Failed one and the 12:11 Pending one, which is the case
+  // worth looking at: 12:11 stops being last of its run and must lose its
+  // reading, 12:09 keeps its own because it FAILED.
+  //
+  // HERE and not in the constructor, for the same reason the message selection
+  // above is here: this runs from the content root's first SizeChanged, i.e.
+  // post-layout on a realized tree, which is the only place a bubble entrance
+  // can actually play. DrainDeepLink is one-shot, so this fires exactly once.
+  //
+  // The demo WORLD is not mutated: MutableWorld() belongs to that ambient loop
+  // (DemoWorld.h) and this is a capture seed, not the loop.
+  if (options_.autoplay && options_.screen == urmsg::demo::DemoScreen::Thread &&
+      thread_.root) {
+    urmsg::demo::MessageRow row{};
+    row.kind = urmsg::demo::RowKind::Message;
+    row.id = L"c0-ambient-1";
+    row.body = L"Measurements are in the branch now.";
+    row.timeLabel = L"12:14";
+    row.outgoing = true;
+    row.state = urmsg::demo::DeliveryState::Sent;
+    // Contract S1 guarantees this is always populated, and the bubble's
+    // automation name falls back to it on a run continuation.
+    row.inspect.senderDisplayName = L"You";
+    urmsg::views::AppendThreadRow(thread_, row);
+    urnw::LogInfo("thread: ambient seed appended 1 row -> {} bubbles",
+                  thread_.bubbles.size());
+  }
+
   urnw::LogInfo("window: demo deep link -> tag={} conversation={} message={} (rail={})",
                 urnw::Narrow(std::wstring{pendingLink_.navTag}),
                 pendingLink_.selectConversation, pendingLink_.selectMessage,

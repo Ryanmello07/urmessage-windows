@@ -114,4 +114,30 @@ int SelectedBubbleIndex(std::vector<std::wstring> const& ids, std::wstring const
   return -1;
 }
 
+// ---- T6 -------------------------------------------------------------------
+
+int64_t TypingDotPhaseMs(int dot) {
+  if (dot < 0 || kTypingDots <= dot) return -1;
+  return kTypingPhaseMs * dot;
+}
+
+int EntranceTimelineCount(bool animate) { return animate ? 4 : 0; }
+int TypingTimelineCount(bool animate) { return animate ? kTypingDots : 0; }
+
+// The whole decision an append makes about the delivery cluster, on BOTH rows.
+// One call to CarriesDeliveryGlyph per question, and no second rule: the row
+// being appended is the newest, so its `next` is nullptr by definition, and the
+// row above it is re-asked the same question with the new row as its `next`.
+AppendClusterPlan PlanAppendCluster(demo::MessageRow const* prev,
+                                    demo::MessageRow const& appended) {
+  AppendClusterPlan p;
+  p.appendedCarries = CarriesDeliveryGlyph(appended, nullptr);
+  if (prev == nullptr) return p;
+  p.prevCarried = CarriesDeliveryGlyph(*prev, nullptr);
+  p.prevCarriesNow = CarriesDeliveryGlyph(*prev, &appended);
+  p.prevMustLose = p.prevCarried && !p.prevCarriesNow;
+  p.prevMustGain = !p.prevCarried && p.prevCarriesNow;
+  return p;
+}
+
 }  // namespace urmsg::views

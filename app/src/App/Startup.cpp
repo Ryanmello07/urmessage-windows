@@ -22,6 +22,7 @@
 #include "Log.h"
 #include "Paths.h"
 #include "Strings.h"
+#include "UrMotion.h"
 #include "Views/ConversationRowModel.h"
 #include "Demo/DemoShellState.h"
 #include "Demo/AdvancedMode.h"
@@ -1165,6 +1166,202 @@ std::vector<std::wstring> CollectDiagnostics() {
             ? L"PASS"
             : L"FAIL",
         hits, deselects ? L"-1" : L"NOT -1", worldHits, worldIds.size()));
+  }
+
+  // ---- T6: motion, as counts that must go to ZERO --------------------------
+  //
+  //  Neither number below is decoration. "Motion off" in this app means the
+  //  timelines are NEVER CREATED, not that they run short (UrMotion.h), and a
+  //  gate that reported 4 and 3 whatever `animate` said would be true of a
+  //  build with no reduce-motion path at all. The zeroes are the assertion.
+  {
+    const int onCount = urmsg::views::EntranceTimelineCount(true);
+    const int offCount = urmsg::views::EntranceTimelineCount(false);
+    lines.push_back(std::format(
+        L"  T6 bubble entrance   : {} — {} timelines with motion on, {} with it off; "
+        L"rise {:.1f} dip, scale {:.2f}->1.00, {} ms",
+        (onCount == 4 && offCount == 0 && urmsg::views::kBubbleRiseDip == 10.0 &&
+         urmsg::views::kBubbleFromScale == 0.96 && urnw::motion::kBaseMs == 250)
+            ? L"PASS"
+            : L"FAIL",
+        onCount, offCount, urmsg::views::kBubbleRiseDip, urmsg::views::kBubbleFromScale,
+        urnw::motion::kBaseMs));
+
+    // The three phases are 0/140/280 and every one of them must be INSIDE the
+    // pulse it offsets: a phase >= kPulseMs is not a wave, it is three dots
+    // taking turns.
+    std::wstring phases;
+    bool phasesOk = (urmsg::views::TypingDotPhaseMs(-1) == -1 &&
+                     urmsg::views::TypingDotPhaseMs(urmsg::views::kTypingDots) == -1);
+    for (int i = 0; i < urmsg::views::kTypingDots; ++i) {
+      const int64_t ph = urmsg::views::TypingDotPhaseMs(i);
+      if (ph != urmsg::views::kTypingPhaseMs * i || urnw::motion::kPulseMs <= ph)
+        phasesOk = false;
+      phases += (i ? L"/" : L"") + std::to_wstring(ph);
+    }
+    lines.push_back(std::format(
+        L"  T6 typing indicator  : {} — {} dots at {} ms (offset {}), {} timelines on / "
+        L"{} off, all phases < kPulseMs {}",
+        (phasesOk && urmsg::views::TypingTimelineCount(true) == urmsg::views::kTypingDots &&
+         urmsg::views::TypingTimelineCount(false) == 0)
+            ? L"PASS"
+            : L"FAIL",
+        urmsg::views::kTypingDots, phases, urmsg::views::kTypingPhaseMs,
+        urmsg::views::TypingTimelineCount(true), urmsg::views::TypingTimelineCount(false),
+        urnw::motion::kPulseMs));
+  }
+
+  // ---- T6: ONE reading per run, ACROSS an append ---------------------------
+  //
+  //  The property: appending a row to a column must leave it drawing exactly
+  //  what a full rebuild of the grown conversation would draw. That is the
+  //  one-drawer rule of design S6.2 stated so it survives the incremental
+  //  path, and it is asserted PER ROW against the rebuild rather than as a
+  //  total - two rows swapping cluster and no-cluster leaves every count
+  //  identical (the lesson T4's shape gate paid for).
+  //
+  //  THE DEFECT IT EXISTS TO CATCH, and it was in T6's own brief: append the
+  //  new row's cluster and never revisit the row above it. The row that WAS
+  //  last-of-run keeps a reading it is no longer entitled to and the run shows
+  //  two. So the append-only answer is computed here as well, and the gate
+  //  REQUIRES it to differ (`append-only differs on >= 1`). If it ever stops
+  //  differing, either the removal has been deleted or the rule has been
+  //  flattened to "every outgoing row carries one", and both FAIL.
+  //
+  //  MUTATIONS CAUGHT:
+  //    - PlanAppendCluster stops removing         -> incremental == append-only,
+  //                                                  incremental wrong on 1.
+  //    - it removes unconditionally instead       -> the Failed row loses its
+  //                                                  cluster; wrong on 1, and
+  //                                                  `Failed kept` drops to 0.
+  //    - CarriesDeliveryGlyph loses the Failed
+  //      exception                                -> `Failed kept` drops to 0.
+  //    - CarriesDeliveryGlyph loses last-of-run   -> append-only stops
+  //                                                  differing, and the run
+  //                                                  walk finds stray readings.
+  //
+  //  Built LOCALLY, and as a whole Conversation so PlanThreadRows really runs
+  //  on it - never by editing Demo/DemoWorld.cpp, whose exact bytes I10
+  //  fingerprints. The shipped world cannot stand in: nothing appends to it.
+  {
+    using DState = urmsg::demo::DeliveryState;
+    namespace dv = urmsg::views;
+
+    auto mkRow = [](bool outgoing, DState st) {
+      urmsg::demo::MessageRow r{};
+      r.kind = urmsg::demo::RowKind::Message;
+      r.outgoing = outgoing;
+      r.state = st;
+      return r;
+    };
+
+    // The seed column, as SetThreadConversation would have drawn it:
+    //   s0 outgoing Sent   - next is outgoing, so NOT last of run -> no cluster
+    //   s1 outgoing Failed - newest, and Failed                   -> cluster
+    urmsg::demo::Conversation seed{};
+    seed.kind = urmsg::demo::ConversationKind::Direct;
+    seed.rows.push_back(mkRow(true, DState::Sent));
+    seed.rows.push_back(mkRow(true, DState::Failed));
+
+    // Four appends, one per position of the rule:
+    //   a0 outgoing Pending  - lands under the FAILED row, which must KEEP its
+    //                          cluster (the exception; blanket removal fails here)
+    //   a1 outgoing Sent     - lands under a0, which must LOSE its cluster
+    //                          (the run-end rule; append-only fails here)
+    //   a2 INCOMING Sent     - a1 stays last of its outgoing run and KEEPS its
+    //                          cluster; the incoming row gets none
+    //   a3 outgoing Read     - previous row is incoming, so nothing to revisit
+    const urmsg::demo::MessageRow kAppends[] = {
+        mkRow(true, DState::Pending),
+        mkRow(true, DState::Sent),
+        mkRow(false, DState::Sent),
+        mkRow(true, DState::Read),
+    };
+
+    // What a FULL build of a conversation draws, taken exactly the way
+    // SetThreadConversation takes it: the plan, then CarriesDeliveryGlyph with
+    // the following row. This is the reference the incremental path must match.
+    auto renderAll = [](urmsg::demo::Conversation const& c) {
+      std::vector<bool> out;
+      for (auto const& pl : dv::PlanThreadRows(c)) {
+        urmsg::demo::MessageRow const* next =
+            (pl.rowIndex + 1 < c.rows.size()) ? &c.rows[pl.rowIndex + 1] : nullptr;
+        out.push_back(dv::CarriesDeliveryGlyph(c.rows[pl.rowIndex], next));
+      }
+      return out;
+    };
+
+    std::vector<bool> live = renderAll(seed);  // AppendThreadRow's path
+    std::vector<bool> naive = live;            // the same path minus the removal
+    urmsg::demo::Conversation grown = seed;
+    std::size_t removals = 0, additions = 0, failedKept = 0;
+    for (auto const& a : kAppends) {
+      urmsg::demo::MessageRow const* prev =
+          grown.rows.empty() ? nullptr : &grown.rows.back();
+      const dv::AppendClusterPlan plan = dv::PlanAppendCluster(prev, a);
+      if (prev) {
+        if (plan.prevMustLose) ++removals;
+        if (plan.prevMustGain) ++additions;
+        if (prev->outgoing && prev->state == DState::Failed && plan.prevCarried &&
+            plan.prevCarriesNow)
+          ++failedKept;
+        live.back() = plan.prevCarriesNow;  // the half the brief dropped
+      }
+      live.push_back(plan.appendedCarries);
+      naive.push_back(plan.appendedCarries);
+      grown.rows.push_back(a);
+    }
+    const std::vector<bool> rebuilt = renderAll(grown);
+
+    std::size_t liveWrong = 0, naiveWrong = 0;
+    for (std::size_t i = 0; i < rebuilt.size(); ++i) {
+      if (live.size() <= i || live[i] != rebuilt[i]) ++liveWrong;
+      if (naive.size() <= i || naive[i] != rebuilt[i]) ++naiveWrong;
+    }
+
+    // And the property said directly, over the grown column: each outgoing run
+    // ends in exactly ONE reading, and any other reading inside a run sits on a
+    // Failed row. `stray` is a second drawer in a run, which is the bug.
+    auto isOutgoingMessage = [](urmsg::demo::MessageRow const& r) {
+      return r.kind == urmsg::demo::RowKind::Message && r.outgoing;
+    };
+    std::size_t runs = 0, runEndReadings = 0, failedExtras = 0, stray = 0, clusters = 0;
+    for (std::size_t i = 0; i < grown.rows.size(); ++i) {
+      auto const& r = grown.rows[i];
+      if (!isOutgoingMessage(r)) continue;
+      if (rebuilt[i]) ++clusters;
+      if (i == 0 || !isOutgoingMessage(grown.rows[i - 1])) ++runs;
+      const bool endsRun = (i + 1 == grown.rows.size()) ||
+                           !isOutgoingMessage(grown.rows[i + 1]);
+      if (endsRun) {
+        if (rebuilt[i]) ++runEndReadings;
+      } else if (rebuilt[i]) {
+        if (r.state == DState::Failed)
+          ++failedExtras;
+        else
+          ++stray;
+      }
+    }
+
+    auto bits = [](std::vector<bool> const& v) {
+      std::wstring out;
+      for (bool b : v) out += (b ? L'1' : L'0');
+      return out;
+    };
+
+    lines.push_back(std::format(
+        L"  T6 append cluster    : {} — {} seed + {} appended rows; incremental {} vs full "
+        L"rebuild {} ({} wrong), append-only {} differs on {}; {} removal(s), {} addition(s), "
+        L"{} Failed row(s) kept theirs; {} outgoing run(s), {} run-end reading(s), {} stray "
+        L"second reading(s), {} Failed extra(s), {} cluster(s)",
+        (liveWrong == 0 && 1 <= naiveWrong && 1 <= removals && failedKept == 1 &&
+         runs == 2 && runEndReadings == runs && stray == 0 && failedExtras == 1 &&
+         clusters == 3)
+            ? L"PASS"
+            : L"FAIL",
+        seed.rows.size(), std::size(kAppends), bits(live), bits(rebuilt), liveWrong,
+        bits(naive), naiveWrong, removals, additions, failedKept, runs, runEndReadings,
+        stray, failedExtras, clusters));
   }
 
   return lines;

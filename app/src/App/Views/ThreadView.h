@@ -1,4 +1,5 @@
-// The thread surface: bubbles, day separators, system rows, the column.
+// The thread surface: bubbles, day separators, system rows, the column, the
+// typing indicator and the composer.
 //
 // Structure follows the UrComponents.h grain — a struct of named elements plus
 // free Make*/Set* functions. No classes with virtuals, no MVVM, no IDL.

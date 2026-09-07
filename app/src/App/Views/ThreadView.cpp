@@ -10,9 +10,11 @@
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
 #include <winrt/Microsoft.UI.Xaml.Media.h>
 
+#include "Demo/DemoSwitches.h"
 #include "Demo/ThreadLayout.h"
 #include "Identicon.h"
 #include "UrColors.h"
+#include "UrMotion.h"
 #include "Views/ThreadLayout.h"
 
 using namespace winrt::Microsoft::UI::Xaml;
@@ -55,6 +57,57 @@ void MarkRaw(UIElement const& e) {
 // set of codepoints, so a glyph picked from the Fluent set can land on a
 // different drawing - or on nothing - if the family is left to the default.
 Media::FontFamily IconFont() { return Media::FontFamily(L"Segoe Fluent Icons"); }
+
+namespace anim = winrt::Microsoft::UI::Xaml::Media::Animation;
+
+// design S7: fade + 10 DIP rise + 0.96 -> 1.0 scale, kBaseMs, standard curve.
+// Four timelines in ONE Storyboard so they finish on the same frame - two
+// independent storyboards can land a frame apart, which reads as a hitch
+// exactly when the bubble settles (the same reason CrossfadePageSwap shares one
+// storyboard, UrMotion.cpp).
+//
+// EntranceTimelineCount() (Views/ThreadLayout.h) is the pure statement of the
+// count below, and --diagnose asserts it, INCLUDING the zero: "motion off"
+// here means the four timelines are never created at all, not that they run
+// short. Keep the two in step - four `add(...)` calls, four from the counter.
+void RunBubbleEntrance(FrameworkElement const& el) {
+  if (!el) return;
+  if (!urnw::motion::ShouldAnimate()) {
+    // Motion GONE, not reduced: the final pose, immediately, and no transform
+    // left on the element for a later layout pass to trip over.
+    el.Opacity(1.0);
+    el.RenderTransform(nullptr);
+    return;
+  }
+
+  Media::CompositeTransform t;
+  t.TranslateY(kBubbleRiseDip);
+  t.ScaleX(kBubbleFromScale);
+  t.ScaleY(kBubbleFromScale);
+  el.RenderTransform(t);
+  // The bubble grows from where it will end up, not from its own middle.
+  el.RenderTransformOrigin(winrt::Windows::Foundation::Point{0.5f, 1.0f});
+  el.Opacity(0.0);
+
+  anim::Storyboard sb;
+  auto add = [&sb, &el](anim::DoubleAnimationUsingKeyFrames const& a, wchar_t const* path) {
+    anim::Storyboard::SetTarget(a, el);
+    anim::Storyboard::SetTargetProperty(a, path);
+    sb.Children().Append(a);
+  };
+  using urnw::motion::kBaseMs;
+  using urnw::motion::kStandardP1;
+  using urnw::motion::kStandardP2;
+  using urnw::motion::MakeSplineDouble;
+  add(MakeSplineDouble(0.0, 1.0, kBaseMs, 0, kStandardP1, kStandardP2), L"Opacity");
+  add(MakeSplineDouble(kBubbleRiseDip, 0.0, kBaseMs, 0, kStandardP1, kStandardP2),
+      L"(UIElement.RenderTransform).(CompositeTransform.TranslateY)");
+  add(MakeSplineDouble(kBubbleFromScale, 1.0, kBaseMs, 0, kStandardP1, kStandardP2),
+      L"(UIElement.RenderTransform).(CompositeTransform.ScaleX)");
+  add(MakeSplineDouble(kBubbleFromScale, 1.0, kBaseMs, 0, kStandardP1, kStandardP2),
+      L"(UIElement.RenderTransform).(CompositeTransform.ScaleY)");
+  sb.Begin();
+}
 
 // THE ONE WRITER of a bubble's edge — resting AND selected, because they are
 // the same two properties and a property with two writers is a property that
@@ -193,6 +246,55 @@ FrameworkElement MakeDeliveryCluster(demo::MessageRow const& row) {
   return column;
 }
 
+// ---- the cluster as a thing that can be TAKEN AWAY AGAIN (T6) ------------
+// SetThreadConversation builds a whole column at once and every row's `next` is
+// known, so until T6 a cluster was only ever created. AppendThreadRow changes
+// that: the row that WAS newest stops being last-of-run the moment another
+// outgoing row lands under it, and design S6.2's one-reading-per-run then
+// requires its cluster to GO. So the element needs an identity the remover can
+// find.
+//
+// A TAG, not an index. MakeBubbleRow happens to append the cluster as
+// BubbleRow::root's second child today; a later task that adds a third child
+// would make an index-based remove delete the wrong element, silently and only
+// on the append path, which is the path nobody screenshots.
+constexpr wchar_t kDeliveryClusterTag[] = L"ur-delivery-cluster";
+
+FrameworkElement MakeTaggedDeliveryCluster(demo::MessageRow const& row) {
+  auto el = MakeDeliveryCluster(row);
+  if (el) el.Tag(winrt::box_value(winrt::hstring{kDeliveryClusterTag}));
+  return el;
+}
+
+// -1 when this row draws no cluster.
+int DeliveryClusterIndex(Controls::Panel const& rowRoot) {
+  if (!rowRoot) return -1;
+  auto kids = rowRoot.Children();
+  for (uint32_t i = 0; i < kids.Size(); ++i) {
+    auto fe = kids.GetAt(i).try_as<FrameworkElement>();
+    if (!fe) continue;
+    if (winrt::unbox_value_or<winrt::hstring>(fe.Tag(), winrt::hstring{}) ==
+        winrt::hstring{kDeliveryClusterTag})
+      return static_cast<int>(i);
+  }
+  return -1;
+}
+
+// Make this row's cluster match `carries`, whatever it was before. Idempotent
+// in both directions, so the caller may hand it the answer unconditionally.
+void SetRowCluster(FrameworkElement const& rowRoot, demo::MessageRow const& row,
+                   bool carries) {
+  if (!rowRoot) return;
+  auto panel = rowRoot.try_as<Controls::Panel>();
+  if (!panel) return;
+  const int at = DeliveryClusterIndex(panel);
+  if (carries == (0 <= at)) return;  // already right
+  if (carries)
+    panel.Children().Append(MakeTaggedDeliveryCluster(row));
+  else
+    panel.Children().RemoveAt(static_cast<uint32_t>(at));
+}
+
 }  // namespace
 
 BubbleRow MakeBubbleRow(demo::MessageRow const& row, bool group, bool showSenderHeader,
@@ -289,7 +391,12 @@ BubbleRow MakeBubbleRow(demo::MessageRow const& row, bool group, bool showSender
   // ONE cluster, or none. The CALLER decides, with CarriesDeliveryGlyph()
   // (Demo/ThreadLayout.h) - never with ThreadRowPlan::endsOutgoingRun, which is
   // direction-only and is FALSE on the shipped world's mid-run Failed row.
-  if (carriesDeliveryGlyph) rowRoot.Children().Append(MakeDeliveryCluster(row));
+  //
+  // TAGGED, because "or none" is not only decided once: AppendThreadRow re-asks
+  // the same question of the row above the one it is adding, and a row that has
+  // stopped being last-of-run has to LOSE this element again. SetRowCluster is
+  // the remover and it finds the cluster by that tag.
+  if (carriesDeliveryGlyph) rowRoot.Children().Append(MakeTaggedDeliveryCluster(row));
   out.root = rowRoot;
   return out;
 }
@@ -311,6 +418,30 @@ struct ThreadParts {
   std::function<void()> onDeselect;
   std::vector<Button> bubbles;   // for the width walk; ThreadView owns the public list
   double columnWidth = 0.0;
+
+  // ---- T6: what AppendThreadRow needs and ThreadBubble cannot carry -------
+  // ThreadBubble is fixed by contract S4 (an id and a Button) and ThreadView
+  // holds no MessageRows, but appending a row is a decision ABOUT THE ROW
+  // ABOVE IT: CarriesDeliveryGlyph() takes a row and its successor, so the
+  // previous row's DATA has to still be here to be re-asked the question, and
+  // the element that owns its cluster has to be reachable to answer it.
+  //
+  // EVERY row is recorded, not only the message rows - a day separator or a
+  // system row is a legitimate `prev`, and CarriesDeliveryGlyph returns false
+  // for one, which is exactly the answer that KEEPS an outgoing row's cluster
+  // when a system line lands under it. clusterHost is null for those.
+  struct RenderedRow {
+    demo::MessageRow row;
+    FrameworkElement clusterHost{nullptr};  // BubbleRow::root; null off a message row
+  };
+  std::vector<RenderedRow> rows;
+  bool group = false;
+
+  // The typing indicator (design S7). typingStory is stopped and dropped on
+  // every state change so two waves can never run over one another.
+  FrameworkElement typingRow{nullptr};
+  std::vector<winrt::Microsoft::UI::Xaml::Shapes::Ellipse> typingDots;
+  anim::Storyboard typingStory{nullptr};
 };
 
 std::map<void const*, std::shared_ptr<ThreadParts>>& Registry() {
@@ -471,6 +602,238 @@ FrameworkElement MakeKeyChangeRecord(winrt::hstring const& text) {
   return root;
 }
 
+// ---- the typing indicator (T6, design S7) --------------------------------
+// Three pulsing dots AND a word. The word is not decoration: with "Show
+// animations in Windows" off the dots do not move at all, and three motionless
+// grey dots say nothing - this line is what carries the state in that case, and
+// it is also the only thing a screen reader gets (the dots are Raw).
+//
+// It says "Typing", which is the one thing this demo can honestly claim about a
+// fabricated participant. Nothing here says a message was encrypted, sent or
+// received: there is no protocol and no crypto behind this window.
+FrameworkElement MakeTypingIndicator(std::shared_ptr<ThreadParts> const& parts) {
+  StackPanel row;
+  row.Orientation(Orientation::Horizontal);
+  row.Spacing(6);
+  row.VerticalAlignment(VerticalAlignment::Center);
+  row.Margin(ThicknessHelper::FromLengths(20, 0, 0, 6));
+  row.Visibility(Visibility::Collapsed);
+
+  StackPanel dots;
+  dots.Orientation(Orientation::Horizontal);
+  dots.Spacing(5);
+  dots.VerticalAlignment(VerticalAlignment::Center);
+  parts->typingDots.clear();
+  for (int i = 0; i < kTypingDots; ++i) {
+    winrt::Microsoft::UI::Xaml::Shapes::Ellipse dot;
+    dot.Width(6);
+    dot.Height(6);
+    dot.Fill(urnw::colors::MutedBrush());
+    dot.Opacity(0.30);
+    MarkRaw(dot);
+    parts->typingDots.push_back(dot);
+    dots.Children().Append(dot);
+  }
+  row.Children().Append(dots);
+
+  TextBlock says;
+  says.Text(L"Typing…");  // U+2026 HORIZONTAL ELLIPSIS
+  if (auto st = StyleByKey(L"UrCaptionTextStyle")) says.Style(st);
+  says.FontSize(11);
+  says.Foreground(urnw::colors::MutedBrush());
+  says.VerticalAlignment(VerticalAlignment::Center);
+  MarkRaw(says);
+  row.Children().Append(says);
+
+  // The row carries the announcement; the dots and the word inside it are Raw,
+  // so a screen reader says this ONCE rather than four times.
+  Automation::AutomationProperties::SetName(row, L"Typing");
+  parts->typingRow = row;
+  return row;
+}
+
+// ---- the composer (T6, design S9.1) --------------------------------------
+// = App.xaml's UrBorderStrongBrush (#38FFFFFF). Written as a literal rather
+// than derived from kText, which would give #38F8F8F8 - near enough to look
+// right and wrong enough to be a second edge token.
+constexpr winrt::Windows::UI::Color kBorderStrong{0x38, 0xFF, 0xFF, 0xFF};
+
+// Entrance kFastMs on the standard curve, exit one step faster on the exit
+// curve - UrMotion's own rule ("exits run one step faster than entrances"), no
+// new token. Instant in both directions when motion is off.
+void FadeFocusRule(FrameworkElement const& rule, bool on) {
+  if (!rule) return;
+  if (!urnw::motion::ShouldAnimate()) {
+    rule.Opacity(on ? 1.0 : 0.0);
+    return;
+  }
+  anim::Storyboard sb;
+  auto a = on ? urnw::motion::MakeSplineDouble(0.0, 1.0, urnw::motion::kFastMs, 0,
+                                               urnw::motion::kStandardP1,
+                                               urnw::motion::kStandardP2)
+              : urnw::motion::MakeSplineDouble(1.0, 0.0, urnw::motion::kMicroMs, 0,
+                                               urnw::motion::kExitP1, urnw::motion::kExitP2);
+  anim::Storyboard::SetTarget(a, rule);
+  anim::Storyboard::SetTargetProperty(a, L"Opacity");
+  sb.Children().Append(a);
+  sb.Begin();
+}
+
+// design S9.1: a control that cannot act is DISABLED, so the platform draws it
+// at 0.38 opacity and it never takes focus. An enabled-looking button that eats
+// a click is the demo bug that rule exists to stop.
+Button MakeInertIconButton(wchar_t const* glyph, wchar_t const* name) {
+  Button b;
+  FontIcon g;
+  g.FontFamily(IconFont());
+  g.Glyph(glyph);
+  g.FontSize(16);
+  b.Content(g);
+  b.Background(nullptr);
+  b.BorderThickness(ThicknessHelper::FromUniformLength(0));
+  b.Padding(ThicknessHelper::FromUniformLength(6));
+  b.MinWidth(0);
+  b.IsEnabled(false);
+  Automation::AutomationProperties::SetName(b, winrt::hstring{name});
+  return b;
+}
+
+FrameworkElement MakeComposer() {
+  Border bar;
+  bar.Background(urnw::colors::CardBrush());
+  bar.BorderBrush(urnw::colors::BorderBrush());
+  bar.BorderThickness(ThicknessHelper::FromLengths(0, 1, 0, 0));
+  bar.Padding(ThicknessHelper::FromLengths(12, 8, 12, 10));
+
+  StackPanel column;
+  column.Spacing(6);
+
+  Grid row;
+  row.ColumnSpacing(4);
+  for (int i = 0; i < 5; ++i) {
+    ColumnDefinition c;
+    c.Width(i == 3 ? GridLengthHelper::FromValueAndType(1, GridUnitType::Star)
+                   : GridLengthHelper::FromValueAndType(1, GridUnitType::Auto));
+    row.ColumnDefinitions().Append(c);
+  }
+
+  auto attach = MakeInertIconButton(L"\uE723",  // Segoe Fluent "Attach" - paperclip
+                                    L"Attach a file (not available in the demo)");
+  auto emoji = MakeInertIconButton(L"\uE76E",   // Segoe Fluent "Emoji2" - outline smiley
+                                   L"Insert an emoji (not available in the demo)");
+  Grid::SetColumn(attach, 0);
+  Grid::SetColumn(emoji, 1);
+  row.Children().Append(attach);
+  row.Children().Append(emoji);
+
+  // The disappearing-timer chip: a glyph AND its value, because a clock face
+  // alone cannot say "24 hours" and this is the one control whose whole point is
+  // the number on it.
+  Button timer;
+  {
+    StackPanel chip;
+    chip.Orientation(Orientation::Horizontal);
+    chip.Spacing(5);
+    FontIcon g;
+    g.FontFamily(IconFont());
+    g.Glyph(L"\uE916");  // Segoe Fluent "Timer"
+    g.FontSize(14);
+    chip.Children().Append(g);
+    TextBlock t;
+    t.Text(L"24h");
+    t.FontSize(12);
+    chip.Children().Append(t);
+    timer.Content(chip);
+  }
+  timer.Background(nullptr);
+  timer.BorderBrush(urnw::colors::BorderBrush());
+  timer.BorderThickness(ThicknessHelper::FromUniformLength(1));
+  timer.CornerRadius(CornerRadiusHelper::FromUniformRadius(12));
+  timer.Padding(ThicknessHelper::FromLengths(8, 3, 8, 3));
+  timer.MinWidth(0);
+  timer.IsEnabled(false);
+  Automation::AutomationProperties::SetName(
+      timer, L"Disappearing messages: 24 hours (not available in the demo)");
+  Grid::SetColumn(timer, 2);
+  row.Children().Append(timer);
+
+  // The ONE live control. Focus and typing are things this demo can honestly
+  // do, so they are not taken away. The placeholder is the word "Message" and
+  // nothing more - a placeholder that promised anything about what happens to
+  // what you type would be the claim G4 forbids.
+  TextBox box;
+  box.PlaceholderText(L"Message");
+  box.AcceptsReturn(false);
+  box.TextWrapping(TextWrapping::Wrap);
+  box.MaxHeight(96);
+  box.BorderThickness(ThicknessHelper::FromUniformLength(0));
+  box.Background(nullptr);
+  box.VerticalAlignment(VerticalAlignment::Center);
+  Automation::AutomationProperties::SetName(box, L"Message (the demo does not send)");
+  Grid::SetColumn(box, 3);
+  row.Children().Append(box);
+
+  // UrAccentBrush's one legitimate home on this surface (the selection outline
+  // is the other). AccentButtonStyle is what spends App.xaml's
+  // AccentButtonBackground* keys, which are already the pale yellow - and
+  // DISABLED it resolves to AccentButtonBackgroundDisabled #33EFF7BB, so the
+  // pill reads as faint rather than as a live call to action.
+  Button send;
+  {
+    FontIcon plane;
+    plane.FontFamily(IconFont());
+    plane.Glyph(L"\uE724");  // Segoe Fluent "Send" - outline paper plane
+    plane.FontSize(16);
+    send.Content(plane);
+  }
+  if (auto st = StyleByKey(L"AccentButtonStyle")) {
+    send.Style(st);
+  } else {
+    send.Background(urnw::colors::AccentBrush());
+    send.Foreground(urnw::colors::MakeBrush(urnw::colors::kInverseText));
+  }
+  send.MinWidth(40);
+  send.Padding(ThicknessHelper::FromLengths(10, 6, 10, 6));
+  send.IsEnabled(false);  // design S9.1 - the disabled accent reads as inert
+  Automation::AutomationProperties::SetName(send, L"Send (not available in the demo)");
+  Grid::SetColumn(send, 4);
+  row.Children().Append(send);
+  column.Children().Append(row);
+
+  // The focus channel. Not the accent - that is the send button and the
+  // selection outline only - so focus lifts a 1px rule from nothing to
+  // UrBorderStrongBrush, which is the same edge step UrCardButtonStyle's hover
+  // state already spends.
+  Border focusRule;
+  focusRule.Height(1);
+  focusRule.HorizontalAlignment(HorizontalAlignment::Stretch);
+  focusRule.Background(urnw::colors::MakeBrush(kBorderStrong));
+  focusRule.Opacity(0.0);
+  column.Children().Append(focusRule);
+
+  box.GotFocus([focusRule](auto const&, auto const&) { FadeFocusRule(focusRule, true); });
+  box.LostFocus([focusRule](auto const&, auto const&) { FadeFocusRule(focusRule, false); });
+
+  // Said ONCE, here, instead of on every inert control in the window: the
+  // failed message's [ Try again ], the [ Review ] on the key-change record and
+  // these four all point at the same fact. It says what is NOT happening; it
+  // claims nothing about encryption, because there is none.
+  TextBlock note;
+  note.Text(L"Demo — nothing is sent, and no message leaves this window.");  // U+2014 EM DASH
+  if (auto st = StyleByKey(L"UrCaptionTextStyle")) note.Style(st);
+  note.FontSize(11);
+  note.Foreground(urnw::colors::FaintBrush());
+  column.Children().Append(note);
+
+  bar.Child(column);
+  // A click in the composer is NOT a click in empty thread space. Without this
+  // it bubbles to MakeThread's root.Tapped and deselects the message the rail
+  // is showing, the moment you go to type - the same reason a bubble marks its
+  // own Tapped handled.
+  bar.Tapped([](auto const&, auto const& args) { args.Handled(true); });
+  return bar;
+}
+
 }  // namespace
 
 ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
@@ -482,6 +845,17 @@ ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
 
   Grid root;
   root.Background(BrushByKey(L"UrBackgroundBrush", urnw::colors::kBackground));
+  // THREE rows: the scrolling backlog, the typing indicator, the composer.
+  // Star / Auto / Auto - the two bottom rows keep their measured height and the
+  // backlog takes what is left, so the composer cannot be scrolled off and a
+  // typing indicator appearing SHORTENS the backlog rather than covering its
+  // last bubble.
+  for (int i = 0; i < 3; ++i) {
+    RowDefinition rd;
+    rd.Height(i == 0 ? GridLengthHelper::FromValueAndType(1, GridUnitType::Star)
+                     : GridLengthHelper::FromValueAndType(1, GridUnitType::Auto));
+    root.RowDefinitions().Append(rd);
+  }
 
   ScrollViewer scroller;
   scroller.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
@@ -491,7 +865,16 @@ ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
   StackPanel stack;
   stack.Spacing(6);
   scroller.Content(stack);
+  Grid::SetRow(scroller, 0);
   root.Children().Append(scroller);
+
+  auto typingRow = MakeTypingIndicator(parts);
+  Grid::SetRow(typingRow, 1);
+  root.Children().Append(typingRow);
+
+  auto composer = MakeComposer();
+  Grid::SetRow(composer, 2);
+  root.Children().Append(composer);
 
   parts->scroller = scroller;
   parts->stack = stack;
@@ -526,6 +909,14 @@ ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
   // from the foot today. What they cannot do is STAY away across a window
   // resize - this handler fires on width-only changes too and yanks them back.
   //
+  // T6 GAVE IT A SECOND JOB, and it is the more important one now. Appending a
+  // row adds a child to this stack, so this handler fires and re-pins - which
+  // is what keeps an arriving message visible and is why AppendThreadRow writes
+  // no scroll offset of its own (two writers of one property, and the later one
+  // wins by accident of ordering). It also means design S9.2's "do not yank a
+  // reader who has scrolled away" is unimplemented on the APPEND path too, not
+  // only across a resize, and for the same reason: the guard belongs here.
+  //
   // The obvious two-line guard ("return if we are far from the bottom") is
   // WRONG here and was deliberately not added: on the construction path the
   // first size change that carries a real extent has offset 0 and a large
@@ -540,10 +931,44 @@ ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
   });
 
   // Design 9.1: a click in empty thread space deselects. A Button handles its
-  // own pointer events, so a bubble click does not reach this.
+  // own pointer events, so a bubble click does not reach this - and since T6
+  // this root also holds the COMPOSER, which is not a Button and is not empty
+  // thread space, so MakeComposer marks its own Tapped handled rather than
+  // letting a click into the message box throw away the selection the rail is
+  // showing.
   root.Tapped([parts](auto const&, auto const&) {
     if (parts->onDeselect) parts->onDeselect();
   });
+
+  // --demo is the ONLY way an agent can reach a state without synthesising
+  // input (design S9.3), and the typing indicator is otherwise unreachable
+  // until an ambient loop that does not exist yet decides to raise it. So
+  // --demo-autoplay SEEDS it on: a presenter sees the indicator immediately
+  // instead of waiting out a minute of silence, and the capture that proves it
+  // renders has something to photograph. Without --demo-autoplay the row stays
+  // Collapsed and costs nothing.
+  //
+  // The WAVE starts here too, from the window constructor and before this root
+  // is mounted into ThreadHost - and that works, which is not what a lifecycle
+  // rule of thumb would predict. It was not taken on trust: a Loaded-armed
+  // variant was built and swept across a whole 1500 ms cycle at 150 ms steps,
+  // and this version was then sampled at the steps where that sweep showed the
+  // dots apart. Both drew three DIFFERENT opacities, so the extra hook bought
+  // nothing and came out rather than being kept "to be safe".
+  //
+  // HOW NOT TO CHECK IT, because a pair of stills said the opposite and was
+  // believed for a while. The standard curve (0.10,0.90)->(0.20,1.00) is a hard
+  // ease-out: a dot is past 0.93 opacity a third of the way through its 750 ms
+  // leg and sits near 1.0 for the rest, so the three are only visibly apart for
+  // part of the cycle. MEASURED on that 10-frame sweep: 3 frames showed three
+  // different opacities, 7 showed three identical ones. Two stills, however far
+  // apart they are spaced, are therefore NOT a test of whether the wave runs -
+  // they will usually land on the plateau, which looks exactly like a
+  // storyboard that never started.
+  {
+    const auto opts = demo::ParseDemoOptions();
+    if (opts.autoplay && opts.screen == demo::DemoScreen::Thread) SetThreadTyping(v, true);
+  }
   return v;
 }
 
@@ -553,9 +978,13 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
 
   parts->stack.Children().Clear();
   parts->bubbles.clear();
+  parts->rows.clear();
   v.bubbles.clear();
 
   const bool group = (c.kind == demo::ConversationKind::Group);
+  // Remembered because AppendThreadRow has no Conversation to ask later, and a
+  // continuation bubble in a GROUP still reserves the identicon gutter.
+  parts->group = group;
 
   // The builder renders the PLAN and chooses no SHAPE of its own. PlanThreadRows
   // lives in Views/ThreadLayout.h, which is pure C++, so every branch of this
@@ -593,6 +1022,9 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
     demo::MessageRow const& row = c.rows[p.rowIndex];
     demo::MessageRow const* next =
         (p.rowIndex + 1 < c.rows.size()) ? &c.rows[p.rowIndex + 1] : nullptr;
+    // The element that would own this row's delivery cluster, for the append
+    // path to re-decide against later. Null on every non-bubble row.
+    FrameworkElement clusterHost{nullptr};
 
     switch (p.shape) {
       case ThreadRowShape::DaySeparator: {
@@ -627,9 +1059,18 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
         parts->bubbles.push_back(built.bubble.root);
         v.bubbles.push_back(built.bubble);
         parts->stack.Children().Append(built.root);
+        clusterHost = built.root;
         break;
       }
     }
+
+    // EVERY row, including the unlabelled separator that drew nothing: the
+    // append path asks CarriesDeliveryGlyph() about the row IMMEDIATELY above
+    // the one it is adding, and skipping a row here would hand it the wrong
+    // one. That would be invisible except in the one case it matters - an
+    // outgoing bubble under a system line - which is precisely the case a
+    // "message rows only" list gets wrong.
+    parts->rows.push_back(ThreadParts::RenderedRow{row, clusterHost});
   }
 
   ApplyColumnWidth(parts);
@@ -701,6 +1142,132 @@ void SetThreadSelectedMessage(ThreadView& v, std::wstring const& id) {
       base.erase(base.size() - mark.size());
     Automation::AutomationProperties::SetName(b.root, winrt::hstring{on ? base + mark : base});
   }
+}
+
+// Contract S4. design S7's typing indicator, as a state rather than as an
+// animation: the ROW is what says someone is typing, and the wave is how it
+// says it when the machine is allowed to move.
+//
+// The reduce-motion path is not a shorter wave, it is NO wave: the dots are
+// left at full opacity (not the 0.30 they rest at, which would read as three
+// dots frozen mid-fade) and the word beside them carries the state on its own.
+// TypingTimelineCount() is the pure statement of that - kTypingDots timelines
+// with motion on, ZERO with it off - and --diagnose asserts both halves.
+void SetThreadTyping(ThreadView& v, bool typing) {
+  auto parts = Find(v.root);
+  if (!parts || !parts->typingRow) return;
+  parts->typingRow.Visibility(typing ? Visibility::Visible : Visibility::Collapsed);
+
+  // Stopped and dropped FIRST, on every call: Begin() on a second storyboard
+  // targeting the same three Opacity properties leaves two waves fighting over
+  // them, and the loser never stops because RepeatBehavior is Forever.
+  if (parts->typingStory) {
+    parts->typingStory.Stop();
+    parts->typingStory = nullptr;
+  }
+  // Full opacity when still, so the reduce-motion reading is three solid dots
+  // and a word rather than three dots frozen mid-fade at 30%.
+  for (auto const& d : parts->typingDots) d.Opacity(typing ? 1.0 : 0.30);
+  if (!typing || !urnw::motion::ShouldAnimate()) return;
+
+  anim::Storyboard sb;
+  for (int i = 0; i < kTypingDots; ++i) {
+    // Half a cycle out, AutoReverse back = kPulseMs per dot, offset by design
+    // S7's 140 ms so the three read as a wave rather than as one blink.
+    auto a = urnw::motion::MakeSplineDouble(0.30, 1.0, urnw::motion::kPulseMs / 2,
+                                            TypingDotPhaseMs(i), urnw::motion::kStandardP1,
+                                            urnw::motion::kStandardP2);
+    a.AutoReverse(true);
+    a.RepeatBehavior(anim::RepeatBehaviorHelper::Forever());
+    anim::Storyboard::SetTarget(a, parts->typingDots[static_cast<std::size_t>(i)]);
+    anim::Storyboard::SetTargetProperty(a, L"Opacity");
+    sb.Children().Append(a);
+  }
+  parts->typingStory = sb;
+  sb.Begin();
+}
+
+// Contract S4. Ambient activity's one entry point (design S9.2): ONE row,
+// arriving at the foot of a column that is already built.
+//
+// TWO ROWS CHANGE, NOT ONE, and the second is the whole difficulty. The row
+// being appended is the newest, so its `next` is nullptr and
+// CarriesDeliveryGlyph() gives it a cluster whenever it is outgoing. But the
+// row that WAS newest was judged under the same rule with the same nullptr, and
+// an outgoing one got a cluster for being last of its run - which it now is
+// not. Leave it alone and the run shows TWO readings, which design S6.2 gives
+// exactly one of, and which every earlier draft of this function did.
+//
+// Not "clear the previous cluster" either: CarriesDeliveryGlyph fires on any
+// Failed row wherever it sits, so a Failed row KEEPS its cluster when something
+// lands under it. The rule is re-EVALUATED, and PlanAppendCluster
+// (Views/ThreadLayout.h) is that re-evaluation as pure data, so --diagnose can
+// assert it without an apartment. `T6 append cluster` is the gate.
+void AppendThreadRow(ThreadView& v, demo::MessageRow const& row) {
+  auto parts = Find(v.root);
+  if (!parts || !parts->stack) return;
+
+  // ---- 1. the row above, re-decided --------------------------------------
+  demo::MessageRow const* prev = parts->rows.empty() ? nullptr : &parts->rows.back().row;
+  const AppendClusterPlan plan = PlanAppendCluster(prev, row);
+  if (prev) SetRowCluster(parts->rows.back().clusterHost, *prev, plan.prevCarriesNow);
+
+  // ---- 2. the new row ----------------------------------------------------
+  FrameworkElement added{nullptr};
+  FrameworkElement clusterHost{nullptr};
+  switch (row.kind) {
+    case demo::RowKind::DaySeparator: {
+      // Same exception SetThreadConversation makes: an unlabelled separator
+      // draws NOTHING rather than an empty pill.
+      const std::wstring label = DaySeparatorLabel(row);
+      if (!label.empty()) added = MakeDaySeparator(label);
+      break;
+    }
+    case demo::RowKind::System:
+      added = row.permanentRecord ? MakeKeyChangeRecord(winrt::hstring{row.systemText})
+                                  : MakeSystemLine(winrt::hstring{row.systemText});
+      break;
+    case demo::RowKind::Message: {
+      // showSenderHeader is FALSE by construction, not by rule: a row that
+      // arrives on its own has no conversation and no plan around it, and an
+      // arriving message is a continuation in practice. ShowsSenderHeader()
+      // needs the row above and the conversation kind to say otherwise, and a
+      // header guessed wrong here would name a speaker mid-run.
+      auto built = MakeBubbleRow(row, parts->group, /*showSenderHeader=*/false,
+                                 plan.appendedCarries);
+      built.bubble.root.Click([parts, id = row.id](auto const&, auto const&) {
+        if (parts->onSelect) parts->onSelect(id);
+      });
+      parts->bubbles.push_back(built.bubble.root);
+      v.bubbles.push_back(built.bubble);
+      added = built.root;
+      clusterHost = built.root;
+      break;
+    }
+  }
+
+  // Recorded even when it drew nothing - see SetThreadConversation.
+  parts->rows.push_back(ThreadParts::RenderedRow{row, clusterHost});
+  if (!added) return;
+
+  parts->stack.Children().Append(added);
+  // The 68% cap is a function of the CURRENT column width, and the walk in
+  // ApplyColumnWidth only ever runs on a resize; a bubble appended between two
+  // resizes would otherwise keep MakeBubbleRow's unmeasured 640 DIP fallback.
+  ApplyColumnWidth(parts);
+  RunBubbleEntrance(added);
+
+  // NO SCROLL WRITE HERE, deliberately. MakeThread's stack.SizeChanged pin
+  // already fires on this append - a new child changes the stack's height - and
+  // it re-pins to the foot unconditionally, which is what keeps the arriving
+  // message visible. A second ChangeView from here would be a second writer of
+  // one property, and the one that ran last would win by accident of ordering.
+  //
+  // So design S9.2's "do not yank a reader who has scrolled away" is NOT
+  // implemented, here or anywhere: a conditional follow written here would be
+  // overridden by that unconditional pin a moment later, which would look
+  // implemented and not be. The guard belongs on the pin, and T3's comment on
+  // it says why it needs an armed flag and a scrolled-away state to prove.
 }
 
 }  // namespace urmsg::views

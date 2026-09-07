@@ -21,6 +21,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -97,5 +98,60 @@ DeliveryBadge BadgeFor(demo::DeliveryState s);
 // match" would do, and it would be invisible in every screenshot where bubble 0
 // happened to be the selected one.
 int SelectedBubbleIndex(std::vector<std::wstring> const& ids, std::wstring const& id);
+
+// ---- motion, as numbers rather than as code (T6) -------------------------
+// design S7, "Bubble entrance": fade + 10 DIP rise + 0.96 -> 1.0 scale at
+// motion::kBaseMs on the standard curve. The numbers live here rather than in
+// the builder so --diagnose can read them without an apartment.
+inline constexpr double kBubbleRiseDip = 10.0;
+inline constexpr double kBubbleFromScale = 0.96;
+
+// design S7, "Typing indicator": three dots at kPulseMs, 140 ms phase offset.
+// 140 is an OFFSET between three copies of one timeline, not a new duration.
+inline constexpr int kTypingDots = 3;
+inline constexpr int64_t kTypingPhaseMs = 140;
+
+// 0, 140, 280. -1 for a dot outside [0, kTypingDots).
+int64_t TypingDotPhaseMs(int dot);
+
+// How many timelines each effect starts. FOUR for an entrance (opacity,
+// TranslateY, ScaleX, ScaleY) and THREE for the typing wave when motion is on -
+// and ZERO for both when it is off. The zero is the half worth asserting: a
+// gate that returns the same count either way is not a gate.
+int EntranceTimelineCount(bool animate);
+int TypingTimelineCount(bool animate);
+
+// ---- what an APPEND does to the row above it (T6) -------------------------
+// Appending a row does not only ADD a cluster. It can also TAKE one away, and
+// that half is the one an append-only implementation silently drops.
+//
+// CarriesDeliveryGlyph() (Demo/ThreadLayout.h) is a function of a row AND the
+// row after it. The row that was newest was evaluated with next == nullptr, so
+// an outgoing one carried a cluster because it was last of its run. Put another
+// outgoing row under it and it is no longer last of its run: the SAME rule now
+// says it must not carry one, and unless something removes it the thread shows
+// two readings of one run. Design S6.2 gives a run exactly ONE reading.
+//
+// The Failed exception is why this is a re-EVALUATION and not "clear the
+// previous cluster": CarriesDeliveryGlyph fires on any Failed row wherever it
+// sits, so a Failed row keeps its cluster when a newer row lands under it, and
+// blanket removal would delete the one delivery state this surface must never
+// swallow.
+//
+// Pure, and returning DATA rather than doing the removal, for the reason every
+// other decision on this surface is: --diagnose runs before
+// winrt::init_apartment() and can only assert what it can call.
+struct AppendClusterPlan {
+  bool appendedCarries = false;  // CarriesDeliveryGlyph(appended, nullptr)
+  bool prevCarried = false;      // what prev drew BEFORE, i.e. with next == nullptr
+  bool prevCarriesNow = false;   // CarriesDeliveryGlyph(prev, &appended)
+  bool prevMustLose = false;     // prevCarried && !prevCarriesNow  -> REMOVE
+  bool prevMustGain = false;     // !prevCarried && prevCarriesNow  -> ADD
+};
+
+// `prev` is the last row already in the column, or nullptr for an append into
+// an empty thread. Never throws.
+AppendClusterPlan PlanAppendCluster(demo::MessageRow const* prev,
+                                    demo::MessageRow const& appended);
 
 }  // namespace urmsg::views
