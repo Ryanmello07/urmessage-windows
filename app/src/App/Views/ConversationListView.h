@@ -68,8 +68,10 @@ std::size_t ApplyConversationListFilter(ConversationListView& v,
                                         urmsg::demo::World const& world,
                                         std::wstring const& query);
 
-// The rest of contract 4's ConversationListView API (SetConversationListAdvanced)
-// is declared by the task that IMPLEMENTS it. A declaration without a
-// definition is a link error waiting for whoever builds next.
+// Show or hide the Advanced-Mode group-id chip on every group row (design 6.6).
+// DENSITY ONLY -- one Visibility per row, no rebuild and no crossfade
+// (contract 4). The chip exists on every row already, collapsed and empty on a
+// DM, so this call cannot change the list's measured height or its row count.
+void SetConversationListAdvanced(ConversationListView& v, bool advanced);
 
 }  // namespace urmsg::views

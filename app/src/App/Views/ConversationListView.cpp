@@ -101,6 +101,14 @@ FrameworkElement TaggedChild(Controls::Panel const& panel, wchar_t const* tag) {
   return nullptr;
 }
 
+// The same lookup, narrowed to a Panel, so a chain of them reads as one
+// expression without a null check between every hop.
+Controls::Panel TaggedPanel(Controls::Panel const& parent, wchar_t const* tag) {
+  auto child = TaggedChild(parent, tag);
+  if (!child) return nullptr;
+  return child.try_as<Controls::Panel>();
+}
+
 // The kit row's content Grid. MakePaneTwoLineRowButton ends with
 // out.root.Content(grid) (UrComponents.cpp:478), so this is the documented
 // shape rather than a guess.
@@ -362,6 +370,26 @@ std::size_t ApplyConversationListFilter(ConversationListView& v,
   urnw::LogInfo("list: filter \"{}\" -> {} of {}", winrt::to_string(winrt::hstring{query}),
                 visible, v.rows.size());
   return visible;
+}
+
+void SetConversationListAdvanced(ConversationListView& v, bool advanced) {
+  int shown = 0;
+  int chips = 0;
+  for (auto const& row : v.rows) {
+    auto cluster = TaggedPanel(TaggedPanel(RowGrid(row), kTagTrailing), kTagCluster);
+    auto chip = TaggedChild(cluster, kTagGroupChip);
+    if (!chip) continue;
+    auto text = chip.try_as<Controls::TextBlock>();
+    if (!text) continue;
+    ++chips;
+    // Empty on every DM (ConversationRowModel::groupIdChip), so Advanced Mode
+    // never puts an empty chip and its 6dip of Spacing on a direct message.
+    const bool show = advanced && !text.Text().empty();
+    text.Visibility(show ? Visibility::Visible : Visibility::Collapsed);
+    if (show) ++shown;
+  }
+  urnw::LogInfo("list: advanced {} -> {} of {} group-id chips visible",
+                advanced ? "on" : "off", shown, chips);
 }
 
 }  // namespace urmsg::views

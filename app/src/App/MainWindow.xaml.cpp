@@ -217,6 +217,12 @@ void MainWindow::BuildConversationList() {
       if (auto self = weak.get()) self->ApplyConversationFilter();
     });
 
+    // Contract 5: Advanced Mode has ONE owner and no view reads the preference.
+    // This is the initial application; the live subscription that re-calls this
+    // on every toggle is registered by the wiring surface, which owns
+    // OnAdvancedModeChanged.
+    urmsg::views::SetConversationListAdvanced(list_, urmsg::AdvancedModeEnabled());
+
     // The agent may not synthesise input, so a selection that only ever happens
     // on a click is a state no capture can reach. Contract 2 already requires
     // --demo=inspect to pre-select conversation 0; --demo=chats does the same so
