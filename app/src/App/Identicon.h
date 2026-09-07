@@ -25,12 +25,22 @@ struct IdenticonPattern {
   std::array<bool, 25> cells{};  // row-major 5x5, mirrored left-to-right
   size_t colorIndex = 0;
 };
-IdenticonPattern MakeIdenticonPattern(urmsg::demo::Seed const& seed);
+// constexpr (fix round 1): lets Identicon.cpp static_assert the density
+// extremes (an all-zero-bits seed, an all-one-bits seed) it can reach, which
+// is a compile time check the runtime --diagnose pass over 30 fixed demo
+// seeds cannot substitute for - see the two static_asserts below
+// MakeIdenticonPattern's definition in the .cpp.
+constexpr IdenticonPattern MakeIdenticonPattern(urmsg::demo::Seed const& seed);
 
 // Applies its own CornerRadius(8) - callers must NOT set one.
-// Palette is constrained to hues that cannot be mistaken for state: it NEVER
-// emits kDanger, kUrGreen, kToggleAccent, kStatusConnecting or kProGold, and
-// the .cpp proves it with a static_assert rather than promising it.
+// Palette is constrained to hues that cannot be mistaken for state: fix
+// round 1 replaced an exact-colour-match check (which a Tint() toward an
+// achromatic surface can never trip, since mixing with grey cannot change
+// hue) with a HUE-DISTANCE minimum against kDanger, kUrGreen,
+// kToggleAccent, kStatusConnecting, kProGold AND kStatusIdle (added in the
+// same round - it is the idle state of the same three-state connect
+// indicator as the other two status colours, and was missing). The .cpp
+// proves the distance with a static_assert rather than promising it.
 winrt::Microsoft::UI::Xaml::Controls::Border MakeIdenticon(
     urmsg::demo::Seed const& seed, double size = 40);
 

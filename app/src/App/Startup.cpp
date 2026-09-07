@@ -408,7 +408,6 @@ std::vector<std::wstring> CollectDiagnostics() {
       for (auto const& m : c.members) seeds.push_back(m.identityKey);
     }
     size_t stable = 0, symmetric = 0, inRange = 0;
-    std::vector<std::array<bool, 25>> patterns;
     for (auto const& s : seeds) {
       const auto a = urmsg::MakeIdenticonPattern(s);
       const auto b = urmsg::MakeIdenticonPattern(s);
@@ -423,24 +422,54 @@ std::vector<std::wstring> CollectDiagnostics() {
         }
       if (mirrored) ++symmetric;
       if (1 <= on && on <= 23) ++inRange;
-      patterns.push_back(a.cells);
-    }
-    size_t distinct = 0;
-    for (size_t i = 0; i < patterns.size(); ++i) {
-      bool seen = false;
-      for (size_t j = 0; j < i; ++j) if (patterns[j] == patterns[i]) seen = true;
-      if (!seen) ++distinct;
     }
     const size_t n = seeds.size();
-    lines.push_back(std::format(L"  identicons       : {} seeds from the demo world", n));
+
+    // P4 (fix round 1): m-mira and m-tobias are admins of BOTH groups, so
+    // two of the 30 seed slots are byte-identical repeats of the same
+    // identity - those two SHOULD produce the same identicon, and are not a
+    // collision. "distinguishable" only means something once repeats of one
+    // identity are folded down to one, so dedupe by identity key first.
+    std::vector<Seed> uniqueSeeds;
+    for (auto const& s : seeds) {
+      bool seen = false;
+      for (auto const& u : uniqueSeeds)
+        if (u == s) { seen = true; break; }
+      if (!seen) uniqueSeeds.push_back(s);
+    }
+    const size_t uniqueIdentities = uniqueSeeds.size();
+
+    // This is a closed set of hand-authored demo seeds, not an open
+    // population, so an exact bound is available and is the right one: if
+    // two DIFFERENT people ever end up with the same avatar, the fix is to
+    // change a seed, not to tolerate a rate. colorIndex is included in the
+    // comparison because IdenticonPattern's visible result is cells AND
+    // colour together - two identities that share a cell layout but differ
+    // only in colour are still distinguishable, and the reverse.
+    size_t distinctIdentities = 0;
+    for (size_t i = 0; i < uniqueSeeds.size(); ++i) {
+      const auto pi = urmsg::MakeIdenticonPattern(uniqueSeeds[i]);
+      bool seen = false;
+      for (size_t j = 0; j < i; ++j) {
+        const auto pj = urmsg::MakeIdenticonPattern(uniqueSeeds[j]);
+        if (pj.cells == pi.cells && pj.colorIndex == pi.colorIndex) { seen = true; break; }
+      }
+      if (!seen) ++distinctIdentities;
+    }
+
+    lines.push_back(std::format(
+        L"  identicons       : {} seeds from the demo world, {} unique identities",
+        n, uniqueIdentities));
     lines.push_back(std::format(L"    P1  deterministic       {}  {}/{} seeds identical on a second call",
                                 n && stable == n ? L"PASS" : L"FAIL", stable, n));
     lines.push_back(std::format(L"    P2  mirrored            {}  {}/{} patterns symmetric",
                                 n && symmetric == n ? L"PASS" : L"FAIL", symmetric, n));
     lines.push_back(std::format(L"    P3  density in range    {}  {}/{} have 1..23 cells set",
                                 n && inRange == n ? L"PASS" : L"FAIL", inRange, n));
-    lines.push_back(std::format(L"    P4  distinguishable     {}  {} distinct of {} patterns",
-                                distinct * 4 >= n * 3 ? L"PASS" : L"FAIL", distinct, n));
+    lines.push_back(std::format(
+        L"    P4  no collisions       {}  {} distinct of {} unique identities",
+        uniqueIdentities && distinctIdentities == uniqueIdentities ? L"PASS" : L"FAIL",
+        distinctIdentities, uniqueIdentities));
   }
   return lines;
 }
