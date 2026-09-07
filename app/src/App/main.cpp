@@ -31,6 +31,8 @@
 #include <vector>
 
 #include "App.xaml.h"
+#include "Demo/AdvancedMode.h"
+#include "Demo/DemoSwitches.h"
 #include "Ids.h"
 #include "Log.h"
 #include "Startup.h"
@@ -165,6 +167,11 @@ int __stdcall wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     // means the Windows App SDK initializer could not resolve a usable Windows
     // App Runtime (it runs from a CRT initializer, ahead of everything here).
     urnw::StartupLogInit();
+    // Here, and not in OnLaunched: --diagnose returns before OnLaunched ever
+    // runs, so initialising there would leave the diagnostic reporting a
+    // state the app never entered. It touches only the filesystem, so it is
+    // safe before init_apartment.
+    urmsg::InitAdvancedMode(urmsg::demo::ParseDemoOptions().advanced);
     diagnostics = urnw::CollectDiagnostics();
     urnw::LogDiagnostics(diagnostics);
     diagnose = urnw::WantsDiagnose();

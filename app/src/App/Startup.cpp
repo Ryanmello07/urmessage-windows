@@ -12,12 +12,14 @@
 #include <format>
 #include <optional>
 
+#include "AppPrefs.h"
 #include "Ids.h"
 #include "Identicon.h"
 #include "Localization.h"
 #include "Log.h"
 #include "Paths.h"
 #include "Strings.h"
+#include "Demo/AdvancedMode.h"
 #include "Demo/DemoWorld.h"
 #include "Demo/DemoSwitches.h"
 
@@ -397,6 +399,15 @@ std::vector<std::wstring> CollectDiagnostics() {
         o.enabled ? L"yes" : L"no", kScreens[static_cast<size_t>(o.screen)],
         o.autoplay ? L"yes" : L"no", o.advanced ? L"yes" : L"no",
         o.watermark ? L"on" : L"off"));
+  }
+  {
+    const nlohmann::json prefs = urnw::LoadAppPrefs();
+    const bool present = prefs.contains("advanced_mode") && prefs["advanced_mode"].is_boolean();
+    lines.push_back(std::format(
+        L"  advanced mode    : {}  (pref advanced_mode: {}; session override: {})",
+        urmsg::AdvancedModeEnabled() ? L"ON " : L"off",
+        present ? (prefs["advanced_mode"].get<bool>() ? L"true" : L"false") : L"absent",
+        urmsg::demo::ParseDemoOptions().advanced ? L"yes" : L"no"));
   }
   for (auto& line : DemoWorldAssertions()) lines.push_back(std::move(line));
   {
