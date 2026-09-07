@@ -8,7 +8,7 @@
 // ever be checked by looking at it.
 //
 // NOT the same header as Demo/ThreadLayout.h. That one holds T1's row RULES
-// (ShowsSenderHeader, DeliveryGlyph, AuditDaySeparators, ...); this one holds
+// (ShowsSenderHeader, DeliveryWord, AuditDaySeparators, ...); this one holds
 // the row PLANNER. BOTH are namespace urmsg::views - only the PATH differs.
 // Do not write demo::ShowsSenderHeader: it does not compile, and that mistake
 // has already been made once. Both are always included WITH their directory prefix -
@@ -73,11 +73,11 @@ std::vector<ThreadRowPlan> PlanThreadRows(demo::Conversation const& c);
 // Pure, so --diagnose can walk the whole closed set of Spec C §5.3 rather
 // than a screenshot having to be believed.
 //
-// Not the same table as DeliveryGlyph()/DeliveryWord() in Demo/ThreadLayout.h,
-// and deliberately so: that one is the six states as six DISTINCT glyphs, which
-// is what a bubble's automation name and the T2 gate are built on. This one is
-// the RENDERED cluster, where Sent and Delivered share a glyph on purpose and
-// are told apart by how many of it there are.
+// THE table of what a state draws. Demo/ThreadLayout.h keeps only the WORDS
+// now (DeliveryWord, for the automation name); its six-distinct-GLYPH table was
+// deleted in T5 fix round 1 rather than left orphaned, because this one gives
+// Sent and Delivered the same glyph on purpose and tells them apart by how many
+// of it there are — so the two tables could not both be true.
 enum class DeliveryCue { Clock, OneCheck, TwoOutlineChecks, TwoFilledChecks, Alert, Timer };
 
 struct DeliveryBadge {

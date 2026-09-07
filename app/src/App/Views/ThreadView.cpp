@@ -56,6 +56,36 @@ void MarkRaw(UIElement const& e) {
 // different drawing - or on nothing - if the family is left to the default.
 Media::FontFamily IconFont() { return Media::FontFamily(L"Segoe Fluent Icons"); }
 
+// THE ONE WRITER of a bubble's edge — resting AND selected, because they are
+// the same two properties and a property with two writers is a property that
+// can half-change. MakeBubbleRow calls it with selected=false when it builds a
+// bubble; SetThreadSelectedMessage calls it for every bubble on every selection
+// change. There is no third caller and there must not be one.
+//
+// Spec C §5.2 gives the RESTING edge: a 1px UrBorderBrush edge on an outgoing
+// bubble, none on an incoming one. Selection replaces it with 2px UrAccentBrush
+// — an OUTLINE, never a fill, and the 1px -> 2px step is a SHAPE change, so
+// selection survives colour being taken away.
+//
+// UrBubbleButtonStyle (App.xaml:753) template-binds BorderBrush and
+// BorderThickness onto its template root, which is what makes both of these
+// paint at all.
+void SetBubbleEdge(Button const& bubble, bool outgoing, bool selected) {
+  if (!bubble) return;
+  bubble.BorderThickness(
+      ThicknessHelper::FromUniformLength(selected ? 2.0 : (outgoing ? 1.0 : 0.0)));
+  // A local rather than a nested ternary: two of the arms would be a
+  // SolidColorBrush and a nullptr, and letting the compiler pick a common type
+  // for those is how a null edge quietly becomes a transparent one.
+  Media::Brush edge{nullptr};
+  if (selected) {
+    edge = urnw::colors::AccentBrush();
+  } else if (outgoing) {
+    edge = BrushByKey(L"UrBorderBrush", urnw::colors::kBorder);
+  }
+  bubble.BorderBrush(edge);
+}
+
 // THE delivery cluster. design §6.2: right-aligned, under the last bubble that
 // CarriesDeliveryGlyph() marks — which is the last of an outgoing run, PLUS any
 // Failed row wherever it sits.
@@ -179,10 +209,9 @@ BubbleRow MakeBubbleRow(demo::MessageRow const& row, bool group, bool showSender
   // fill — it is the send button and the selection outline only.
   bubble.Background(row.outgoing ? BrushByKey(L"UrCardHoverBrush", urnw::colors::kCardHover)
                                  : BrushByKey(L"UrCardBrush", urnw::colors::kCard));
-  bubble.BorderThickness(ThicknessHelper::FromUniformLength(1));
-  bubble.BorderBrush(row.outgoing
-                         ? BrushByKey(L"UrBorderBrush", urnw::colors::kBorder)
-                         : Media::SolidColorBrush(winrt::Windows::UI::Colors::Transparent()));
+  // The edge goes through the ONE writer, at rest: a bubble that has just been
+  // built is not selected. SetThreadSelectedMessage rewrites it from there.
+  SetBubbleEdge(bubble, row.outgoing, /*selected=*/false);
   bubble.HorizontalAlignment(row.outgoing ? HorizontalAlignment::Right
                                           : HorizontalAlignment::Left);
   // The cap now; the thread column narrows it on SizeChanged (the column task
@@ -654,21 +683,11 @@ void SetThreadSelectedMessage(ThreadView& v, std::wstring const& id) {
     const bool outgoing = (b.root.HorizontalAlignment() == HorizontalAlignment::Right);
 
     // Three channels, the same rule SetPaneListRowSelected already follows
-    // (UrComponents.h): the accent EDGE, a 1px -> 2px thickness (a SHAPE change,
-    // so selection survives colour being taken away), and the automation name.
-    // UrAccentBrush #EFF7BB is the selection OUTLINE and the send button, and
-    // nothing else on this surface — it is never a bubble fill.
-    b.root.BorderThickness(ThicknessHelper::FromUniformLength(on ? 2.0 : (outgoing ? 1.0 : 0.0)));
-    // A local rather than a nested ternary: the arms would be a SolidColorBrush
-    // and a nullptr, and letting the compiler pick a common type for those is
-    // how a null edge quietly becomes a transparent one.
-    Media::Brush edge{nullptr};
-    if (on) {
-      edge = urnw::colors::AccentBrush();
-    } else if (outgoing) {
-      edge = urnw::colors::BorderBrush();
-    }
-    b.root.BorderBrush(edge);
+    // (UrComponents.h): the accent EDGE, a 1px -> 2px thickness (a SHAPE change),
+    // and the automation name. The first two are SetBubbleEdge's — the same
+    // writer MakeBubbleRow used to build this bubble's resting edge, so there is
+    // exactly one place that decides what a bubble's border is.
+    SetBubbleEdge(b.root, outgoing, on);
 
     // The name is a channel too, and it is idempotent: the suffix is stripped
     // before it is re-applied, so calling this twice cannot leave

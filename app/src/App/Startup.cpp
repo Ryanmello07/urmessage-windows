@@ -705,31 +705,37 @@ std::vector<std::wstring> CollectDiagnostics() {
         total.unlabelled, total.adjacent, total.trailing, daySynth.adjacent,
         daySynth.trailing));
 
-    // 5. Delivery vocabulary. Six states, six NON-EMPTY, six DISTINCT glyphs —
-    //    the empty-glyph-literal defect and the "two states differ only by
-    //    colour" defect are the same check.
+    // 5. Delivery vocabulary. Six states -> six NON-EMPTY, DISTINCT words.
+    //
+    //    THE GLYPH HALF OF THIS CHECK IS GONE, with DeliveryGlyph() itself
+    //    (T5 fix round 1). It asserted six DISTINCT glyphs, and the rendered
+    //    table deliberately violates that: BadgeFor() gives Sent and Delivered
+    //    the same E930 and tells them apart by COUNT, which is Spec C §5.3's
+    //    own reading. A gate asserting a property the render contradicts is
+    //    worse than no gate. What draws is asserted by `T5 delivery badges`.
+    //
+    //    The WORD is still live and still load-bearing: BubbleAutomationName
+    //    puts it in every outgoing bubble's name, and check 6 below searches
+    //    each name for it — so two states sharing a word would make a screen
+    //    reader unable to tell them apart, which is what this line prevents.
     static constexpr demo::DeliveryState kStates[] = {
         demo::DeliveryState::Pending, demo::DeliveryState::Sent,
         demo::DeliveryState::Delivered, demo::DeliveryState::Read,
         demo::DeliveryState::Failed, demo::DeliveryState::Expired};
-    std::vector<std::wstring> glyphs, words;
-    for (auto s : kStates) { glyphs.push_back(views::DeliveryGlyph(s));
-                             words.push_back(views::DeliveryWord(s)); }
-    int nonEmpty = 0, distinct = 0, distinctWords = 0;
-    for (std::size_t i = 0; i < glyphs.size(); ++i) {
-      if (!glyphs[i].empty()) ++nonEmpty;
-      bool dupG = false, dupW = false;
-      for (std::size_t j = 0; j < i; ++j) {
-        if (glyphs[j] == glyphs[i]) dupG = true;
+    std::vector<std::wstring> words;
+    for (auto s : kStates) words.push_back(views::DeliveryWord(s));
+    int nonEmpty = 0, distinctWords = 0;
+    for (std::size_t i = 0; i < words.size(); ++i) {
+      if (!words[i].empty()) ++nonEmpty;
+      bool dupW = false;
+      for (std::size_t j = 0; j < i; ++j)
         if (words[j] == words[i]) dupW = true;
-      }
-      if (!dupG) ++distinct;
       if (!dupW) ++distinctWords;
     }
     lines.push_back(std::format(
-        L"  thread T2 glyphs : {} - 6 states, {} non-empty, {} distinct glyphs, {} distinct words",
-        (nonEmpty == 6 && distinct == 6 && distinctWords == 6) ? L"PASS" : L"FAIL",
-        nonEmpty, distinct, distinctWords));
+        L"  thread T2 words  : {} - 6 states, {} non-empty, {} distinct words",
+        (nonEmpty == 6 && distinctWords == 6) ? L"PASS" : L"FAIL", nonEmpty,
+        distinctWords));
 
     // 6. Bubble names. Every bubble is named; every name carries its time; every
     //    outgoing name carries its delivery WORD (so state is never colour-only);
@@ -998,15 +1004,68 @@ std::vector<std::wstring> CollectDiagnostics() {
       if (anyOut) ++convsWithOutgoing;
       if (anyCluster) ++convsWithCluster;
     }
+    // 1b. THE CASE THE SHIPPED WORLD CANNOT PROVIDE, built locally.
+    //
+    //     The counts above are blind to half the rule, and the arithmetic says
+    //     why: 24 outgoing rows in 23 runs means exactly ONE multi-row outgoing
+    //     run exists, and its first row is the Failed one. So the world contains
+    //     NO row that is outgoing, not-last-of-run and not-Failed — and deleting
+    //     the last-of-run clause from CarriesDeliveryGlyph (making it `return
+    //     true` for every outgoing row) leaves byRule 24, divergent 1 and
+    //     divergentFailedMidRun 1: every number above identical, PASS unchanged.
+    //     This is the same fixture-blindness `thread T1 glyph` states at check 3
+    //     and fixes with a synthetic run; the pattern is reused here rather than
+    //     reinvented, and NEVER by editing Demo/DemoWorld.cpp, whose exact bytes
+    //     I10 fingerprints.
+    //
+    //     A whole Conversation is built rather than a bare row vector, because
+    //     this gate's subject is the rule AGAINST the plan — so PlanThreadRows
+    //     has to run on the same fixture and endsOutgoingRun has to be real.
+    //
+    //     Four rows, and every position of the rule is exercised once:
+    //       r0 outgoing Sent,   next outgoing -> NOT last of run, not Failed -> no
+    //       r1 outgoing Failed, next outgoing -> NOT last of run, Failed     -> YES
+    //       r2 outgoing Sent,   next incoming -> last of run                 -> YES
+    //       r3 incoming Sent                                                 -> no
+    //     r0 is the row the world does not have. r1 is the only place rule and
+    //     endsOutgoingRun may disagree, and r2 is the only place they must agree
+    //     while both being true.
+    urmsg::demo::Conversation synth{};
+    synth.kind = urmsg::demo::ConversationKind::Direct;
+    synth.rows.resize(4);
+    for (auto& r : synth.rows) {
+      r.kind = urmsg::demo::RowKind::Message;
+      r.outgoing = true;
+      r.state = DState::Sent;
+    }
+    synth.rows[1].state = DState::Failed;
+    synth.rows[3].outgoing = false;
+    const bool kSynthRule[4] = {false, true, true, false};
+    const bool kSynthPlan[4] = {false, false, true, false};
+
+    std::size_t synthChecked = 0, synthRuleOk = 0, synthPlanOk = 0;
+    for (auto const& p : urmsg::views::PlanThreadRows(synth)) {
+      urmsg::demo::MessageRow const* next =
+          (p.rowIndex + 1 < synth.rows.size()) ? &synth.rows[p.rowIndex + 1] : nullptr;
+      ++synthChecked;
+      if (urmsg::views::CarriesDeliveryGlyph(synth.rows[p.rowIndex], next) ==
+          kSynthRule[p.rowIndex])
+        ++synthRuleOk;
+      if (p.endsOutgoingRun == kSynthPlan[p.rowIndex]) ++synthPlanOk;
+    }
+
     lines.push_back(std::format(
         L"  T5 cluster rows      : {} — {} outgoing rows; rule {} vs endsOutgoingRun {}, "
-        L"{} disagree ({} Failed mid-run); {} of {} conversations carry one",
+        L"{} disagree ({} Failed mid-run); {} of {} conversations carry one; synthetic "
+        L"4-row fixture {}/{} rule and {}/{} plan (mid-run non-failed false, Failed true, "
+        L"last-of-run true)",
         (1 <= byRule && byRule == byPlanField + divergent && 1 <= divergent &&
-         divergent == divergentFailedMidRun && convsWithCluster == convsWithOutgoing)
+         divergent == divergentFailedMidRun && convsWithCluster == convsWithOutgoing &&
+         synthChecked == 4 && synthRuleOk == synthChecked && synthPlanOk == synthChecked)
             ? L"PASS"
             : L"FAIL",
         outRows, byRule, byPlanField, divergent, divergentFailedMidRun, convsWithCluster,
-        convsWithOutgoing));
+        convsWithOutgoing, synthRuleOk, synthChecked, synthPlanOk, synthChecked));
 
     // 2. THE BADGE TABLE — per state and per CHANNEL, not a census.
     //
