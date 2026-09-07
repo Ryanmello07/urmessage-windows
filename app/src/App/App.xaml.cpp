@@ -5,10 +5,11 @@
 
 #include <string>
 
-#include "Demo/DemoSwitches.h"
 #include "Log.h"
 #include "MainWindow.xaml.h"
 #include "Startup.h"
+#include <winrt/Microsoft.UI.Interop.h>
+#include <winrt/Microsoft.UI.Windowing.h>
 #include "Strings.h"
 #include "WindowShell.h"
 
@@ -75,12 +76,28 @@ void App::OnLaunched(LaunchActivatedEventArgs const&) {
       HWND hwnd = nullptr;
       native->get_WindowHandle(&hwnd);
       if (hwnd) {
-        // --demo, and only --demo, opens wide enough for the third pane.
-        // A normal launch is unchanged: 480x760, centred, WindowShell.h:21.
-        const auto demo = urmsg::demo::ParseDemoOptions();
-        const int w = demo.enabled ? urnw::shell::kDemoWidthDips : 0;
-        const int h = demo.enabled ? urnw::shell::kDemoHeightDips : 0;
-        urnw::shell::ApplyNativeShell(window_, hwnd, w, h);
+        urnw::shell::ApplyNativeShell(window_, hwnd);
+        // D7: demo mode opens at 1560x900 DIP, because the rail exists only at
+        // or above 1500 CONTENT dips (a 1560-dip window measures ~1546 of
+        // content) and the rail must be live on launch - it is the only way an
+        // agent can see that state without synthesising input. AFTER
+        // ApplyNativeShell deliberately: that function ends in MoveAndResize and
+        // would otherwise win. The options are READ BACK from the window that
+        // already parsed them, so the command line has one parser.
+        bool demo = false;
+        if (auto self = window_.try_as<URmessage::MainWindow>())
+          demo = winrt::get_self<MainWindow>(self)->DemoOptions().enabled;
+        if (demo) {
+          const UINT dpi = ::GetDpiForWindow(hwnd);
+          const double scale = (dpi ? dpi : 96u) / 96.0;
+          const auto id = winrt::Microsoft::UI::GetWindowIdFromWindow(hwnd);
+          if (auto appWindow =
+                  winrt::Microsoft::UI::Windowing::AppWindow::GetFromWindowId(id)) {
+            appWindow.Resize({static_cast<int32_t>(1560 * scale),
+                              static_cast<int32_t>(900 * scale)});
+            urnw::LogInfo("app: demo launch size 1560x900 dip (dpi {})", dpi);
+          }
+        }
       }
     }
 

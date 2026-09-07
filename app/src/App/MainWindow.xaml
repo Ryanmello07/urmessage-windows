@@ -38,6 +38,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <!-- The title bar. ExtendsContentIntoTitleBar puts the content under
@@ -60,6 +61,21 @@
                 <TextBlock x:Name="BrandText" VerticalAlignment="Center"
                            FontFamily="{StaticResource UrWordmarkFontFamily}"
                            FontSize="24" FontWeight="Bold" />
+                <!-- D2. It exists so an unpatched screenshot cannot be mistaken
+                     for a shipping product; the demo-watermark=off switch removes
+                     it for clean capture. The parent StackPanel is
+                     IsHitTestVisible=False, so this cannot eat the drag region.
+                     Text is set from code as an English literal: Resources.resw
+                     is GENERATED from urnetwork/localizations and no task here
+                     may add a key to it. -->
+                <Border x:Name="DemoChip" Visibility="Collapsed"
+                        Background="{StaticResource UrSheetBrush}"
+                        BorderBrush="{StaticResource UrBorderBrush}"
+                        BorderThickness="1" CornerRadius="4" Padding="6,1"
+                        Margin="4,0,0,0" VerticalAlignment="Center">
+                    <TextBlock x:Name="DemoChipText"
+                               Style="{StaticResource UrCaptionTextStyle}" />
+                </Border>
             </StackPanel>
         </Grid>
 
@@ -104,8 +120,23 @@
                         <FontIcon FontFamily="{StaticResource UrIconFontFamily}" FontSize="20" Glyph="&#xE77B;" />
                     </muxc:NavigationViewItem.Icon>
                 </muxc:NavigationViewItem>
+                <!-- Demo destinations, hidden on a normal launch. Segoe Fluent
+                     Icons through UrIconFontFamily like every other glyph in
+                     this file: E839 is Ethernet, E943 is Code. -->
+                <muxc:NavigationViewItem x:Name="NetworkNavItem" Tag="network"
+                                         Visibility="Collapsed">
+                    <muxc:NavigationViewItem.Icon>
+                        <FontIcon FontFamily="{StaticResource UrIconFontFamily}" FontSize="20" Glyph="&#xE839;" />
+                    </muxc:NavigationViewItem.Icon>
+                </muxc:NavigationViewItem>
             </muxc:NavigationView.MenuItems>
             <muxc:NavigationView.FooterMenuItems>
+                <muxc:NavigationViewItem x:Name="DeveloperNavItem" Tag="developer"
+                                         Visibility="Collapsed">
+                    <muxc:NavigationViewItem.Icon>
+                        <FontIcon FontFamily="{StaticResource UrIconFontFamily}" FontSize="20" Glyph="&#xE943;" />
+                    </muxc:NavigationViewItem.Icon>
+                </muxc:NavigationViewItem>
                 <muxc:NavigationViewItem x:Name="SettingsNavItem" Tag="settings">
                     <muxc:NavigationViewItem.Icon>
                         <FontIcon FontFamily="{StaticResource UrIconFontFamily}" FontSize="20" Glyph="&#xE713;" />
@@ -126,14 +157,20 @@
                      the flyout reading. ApplyBreakpoint is the one place in
                      this app that decides what "wide" means. -->
                 <Grid x:Name="ChatsPage" Style="{StaticResource UrPaneStyle}">
+                    <!-- Five columns, two breakpoints. 0/1/2 are the shipped
+                         list | rule | thread. 3/4 are the demo's inspector rail
+                         (design doc 6.3), which exists only at or above
+                         urmsg::demo::kRailBreakpointDip = 1500 CONTENT dips. -->
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition x:Name="ListColumn" Width="*" />
                         <ColumnDefinition x:Name="RuleColumn" Width="Auto" />
                         <ColumnDefinition x:Name="ThreadColumn" Width="0" />
+                        <ColumnDefinition x:Name="RailRuleColumn" Width="Auto" />
+                        <ColumnDefinition x:Name="RailColumn" Width="0" />
                     </Grid.ColumnDefinitions>
 
                     <!-- the list pane -->
-                    <Grid Grid.Column="0" Style="{StaticResource UrPaneStyle}">
+                    <Grid x:Name="ListScaffold" Grid.Column="0" Style="{StaticResource UrPaneStyle}">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
@@ -161,6 +198,13 @@
                         </ScrollViewer>
                     </Grid>
 
+                    <!-- The demo's ConversationListView lands here and
+                         ListScaffold collapses. Two siblings in one cell rather
+                         than a rebuilt pane: a launch without demo mode must draw
+                         exactly what it draws today. -->
+                    <Grid x:Name="ListHost" Grid.Column="0" Visibility="Collapsed"
+                          Style="{StaticResource UrPaneStyle}" />
+
                     <Border x:Name="PaneRule" Grid.Column="1"
                             Style="{StaticResource UrPaneVRuleStyle}"
                             Visibility="Collapsed" />
@@ -178,6 +222,17 @@
                         </Border>
                         <Grid x:Name="ThreadBody" Grid.Row="1" />
                     </Grid>
+
+                    <!-- the demo's ThreadView -->
+                    <Grid x:Name="ThreadHost" Grid.Column="2" Visibility="Collapsed"
+                          Style="{StaticResource UrPaneStyle}" />
+
+                    <!-- the inspector rail (design doc 6.3, D3) -->
+                    <Border x:Name="RailRule" Grid.Column="3"
+                            Style="{StaticResource UrPaneVRuleStyle}"
+                            Visibility="Collapsed" />
+                    <Grid x:Name="RailHost" Grid.Column="4" Visibility="Collapsed"
+                          Style="{StaticResource UrPaneStyle}" />
                 </Grid>
 
                 <!-- The two destinations that do not exist yet. A pane with one
@@ -197,8 +252,22 @@
                     <Grid x:Name="StubBody" Grid.Row="1" />
                 </Grid>
 
+                <!-- The demo destinations. Each is one empty pane that its view
+                     fills; MainWindow never draws into them itself. -->
+                <Grid x:Name="NetworkHost" Visibility="Collapsed"
+                      Style="{StaticResource UrPaneStyle}" />
+                <Grid x:Name="SettingsHost" Visibility="Collapsed"
+                      Style="{StaticResource UrPaneStyle}" />
+                <Grid x:Name="DeveloperHost" Visibility="Collapsed"
+                      Style="{StaticResource UrPaneStyle}" />
+
             </Grid>
         </muxc:NavigationView>
+
+        <!-- The persistent connect indicator (design doc 6.5, D4). Window level,
+             not per-destination: it is one strip along the bottom of the app,
+             and its preview drawer opens ABOVE it inside this same host. -->
+        <Grid x:Name="StatusStripHost" Grid.Row="2" Visibility="Collapsed" />
     </Grid>
     </Grid>
 </Window>

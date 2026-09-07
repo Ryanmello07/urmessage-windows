@@ -12,10 +12,14 @@
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
 #include <winrt/Windows.Foundation.h>
 
+#include "Demo/AdvancedMode.h"
+#include "Demo/DemoShellState.h"
 #include "Demo/DemoSwitches.h"
 #include "Localization.h"
 #include "Log.h"
+#include "Strings.h"
 #include "UrColors.h"
+#include "UrMotion.h"
 
 using namespace winrt;
 using namespace winrt::Microsoft::UI::Xaml;
@@ -31,16 +35,14 @@ namespace {
 // L: L is the wide-string-literal prefix and this file uses both.
 winrt::hstring Loc(std::string_view key) { return winrt::hstring{urnw::Localized(key)}; }
 
-// A style out of the app dictionary by key, or null. Same three lines as
-// UrComponents.cpp's StyleByKey, which is file-local there; a missing key must
-// not throw a title bar away.
-Style StyleByKey(wchar_t const* key) {
-  auto app = Application::Current();
-  if (!app) return nullptr;
-  auto boxed = winrt::box_value(winrt::hstring{key});
-  if (!app.Resources().HasKey(boxed)) return nullptr;
-  return app.Resources().Lookup(boxed).try_as<Style>();
-}
+// Demo-only labels. Strings/en/Resources.resw is GENERATED from the separate
+// urnetwork/localizations repository (Localization.h:3-4), so a demo surface
+// cannot add keys to it and must not hand-edit it. These literals ship only
+// behind --demo and sit in one block for the same reason the demo world is one
+// directory: the diff that deletes the demo must be short.
+constexpr const wchar_t* kDemoNavNetwork = L"Network";
+constexpr const wchar_t* kDemoNavDeveloper = L"Developer";
+constexpr const wchar_t* kDemoWatermark = L"DEMO";
 
 // The conversation-list placeholder.
 //
@@ -85,19 +87,30 @@ MainWindow::MainWindow() {
   ExtendsContentIntoTitleBar(true);
   SetTitleBar(AppTitleBar());
 
+  options_ = urmsg::demo::ParseDemoOptions();
   ApplyStrings();
-  BuildDemoWatermark();
-  BuildConversationList();
+  // Seeded before anything can navigate: CrossfadePageSwap with a null outgoing
+  // fades the incoming page in and never collapses the old one, so both would be
+  // drawn on top of each other.
+  currentPage_ = ChatsPage();
+  if (options_.enabled) {
+    EnterDemoMode();
+  } else {
+    BuildConversationList();
+  }
 
   // The window reveal: bind now that the content tree exists, then arm BEFORE
   // Activate() so the first composed frame is already the start pose rather
   // than the settled one corrected a frame later. No tray icon yet, so there is
   // no anchor to spring from — nullopt gives the plain centred scale, which is
   // the third of WindowReveal's three documented fallbacks and never fails.
+  const FrameworkElement listRing = options_.enabled
+                                        ? ListHost().as<FrameworkElement>()
+                                        : ConversationList().as<FrameworkElement>();
   reveal_.Bind(WindowPlate(), RevealRoot(),
                {
                    {ListPaneTitle(), 0},
-                   {ConversationList(), 0},
+                   {listRing, 0},
                    {HomeNav(), 40},
                    {AppTitleBar(), 80},
                });
@@ -108,7 +121,12 @@ MainWindow::MainWindow() {
   // is cheap on the resizes that do not cross the breakpoint.
   if (auto root = Content().try_as<FrameworkElement>()) {
     root.SizeChanged([weak = get_weak()](auto const&, auto const&) {
-      if (auto self = weak.get()) self->ApplyBreakpoint();
+      auto self = weak.get();
+      if (!self) return;
+      self->ApplyBreakpoint();
+      // AFTER ApplyBreakpoint, never before: the deep link's message half needs
+      // the rail to exist, and the rail is decided by the line above.
+      self->DrainDeepLink();
     });
   }
   ApplyBreakpoint();
@@ -174,33 +192,70 @@ void MainWindow::BuildConversationList() {
                 kSampleConversations.size());
 }
 
-void MainWindow::BuildDemoWatermark() {
-  const auto demo = urmsg::demo::ParseDemoOptions();
-  if (!demo.enabled || !demo.watermark) return;
+void MainWindow::EnterDemoMode() {
+  const auto link = urmsg::demo::DeepLinkFor(options_.screen);
 
-  // ZERO new tokens: the card surface, the border hairline, and
-  // UrGroupHeaderTextStyle - the app's existing 11px letterspaced caption
-  // voice, which is what a chip is. The parent StackPanel is
-  // IsHitTestVisible=False, so the chip cannot swallow the drag region and
-  // is visibly inert, which is what a watermark should be.
-  Border chip;
-  chip.Background(urnw::colors::CardBrush());
-  chip.BorderBrush(urnw::colors::BorderBrush());
-  chip.BorderThickness(ThicknessHelper::FromUniformLength(1));
-  chip.CornerRadius(CornerRadiusHelper::FromUniformRadius(4));
-  chip.Padding(ThicknessHelper::FromLengths(6, 1, 6, 2));
-  chip.VerticalAlignment(VerticalAlignment::Center);
+  // Advanced Mode resolves FIRST: the Developer nav item and every view built
+  // below depends on it. --demo-advanced and a --demo=developer deep link are
+  // both session-only and write nothing (AdvancedMode.h).
+  urmsg::InitAdvancedMode(options_.advanced || link.forceAdvanced);
+  advanced_ = urmsg::AdvancedModeEnabled();
 
-  TextBlock label;
-  // English literal, deliberately. Strings/en/Resources.resw is GENERATED
-  // from the urnetwork/localizations repo and no task may add a key to it.
-  label.Text(L"DEMO");
-  if (auto style = StyleByKey(L"UrGroupHeaderTextStyle")) label.Style(style);
-  chip.Child(label);
+  // The shipped scaffold steps aside; the hosts take over.
+  ListScaffold().Visibility(Visibility::Collapsed);
+  ThreadPane().Visibility(Visibility::Collapsed);
+  ListHost().Visibility(Visibility::Visible);
 
-  TitleBarContent().Children().Append(chip);
-  urnw::LogInfo("window: DEMO watermark chip added ({} title-bar children)",
-                TitleBarContent().Children().Size());
+  NetworkNavItem().Content(box_value(hstring{kDemoNavNetwork}));
+  DeveloperNavItem().Content(box_value(hstring{kDemoNavDeveloper}));
+  NetworkNavItem().Visibility(Visibility::Visible);
+  DeveloperNavItem().Visibility(advanced_ ? Visibility::Visible
+                                          : Visibility::Collapsed);
+
+  DemoChipText().Text(kDemoWatermark);
+  DemoChip().Visibility(options_.watermark ? Visibility::Visible
+                                           : Visibility::Collapsed);
+
+  // Armed, not run. See DrainDeepLink.
+  pendingLink_ = link;
+  pendingLinkArmed_ = true;
+
+  urnw::LogInfo("window: demo mode on (screen tag {}, autoplay {}, advanced {}, watermark {})",
+                urnw::Narrow(std::wstring{link.navTag}), options_.autoplay, advanced_,
+                options_.watermark);
+}
+
+void MainWindow::SelectNavTag(std::wstring_view tag) {
+  // Setting SelectedItem raises SelectionChanged, so the destination swap runs
+  // through the one path OnNavSelectionChanged already owns.
+  auto match = [&](auto const& items) -> bool {
+    for (auto const& entry : items) {
+      auto item = entry.template try_as<NavigationViewItem>();
+      if (!item) continue;
+      auto itemTag = item.Tag().template try_as<hstring>();
+      if (itemTag && std::wstring_view{*itemTag} == tag) {
+        HomeNav().SelectedItem(item);
+        return true;
+      }
+    }
+    return false;
+  };
+  if (!match(HomeNav().MenuItems())) match(HomeNav().FooterMenuItems());
+}
+
+void MainWindow::DrainDeepLink() {
+  // One-shot, and only once the layout has actually been written. breakpoint
+  // state, window size and NavigationView's own load-time selection are all
+  // settled by the first SizeChanged; running from the constructor instead put
+  // the nav selection before NavigationView loaded (where the markup's
+  // IsSelected="True" on ChatsNavItem wins) and the message selection before the
+  // rail existed.
+  if (!pendingLinkArmed_ || !breakpointApplied_) return;
+  pendingLinkArmed_ = false;
+  SelectNavTag(pendingLink_.navTag);
+  urnw::LogInfo("window: demo deep link -> tag={} conversation={} message={}",
+                urnw::Narrow(std::wstring{pendingLink_.navTag}),
+                pendingLink_.selectConversation, pendingLink_.selectMessage);
 }
 
 void MainWindow::ApplyBreakpoint() {
@@ -234,18 +289,38 @@ void MainWindow::ApplyBreakpoint() {
 }
 
 void MainWindow::ShowDestination(std::wstring_view tag) {
-  const bool chats = (tag == L"chats");
-  ChatsPage().Visibility(chats ? Visibility::Visible : Visibility::Collapsed);
-  StubPage().Visibility(chats ? Visibility::Collapsed : Visibility::Visible);
+  // There is no Frame in this window - sibling Grids toggled by Visibility - so
+  // the page change goes through motion::CrossfadePageSwap (UrMotion.h:120), the
+  // app's standing replacement for NavigationTransitionInfo and design doc 7's
+  // page-change row. It owns the Visibility of BOTH elements and falls back to
+  // an instant swap when ShouldAnimate() is false, so nothing here writes
+  // Visibility itself.
+  FrameworkElement incoming = StubPage();
+  hstring header = Loc("nav_settings");
 
-  if (chats) {
-    HomeNav().Header(box_value(Loc("nav_chats")));
-    return;
+  if (tag == L"chats") {
+    incoming = ChatsPage();
+    header = Loc("nav_chats");
+  } else if (tag == L"contacts") {
+    incoming = StubPage();
+    header = Loc("nav_contacts");
+  } else if (tag == L"network" && options_.enabled) {
+    incoming = NetworkHost();
+    header = hstring{kDemoNavNetwork};
+  } else if (tag == L"developer" && options_.enabled) {
+    incoming = DeveloperHost();
+    header = hstring{kDemoNavDeveloper};
+  } else if (tag == L"settings" && options_.enabled) {
+    incoming = SettingsHost();
+    header = Loc("nav_settings");
   }
-  const auto label = (tag == L"contacts") ? Loc("nav_contacts")
-                                          : Loc("nav_settings");
-  HomeNav().Header(box_value(label));
-  StubPaneTitle().Text(label);
+
+  HomeNav().Header(box_value(header));
+  if (incoming == StubPage()) StubPaneTitle().Text(header);
+
+  currentTag_ = std::wstring{tag};
+  urnw::motion::CrossfadePageSwap(currentPage_, incoming);
+  currentPage_ = incoming;
 }
 
 void MainWindow::OnNavSelectionChanged(NavigationView const&,

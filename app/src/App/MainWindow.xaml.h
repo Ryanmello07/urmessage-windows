@@ -18,6 +18,9 @@
 #include <string>
 #include <string_view>
 
+#include "Demo/AdvancedMode.h"
+#include "Demo/DemoShellState.h"
+#include "Demo/DemoSwitches.h"
 #include "UrComponents.h"
 #include "WindowReveal.h"
 
@@ -37,6 +40,11 @@ struct MainWindow : MainWindowT<MainWindow> {
   // composed frame) and started here.
   void StartReveal();
 
+  // Read back by App::OnLaunched to choose the launch size, so the command line
+  // is parsed EXACTLY ONCE. Not in MainWindow.idl: App.xaml.cpp already reaches
+  // the implementation through winrt::get_self for StartReveal().
+  urmsg::demo::DemoOptions const& DemoOptions() const { return options_; }
+
  private:
   // Every label in the window, from the localization store. One place, so a
   // missing key is one line to find rather than a hunt through the markup.
@@ -47,11 +55,6 @@ struct MainWindow : MainWindowT<MainWindow> {
   // in a comment somewhere else.
   void BuildConversationList();
 
-  // The DEMO watermark chip: a small inert chip at the right of the wordmark,
-  // present under --demo and suppressed by --demo-watermark=off. It exists so
-  // an unpatched screenshot cannot be mistaken for a shipping product (D2).
-  void BuildDemoWatermark();
-
   // The ONE desktop breakpoint (urnw::kit::kWideBreakpointDip). Below it the
   // list pane fills the window and the thread pane does not exist; at or above,
   // the two panes sit side by side with a 1px rule between them. One function
@@ -60,6 +63,24 @@ struct MainWindow : MainWindowT<MainWindow> {
   void ApplyBreakpoint();
 
   void ShowDestination(std::wstring_view tag);
+
+  // The demo composer. Everything below is inert without --demo: the hosts stay
+  // collapsed and the window draws what it drew before.
+  void EnterDemoMode();
+  void SelectNavTag(std::wstring_view tag);
+  // The deep link runs LATE, not from the constructor: EnterDemoMode runs before
+  // any layout pass (Content().ActualWidth() is 0, so ApplyBreakpoint has never
+  // written the layout) and before App::OnLaunched resizes to 1560x900, and
+  // NavigationView re-asserts the markup's IsSelected when it loads. Draining it
+  // from the first SizeChanged puts it after all three.
+  void DrainDeepLink();
+
+  urmsg::demo::DemoOptions options_{};
+  bool advanced_ = false;
+  std::wstring currentTag_ = L"chats";
+  winrt::Microsoft::UI::Xaml::FrameworkElement currentPage_{nullptr};
+  urmsg::demo::DeepLink pendingLink_{};
+  bool pendingLinkArmed_ = false;
 
   urnw::WindowReveal reveal_;
   urnw::kit::PaneSearchRow search_{};
