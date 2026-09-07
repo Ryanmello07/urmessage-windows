@@ -94,11 +94,14 @@ MainWindow::MainWindow() {
   // fades the incoming page in and never collapses the old one, so both would be
   // drawn on top of each other.
   currentPage_ = ChatsPage();
-  // EnterDemoMode collapses ListScaffold and reveals ListHost BEFORE
-  // BuildConversationList decides which one to fill (fix round 1 for L2): the
-  // demo branch it added writes into ListHost, per MainWindow.xaml:201-204's
-  // own comment ("The demo's ConversationListView lands here and ListScaffold
-  // collapses"), so ordering here is load-bearing, not stylistic.
+  // EnterDemoMode arms Advanced Mode, the DEMO chip and the deep link.
+  // Previously this ordering was ALSO load-bearing for which of
+  // ListScaffold/ListHost BuildConversationList had to fill; that split is
+  // gone (EnterDemoMode no longer collapses ListScaffold -- see its own
+  // comment -- and the demo's rows land in the same ConversationList the
+  // shipped placeholder rows use), so nothing below depends on this ordering
+  // for the list any more. Left as-is regardless: EnterDemoMode's other
+  // effects are naturally wanted before the list that can read them exists.
   if (options_.enabled) {
     EnterDemoMode();
   }
@@ -109,9 +112,12 @@ MainWindow::MainWindow() {
   // than the settled one corrected a frame later. No tray icon yet, so there is
   // no anchor to spring from — nullopt gives the plain centred scale, which is
   // the third of WindowReveal's three documented fallbacks and never fails.
-  const FrameworkElement listRing = options_.enabled
-                                        ? ListHost().as<FrameworkElement>()
-                                        : ConversationList().as<FrameworkElement>();
+  //
+  // ConversationList unconditionally, not a demo/non-demo ternary: the demo's
+  // rows land there too now (BuildConversationList), so it is the one element
+  // that is ever actually visible as the list ring in either mode. ListHost,
+  // which this used to switch to under --demo, is never made visible any more.
+  const FrameworkElement listRing = ConversationList().as<FrameworkElement>();
   reveal_.Bind(WindowPlate(), RevealRoot(),
                {
                    {ListPaneTitle(), 0},
@@ -193,13 +199,13 @@ void MainWindow::BuildConversationList() {
     list_ = urmsg::views::MakeConversationList(world, [weak = get_weak()](int index) {
       if (auto self = weak.get()) self->OnConversationSelected(index);
     });
-    // ListHost, NOT `list` (ConversationList): ConversationList lives inside
-    // ListScaffold, which EnterDemoMode collapses. Appending there would build
-    // a real list that paints zero pixels -- confirmed by screenshot before
-    // this line existed. ListHost is the empty Grid MainWindow.xaml:205-206
-    // reserves for exactly this.
-    ListHost().Children().Clear();
-    ListHost().Children().Append(list_.root);
+    // `list` (ConversationList), now that EnterDemoMode no longer collapses
+    // ListScaffold: the demo's rows land in the SAME scaffold -- header,
+    // search row and all -- that the shipped placeholder rows below use. This
+    // was routed through the separate ListHost for a while (see git history);
+    // that detour existed only because ListScaffold was collapsed, and
+    // restoring the scaffold restores L2's originally intended target too.
+    list.Append(list_.root);
     ListPaneCount().Text(winrt::to_hstring(static_cast<int>(world.conversations.size())));
     urnw::LogInfo("window: demo conversation list built with {} rows",
                   world.conversations.size());
@@ -278,10 +284,16 @@ void MainWindow::EnterDemoMode() {
   urmsg::InitAdvancedMode(options_.advanced || link.forceAdvanced);
   advanced_ = urmsg::AdvancedModeEnabled();
 
-  // The shipped scaffold steps aside; the hosts take over.
-  ListScaffold().Visibility(Visibility::Collapsed);
+  // The shipped THREAD scaffold steps aside for the demo's ThreadHost; the
+  // LIST scaffold does not, and ListHost is never made visible. Unlike the
+  // thread (a genuinely different view the demo swaps in), the list pane's
+  // shape does not change under --demo -- BuildConversationList fills the
+  // same ConversationList/SearchHost/ListPaneCount either way -- so there is
+  // no second list host to switch to, and collapsing ListScaffold here used
+  // to take the search row and the pane header count down with it for no
+  // reason tied to the demo/non-demo split itself (fixed: see
+  // BuildConversationList's comment on the demo branch).
   ThreadPane().Visibility(Visibility::Collapsed);
-  ListHost().Visibility(Visibility::Visible);
 
   // Content only, here. The Visibility flip is deferred to DrainDeepLink (fix
   // round 1) and paired there with a PaneDisplayMode nudge - see that function

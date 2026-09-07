@@ -198,10 +198,18 @@
                         </ScrollViewer>
                     </Grid>
 
-                    <!-- The demo's ConversationListView lands here and
-                         ListScaffold collapses. Two siblings in one cell rather
-                         than a rebuilt pane: a launch without demo mode must draw
-                         exactly what it draws today. -->
+                    <!-- UNUSED. The demo's ConversationListView briefly landed
+                         here while EnterDemoMode collapsed ListScaffold above;
+                         that collapse also took the search row and the pane
+                         header count down with it for no reason tied to the
+                         demo/non-demo split, so it was removed and the demo's
+                         rows now fill ConversationList/SearchHost/ListPaneCount
+                         directly, same as the shipped placeholder rows. Left
+                         declared (Collapsed, never made Visible, nothing ever
+                         appended to it again) rather than deleted, since
+                         MainWindow.xaml.cpp no longer names it at all and
+                         removing an x:Name touches the generated header for
+                         zero behavioural gain. -->
                     <Grid x:Name="ListHost" Grid.Column="0" Visibility="Collapsed"
                           Style="{StaticResource UrPaneStyle}" />
 
