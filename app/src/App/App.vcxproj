@@ -181,6 +181,7 @@
          (main.cpp:168 vs :183). Compiling it standalone is what makes "pure C++"
          a property of the build rather than a comment someone can delete. -->
     <ClCompile Include="Demo\DemoWorld.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="Demo\DemoSwitches.cpp" />
     <ClCompile Include="MainWindow.xaml.cpp"><DependentUpon>MainWindow.xaml</DependentUpon></ClCompile>
     <ClCompile Include="Localization.cpp" />
     <ClCompile Include="Startup.cpp" />
@@ -193,6 +194,7 @@
     <ClInclude Include="pch.h" />
     <ClInclude Include="App.xaml.h"><DependentUpon>App.xaml</DependentUpon></ClInclude>
     <ClInclude Include="Demo\DemoWorld.h" />
+    <ClInclude Include="Demo\DemoSwitches.h" />
     <ClInclude Include="MainWindow.xaml.h"><DependentUpon>MainWindow.xaml</DependentUpon></ClInclude>
     <ClInclude Include="Localization.h" />
     <ClInclude Include="Startup.h" />

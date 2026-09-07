@@ -18,6 +18,7 @@
 #include "Paths.h"
 #include "Strings.h"
 #include "Demo/DemoWorld.h"
+#include "Demo/DemoSwitches.h"
 
 // The Windows App SDK version this binary was BUILT against, injected from the
 // single MSBuild property that also drives the PackageReference (App.vcxproj),
@@ -386,6 +387,16 @@ std::vector<std::wstring> CollectDiagnostics() {
   lines.push_back(std::format(L"  fonts            : {}",
                               Presence(dir / L"Assets" / L"Fonts" /
                                        L"pp_neue_bit_bold.ttf")));
+  {
+    const urmsg::demo::DemoOptions o = urmsg::demo::ParseDemoOptions();
+    constexpr const wchar_t* kScreens[] = {L"none", L"chats", L"thread", L"inspect",
+                                           L"network", L"settings", L"developer"};
+    lines.push_back(std::format(
+        L"  demo switches    : enabled={} screen={} autoplay={} advanced={} watermark={}",
+        o.enabled ? L"yes" : L"no", kScreens[static_cast<size_t>(o.screen)],
+        o.autoplay ? L"yes" : L"no", o.advanced ? L"yes" : L"no",
+        o.watermark ? L"on" : L"off"));
+  }
   for (auto& line : DemoWorldAssertions()) lines.push_back(std::move(line));
   return lines;
 }
