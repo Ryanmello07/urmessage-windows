@@ -98,6 +98,39 @@ moment any task adds a file, and then every later task's number is wrong. So:
 `Start-Process -FilePath $exe -PassThru`. Task **F1** adds `-AppArgs`. It is never `-Args` —
 that shadows PowerShell's automatic `$args`.
 
+### G2b - Glyphs are escapes, and the escape itself is fragile
+
+**Every glyph literal is written `L"\uXXXX"` with the icon's name in a trailing comment. Never
+paste the character itself.**
+
+This is not a style preference. It is the fix for a defect that shipped once and then recurred
+while being repaired. Task F2's plan text carried the three relay glyphs as *raw* Private Use Area
+characters. PUA characters render as **blank** in terminals and in most editors, so when they were
+transcribed into `DemoWorld.cpp` they were silently dropped: the source came out with three empty
+string literals sitting directly beneath a comment asserting `NEVER EMPTY`, and neither the
+implementer nor the reviewer could see the loss by looking at it.
+
+Worse, while fixing it the implementer's first two edit attempts **re-inserted the raw character
+again** instead of the six literal characters `\uXXXX`. The editing path can turn a typed escape
+back into the character it denotes. What worked was constructing the backslash byte
+programmatically (`chr(92)`), so no literal backslash appeared in the edit text, then doing a
+byte-level replacement and verifying afterwards.
+
+**So when a task requires a glyph:**
+
+1. Write escape form, e.g. `L"\uE977"  // Devices`.
+2. Verify at the **byte** level, never by reading. A raw character and a correct escape look
+   identical when one of them is invisible. This settles it:
+
+   ```
+   python -c "t=open(r'<file>',encoding='utf-8').read(); print([hex(ord(c)) for c in t if 0xE000<=ord(c)<=0xF8FF])"
+   ```
+
+   An **empty list** is the passing result. Anything else means a raw character survived.
+3. Where the glyph is load-bearing, confirm the **runtime** value, not the source text: a
+   one-character `std::wstring` carrying the expected codepoint. Source text proves what you
+   typed; only the runtime value proves what the compiler produced.
+
 ### G3 — Brand and interaction rules
 
 - **`kProGold` (#FFC400) appears nowhere.** It is reserved for the Pro entitlement across the
