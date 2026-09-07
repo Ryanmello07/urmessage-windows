@@ -48,6 +48,15 @@ ConversationListView MakeConversationList(urmsg::demo::World const& world,
 // carries, for the same reason (UrComponents.h:333-340).
 void SetConversationSelected(ConversationListView& v, int index);
 
+// Start the staggered row entrance. Call AFTER Window.Activate(), from
+// MainWindow::StartReveal -- MakeConversationList already wrote the start pose,
+// because it runs from the MainWindow constructor and WindowReveal.h:50-54 fixes
+// that split for every reveal in this app.
+//
+// A no-op when motion::ShouldAnimate() is false, in which case the rows were
+// never dimmed and there is nothing to settle.
+void AnimateConversationListEntrance(ConversationListView& v);
+
 // The rest of contract 4's ConversationListView API (SetConversationListAdvanced)
 // is declared by the task that IMPLEMENTS it. A declaration without a
 // definition is a link error waiting for whoever builds next.

@@ -14,6 +14,7 @@
 #include "Localization.h"
 #include "Log.h"
 #include "UrColors.h"
+#include "UrMotion.h"
 #include "Views/ConversationRowModel.h"
 
 using namespace winrt::Microsoft::UI::Xaml;
@@ -271,6 +272,16 @@ ConversationListView MakeConversationList(urmsg::demo::World const& world,
     view.rows.push_back(row);
   }
 
+  // The START pose, written here because MakeConversationList runs from the
+  // MainWindow CONSTRUCTOR, before Activate(). WindowReveal.h:50-54 is the rule:
+  // write the start pose synchronously ahead of the first composed frame and
+  // START after Activate -- which AnimateConversationListEntrance does from
+  // MainWindow::StartReveal. Gated, so that with animations off in Windows no row
+  // is ever written to 0 and none can be left there.
+  if (urnw::motion::ShouldAnimate())
+    for (auto const& row : view.rows)
+      if (row.root) row.root.Opacity(0.0);
+
   view.root = stack;
   urnw::LogInfo("list: built {} conversation rows at {:.0f} dip", view.rows.size(),
                 kConversationRowHeight);
@@ -303,6 +314,35 @@ void SetConversationSelected(ConversationListView& v, int index) {
           winrt::hstring{ConversationRowAutomationName(world.conversations[i], selected)});
   }
   urnw::LogInfo("list: selection -> row {} of {}", index, v.rows.size());
+}
+
+void AnimateConversationListEntrance(ConversationListView& v) {
+  namespace anim = winrt::Microsoft::UI::Xaml::Media::Animation;
+  if (!urnw::motion::ShouldAnimate()) {
+    urnw::LogInfo("list: entrance skipped ({} rows, motion off)", v.rows.size());
+    return;
+  }
+  // A LOCAL Storyboard, begun and left: the shape every hand-built animation in
+  // this app already uses (UrMotion.cpp:90-115), because a running Storyboard is
+  // held by the timing manager.
+  anim::Storyboard board;
+  for (std::size_t i = 0; i < v.rows.size(); ++i) {
+    auto const& row = v.rows[i];
+    if (!row.root) continue;
+    // No new duration and no new curve: kBaseMs on the standard spline
+    // (design 7). The stagger is ConversationRowDelayMs, whose cap L1's
+    // demo.list.stagger asserts exhaustively at index 0/5/6/50.
+    auto fade = urnw::motion::MakeSplineDouble(0.0, 1.0, urnw::motion::kBaseMs,
+                                               ConversationRowDelayMs(i),
+                                               urnw::motion::kStandardP1,
+                                               urnw::motion::kStandardP2);
+    anim::Storyboard::SetTarget(fade, row.root);
+    anim::Storyboard::SetTargetProperty(fade, L"Opacity");
+    board.Children().Append(fade);
+  }
+  board.Begin();
+  urnw::LogInfo("list: entrance armed ({} rows, last begins at {} ms)", v.rows.size(),
+                ConversationRowDelayMs(v.rows.empty() ? 0 : v.rows.size() - 1));
 }
 
 }  // namespace urmsg::views

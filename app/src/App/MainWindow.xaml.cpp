@@ -138,7 +138,14 @@ MainWindow::MainWindow() {
   urnw::LogInfo("window: main window constructed");
 }
 
-void MainWindow::StartReveal() { reveal_.Start(); }
+void MainWindow::StartReveal() {
+  reveal_.Start();
+  // After Activate(), beside the window reveal rather than inside it: the reveal
+  // ramps ConversationList itself (the parent), this ramps its rows. Two
+  // opacities on two elements multiply; they do not fight. A no-op on a
+  // non-demo launch, where list_.rows is empty.
+  urmsg::views::AnimateConversationListEntrance(list_);
+}
 
 void MainWindow::ApplyStrings() {
   // The wordmark. app_name is also what Startup's ResourceProbe asks for, so if
