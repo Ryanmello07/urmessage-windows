@@ -95,6 +95,24 @@ inline constexpr double kWideBreakpointDip = 1000.0;
 // a table or a form; a third column there would be width for its own sake.
 inline constexpr double kUltraWideDip = 1800.0;
 
+// ---- the third-pane breakpoint (URmessage only) -----------------------------
+//
+// At or above this width the inspector rail sits BESIDE the list and the
+// thread; below it the rail collapses and message inspect is unavailable
+// (design doc 6.5a - a deliberate demo limitation, not a defect: Spec C's
+// answer below 1500 is a ContentDialog sheet, which this work does not build).
+//
+// The name carries the product because this constant is URmessage's, unlike
+// the two above it, which came verbatim from the VPN client along with the
+// rest of this file. A future diff against that repo shows one added block
+// that is obviously ours.
+//
+// 1560x900 is what --demo opens at (WindowShell.h) precisely so this
+// breakpoint is on the right side of it from the first frame - the rail has
+// to be live at launch, both for the demo and because it is the only way an
+// agent that may not synthesise input can see that state at all.
+inline constexpr double kMessageThirdPaneDip = 1500.0;
+
 // Set a line's text AND its visibility in one call: an empty string collapses
 // the element instead of leaving a row of nothing behind.
 //

@@ -5,6 +5,7 @@
 
 #include <string>
 
+#include "Demo/DemoSwitches.h"
 #include "Log.h"
 #include "MainWindow.xaml.h"
 #include "Startup.h"
@@ -73,7 +74,14 @@ void App::OnLaunched(LaunchActivatedEventArgs const&) {
     if (auto native = window_.try_as<::IWindowNative>()) {
       HWND hwnd = nullptr;
       native->get_WindowHandle(&hwnd);
-      if (hwnd) urnw::shell::ApplyNativeShell(window_, hwnd);
+      if (hwnd) {
+        // --demo, and only --demo, opens wide enough for the third pane.
+        // A normal launch is unchanged: 480x760, centred, WindowShell.h:21.
+        const auto demo = urmsg::demo::ParseDemoOptions();
+        const int w = demo.enabled ? urnw::shell::kDemoWidthDips : 0;
+        const int h = demo.enabled ? urnw::shell::kDemoHeightDips : 0;
+        urnw::shell::ApplyNativeShell(window_, hwnd, w, h);
+      }
     }
 
     window_.Activate();

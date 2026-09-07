@@ -52,7 +52,7 @@
              IsHitTestVisible=False on the content, or the icon and the text
              swallow the drag region. -->
         <Grid x:Name="AppTitleBar" Grid.Row="0" Height="48" Background="Transparent">
-            <StackPanel Orientation="Horizontal" Margin="16,0" Spacing="8"
+            <StackPanel x:Name="TitleBarContent" Orientation="Horizontal" Margin="16,0" Spacing="8"
                         VerticalAlignment="Center" IsHitTestVisible="False">
                 <Image x:Name="BrandIcon" Width="20" Height="20"
                        VerticalAlignment="Center"

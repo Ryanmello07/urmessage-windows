@@ -12,6 +12,7 @@
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
 #include <winrt/Windows.Foundation.h>
 
+#include "Demo/DemoSwitches.h"
 #include "Localization.h"
 #include "Log.h"
 #include "UrColors.h"
@@ -29,6 +30,17 @@ namespace {
 // named adapter rather than a hstring{...} at forty call sites. Named Loc, not
 // L: L is the wide-string-literal prefix and this file uses both.
 winrt::hstring Loc(std::string_view key) { return winrt::hstring{urnw::Localized(key)}; }
+
+// A style out of the app dictionary by key, or null. Same three lines as
+// UrComponents.cpp's StyleByKey, which is file-local there; a missing key must
+// not throw a title bar away.
+Style StyleByKey(wchar_t const* key) {
+  auto app = Application::Current();
+  if (!app) return nullptr;
+  auto boxed = winrt::box_value(winrt::hstring{key});
+  if (!app.Resources().HasKey(boxed)) return nullptr;
+  return app.Resources().Lookup(boxed).try_as<Style>();
+}
 
 // The conversation-list placeholder.
 //
@@ -74,6 +86,7 @@ MainWindow::MainWindow() {
   SetTitleBar(AppTitleBar());
 
   ApplyStrings();
+  BuildDemoWatermark();
   BuildConversationList();
 
   // The window reveal: bind now that the content tree exists, then arm BEFORE
@@ -159,6 +172,35 @@ void MainWindow::BuildConversationList() {
   ListPaneCount().Text(winrt::to_hstring(static_cast<int>(kSampleConversations.size())));
   urnw::LogInfo("window: conversation list built with {} placeholder rows",
                 kSampleConversations.size());
+}
+
+void MainWindow::BuildDemoWatermark() {
+  const auto demo = urmsg::demo::ParseDemoOptions();
+  if (!demo.enabled || !demo.watermark) return;
+
+  // ZERO new tokens: the card surface, the border hairline, and
+  // UrGroupHeaderTextStyle - the app's existing 11px letterspaced caption
+  // voice, which is what a chip is. The parent StackPanel is
+  // IsHitTestVisible=False, so the chip cannot swallow the drag region and
+  // is visibly inert, which is what a watermark should be.
+  Border chip;
+  chip.Background(urnw::colors::CardBrush());
+  chip.BorderBrush(urnw::colors::BorderBrush());
+  chip.BorderThickness(ThicknessHelper::FromUniformLength(1));
+  chip.CornerRadius(CornerRadiusHelper::FromUniformRadius(4));
+  chip.Padding(ThicknessHelper::FromLengths(6, 1, 6, 2));
+  chip.VerticalAlignment(VerticalAlignment::Center);
+
+  TextBlock label;
+  // English literal, deliberately. Strings/en/Resources.resw is GENERATED
+  // from the urnetwork/localizations repo and no task may add a key to it.
+  label.Text(L"DEMO");
+  if (auto style = StyleByKey(L"UrGroupHeaderTextStyle")) label.Style(style);
+  chip.Child(label);
+
+  TitleBarContent().Children().Append(chip);
+  urnw::LogInfo("window: DEMO watermark chip added ({} title-bar children)",
+                TitleBarContent().Children().Size());
 }
 
 void MainWindow::ApplyBreakpoint() {

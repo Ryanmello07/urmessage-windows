@@ -47,6 +47,11 @@ struct MainWindow : MainWindowT<MainWindow> {
   // in a comment somewhere else.
   void BuildConversationList();
 
+  // The DEMO watermark chip: a small inert chip at the right of the wordmark,
+  // present under --demo and suppressed by --demo-watermark=off. It exists so
+  // an unpatched screenshot cannot be mistaken for a shipping product (D2).
+  void BuildDemoWatermark();
+
   // The ONE desktop breakpoint (urnw::kit::kWideBreakpointDip). Below it the
   // list pane fills the window and the thread pane does not exist; at or above,
   // the two panes sit side by side with a 1px rule between them. One function

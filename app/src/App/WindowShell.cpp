@@ -219,7 +219,8 @@ void ApplyWindowMotionAttributes(HWND hwnd) {
 
 }  // namespace
 
-bool ApplyNativeShell(winrtx::Window const& window, HWND hwnd) {
+bool ApplyNativeShell(winrtx::Window const& window, HWND hwnd,
+                      int forcedWidthDips, int forcedHeightDips) {
   if (!window || !hwnd) return false;
 
   // NO MICA. Removed 2026-08-07 after the owner reported the window rendering
@@ -265,8 +266,11 @@ bool ApplyNativeShell(winrtx::Window const& window, HWND hwnd) {
   ApplyWindowMotionAttributes(hwnd);
 
   const double scale = ScaleFor(hwnd);
-  const int defaultW = static_cast<int>(kDefaultWidthDips * scale);
-  const int defaultH = static_cast<int>(kDefaultHeightDips * scale);
+  const bool forced = (0 < forcedWidthDips && 0 < forcedHeightDips);
+  const int defaultW =
+      static_cast<int>((forced ? forcedWidthDips : kDefaultWidthDips) * scale);
+  const int defaultH =
+      static_cast<int>((forced ? forcedHeightDips : kDefaultHeightDips) * scale);
 
   if (auto presenter = appWindow.Presenter().try_as<windowing::OverlappedPresenter>()) {
     // resizable, but not down to nothing
@@ -276,7 +280,11 @@ bool ApplyNativeShell(winrtx::Window const& window, HWND hwnd) {
 
   Placement p;
   bool restored = false;
-  auto saved = LoadPlacement();
+  // Nothing calls SaveWindowPlacement yet (no tray, no quit path), so this
+  // never fires today - which is exactly why it is written now rather than
+  // rediscovered the day one of them lands.
+  std::optional<Placement> saved;
+  if (!forced) saved = LoadPlacement();
   if (saved) {
     // Checked BEFORE the window is moved anywhere near it: a rect that
     // overlaps no current monitor at all is not "the wrong monitor", it is
@@ -335,9 +343,8 @@ bool ApplyNativeShell(winrtx::Window const& window, HWND hwnd) {
       }
     }
     p = ClampToWorkArea(p);
-    LogInfo("shell: no saved placement - compact default {}x{} centred at ({},{}) "
-            "(dpi scale {:.2f})",
-            p.width, p.height, p.x, p.y, scale);
+    LogInfo("shell: no saved placement - {} {}x{} centred at ({},{}) (dpi scale {:.2f})",
+            forced ? "forced demo size" : "compact default", p.width, p.height, p.x, p.y, scale);
   }
   appWindow.MoveAndResize({p.x, p.y, p.width, p.height});
   return restored;

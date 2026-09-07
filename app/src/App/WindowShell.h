@@ -24,6 +24,12 @@ inline constexpr int kDefaultHeightDips = 760;
 inline constexpr int kMinWidthDips = 400;
 inline constexpr int kMinHeightDips = 480;
 
+// What --demo opens at, and ONLY --demo. 60 DIP of headroom over
+// kit::kMessageThirdPaneDip, so the rail is present before anyone touches an
+// edge; 900 tall so a thread, a composer and the status strip all fit.
+inline constexpr int kDemoWidthDips = 1560;
+inline constexpr int kDemoHeightDips = 900;
+
 // Apply the shell to a just-created window. Call once, after the window exists
 // and before it is first activated.
 //
@@ -48,7 +54,15 @@ inline constexpr int kMinHeightDips = 480;
 // honour: the tray-anchor flyout move would otherwise overwrite the position
 // the user chose, one statement after this function applied it. The anchor is
 // a default, not an override — see AppController::ShowWindowImpl.
-bool ApplyNativeShell(winrt::Microsoft::UI::Xaml::Window const& window, HWND hwnd);
+//
+// `forcedWidthDips` / `forcedHeightDips`: a size to open at INSTEAD of the
+// compact default and instead of any saved placement. 0/0 - the default, and
+// what every existing call site passes - is today's behaviour byte for byte.
+// The saved placement is skipped when a size is forced: a demo that restored
+// yesterday's dragged-narrow window would open with the rail missing, which
+// is the one state the demo exists to show.
+bool ApplyNativeShell(winrt::Microsoft::UI::Xaml::Window const& window, HWND hwnd,
+                      int forcedWidthDips = 0, int forcedHeightDips = 0);
 
 // Record the window's current size and position. Called on the two ways the
 // window goes away — hidden to the tray, and quit — rather than on every frame
