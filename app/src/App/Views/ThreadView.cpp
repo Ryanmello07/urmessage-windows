@@ -3,6 +3,9 @@
 
 #include "Views/ThreadView.h"
 
+#include <map>
+#include <memory>
+
 #include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
 #include <winrt/Microsoft.UI.Xaml.Media.h>
@@ -177,6 +180,219 @@ BubbleRow MakeBubbleRow(demo::MessageRow const& row, bool group, bool showSender
   if (carriesDeliveryGlyph) rowRoot.Children().Append(MakeDeliveryLine(row));
   out.root = rowRoot;
   return out;
+}
+
+
+namespace {
+
+// The thread pane's inset. The bubble cap is 68% of the CONTENT width, so the
+// padding comes off before BubbleMaxWidthDip sees it.
+constexpr double kThreadPadDip = 16.0;
+
+// Live state for one built thread. MakeThread returns ThreadView BY VALUE, so
+// a SizeChanged lambda capturing &v would dangle on the first copy; the parts
+// live here in a shared_ptr instead, and every setter finds them from v.root.
+struct ThreadParts {
+  ScrollViewer scroller{nullptr};
+  StackPanel stack{nullptr};
+  std::function<void(std::wstring)> onSelect;
+  std::function<void()> onDeselect;
+  std::vector<Button> bubbles;   // for the width walk; ThreadView owns the public list
+  double columnWidth = 0.0;
+};
+
+std::map<void const*, std::shared_ptr<ThreadParts>>& Registry() {
+  static std::map<void const*, std::shared_ptr<ThreadParts>> map;
+  return map;
+}
+
+std::shared_ptr<ThreadParts> Find(FrameworkElement const& root) {
+  if (!root) return nullptr;
+  auto it = Registry().find(winrt::get_abi(root));
+  return it == Registry().end() ? nullptr : it->second;
+}
+
+void ApplyColumnWidth(std::shared_ptr<ThreadParts> const& parts) {
+  if (!parts) return;
+  const double cap = BubbleMaxWidthDip(parts->columnWidth - kThreadPadDip * 2.0);
+  for (auto const& b : parts->bubbles)
+    if (b) b.MaxWidth(cap);
+}
+
+// The day separator: a centred pill, not a rule with text on it. 11px
+// letterspaced muted is UrGroupHeaderTextStyle - the same voice every group
+// header in the app already speaks, so the thread does not grow a caption
+// species of its own.
+FrameworkElement MakeDaySeparator(std::wstring const& label) {
+  Border pill;
+  pill.Background(BrushByKey(L"UrCardBrush", urnw::colors::kCard));
+  pill.BorderBrush(BrushByKey(L"UrBorderBrush", urnw::colors::kBorder));
+  pill.BorderThickness(ThicknessHelper::FromUniformLength(1));
+  pill.CornerRadius(CornerRadiusHelper::FromUniformRadius(10));
+  pill.Padding(ThicknessHelper::FromLengths(10, 2, 10, 3));
+  pill.HorizontalAlignment(HorizontalAlignment::Center);
+  pill.Margin(ThicknessHelper::FromLengths(0, 14, 0, 6));
+
+  TextBlock text;
+  text.Text(winrt::hstring{label});
+  if (auto s = StyleByKey(L"UrGroupHeaderTextStyle")) text.Style(s);
+  text.Foreground(urnw::colors::MutedBrush());
+  pill.Child(text);
+  Automation::AutomationProperties::SetName(pill, winrt::hstring{label});
+  return pill;
+}
+
+// A system row: centred, muted, and NOT a bubble - it did not come from a
+// person. A permanent record (the key-change line, Spec C 7.4) additionally
+// carries a lock glyph and an edge, so "this one cannot be dismissed" is a
+// shape and not a shade.
+FrameworkElement MakeSystemRow(demo::MessageRow const& row) {
+  StackPanel line;
+  line.Orientation(Orientation::Horizontal);
+  line.Spacing(6);
+  line.HorizontalAlignment(HorizontalAlignment::Center);
+
+  if (row.permanentRecord) {
+    FontIcon lock;
+    lock.FontFamily(Media::FontFamily(L"Segoe Fluent Icons"));
+    lock.Glyph(L"\uE72E");  // Lock
+    lock.FontSize(12);
+    lock.Foreground(urnw::colors::MutedBrush());
+    lock.VerticalAlignment(VerticalAlignment::Center);
+    MarkRaw(lock);
+    line.Children().Append(lock);
+  }
+
+  TextBlock text;
+  text.Text(winrt::hstring{row.systemText});
+  if (auto s = StyleByKey(L"UrCaptionTextStyle")) text.Style(s);
+  text.Foreground(urnw::colors::MutedBrush());
+  text.TextWrapping(TextWrapping::Wrap);
+  text.TextAlignment(TextAlignment::Center);
+  text.MaxWidth(420);
+  MarkRaw(text);
+  line.Children().Append(text);
+
+  Border box;
+  box.Child(line);
+  box.HorizontalAlignment(HorizontalAlignment::Center);
+  box.Margin(ThicknessHelper::FromLengths(0, 8, 0, 8));
+  if (row.permanentRecord) {
+    box.BorderBrush(BrushByKey(L"UrBorderBrush", urnw::colors::kBorder));
+    box.BorderThickness(ThicknessHelper::FromUniformLength(1));
+    box.CornerRadius(CornerRadiusHelper::FromUniformRadius(8));
+    box.Padding(ThicknessHelper::FromLengths(10, 4, 10, 4));
+  }
+  Automation::AutomationProperties::SetName(box, winrt::hstring{row.systemText});
+  return box;
+}
+
+}  // namespace
+
+ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
+                      std::function<void()> onDeselect) {
+  ThreadView v;
+  auto parts = std::make_shared<ThreadParts>();
+  parts->onSelect = std::move(onSelectMessage);
+  parts->onDeselect = std::move(onDeselect);
+
+  Grid root;
+  root.Background(BrushByKey(L"UrBackgroundBrush", urnw::colors::kBackground));
+
+  ScrollViewer scroller;
+  scroller.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
+  scroller.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
+  scroller.Padding(ThicknessHelper::FromLengths(kThreadPadDip, 8, kThreadPadDip, 12));
+
+  StackPanel stack;
+  stack.Spacing(6);
+  scroller.Content(stack);
+  root.Children().Append(scroller);
+
+  parts->scroller = scroller;
+  parts->stack = stack;
+  v.root = root;
+  v.scroller = scroller;
+  v.stack = stack;
+  Registry()[winrt::get_abi(v.root)] = parts;
+
+  // The bubble cap tracks the column. One walk over <= ~45 buttons on a
+  // resize is cheaper than a per-bubble binding and is the only way the 68%
+  // rule can be true at more than one window width.
+  scroller.SizeChanged([parts](auto const&, SizeChangedEventArgs const& e) {
+    parts->columnWidth = e.NewSize().Width;
+    ApplyColumnWidth(parts);
+  });
+
+  // A thread opens at its NEWEST row, and SetThreadConversation alone cannot
+  // put it there: BuildThread runs from the window constructor, before any
+  // layout pass and while ThreadHost is still collapsed, so the ChangeView down
+  // there sees ScrollableHeight 0 and lands on nothing. VERIFIED, not assumed -
+  // the first capture of this surface opened on "Yesterday" at the top with the
+  // failed row an entire viewport below the fold. The stack's own SizeChanged
+  // is the first moment a real extent exists, and it fires again whenever the
+  // column resizes, which is also when a thread should stay at its foot rather
+  // than drift up the backlog. Nothing here loops: ChangeView moves the OFFSET,
+  // which is not a size.
+  //
+  // The task that lets the reader scroll away (or appends a row) owns the guard
+  // that stops this re-pinning a thread the reader has deliberately left.
+  stack.SizeChanged([parts](auto const&, auto const&) {
+    parts->scroller.ChangeView(nullptr, parts->scroller.ScrollableHeight(), nullptr, true);
+  });
+
+  // Design 9.1: a click in empty thread space deselects. A Button handles its
+  // own pointer events, so a bubble click does not reach this.
+  root.Tapped([parts](auto const&, auto const&) {
+    if (parts->onDeselect) parts->onDeselect();
+  });
+  return v;
+}
+
+void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
+  auto parts = Find(v.root);
+  if (!parts) return;
+
+  parts->stack.Children().Clear();
+  parts->bubbles.clear();
+  v.bubbles.clear();
+
+  const bool group = (c.kind == demo::ConversationKind::Group);
+  for (std::size_t i = 0; i < c.rows.size(); ++i) {
+    auto const& row = c.rows[i];
+    demo::MessageRow const* prev = (i > 0) ? &c.rows[i - 1] : nullptr;
+    demo::MessageRow const* next = (i + 1 < c.rows.size()) ? &c.rows[i + 1] : nullptr;
+
+    switch (row.kind) {
+      case demo::RowKind::DaySeparator: {
+        const std::wstring label = DaySeparatorLabel(row);
+        // An unlabelled separator draws NOTHING rather than an empty pill.
+        if (!label.empty()) parts->stack.Children().Append(MakeDaySeparator(label));
+        break;
+      }
+      case demo::RowKind::System:
+        parts->stack.Children().Append(MakeSystemRow(row));
+        break;
+      case demo::RowKind::Message: {
+        auto built = MakeBubbleRow(row, group, ShowsSenderHeader(prev, row, group),
+                                   CarriesDeliveryGlyph(row, next));
+        built.bubble.root.Click([parts, id = row.id](auto const&, auto const&) {
+          if (parts->onSelect) parts->onSelect(id);
+        });
+        parts->bubbles.push_back(built.bubble.root);
+        v.bubbles.push_back(built.bubble);
+        parts->stack.Children().Append(built.root);
+        break;
+      }
+    }
+  }
+
+  ApplyColumnWidth(parts);
+  // A thread opens at its newest row. ScrollableHeight is 0 until the stack
+  // has been measured, so lay out first; disableAnimation is true because
+  // this is a jump to a position, not a motion the user asked for.
+  parts->scroller.UpdateLayout();
+  parts->scroller.ChangeView(nullptr, parts->scroller.ScrollableHeight(), nullptr, true);
 }
 
 }  // namespace urmsg::views

@@ -23,6 +23,7 @@
 #include "Demo/DemoSwitches.h"
 #include "UrComponents.h"
 #include "Views/ConversationListView.h"
+#include "Views/ThreadView.h"
 #include "WindowReveal.h"
 
 namespace winrt::URmessage::implementation {
@@ -55,6 +56,14 @@ struct MainWindow : MainWindowT<MainWindow> {
   // behind them yet, and the file says so where the data is built rather than
   // in a comment somewhere else.
   void BuildConversationList();
+
+  // The demo thread. Built only under --demo: a normal launch is 480x760 and
+  // must behave exactly as it does today (design D7), so the pane keeps its
+  // "nothing selected" line. The conversation this opens on, and the two
+  // callbacks, become the click graph's when that task wires the rail.
+  void BuildThread();
+
+  urmsg::views::ThreadView thread_{};
 
   // A row was clicked. Takes the row INDEX: ConversationListView::rows[i] is
   // world.conversations[i], and nothing reorders either.

@@ -21,6 +21,7 @@
 #include "Strings.h"
 #include "UrColors.h"
 #include "UrMotion.h"
+#include "Views/ThreadView.h"
 
 using namespace winrt;
 using namespace winrt::Microsoft::UI::Xaml;
@@ -106,6 +107,7 @@ MainWindow::MainWindow() {
     EnterDemoMode();
   }
   BuildConversationList();
+  BuildThread();
 
   // The window reveal: bind now that the content tree exists, then arm BEFORE
   // Activate() so the first composed frame is already the start pose rather
@@ -248,6 +250,40 @@ void MainWindow::BuildConversationList() {
   ListPaneCount().Text(winrt::to_hstring(static_cast<int>(kSampleConversations.size())));
   urnw::LogInfo("window: conversation list built with {} placeholder rows",
                 kSampleConversations.size());
+}
+
+void MainWindow::BuildThread() {
+  // Gated on --demo. Without it this window is the 480x760 shell it is today,
+  // where ApplyBreakpoint collapses the thread column below 1000 dip anyway,
+  // and mounting fabricated messages into a normal launch would change the one
+  // thing design D7 says not to change.
+  if (!urmsg::demo::ParseDemoOptions().enabled) return;
+
+  auto const& world = urmsg::demo::GetWorld();
+  if (world.conversations.empty()) return;
+  auto const& open = world.conversations.front();
+
+  // Both callbacks are seams. The rail does not exist yet, so they log and
+  // return; the click-graph task replaces them with SelectMessage /
+  // ClearMessageSelection without touching this file's structure.
+  thread_ = urmsg::views::MakeThread(
+      [](std::wstring id) { urnw::LogInfo("thread: bubble selected {}", winrt::to_string(id)); },
+      []() { urnw::LogInfo("thread: deselected"); });
+
+  // ThreadHost, NOT ThreadBody. ApplyBreakpoint gives exactly one of the two
+  // thread surfaces to a run: under --demo it collapses ThreadPane outright
+  // (EnterDemoMode does too) and shows ThreadHost, so anything appended to
+  // ThreadBody here would compile, log and render ZERO pixels. ThreadHost is a
+  // bare UrPaneStyle Grid with no header row, which is why nothing below writes
+  // a pane title: ApplyStrings already set ThreadPaneTitle once to
+  // Loc("pane_thread"), and UrPaneTitleStyle is the letterspaced CHROME voice -
+  // a mixed-case personal name set in it reads wrong. The conversation's name
+  // belongs to the wiring task that gives this host a header.
+  ThreadHost().Children().Clear();
+  ThreadHost().Children().Append(thread_.root);
+  urmsg::views::SetThreadConversation(thread_, open);
+  urnw::LogInfo("thread: mounted {} rows, {} bubbles", open.rows.size(),
+                thread_.bubbles.size());
 }
 
 void MainWindow::OnConversationSelected(int index) {
