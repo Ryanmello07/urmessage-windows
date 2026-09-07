@@ -61,22 +61,28 @@ Media::FontFamily IconFont() { return Media::FontFamily(L"Segoe Fluent Icons"); 
 namespace anim = winrt::Microsoft::UI::Xaml::Media::Animation;
 
 // design §7: fade + 10 DIP rise + 0.96 -> 1.0 scale, kBaseMs, standard curve.
-// Four timelines in ONE Storyboard so they finish on the same frame — two
-// independent storyboards can land a frame apart, which reads as a hitch
-// exactly when the bubble settles (the same reason CrossfadePageSwap shares one
-// storyboard, UrMotion.cpp).
+// The rationale for putting them in ONE Storyboard is at the Storyboard itself,
+// below; it is not repeated here.
 //
-// EntranceTimelineCount() (Views/ThreadLayout.h) is the pure statement of the
-// count below, and --diagnose asserts it, INCLUDING the zero: "motion off"
-// here means the four timelines are never created at all, not that they run
-// short. Keep the two in step — four `add(...)` calls, four from the counter.
+// EntranceTimelineCount() (Views/ThreadLayout.h) is `.size()` of the very table
+// this function iterates, so the count and the timelines CANNOT drift — there is
+// no longer a hand-written list to keep in step with a literal. --diagnose
+// asserts it INCLUDING the zero: "motion off" means the timelines are never
+// created at all, not that they run short.
 void RunBubbleEntrance(FrameworkElement const& el) {
   if (!el) return;
 
   // ShouldAnimate() is consulted ONCE and its answer goes straight into the
-  // pure table, so "is motion on" and "which timelines exist" cannot disagree.
-  // An empty table IS the reduce-motion path — there is no second branch that
-  // could be deleted while the count kept saying four.
+  // pure table, so "is motion on" and "which timelines exist" cannot disagree,
+  // and an empty table IS the reduce-motion path.
+  //
+  // What that does NOT buy, stated because an earlier version of this comment
+  // overclaimed it: the `plan.empty()` branch below is still deletable, and
+  // deleting it leaves a reduce-motion bubble at Opacity(0.0) with a residual
+  // transform — permanently invisible — while --diagnose still prints PASS.
+  // No pure gate can reach that; only looking at the reduce-motion render can,
+  // and this machine reports SPI_GETCLIENTAREAANIMATION = 1, so that path has
+  // never executed here. A2's motion override is the first task that can.
   const auto plan = EntranceTimelines(urnw::motion::ShouldAnimate());
   if (plan.empty()) {
     // Motion GONE, not reduced: the final pose, immediately, and no transform
@@ -973,7 +979,7 @@ ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
   // leg and sits near 1.0 for the rest, so the three are only visibly apart for
   // part of the cycle. MEASURED on that 10-frame sweep: 3 frames showed three
   // different opacities, 7 showed three identical ones. Two stills, however far
-  // apart they are spaced, are therefore NOT a test of whether the wave runs -
+  // apart they are spaced, are therefore NOT a test of whether the wave runs —
   // they will usually land on the plateau, which looks exactly like a
   // storyboard that never started.
   {
@@ -1182,7 +1188,7 @@ void SetThreadTyping(ThreadView& v, bool typing) {
                            : std::vector<TimelineSpec>{};
 
   // THE RESTING VALUE, and it is not one number. With motion off the dots do
-  // not move at all, so they must read as three SOLID dots beside the word -
+  // not move at all, so they must read as three SOLID dots beside the word —
   // 0.30 there would be three dots frozen mid-fade. With motion on they must
   // rest at 0.30, which is where every timeline STARTS: dots 2 and 3 sit out a
   // 140 / 280 ms BeginTime before their own timeline takes over, and leaving

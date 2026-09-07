@@ -1185,8 +1185,12 @@ std::vector<std::wstring> CollectDiagnostics() {
   //  that the builders pass ShouldAnimate() into the table rather than `true`.
   //  That call sits in a winrt translation unit CollectDiagnostics cannot enter.
   //  It is why RunBubbleEntrance consults the gate exactly ONCE and treats an
-  //  empty table AS the reduce-motion path — there is no second branch left to
-  //  delete while the count still says four.
+  //  empty table AS the reduce-motion path. That removes the duplicate LIST and
+  //  the second read of the gate; it does NOT remove every deletable branch —
+  //  RunBubbleEntrance's `plan.empty()` early return still is one, and deleting
+  //  it leaves a permanently invisible reduce-motion bubble while these lines
+  //  still print PASS. The same blindness covers whether the render CONSUMES
+  //  each spec field: drop `if (spec.forever)` and the dots blink once.
   {
     namespace dv = urmsg::views;
     const auto on = dv::EntranceTimelines(true);
