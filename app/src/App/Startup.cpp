@@ -19,6 +19,7 @@
 #include "Log.h"
 #include "Paths.h"
 #include "Strings.h"
+#include "Demo/DemoShellState.h"
 #include "Demo/AdvancedMode.h"
 #include "Demo/DemoWorld.h"
 #include "Demo/DemoSwitches.h"
@@ -333,6 +334,62 @@ std::vector<std::wstring> DemoWorldAssertions() {
   return out;
 }
 
+// ---- demo composer invariants ----------------------------------------------
+//
+// This repo has no test project, so these lines ARE the tests for the composer's
+// pure decisions. Each prints PASS or FAIL and prints the QUERY beside it, so a
+// reader can tell what was actually checked rather than trusting the word PASS.
+//
+// BOUNDARIES, not samples. LayoutFor is fed CONTENT-root dips at runtime and a
+// sampled window size ("1560x900 -> rail") would be asserting a different
+// quantity from the one the app computes. `f(t) && !f(t - epsilon)` is true of
+// the function whatever the frame inset is.
+std::wstring DemoLayoutCheck() {
+  using urmsg::demo::LayoutFor;
+  const bool wideEdge = LayoutFor(1000.0, 800.0).wide && !LayoutFor(999.9, 800.0).wide;
+  const bool railEdge = LayoutFor(1500.0, 800.0).rail && !LayoutFor(1499.9, 800.0).rail;
+  const bool stripEdge = LayoutFor(1200.0, 560.0).strip && !LayoutFor(1200.0, 559.9).strip;
+  // width and height decide different things and must not leak into each other.
+  const bool axes = LayoutFor(1600.0, 400.0).rail && !LayoutFor(1600.0, 400.0).strip &&
+                    LayoutFor(800.0, 900.0).strip && !LayoutFor(800.0, 900.0).wide;
+  const bool ok = wideEdge && railEdge && stripEdge && axes;
+  return std::format(
+      L"  demo layout      : {}  (CONTENT dips. wide@1000 {} | rail@1500 {} | "
+      L"strip@560h {} | width/height independent {})",
+      ok ? L"PASS" : L"FAIL", wideEdge, railEdge, stripEdge, axes);
+}
+
+std::wstring DemoDeepLinkCheck() {
+  using urmsg::demo::DeepLinkFor;
+  using urmsg::demo::DemoScreen;
+  int checked = 0;
+  auto tag = [&](DemoScreen s, std::wstring_view expect) {
+    ++checked;
+    return DeepLinkFor(s).navTag == expect;
+  };
+  const bool tags = tag(DemoScreen::None, L"chats") && tag(DemoScreen::Chats, L"chats") &&
+                    tag(DemoScreen::Thread, L"chats") && tag(DemoScreen::Inspect, L"chats") &&
+                    tag(DemoScreen::Network, L"network") &&
+                    tag(DemoScreen::Settings, L"settings") &&
+                    tag(DemoScreen::Developer, L"developer");
+  // inspect is thread PLUS a message; thread is not.
+  const bool ladder = !DeepLinkFor(DemoScreen::Chats).selectConversation &&
+                      DeepLinkFor(DemoScreen::Thread).selectConversation &&
+                      !DeepLinkFor(DemoScreen::Thread).selectMessage &&
+                      DeepLinkFor(DemoScreen::Inspect).selectConversation &&
+                      DeepLinkFor(DemoScreen::Inspect).selectMessage;
+  // Developer is the ONLY screen that turns Advanced Mode on by existing.
+  const bool advanced = DeepLinkFor(DemoScreen::Developer).forceAdvanced &&
+                        !DeepLinkFor(DemoScreen::Network).forceAdvanced &&
+                        !DeepLinkFor(DemoScreen::Settings).forceAdvanced &&
+                        !DeepLinkFor(DemoScreen::Inspect).forceAdvanced;
+  const bool ok = tags && ladder && advanced;
+  return std::format(
+      L"  demo deep link   : {}  ({} nav tags checked {} | thread=conv, "
+      L"inspect=conv+msg {} | only developer forces advanced {})",
+      ok ? L"PASS" : L"FAIL", checked, tags, ladder, advanced);
+}
+
 }  // namespace
 
 void StartupLogInit() {
@@ -482,6 +539,8 @@ std::vector<std::wstring> CollectDiagnostics() {
         uniqueIdentities && distinctIdentities == uniqueIdentities ? L"PASS" : L"FAIL",
         distinctIdentities, uniqueIdentities));
   }
+  lines.push_back(DemoLayoutCheck());
+  lines.push_back(DemoDeepLinkCheck());
   return lines;
 }
 

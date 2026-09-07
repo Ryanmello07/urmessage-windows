@@ -205,6 +205,7 @@
     <ClInclude Include="Identicon.h" />
     <ClInclude Include="MainWindow.xaml.h"><DependentUpon>MainWindow.xaml</DependentUpon></ClInclude>
     <ClInclude Include="Localization.h" />
+    <ClInclude Include="Demo\DemoShellState.h" />
     <ClInclude Include="Startup.h" />
     <ClInclude Include="UrColors.h" />
     <ClInclude Include="UrComponents.h" />
