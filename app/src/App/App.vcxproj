@@ -195,6 +195,7 @@
     <ClCompile Include="UrMotion.cpp" />
     <ClCompile Include="Views\ConversationListView.cpp" />
     <ClCompile Include="Views\ConversationRowModel.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="Views\ThreadLayout.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="Views\ThreadView.cpp" />
     <ClCompile Include="WindowReveal.cpp" />
     <ClCompile Include="WindowShell.cpp" />
@@ -204,6 +205,7 @@
     <ClInclude Include="App.xaml.h"><DependentUpon>App.xaml</DependentUpon></ClInclude>
     <ClInclude Include="Demo\DemoWorld.h" />
     <ClInclude Include="Demo\ThreadLayout.h" />
+    <ClInclude Include="Views\ThreadLayout.h" />
     <ClInclude Include="Views\ThreadView.h" />
     <ClInclude Include="Demo\DemoSwitches.h" />
     <ClInclude Include="Demo\AdvancedMode.h" />

@@ -257,7 +257,14 @@ void MainWindow::BuildThread() {
   // where ApplyBreakpoint collapses the thread column below 1000 dip anyway,
   // and mounting fabricated messages into a normal launch would change the one
   // thing design D7 says not to change.
-  if (!urmsg::demo::ParseDemoOptions().enabled) return;
+  //
+  // options_, NOT a second ParseDemoOptions() call. options_ is parsed once in
+  // the constructor and it is what ApplyBreakpoint reads to decide WHICH of the
+  // two thread surfaces is visible (ThreadPane vs ThreadHost). Re-parsing here
+  // would give the mount and the visibility two sources of truth for the one
+  // flag, and "mounted into the collapsed twin" is the failure this project has
+  // shipped four times. One flag, one read.
+  if (!options_.enabled) return;
 
   auto const& world = urmsg::demo::GetWorld();
   if (world.conversations.empty()) return;

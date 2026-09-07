@@ -13,6 +13,7 @@
 #include "Demo/ThreadLayout.h"
 #include "Identicon.h"
 #include "UrColors.h"
+#include "Views/ThreadLayout.h"
 
 using namespace winrt::Microsoft::UI::Xaml;
 using namespace winrt::Microsoft::UI::Xaml::Controls;
@@ -49,6 +50,12 @@ void MarkRaw(UIElement const& e) {
       e, Automation::Peers::AccessibilityView::Raw);
 }
 
+// The icon face, named EVERY time. FontIcon defaults to the older
+// "Segoe MDL2 Assets", whose metrics differ and whose coverage is not the same
+// set of codepoints, so a glyph picked from the Fluent set can land on a
+// different drawing - or on nothing - if the family is left to the default.
+Media::FontFamily IconFont() { return Media::FontFamily(L"Segoe Fluent Icons"); }
+
 // The delivery reading under the last outgoing bubble of a run. Right-aligned,
 // 12px, and for the one state that must never rest on a 12px glyph the word
 // is beside it in the danger brush — colour is a second channel here, never
@@ -63,7 +70,7 @@ FrameworkElement MakeDeliveryLine(demo::MessageRow const& row) {
   const bool failed = (row.state == demo::DeliveryState::Failed);
 
   FontIcon icon;
-  icon.FontFamily(Media::FontFamily(L"Segoe Fluent Icons"));
+  icon.FontFamily(IconFont());
   icon.FontSize(12);
   icon.Glyph(winrt::hstring{DeliveryGlyph(row.state)});
   icon.Foreground(failed ? urnw::colors::DangerBrush()
@@ -242,49 +249,100 @@ FrameworkElement MakeDaySeparator(std::wstring const& label) {
   return pill;
 }
 
-// A system row: centred, muted, and NOT a bubble - it did not come from a
-// person. A permanent record (the key-change line, Spec C 7.4) additionally
-// carries a lock glyph and an edge, so "this one cannot be dismissed" is a
-// shape and not a shade.
-FrameworkElement MakeSystemRow(demo::MessageRow const& row) {
-  StackPanel line;
-  line.Orientation(Orientation::Horizontal);
-  line.Spacing(6);
+// design §6.2: centred, muted, NON-bubble. No fill, no border, no 68% cap.
+// Nobody SAID a system line, so giving it a bubble would be the mock claiming a
+// group changed its own timer. It is 12px muted on the page fill and nothing
+// else - the whole point is that it does not look like anyone spoke.
+FrameworkElement MakeSystemLine(winrt::hstring const& text) {
+  TextBlock line;
+  line.Text(text);
+  line.FontSize(12);
+  line.Foreground(urnw::colors::MutedBrush());
+  line.TextWrapping(TextWrapping::Wrap);
+  line.TextAlignment(TextAlignment::Center);
   line.HorizontalAlignment(HorizontalAlignment::Center);
+  line.MaxWidth(420);
+  line.Margin(ThicknessHelper::FromLengths(0, 10, 0, 10));
+  return line;
+}
 
-  if (row.permanentRecord) {
-    FontIcon lock;
-    lock.FontFamily(Media::FontFamily(L"Segoe Fluent Icons"));
-    lock.Glyph(L"\uE72E");  // Lock
-    lock.FontSize(12);
-    lock.Foreground(urnw::colors::MutedBrush());
-    lock.VerticalAlignment(VerticalAlignment::Center);
-    MarkRaw(lock);
-    line.Children().Append(lock);
+// Spec C §7.4: the permanent key-change record. A 2px UrDangerBrush rule on
+// the LEADING edge, a key glyph, the record's own copy, and [ Review ].
+//
+// Non-dismissible is rendered by CONSTRUCTION: there is no close, no X and no
+// collapse on this element, and none may be added. A demo that offered one
+// would be advertising a control §7.5 forbids the product to ship.
+//
+// The rule is a SHAPE, so the record still reads as "this one is different"
+// with colour taken away.
+//
+// The copy is the WORLD's - it says what this client OBSERVED (a key changed,
+// verify before sending). Nothing here claims a message was encrypted or that
+// anything was cryptographically checked: there is no crypto in this demo.
+FrameworkElement MakeKeyChangeRecord(winrt::hstring const& text) {
+  Grid root;
+  root.HorizontalAlignment(HorizontalAlignment::Center);
+  root.MaxWidth(520);
+  root.Margin(ThicknessHelper::FromLengths(0, 12, 0, 12));
+  {
+    ColumnDefinition ruleCol;
+    ruleCol.Width(GridLengthHelper::FromPixels(2));
+    ColumnDefinition bodyCol;
+    bodyCol.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
+    root.ColumnDefinitions().Append(ruleCol);
+    root.ColumnDefinitions().Append(bodyCol);
   }
 
-  TextBlock text;
-  text.Text(winrt::hstring{row.systemText});
-  if (auto s = StyleByKey(L"UrCaptionTextStyle")) text.Style(s);
-  text.Foreground(urnw::colors::MutedBrush());
-  text.TextWrapping(TextWrapping::Wrap);
-  text.TextAlignment(TextAlignment::Center);
-  text.MaxWidth(420);
-  MarkRaw(text);
-  line.Children().Append(text);
+  Border rule;
+  rule.Width(2);
+  rule.Background(urnw::colors::DangerBrush());
+  rule.VerticalAlignment(VerticalAlignment::Stretch);
+  root.Children().Append(rule);
 
-  Border box;
-  box.Child(line);
-  box.HorizontalAlignment(HorizontalAlignment::Center);
-  box.Margin(ThicknessHelper::FromLengths(0, 8, 0, 8));
-  if (row.permanentRecord) {
-    box.BorderBrush(BrushByKey(L"UrBorderBrush", urnw::colors::kBorder));
-    box.BorderThickness(ThicknessHelper::FromUniformLength(1));
-    box.CornerRadius(CornerRadiusHelper::FromUniformRadius(8));
-    box.Padding(ThicknessHelper::FromLengths(10, 4, 10, 4));
-  }
-  Automation::AutomationProperties::SetName(box, winrt::hstring{row.systemText});
-  return box;
+  StackPanel column;
+  column.Spacing(6);
+  column.Margin(ThicknessHelper::FromLengths(12, 2, 0, 2));
+  Grid::SetColumn(column, 1);
+
+  StackPanel head;
+  head.Orientation(Orientation::Horizontal);
+  head.Spacing(8);
+
+  FontIcon key;
+  key.FontFamily(IconFont());
+  key.Glyph(L"\uE192");  // Segoe Fluent "Permissions" - the key glyph
+  key.FontSize(14);
+  key.Foreground(urnw::colors::DangerBrush());
+  key.VerticalAlignment(VerticalAlignment::Top);
+  // decoration beside a line that already carries the words
+  MarkRaw(key);
+  head.Children().Append(key);
+
+  TextBlock body;
+  body.Text(text);
+  body.FontSize(12);
+  body.TextWrapping(TextWrapping::Wrap);
+  body.Foreground(urnw::colors::TextBrush());
+  head.Children().Append(body);
+  column.Children().Append(head);
+
+  // design §9.1: the modal behind [ Review ] is not built (design §2), so the
+  // button is DISABLED rather than live-but-dead.
+  Button review;
+  review.Content(winrt::box_value(winrt::hstring{L"Review"}));
+  review.HorizontalAlignment(HorizontalAlignment::Left);
+  review.FontSize(12);
+  review.Padding(ThicknessHelper::FromLengths(10, 3, 10, 3));
+  review.MinHeight(26);
+  review.IsEnabled(false);
+  Automation::AutomationProperties::SetName(
+      review, winrt::hstring{L"Review the safety-number change (not available in the demo)"});
+  column.Children().Append(review);
+
+  root.Children().Append(column);
+  Automation::AutomationProperties::SetName(
+      root, winrt::hstring{L"Permanent record, cannot be dismissed. "} + text);
+  return root;
 }
 
 }  // namespace
@@ -335,8 +393,22 @@ ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
   // than drift up the backlog. Nothing here loops: ChangeView moves the OFFSET,
   // which is not a size.
   //
-  // The task that lets the reader scroll away (or appends a row) owns the guard
-  // that stops this re-pinning a thread the reader has deliberately left.
+  // WHAT IS MISSING, stated accurately. An earlier version of this comment
+  // implied nothing scrolls yet. That was false: the scroller is created with
+  // VerticalScrollBarVisibility::Auto just above, and a measured run of this
+  // thread reports 892.8 dip of scrollable extent, so the reader CAN wheel away
+  // from the foot today. What they cannot do is STAY away across a window
+  // resize - this handler fires on width-only changes too and yanks them back.
+  //
+  // The obvious two-line guard ("return if we are far from the bottom") is
+  // WRONG here and was deliberately not added: on the construction path the
+  // first size change that carries a real extent has offset 0 and a large
+  // scrollable height, which is indistinguishable from "the reader scrolled to
+  // the top" - so the guard would skip the very first pin and put the thread
+  // straight back into the bug this handler exists to fix. A correct guard
+  // needs an ARMED flag (pin unconditionally until the first pin lands, guard
+  // after that), and proving it needs a scrolled-away state, which needs input
+  // this task may not synthesize. The task that owns scroll behaviour owns it.
   stack.SizeChanged([parts](auto const&, auto const&) {
     parts->scroller.ChangeView(nullptr, parts->scroller.ScrollableHeight(), nullptr, true);
   });
@@ -358,22 +430,51 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
   v.bubbles.clear();
 
   const bool group = (c.kind == demo::ConversationKind::Group);
-  for (std::size_t i = 0; i < c.rows.size(); ++i) {
-    auto const& row = c.rows[i];
-    demo::MessageRow const* prev = (i > 0) ? &c.rows[i - 1] : nullptr;
-    demo::MessageRow const* next = (i + 1 < c.rows.size()) ? &c.rows[i + 1] : nullptr;
 
-    switch (row.kind) {
-      case demo::RowKind::DaySeparator: {
+  // The builder renders the PLAN and decides nothing. PlanThreadRows lives in
+  // Views/ThreadLayout.h, which is pure C++, so every branch of this switch is
+  // reachable from --diagnose - a builder that classified rows inline could
+  // only ever be checked by looking at a screenshot.
+  //
+  // The plan carries the SHAPE ONLY. The bubble's own trim still comes from the
+  // per-row rules in Demo/ThreadLayout.h, and that is deliberate, because the
+  // two headers do NOT agree about what a run is:
+  //
+  //   Demo/ThreadLayout.h  StartsRun  - a run is the same SENDER (it compares
+  //                                     senderKey), so Mira then Tobias is two
+  //                                     runs and Tobias gets his name.
+  //   Views/ThreadLayout.h PlanThreadRows - a run is the same DIRECTION, so
+  //                                     Mira then Tobias is ONE incoming run
+  //                                     and only Mira is named.
+  //
+  // Spec C §5.2 wants the sender named on the first bubble of a run, and in a
+  // group the reader needs to know WHO is speaking - so the SENDER rule is the
+  // right one and it is the one wired to the bubble here. ThreadRowPlan's
+  // showSenderHeader is produced for T5 as the contract requires; a later task
+  // that swaps this call over to p.showSenderHeader would silently drop sender
+  // names off every incoming run that follows another incoming sender. Measured
+  // on the shipped world, not guessed: see the T4 report.
+  for (auto const& p : PlanThreadRows(c)) {
+    demo::MessageRow const& row = c.rows[p.rowIndex];
+    demo::MessageRow const* prev = (p.rowIndex > 0) ? &c.rows[p.rowIndex - 1] : nullptr;
+    demo::MessageRow const* next =
+        (p.rowIndex + 1 < c.rows.size()) ? &c.rows[p.rowIndex + 1] : nullptr;
+
+    switch (p.shape) {
+      case ThreadRowShape::DaySeparator: {
         const std::wstring label = DaySeparatorLabel(row);
         // An unlabelled separator draws NOTHING rather than an empty pill.
         if (!label.empty()) parts->stack.Children().Append(MakeDaySeparator(label));
         break;
       }
-      case demo::RowKind::System:
-        parts->stack.Children().Append(MakeSystemRow(row));
+      case ThreadRowShape::SystemLine:
+        parts->stack.Children().Append(MakeSystemLine(winrt::hstring{row.systemText}));
         break;
-      case demo::RowKind::Message: {
+      case ThreadRowShape::SystemPermanentRecord:
+        parts->stack.Children().Append(MakeKeyChangeRecord(winrt::hstring{row.systemText}));
+        break;
+      case ThreadRowShape::IncomingBubble:
+      case ThreadRowShape::OutgoingBubble: {
         auto built = MakeBubbleRow(row, group, ShowsSenderHeader(prev, row, group),
                                    CarriesDeliveryGlyph(row, next));
         built.bubble.root.Click([parts, id = row.id](auto const&, auto const&) {
@@ -388,9 +489,21 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
   }
 
   ApplyColumnWidth(parts);
-  // A thread opens at its newest row. ScrollableHeight is 0 until the stack
-  // has been measured, so lay out first; disableAnimation is true because
-  // this is a jump to a position, not a motion the user asked for.
+  // THIS PAIR IS INERT ON THE ONLY PATH THAT RUNS TODAY, and it is NOT the
+  // thing that opens a thread at its newest row. BuildThread calls us from the
+  // window constructor, before ApplyBreakpoint has made ThreadHost visible and
+  // before any layout pass; UpdateLayout() on a collapsed host measures
+  // nothing, ScrollableHeight() is 0, and this ChangeView lands on offset 0.
+  // The bottom pin in MakeThread (stack.SizeChanged) is what actually puts the
+  // thread at its foot - deleting that pin because "SetThreadConversation
+  // already does this" regresses the surface straight back to opening on
+  // "Yesterday" with the newest rows a viewport below the fold, which is a bug
+  // that was already shipped once and caught in a capture.
+  //
+  // Kept because it IS the right path for a later caller that re-points an
+  // already-measured column at a different conversation: there ScrollableHeight
+  // is real and this is the jump. disableAnimation is true because it is a jump
+  // to a position, not a motion the user asked for.
   parts->scroller.UpdateLayout();
   parts->scroller.ChangeView(nullptr, parts->scroller.ScrollableHeight(), nullptr, true);
 }

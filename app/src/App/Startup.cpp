@@ -25,6 +25,7 @@
 #include "Demo/AdvancedMode.h"
 #include "Demo/DemoWorld.h"
 #include "Demo/ThreadLayout.h"
+#include "Views/ThreadLayout.h"
 #include "Demo/DemoSwitches.h"
 
 // The Windows App SDK version this binary was BUILT against, injected from the
@@ -732,8 +733,8 @@ std::vector<std::wstring> CollectDiagnostics() {
     //    outgoing name carries its delivery WORD (so state is never colour-only);
     //    the failed one carries its reason; and in a group every incoming name
     //    carries a sender EVEN ON A CONTINUATION, where the bubble draws none.
-    int named = 0, empty = 0, missingTime = 0, missingBody = 0, outNamed = 0,
-        missingWord = 0;
+    int named = 0, empty = 0, missingTime = 0, bodied = 0, missingBody = 0,
+        outNamed = 0, missingWord = 0;
     int groupIncoming = 0, missingSender = 0, failedRows = 0, withReason = 0;
     for (auto const& c : world.conversations) {
       const bool group = (c.kind == demo::ConversationKind::Group);
@@ -750,8 +751,19 @@ std::vector<std::wstring> CollectDiagnostics() {
         // pass - a gate that cannot fail on the defect it exists to catch.
         // Demonstrated by making exactly that deletion and watching this line
         // report FAIL with 60 missing bodies, then reverting.
-        if (!row.body.empty() && n.find(row.body) == std::wstring::npos)
-          ++missingBody;
+        //
+        // COUNT THE DENOMINATOR TOO. The per-row check is guarded by "the row
+        // has a body", so a fixture that ever emptied the bodies would skip
+        // EVERY row, leave missingBody at 0 and print PASS while announcing
+        // nothing - the numerator alone cannot tell "all covered" from "none
+        // looked at". bodied is therefore counted, printed as {bodied}/{named}
+        // and required to EQUAL named, so an emptied body is a FAIL with the
+        // shortfall visible on the line. Demonstrated against a mutant that
+        // empties one body, then reverted.
+        if (!row.body.empty()) {
+          ++bodied;
+          if (n.find(row.body) == std::wstring::npos) ++missingBody;
+        }
         if (row.outgoing) {
           ++outNamed;
           if (n.find(views::DeliveryWord(row.state)) == std::wstring::npos) ++missingWord;
@@ -768,16 +780,69 @@ std::vector<std::wstring> CollectDiagnostics() {
       }
     }
     const bool namesOk = named > 0 && empty == 0 && missingTime == 0 &&
-                         missingBody == 0 && outNamed > 0 &&
+                         bodied == named && missingBody == 0 && outNamed > 0 &&
                          missingWord == 0 && groupIncoming > 0 && missingSender == 0 &&
                          failedRows > 0 && withReason == failedRows;
     lines.push_back(std::format(
         L"  thread T2 names  : {} - {} bubbles named ({} empty, {} missing time, "
-        L"{} missing body); {} outgoing, {} missing a delivery word; {} group "
-        L"incoming, {} missing a sender; {}/{} failed carry a reason",
-        namesOk ? L"PASS" : L"FAIL", named, empty, missingTime, missingBody, outNamed,
-        missingWord,
+        L"{}/{} carry a body, {} missing body); {} outgoing, {} missing a delivery "
+        L"word; {} group incoming, {} missing a sender; {}/{} failed carry a reason",
+        namesOk ? L"PASS" : L"FAIL", named, empty, missingTime, bodied, named,
+        missingBody, outNamed, missingWord,
         groupIncoming, missingSender, withReason, failedRows));
+  }
+
+  // ---- T4: the thread layout planner -------------------------------------
+  // PlanThreadRows is pure C++, which is the only reason any of this can run
+  // here at all: CollectDiagnostics is called from wWinMain BEFORE
+  // winrt::init_apartment(), so a planner that touched a winrt type could not
+  // be asserted about, only looked at.
+  //
+  // Every line prints its counts, and every condition names a floor, so a stub
+  // that returned an empty plan reads FAIL with zeros rather than PASS with
+  // nothing.
+  {
+    std::size_t convs = 0, rows = 0, planned = 0, system = 0, plain = 0,
+                permanent = 0, emptyText = 0, mismatched = 0;
+    for (auto const& c : urmsg::demo::GetWorld().conversations) {
+      ++convs;
+      rows += c.rows.size();
+      for (auto const& r : c.rows)
+        if (r.kind == urmsg::demo::RowKind::System) ++system;
+      for (auto const& p : urmsg::views::PlanThreadRows(c)) {
+        ++planned;
+        auto const& r = c.rows[p.rowIndex];
+        const bool shapedPermanent =
+            (p.shape == urmsg::views::ThreadRowShape::SystemPermanentRecord);
+        if (p.shape == urmsg::views::ThreadRowShape::SystemLine) ++plain;
+        if (shapedPermanent) {
+          ++permanent;
+          if (r.systemText.empty()) ++emptyText;
+        }
+        // The CORRESPONDENCE, in both directions: the permanent shape appears
+        // on exactly the rows the world marks permanentRecord, and on no
+        // others. Counting plain and permanent alone cannot see an INVERTED
+        // ternary (1 plain + 2 permanent still sums to 3) nor a planner that
+        // hardcoded every system row to the permanent shape (3 permanent also
+        // sums to 3). The world holds 2 plain and 1 permanent system row, so
+        // both directions of that mistake have a row that exercises them.
+        if (shapedPermanent !=
+            (r.kind == urmsg::demo::RowKind::System && r.permanentRecord))
+          ++mismatched;
+      }
+    }
+    lines.push_back(std::format(
+        L"  T4 plan covers rows  : {} — planned {} of {} rows over {} conversations",
+        (planned == rows && 0 < rows) ? L"PASS" : L"FAIL", planned, rows, convs));
+    lines.push_back(std::format(
+        L"  T4 system rows       : {} — {} system rows -> {} plain + {} permanent",
+        (plain + permanent == system && 1 <= plain && 1 <= permanent) ? L"PASS" : L"FAIL",
+        system, plain, permanent));
+    lines.push_back(std::format(
+        L"  T4 permanent record  : {} — {} record(s), {} with empty systemText, "
+        L"{} shape/flag mismatch over {} planned rows",
+        (1 <= permanent && emptyText == 0 && mismatched == 0) ? L"PASS" : L"FAIL",
+        permanent, emptyText, mismatched, planned));
   }
 
   return lines;
