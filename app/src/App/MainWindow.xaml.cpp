@@ -203,6 +203,14 @@ void MainWindow::BuildConversationList() {
     ListPaneCount().Text(winrt::to_hstring(static_cast<int>(world.conversations.size())));
     urnw::LogInfo("window: demo conversation list built with {} rows",
                   world.conversations.size());
+    // TextChanged, not KeyDown: it fires for paste, for undo and for a
+    // programmatic Text() write, and the filter must be true of the box's
+    // CONTENT rather than of the last key that touched it.
+    search_.box.TextChanged([weak = get_weak()](winrt::Windows::Foundation::IInspectable const&,
+                                                TextChangedEventArgs const&) {
+      if (auto self = weak.get()) self->ApplyConversationFilter();
+    });
+
     // The agent may not synthesise input, so a selection that only ever happens
     // on a click is a state no capture can reach. Contract 2 already requires
     // --demo=inspect to pre-select conversation 0; --demo=chats does the same so
@@ -247,6 +255,18 @@ void MainWindow::OnConversationSelected(int index) {
       urnw::kit::MakePaneEmptyLine(winrt::hstring{world.conversations[index].name}));
   urnw::LogInfo("window: conversation {} selected ({})", index,
                 winrt::to_string(winrt::hstring{world.conversations[index].name}));
+}
+
+void MainWindow::ApplyConversationFilter() {
+  if (!search_.box || !list_.root) return;
+  auto const& world = urmsg::demo::GetWorld();
+  const std::wstring query{search_.box.Text()};
+  const std::size_t visible =
+      urmsg::views::ApplyConversationListFilter(list_, world, query);
+  // The ONE count of "how many rows are on screen". The RECENT group header
+  // deliberately carries no count (MakeConversationList): a second readout this
+  // function did not update would be a readout that had stopped being true.
+  ListPaneCount().Text(winrt::to_hstring(static_cast<int>(visible)));
 }
 
 void MainWindow::EnterDemoMode() {

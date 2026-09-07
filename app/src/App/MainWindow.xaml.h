@@ -60,6 +60,10 @@ struct MainWindow : MainWindowT<MainWindow> {
   // world.conversations[i], and nothing reorders either.
   void OnConversationSelected(int index);
 
+  // Reads search_.box and applies it to list_. One place, so the box's text and
+  // the pane header's count cannot disagree.
+  void ApplyConversationFilter();
+
   // The ONE window-level layout function. It consumes
   // urmsg::demo::LayoutFor(), which answers all three content-dip thresholds
   // (wide at kWideBreakpointDip, rail at kRailBreakpointDip, strip at

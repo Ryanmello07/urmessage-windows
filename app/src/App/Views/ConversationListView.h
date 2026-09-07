@@ -57,6 +57,17 @@ void SetConversationSelected(ConversationListView& v, int index);
 // never dimmed and there is nothing to settle.
 void AnimateConversationListEntrance(ConversationListView& v);
 
+// Hide every row whose conversation does not match `query`, show the rest, and
+// return how many are visible. Visibility only: a filter that rebuilt the list
+// would throw away selection and every row's entrance opacity, and `rows[i]`
+// would stop being `world.conversations[i]`.
+//
+// Returns std::size_t, and the caller uses it: the pane header's count has to
+// say how many rows are on screen, not how many exist.
+std::size_t ApplyConversationListFilter(ConversationListView& v,
+                                        urmsg::demo::World const& world,
+                                        std::wstring const& query);
+
 // The rest of contract 4's ConversationListView API (SetConversationListAdvanced)
 // is declared by the task that IMPLEMENTS it. A declaration without a
 // definition is a link error waiting for whoever builds next.

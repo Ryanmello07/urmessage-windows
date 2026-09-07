@@ -345,4 +345,23 @@ void AnimateConversationListEntrance(ConversationListView& v) {
                 ConversationRowDelayMs(v.rows.empty() ? 0 : v.rows.size() - 1));
 }
 
+std::size_t ApplyConversationListFilter(ConversationListView& v,
+                                        urmsg::demo::World const& world,
+                                        std::wstring const& query) {
+  std::size_t visible = 0;
+  for (std::size_t i = 0; i < v.rows.size(); ++i) {
+    auto const& row = v.rows[i];
+    if (!row.root) continue;
+    // A row with no conversation behind it (a world that shrank under a built
+    // list) is hidden rather than left showing stale text.
+    const bool keep = (i < world.conversations.size()) &&
+                      ConversationRowMatches(world.conversations[i], query);
+    row.root.Visibility(keep ? Visibility::Visible : Visibility::Collapsed);
+    if (keep) ++visible;
+  }
+  urnw::LogInfo("list: filter \"{}\" -> {} of {}", winrt::to_string(winrt::hstring{query}),
+                visible, v.rows.size());
+  return visible;
+}
+
 }  // namespace urmsg::views
