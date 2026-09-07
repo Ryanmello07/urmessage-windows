@@ -464,23 +464,26 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
   // one, and no branch reorders or invents a row.
   //
   // The plan carries the SHAPE ONLY. The bubble's own trim still comes from the
-  // per-row rules in Demo/ThreadLayout.h, and that is deliberate, because the
-  // two headers do NOT agree about what a run is:
+  // per-row rules in Demo/ThreadLayout.h. The two now AGREE about what a run
+  // is, and that agreement is enforced rather than assumed:
   //
-  //   Demo/ThreadLayout.h  StartsRun  - a run is the same SENDER (it compares
-  //                                     senderKey), so Mira then Tobias is two
-  //                                     runs and Tobias gets his name.
-  //   Views/ThreadLayout.h PlanThreadRows - a run is the same DIRECTION, so
-  //                                     Mira then Tobias is ONE incoming run
-  //                                     and only Mira is named.
+  //   ShowsSenderHeader   - a run is the same SENDER (it compares senderKey),
+  //                         so Mira then Tobias is two runs and Tobias gets
+  //                         his name. Spec C §5.2: in a group the reader has
+  //                         to know WHO is speaking.
+  //   showSenderHeader    - delegates to exactly that function (fix round 1).
+  //                         It used to be computed by DIRECTION, which named
+  //                         only the first speaker of an incoming stretch and
+  //                         disagreed on 5 of the shipped world's 60 message
+  //                         rows.
   //
-  // Spec C §5.2 wants the sender named on the first bubble of a run, and in a
-  // group the reader needs to know WHO is speaking - so the SENDER rule is the
-  // right one and it is the one wired to the bubble here. ThreadRowPlan's
-  // showSenderHeader is produced for T5 as the contract requires; a later task
-  // that swaps this call over to p.showSenderHeader would silently drop sender
-  // names off every incoming run that follows another incoming sender. Measured
-  // on the shipped world, not guessed: see the T4 report.
+  // So p.showSenderHeader is now SAFE for T5 to use, and `T4 sender headers`
+  // in --diagnose is the gate that keeps it that way: it compares the plan
+  // against the rule over every message row and FAILS at "rule 20 vs plan 15,
+  // 5 disagree" the moment anyone re-inlines a direction rule.
+  //
+  // endsOutgoingRun is the field that is still direction-only, and it is NOT a
+  // substitute for CarriesDeliveryGlyph - see Views/ThreadLayout.h.
   for (auto const& p : PlanThreadRows(c)) {
     demo::MessageRow const& row = c.rows[p.rowIndex];
     demo::MessageRow const* prev = (p.rowIndex > 0) ? &c.rows[p.rowIndex - 1] : nullptr;

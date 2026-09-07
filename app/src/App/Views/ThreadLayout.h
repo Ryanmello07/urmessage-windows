@@ -7,10 +7,11 @@
 // about this surface possible at all; a builder that decided inline could only
 // ever be checked by looking at it.
 //
-// NOT the same header as Demo/ThreadLayout.h. That one is namespace
-// urmsg::demo and holds T1's row RULES (ShowsSenderHeader, DeliveryGlyph,
-// AuditDaySeparators, ...); this one is namespace urmsg::views and holds the
-// row PLANNER. Both are always included WITH their directory prefix -
+// NOT the same header as Demo/ThreadLayout.h. That one holds T1's row RULES
+// (ShowsSenderHeader, DeliveryGlyph, AuditDaySeparators, ...); this one holds
+// the row PLANNER. BOTH are namespace urmsg::views - only the PATH differs.
+// Do not write demo::ShowsSenderHeader: it does not compile, and that mistake
+// has already been made once. Both are always included WITH their directory prefix -
 // "Demo/ThreadLayout.h" and "Views/ThreadLayout.h" - and $(MSBuildProjectDirectory)
 // is on AdditionalIncludeDirectories (App.vcxproj:125), so the two resolve
 // unambiguously. Do not merge them: one is what the demo world means, the
