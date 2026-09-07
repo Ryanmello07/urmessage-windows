@@ -25,8 +25,9 @@ inline constexpr int kMinWidthDips = 400;
 inline constexpr int kMinHeightDips = 480;
 
 // What --demo opens at, and ONLY --demo. 60 DIP of headroom over
-// kit::kMessageThirdPaneDip, so the rail is present before anyone touches an
-// edge; 900 tall so a thread, a composer and the status strip all fit.
+// urmsg::demo::kRailBreakpointDip (Demo/DemoShellState.h), so the rail is
+// present before anyone touches an edge; 900 tall so a thread, a composer and
+// the status strip all fit.
 inline constexpr int kDemoWidthDips = 1560;
 inline constexpr int kDemoHeightDips = 900;
 
