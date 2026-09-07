@@ -383,9 +383,9 @@ World BuildWorld() {
   // codepoints were RENDERED in Segoe Fluent Icons and looked at before they
   // were written down, not read off a list: E977 is the monitor+phone
   // "Devices" pair, E774 is the globe, E968 is the server tower.
-  w.relayPath.push_back({L"This device", L"This computer", L"", 0, true});   // Devices
-  w.relayPath.push_back({L"URnetwork", L"3 hops", L"", 41, true});           // Globe
-  w.relayPath.push_back({L"Message server", L"urmsg-01.ur.io", L"", 18, true}); // Server
+  w.relayPath.push_back({L"This device", L"This computer", L"\uE977", 0, true});   // Devices
+  w.relayPath.push_back({L"URnetwork", L"3 hops", L"\uE774", 41, true});           // Globe
+  w.relayPath.push_back({L"Message server", L"urmsg-01.ur.io", L"\uE968", 18, true}); // Server
 
   w.server = {L"urmsg-01.ur.io", L"Iceland", 59, true};
   return w;
