@@ -195,12 +195,14 @@ until the world exists.
 
 Each is a judgement an implementer should not have to make alone.
 
-1. **The delivery glyphs are not double-checks.** Design §6.2 asks for "two outline checks" and
-   "two filled checks" for Delivered and Read. Segoe Fluent has no double-checkmark in the
-   codepoint range this repo has *proven* it renders, and overlapping two single checks would
-   leave Delivered and Read distinguishable **by colour alone**, which G3 forbids. T2 substitutes
-   two circled-check shapes — outline `U+E930`, solid `U+EC61`. **This needs agreement, not
-   discovery in a screenshot.**
+1. **The delivery glyphs are circled checks. RULED 2026-09-06 — this is the design.**
+   Delivered is `U+E930` (check in an outline circle), Read is `U+EC61` (check in a solid circle).
+   A checkmark is a stroke and has no fill of its own, so design §6.2's "outline" vs "filled" only
+   means anything as an enclosing shape — which is exactly what these two are. The WhatsApp idiom
+   (grey double-check vs blue double-check) was rejected because it separates Delivered from Read
+   **by colour alone**, which G3 forbids. **Contingency:** if either codepoint renders as a tofu
+   box, do not fall back to colour — draw the checks as a vector `Path`. WinUI takes arbitrary
+   geometry and a double-check is a four-point polyline, which removes the font dependency.
 2. **One new App.xaml key: `UrBubbleButtonStyle`.** A bubble must be clickable, and all four
    existing Button styles paint a background on hover, which would destroy the incoming/outgoing
    fill distinction. Verified absent by grepping every `x:Key` in `App.xaml`.
@@ -212,7 +214,6 @@ Each is a judgement an implementer should not have to make alone.
 5. **`kInspectTargetRowId` and `MakeIdenticonPattern`** are additions beyond the fixed contract,
    both forced by the pre-apartment purity constraint. Neither renames or changes a fixed
    signature.
-6. **The app icon is still the URnetwork VPN client's globe.** `Assets/README.md` calls this a
-   brand error and says to replace it before anyone outside the team sees a screenshot — which is
-   exactly what a demo is. No URmessage mark exists. **No task builds one**, because the asset is
-   an owner decision, not an implementation detail.
+6. **The app icon stays the URnetwork globe. RULED 2026-09-06** — it is the company brand.
+   `Assets/README.md` calls it a placeholder to be replaced; that note is superseded for this
+   work. No task touches `app.ico`.

@@ -388,12 +388,9 @@ anatomy, and §W9's deterministic identicons.
   lines it is a signal to split, not to continue.
 - **Fonts are Latin-only.** Spec C flags this for real message content. Demo data is Latin, so it
   does not bite here, and it must not be presented as solved.
-- **The app icon is still the VPN client's globe.** It is a brand error in the taskbar, in
-  alt-tab, and beside the wordmark in every screenshot — `Assets/README.md` already flags it as
-  "replace before anyone outside the team sees a screenshot", and a demo is exactly that.
-  **No URmessage mark exists**, so this cannot be closed by implementation alone: it needs either
-  a supplied asset or agreement to ship a simple generated placeholder that is at least not the
-  VPN globe. Raised as an open question rather than assumed (§12).
+- **The app icon is the URnetwork globe, and that is now a decision, not a defect.**
+  Owner ruling 2026-09-06: *"VPN globe is our company brand, so keep it."* `Assets/README.md` calls it a placeholder and a brand error; that note predates this
+  ruling and is superseded for the demo. No task replaces it.
 
 ---
 
@@ -401,10 +398,9 @@ anatomy, and §W9's deterministic identicons.
 
 These are the things this design deliberately does not decide, because the answer is the owner's.
 
-1. **The app icon.** No URmessage mark exists. Options: supply one, or accept a generated
-   placeholder for the demo. Until then every screenshot carries the VPN client's globe, which
-   `Assets/README.md` already calls a brand error. This is the one open item that is visible in
-   the deliverable itself.
+1. ~~**The app icon.**~~ **CLOSED 2026-09-06.** The URnetwork globe stays: it is the company
+   brand, and the owner ruled it should be kept rather than replaced. `Assets/README.md`'s
+   "replace before anyone outside the team sees a screenshot" note is superseded for this work.
 2. **Font licensing, unchanged and unresolved.** The four brand faces are commercially licensed
    and were assessed for one product. Building and screenshotting is not distributing, so this
    does not block the demo — it blocks a release. Recorded here only so it is not rediscovered.
