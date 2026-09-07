@@ -701,6 +701,72 @@ std::vector<std::wstring> CollectDiagnostics() {
         daysOk ? L"PASS" : L"FAIL", total.separators, convsWithSeparators,
         total.unlabelled, total.adjacent, total.trailing, daySynth.adjacent,
         daySynth.trailing));
+
+    // 5. Delivery vocabulary. Six states, six NON-EMPTY, six DISTINCT glyphs —
+    //    the empty-glyph-literal defect and the "two states differ only by
+    //    colour" defect are the same check.
+    static constexpr demo::DeliveryState kStates[] = {
+        demo::DeliveryState::Pending, demo::DeliveryState::Sent,
+        demo::DeliveryState::Delivered, demo::DeliveryState::Read,
+        demo::DeliveryState::Failed, demo::DeliveryState::Expired};
+    std::vector<std::wstring> glyphs, words;
+    for (auto s : kStates) { glyphs.push_back(views::DeliveryGlyph(s));
+                             words.push_back(views::DeliveryWord(s)); }
+    int nonEmpty = 0, distinct = 0, distinctWords = 0;
+    for (std::size_t i = 0; i < glyphs.size(); ++i) {
+      if (!glyphs[i].empty()) ++nonEmpty;
+      bool dupG = false, dupW = false;
+      for (std::size_t j = 0; j < i; ++j) {
+        if (glyphs[j] == glyphs[i]) dupG = true;
+        if (words[j] == words[i]) dupW = true;
+      }
+      if (!dupG) ++distinct;
+      if (!dupW) ++distinctWords;
+    }
+    lines.push_back(std::format(
+        L"  thread T2 glyphs : {} - 6 states, {} non-empty, {} distinct glyphs, {} distinct words",
+        (nonEmpty == 6 && distinct == 6 && distinctWords == 6) ? L"PASS" : L"FAIL",
+        nonEmpty, distinct, distinctWords));
+
+    // 6. Bubble names. Every bubble is named; every name carries its time; every
+    //    outgoing name carries its delivery WORD (so state is never colour-only);
+    //    the failed one carries its reason; and in a group every incoming name
+    //    carries a sender EVEN ON A CONTINUATION, where the bubble draws none.
+    int named = 0, empty = 0, missingTime = 0, outNamed = 0, missingWord = 0;
+    int groupIncoming = 0, missingSender = 0, failedRows = 0, withReason = 0;
+    for (auto const& c : world.conversations) {
+      const bool group = (c.kind == demo::ConversationKind::Group);
+      for (auto const& row : c.rows) {
+        if (row.kind != demo::RowKind::Message) continue;
+        const std::wstring n = views::BubbleAutomationName(row, group);
+        ++named;
+        if (n.empty()) ++empty;
+        if (!row.timeLabel.empty() && n.find(row.timeLabel) == std::wstring::npos)
+          ++missingTime;
+        if (row.outgoing) {
+          ++outNamed;
+          if (n.find(views::DeliveryWord(row.state)) == std::wstring::npos) ++missingWord;
+          if (row.state == demo::DeliveryState::Failed) {
+            ++failedRows;
+            if (!row.failureReason.empty() &&
+                n.find(row.failureReason) != std::wstring::npos) ++withReason;
+          }
+        } else if (group) {
+          ++groupIncoming;
+          if (!row.inspect.senderDisplayName.empty() &&
+              n.find(row.inspect.senderDisplayName) == std::wstring::npos) ++missingSender;
+        }
+      }
+    }
+    const bool namesOk = named > 0 && empty == 0 && missingTime == 0 && outNamed > 0 &&
+                         missingWord == 0 && groupIncoming > 0 && missingSender == 0 &&
+                         failedRows > 0 && withReason == failedRows;
+    lines.push_back(std::format(
+        L"  thread T2 names  : {} - {} bubbles named ({} empty, {} missing time); "
+        L"{} outgoing, {} missing a delivery word; {} group incoming, {} missing a "
+        L"sender; {}/{} failed carry a reason",
+        namesOk ? L"PASS" : L"FAIL", named, empty, missingTime, outNamed, missingWord,
+        groupIncoming, missingSender, withReason, failedRows));
   }
 
   return lines;

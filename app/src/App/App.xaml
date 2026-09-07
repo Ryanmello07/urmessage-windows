@@ -729,6 +729,101 @@
                 <Setter Property="HorizontalAlignment" Value="Stretch" />
             </Style>
 
+            <!-- ==== the message bubble ======================================
+                 The ONE new button style this work adds, and it exists because
+                 no existing one can be used: every Button style in this file
+                 repaints the FILL on hover, and a bubble's fill is what says
+                 which direction the message went. UrCardButtonStyle hovers to
+                 #242424 (the outgoing fill, so an incoming bubble becomes an
+                 outgoing one under the pointer); UrPaneRowButtonStyle hovers to
+                 #1C1C1C (the incoming fill, and no change at all on an incoming
+                 bubble); UrButtonBaseStyle washes the foreground over the fill
+                 and is Stretch/48-tall/NeueBit-24.
+
+                 So hover here is an EDGE, on its own layer. Root.Background and
+                 Root.BorderBrush are never touched by a visual state, which is
+                 what lets the caller own the direction fill and the 1px edge,
+                 and lets the selection outline (UrAccentBrush, set on
+                 BorderBrush by the selection task) survive a hover instead of
+                 being overwritten by it.
+
+                 BorderThickness is 1 for BOTH directions - incoming's brush is
+                 Transparent - so the two have identical inner metrics and the
+                 hover edge lands in the same place on both. -->
+            <Style x:Key="UrBubbleButtonStyle" TargetType="Button">
+                <Setter Property="Background" Value="{StaticResource UrCardBrush}" />
+                <Setter Property="Foreground" Value="{StaticResource UrTextBrush}" />
+                <Setter Property="BorderBrush" Value="Transparent" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="CornerRadius" Value="12" />
+                <Setter Property="Padding" Value="12,8" />
+                <Setter Property="MinHeight" Value="0" />
+                <Setter Property="MinWidth" Value="0" />
+                <Setter Property="HorizontalAlignment" Value="Left" />
+                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                <Setter Property="VerticalContentAlignment" Value="Top" />
+                <Setter Property="FontFamily" Value="{StaticResource UrBodyFontFamily}" />
+                <Setter Property="FontSize" Value="14" />
+                <Setter Property="UseSystemFocusVisuals" Value="True" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Grid x:Name="Root"
+                                  CornerRadius="{TemplateBinding CornerRadius}"
+                                  Background="{TemplateBinding Background}"
+                                  BorderBrush="{TemplateBinding BorderBrush}"
+                                  BorderThickness="{TemplateBinding BorderThickness}">
+                                <!-- the hover/press edge, on its own layer so no
+                                     visual state ever writes Root.Background or
+                                     Root.BorderBrush -->
+                                <Grid x:Name="EdgeLayer" Opacity="0"
+                                      CornerRadius="{TemplateBinding CornerRadius}"
+                                      BorderBrush="{StaticResource UrBorderStrongBrush}"
+                                      BorderThickness="1" />
+                                <!-- the three font properties are template-bound
+                                     for the reason UrButtonBaseStyle spells out:
+                                     ContentPresenter declares its own defaults,
+                                     so a Style setter never reaches the content. -->
+                                <ContentPresenter x:Name="Presenter"
+                                                  Content="{TemplateBinding Content}"
+                                                  ContentTemplate="{TemplateBinding ContentTemplate}"
+                                                  Padding="{TemplateBinding Padding}"
+                                                  Foreground="{TemplateBinding Foreground}"
+                                                  FontFamily="{TemplateBinding FontFamily}"
+                                                  FontSize="{TemplateBinding FontSize}"
+                                                  FontWeight="{TemplateBinding FontWeight}"
+                                                  HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                  VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}" />
+                                <VisualStateManager.VisualStateGroups>
+                                    <VisualStateGroup x:Name="CommonStates">
+                                        <VisualStateGroup.Transitions>
+                                            <VisualTransition GeneratedDuration="0:0:0.15" />
+                                        </VisualStateGroup.Transitions>
+                                        <VisualState x:Name="Normal" />
+                                        <VisualState x:Name="PointerOver">
+                                            <VisualState.Setters>
+                                                <Setter Target="EdgeLayer.Opacity" Value="1" />
+                                            </VisualState.Setters>
+                                        </VisualState>
+                                        <VisualState x:Name="Pressed">
+                                            <VisualState.Setters>
+                                                <Setter Target="EdgeLayer.Opacity" Value="1" />
+                                                <Setter Target="Root.Opacity" Value="0.92" />
+                                            </VisualState.Setters>
+                                        </VisualState>
+                                        <VisualState x:Name="Disabled">
+                                            <VisualState.Setters>
+                                                <Setter Target="Root.Opacity" Value="0.38" />
+                                            </VisualState.Setters>
+                                        </VisualState>
+                                    </VisualStateGroup>
+                                </VisualStateManager.VisualStateGroups>
+                            </Grid>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
             <!-- ==== UrSwitchToggle (Components/UrSwitchToggle.swift) ==========
                  iOS hand-draws a 40x22 track. Windows does NOT: the platform
                  ToggleSwitch already has the right metrics, the right pointer and

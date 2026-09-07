@@ -115,4 +115,71 @@ inline DaySeparatorAudit AuditDaySeparators(std::vector<demo::MessageRow> const&
   return a;
 }
 
+// ---- delivery vocabulary -------------------------------------------------
+// Segoe Fluent Icons codepoints. FIVE DISTINCT SHAPES, because Delivered and
+// Read must not differ by colour alone (contract rule 6) and this font has no
+// double-checkmark: design §6.2's "two outline checks / two filled checks"
+// becomes an outline circled check and a solid one. Never an empty literal
+// (contract rule 3) — every arm names its icon.
+inline std::wstring DeliveryGlyph(demo::DeliveryState s) {
+  switch (s) {
+    case demo::DeliveryState::Pending:   return L"\uE916";  // Stopwatch
+    case demo::DeliveryState::Sent:      return L"\uE73E";  // CheckMark
+    case demo::DeliveryState::Delivered: return L"\uE930";  // Completed (outline circled check)
+    case demo::DeliveryState::Read:      return L"\uEC61";  // CompletedSolid (filled circled check)
+    case demo::DeliveryState::Failed:    return L"\uE783";  // Error
+    case demo::DeliveryState::Expired:   return L"\uE74D";  // Delete
+  }
+  return L"\uE73E";  // CheckMark
+}
+
+// The same six states as WORDS. This is the channel that keeps delivery state
+// out of colour-alone: it is what a screen reader hears, via
+// BubbleAutomationName below.
+inline std::wstring DeliveryWord(demo::DeliveryState s) {
+  switch (s) {
+    case demo::DeliveryState::Pending:   return L"Sending";
+    case demo::DeliveryState::Sent:      return L"Sent";
+    case demo::DeliveryState::Delivered: return L"Delivered";
+    case demo::DeliveryState::Read:      return L"Read";
+    case demo::DeliveryState::Failed:    return L"Failed";
+    case demo::DeliveryState::Expired:   return L"Expired";
+  }
+  return L"Sent";
+}
+
+// What a screen reader hears when it reaches a bubble.
+//
+// A Button whose Content is a Panel gets NO automatic automation name —
+// UrComponents.h records that this project has paid for the lesson twice — so
+// without this the whole thread reads as a column of "button".
+//
+// On a run CONTINUATION senderName is empty by design (the bubble draws no
+// name), so the sender comes from inspect.senderDisplayName, which contract §1
+// guarantees is always populated. The visual omits it; the announcement
+// must not.
+//
+//   incoming, group : "Bo Nakamura, 14:22. Slide 4 is the one."
+//   incoming, DM    : "14:22. Slide 4 is the one."
+//   outgoing        : "You, 14:22, Read. On it."
+//   outgoing failed : "You, 14:22, Failed: no route to recipient. On it."
+inline std::wstring BubbleAutomationName(demo::MessageRow const& row, bool group) {
+  std::wstring name;
+  if (row.outgoing) {
+    name = L"You, ";
+  } else if (group) {
+    const std::wstring& who =
+        row.senderName.empty() ? row.inspect.senderDisplayName : row.senderName;
+    if (!who.empty()) name = who + L", ";
+  }
+  name += row.timeLabel;
+  if (row.outgoing) {
+    name += L", " + DeliveryWord(row.state);
+    if (row.state == demo::DeliveryState::Failed && !row.failureReason.empty())
+      name += L": " + row.failureReason;
+  }
+  name += L". " + row.body;
+  return name;
+}
+
 }  // namespace urmsg::views
