@@ -15,6 +15,7 @@
 #include "Demo/AdvancedMode.h"
 #include "Demo/DemoShellState.h"
 #include "Demo/DemoSwitches.h"
+#include "Demo/DemoWorld.h"
 #include "Localization.h"
 #include "Log.h"
 #include "Strings.h"
@@ -93,11 +94,15 @@ MainWindow::MainWindow() {
   // fades the incoming page in and never collapses the old one, so both would be
   // drawn on top of each other.
   currentPage_ = ChatsPage();
+  // EnterDemoMode collapses ListScaffold and reveals ListHost BEFORE
+  // BuildConversationList decides which one to fill (fix round 1 for L2): the
+  // demo branch it added writes into ListHost, per MainWindow.xaml:201-204's
+  // own comment ("The demo's ConversationListView lands here and ListScaffold
+  // collapses"), so ordering here is load-bearing, not stylistic.
   if (options_.enabled) {
     EnterDemoMode();
-  } else {
-    BuildConversationList();
   }
+  BuildConversationList();
 
   // The window reveal: bind now that the content tree exists, then arm BEFORE
   // Activate() so the first composed frame is already the start pose rather
@@ -173,6 +178,27 @@ void MainWindow::BuildConversationList() {
   auto list = ConversationList().Children();
   list.Clear();
 
+  // --demo replaces the placeholder rows with the demo world. Without it, every
+  // line below is byte-for-byte what it was: design doc 8, "without --demo the
+  // app behaves exactly as it does today", which step 12 verifies in pixels.
+  if (urmsg::demo::ParseDemoOptions().enabled) {
+    auto const& world = urmsg::demo::GetWorld();
+    list_ = urmsg::views::MakeConversationList(world, [weak = get_weak()](int index) {
+      if (auto self = weak.get()) self->OnConversationSelected(index);
+    });
+    // ListHost, NOT `list` (ConversationList): ConversationList lives inside
+    // ListScaffold, which EnterDemoMode collapses. Appending there would build
+    // a real list that paints zero pixels -- confirmed by screenshot before
+    // this line existed. ListHost is the empty Grid MainWindow.xaml:205-206
+    // reserves for exactly this.
+    ListHost().Children().Clear();
+    ListHost().Children().Append(list_.root);
+    ListPaneCount().Text(winrt::to_hstring(static_cast<int>(world.conversations.size())));
+    urnw::LogInfo("window: demo conversation list built with {} rows",
+                  world.conversations.size());
+    return;
+  }
+
   // A group header on the 28px rhythm, then the rows. Both come out of the kit,
   // which is what makes a list built in code and a pane declared in markup the
   // same pane.
@@ -190,6 +216,12 @@ void MainWindow::BuildConversationList() {
   ListPaneCount().Text(winrt::to_hstring(static_cast<int>(kSampleConversations.size())));
   urnw::LogInfo("window: conversation list built with {} placeholder rows",
                 kSampleConversations.size());
+}
+
+void MainWindow::OnConversationSelected(int index) {
+  // Selection itself lands in L3. This records that a row's click reached the
+  // window, which is the half this task owns.
+  urnw::LogInfo("window: conversation row {} clicked", index);
 }
 
 void MainWindow::EnterDemoMode() {

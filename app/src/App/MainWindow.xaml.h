@@ -22,6 +22,7 @@
 #include "Demo/DemoShellState.h"
 #include "Demo/DemoSwitches.h"
 #include "UrComponents.h"
+#include "Views/ConversationListView.h"
 #include "WindowReveal.h"
 
 namespace winrt::URmessage::implementation {
@@ -55,6 +56,10 @@ struct MainWindow : MainWindowT<MainWindow> {
   // in a comment somewhere else.
   void BuildConversationList();
 
+  // A row was clicked. Takes the row INDEX: ConversationListView::rows[i] is
+  // world.conversations[i], and nothing reorders either.
+  void OnConversationSelected(int index);
+
   // The ONE window-level layout function. It consumes
   // urmsg::demo::LayoutFor(), which answers all three content-dip thresholds
   // (wide at kWideBreakpointDip, rail at kRailBreakpointDip, strip at
@@ -84,6 +89,8 @@ struct MainWindow : MainWindowT<MainWindow> {
 
   urnw::WindowReveal reveal_;
   urnw::kit::PaneSearchRow search_{};
+  // Empty on a non-demo launch: BuildConversationList only fills it under --demo.
+  urmsg::views::ConversationListView list_{};
   // The whole layout answer, not one bool: three thresholds now (list beside
   // thread at 1000, rail at 1500, strip at 560 of HEIGHT), all in CONTENT-root
   // dips, which is what ActualWidth/ActualHeight of Content() report.
