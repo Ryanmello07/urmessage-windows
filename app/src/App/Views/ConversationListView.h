@@ -41,9 +41,15 @@ struct ConversationListView {
 ConversationListView MakeConversationList(urmsg::demo::World const& world,
                                           std::function<void(int)> onSelect);
 
-// The rest of contract 4's ConversationListView API (SetConversationSelected,
-// SetConversationListAdvanced) is declared by the task that IMPLEMENTS it. A
-// declaration without a definition is a link error waiting for whoever builds
-// next.
+// Paint row `index` as the selected one and every other row as not. Pass -1 for
+// "nothing is selected". Three channels, because one is not enough: a fill step,
+// a 2px leading accent bar (a SHAPE change, so colour is never the only carrier)
+// and the row's automation Name -- the same three kit::SetPaneListRowSelected
+// carries, for the same reason (UrComponents.h:333-340).
+void SetConversationSelected(ConversationListView& v, int index);
+
+// The rest of contract 4's ConversationListView API (SetConversationListAdvanced)
+// is declared by the task that IMPLEMENTS it. A declaration without a
+// definition is a link error waiting for whoever builds next.
 
 }  // namespace urmsg::views

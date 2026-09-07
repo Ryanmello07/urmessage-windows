@@ -85,6 +85,29 @@ Controls::Border MakeUnreadPill(std::wstring const& text) {
   return pill;
 }
 
+// The first DIRECT child of `panel` carrying `tag`. Shallow by design: every
+// element this file tags is a direct child of the panel it is looked up from, so
+// a recursive walk would only hide a mistake. Null-safe at every hop -- try_as on
+// an empty handle dereferences null.
+FrameworkElement TaggedChild(Controls::Panel const& panel, wchar_t const* tag) {
+  if (!panel) return nullptr;
+  for (auto const& child : panel.Children()) {
+    auto element = child.try_as<FrameworkElement>();
+    if (!element) continue;
+    auto value = element.Tag().try_as<winrt::hstring>();
+    if (value && *value == tag) return element;
+  }
+  return nullptr;
+}
+
+// The kit row's content Grid. MakePaneTwoLineRowButton ends with
+// out.root.Content(grid) (UrComponents.cpp:478), so this is the documented
+// shape rather than a guess.
+Controls::Grid RowGrid(urnw::kit::PaneTwoLineRowButton const& row) {
+  if (!row.root) return nullptr;
+  return row.root.Content().try_as<Controls::Grid>();
+}
+
 urnw::kit::PaneTwoLineRowButton MakeConversationRow(urmsg::demo::Conversation const& c,
                                                     int index,
                                                     std::function<void(int)> const& onSelect) {
@@ -252,6 +275,34 @@ ConversationListView MakeConversationList(urmsg::demo::World const& world,
   urnw::LogInfo("list: built {} conversation rows at {:.0f} dip", view.rows.size(),
                 kConversationRowHeight);
   return view;
+}
+
+void SetConversationSelected(ConversationListView& v, int index) {
+  auto const& world = urmsg::demo::GetWorld();
+  for (std::size_t i = 0; i < v.rows.size(); ++i) {
+    auto const& row = v.rows[i];
+    if (!row.root) continue;
+    const bool selected = (static_cast<int>(i) == index);
+
+    // Channel 1: the fill step. Deliberately the same step the kit uses, and
+    // deliberately the same value UrPaneRowButtonStyle paints on PointerOver
+    // (App.xaml:931-935) -- a hovered row is indistinguishable from a selected
+    // one on this channel alone, which is why the next two exist.
+    row.root.Background(selected ? urnw::colors::CardBrush()
+                                 : urnw::colors::MakeBrush({0, 0, 0, 0}));
+
+    // Channel 2: the 2px leading accent bar. A SHAPE change, not colour alone.
+    if (auto bar = TaggedChild(RowGrid(row), kTagSelectionBar))
+      bar.Opacity(selected ? 1.0 : 0.0);
+
+    // Channel 3: the announcement. A fill step and a bar say nothing to a screen
+    // reader, so the row's own Name carries the state.
+    if (i < world.conversations.size())
+      Automation::AutomationProperties::SetName(
+          row.root,
+          winrt::hstring{ConversationRowAutomationName(world.conversations[i], selected)});
+  }
+  urnw::LogInfo("list: selection -> row {} of {}", index, v.rows.size());
 }
 
 }  // namespace urmsg::views

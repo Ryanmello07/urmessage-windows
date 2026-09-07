@@ -196,6 +196,11 @@ void MainWindow::BuildConversationList() {
     ListPaneCount().Text(winrt::to_hstring(static_cast<int>(world.conversations.size())));
     urnw::LogInfo("window: demo conversation list built with {} rows",
                   world.conversations.size());
+    // The agent may not synthesise input, so a selection that only ever happens
+    // on a click is a state no capture can reach. Contract 2 already requires
+    // --demo=inspect to pre-select conversation 0; --demo=chats does the same so
+    // the three selection channels are visible at launch.
+    OnConversationSelected(0);
     return;
   }
 
@@ -219,9 +224,22 @@ void MainWindow::BuildConversationList() {
 }
 
 void MainWindow::OnConversationSelected(int index) {
-  // Selection itself lands in L3. This records that a row's click reached the
-  // window, which is the half this task owns.
-  urnw::LogInfo("window: conversation row {} clicked", index);
+  auto const& world = urmsg::demo::GetWorld();
+  if (index < 0 || world.conversations.size() <= static_cast<std::size_t>(index)) return;
+  selectedConversation_ = index;
+  urmsg::views::SetConversationSelected(list_, index);
+
+  // The pane TITLE stays "THREAD": UrPaneTitleStyle is the letterspaced chrome
+  // voice (App.xaml:838-847) and a mixed-case name set in it reads wrong. The
+  // conversation's name goes in the BODY as one muted centred line -- an
+  // acknowledged interim state, replaced wholesale when the ThreadView surface
+  // lands. A centred muted line is an empty state, not an affordance, so it does
+  // not read as something that looks live and does nothing (design 9.1).
+  ThreadBody().Children().Clear();
+  ThreadBody().Children().Append(
+      urnw::kit::MakePaneEmptyLine(winrt::hstring{world.conversations[index].name}));
+  urnw::LogInfo("window: conversation {} selected ({})", index,
+                winrt::to_string(winrt::hstring{world.conversations[index].name}));
 }
 
 void MainWindow::EnterDemoMode() {

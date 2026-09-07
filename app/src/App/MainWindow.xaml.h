@@ -91,6 +91,9 @@ struct MainWindow : MainWindowT<MainWindow> {
   urnw::kit::PaneSearchRow search_{};
   // Empty on a non-demo launch: BuildConversationList only fills it under --demo.
   urmsg::views::ConversationListView list_{};
+  // -1 until something is selected. Held on the window because the window is
+  // what will also drive the thread and the rail.
+  int selectedConversation_ = -1;
   // The whole layout answer, not one bool: three thresholds now (list beside
   // thread at 1000, rail at 1500, strip at 560 of HEIGHT), all in CONTENT-root
   // dips, which is what ActualWidth/ActualHeight of Content() report.
