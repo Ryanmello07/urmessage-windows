@@ -732,7 +732,8 @@ std::vector<std::wstring> CollectDiagnostics() {
     //    outgoing name carries its delivery WORD (so state is never colour-only);
     //    the failed one carries its reason; and in a group every incoming name
     //    carries a sender EVEN ON A CONTINUATION, where the bubble draws none.
-    int named = 0, empty = 0, missingTime = 0, outNamed = 0, missingWord = 0;
+    int named = 0, empty = 0, missingTime = 0, missingBody = 0, outNamed = 0,
+        missingWord = 0;
     int groupIncoming = 0, missingSender = 0, failedRows = 0, withReason = 0;
     for (auto const& c : world.conversations) {
       const bool group = (c.kind == demo::ConversationKind::Group);
@@ -743,6 +744,14 @@ std::vector<std::wstring> CollectDiagnostics() {
         if (n.empty()) ++empty;
         if (!row.timeLabel.empty() && n.find(row.timeLabel) == std::wstring::npos)
           ++missingTime;
+        // The BODY, which nothing above looked at. Delete the one line that
+        // appends it in BubbleAutomationName and every announcement in the app
+        // loses the message itself while all nine other conditions here still
+        // pass - a gate that cannot fail on the defect it exists to catch.
+        // Demonstrated by making exactly that deletion and watching this line
+        // report FAIL with 60 missing bodies, then reverting.
+        if (!row.body.empty() && n.find(row.body) == std::wstring::npos)
+          ++missingBody;
         if (row.outgoing) {
           ++outNamed;
           if (n.find(views::DeliveryWord(row.state)) == std::wstring::npos) ++missingWord;
@@ -758,14 +767,16 @@ std::vector<std::wstring> CollectDiagnostics() {
         }
       }
     }
-    const bool namesOk = named > 0 && empty == 0 && missingTime == 0 && outNamed > 0 &&
+    const bool namesOk = named > 0 && empty == 0 && missingTime == 0 &&
+                         missingBody == 0 && outNamed > 0 &&
                          missingWord == 0 && groupIncoming > 0 && missingSender == 0 &&
                          failedRows > 0 && withReason == failedRows;
     lines.push_back(std::format(
-        L"  thread T2 names  : {} - {} bubbles named ({} empty, {} missing time); "
-        L"{} outgoing, {} missing a delivery word; {} group incoming, {} missing a "
-        L"sender; {}/{} failed carry a reason",
-        namesOk ? L"PASS" : L"FAIL", named, empty, missingTime, outNamed, missingWord,
+        L"  thread T2 names  : {} - {} bubbles named ({} empty, {} missing time, "
+        L"{} missing body); {} outgoing, {} missing a delivery word; {} group "
+        L"incoming, {} missing a sender; {}/{} failed carry a reason",
+        namesOk ? L"PASS" : L"FAIL", named, empty, missingTime, missingBody, outNamed,
+        missingWord,
         groupIncoming, missingSender, withReason, failedRows));
   }
 
