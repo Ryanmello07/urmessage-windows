@@ -719,9 +719,9 @@ Modify: C:/Users/ryanm/Downloads/claude_sandbox_message/message-windows/app/src/
     // codepoints were RENDERED in Segoe Fluent Icons and looked at before they
     // were written down, not read off a list: E977 is the monitor+phone
     // "Devices" pair, E774 is the globe, E968 is the server tower.
-    w.relayPath.push_back({L"This device", L"This computer", L"", 0, true});   // Devices
-    w.relayPath.push_back({L"URnetwork", L"3 hops", L"", 41, true});           // Globe
-    w.relayPath.push_back({L"Message server", L"urmsg-01.ur.io", L"", 18, true}); // Server
+    w.relayPath.push_back({L"This device", L"This computer", L"\uE977", 0, true});   // Devices
+    w.relayPath.push_back({L"URnetwork", L"3 hops", L"\uE774", 41, true});           // Globe
+    w.relayPath.push_back({L"Message server", L"urmsg-01.ur.io", L"\uE968", 18, true}); // Server
 
     w.server = {L"urmsg-01.ur.io", L"Iceland", 59, true};
     return w;
@@ -750,13 +750,36 @@ Modify: C:/Users/ryanm/Downloads/claude_sandbox_message/message-windows/app/src/
 
   Expected last line: `OK in <n>s -> ...\app\build\x64\Release\`. A `C1083 'winrt/...'` here means the `NotUsing` metadata from Step 3 is missing or a winrt include crept in.
 
-- [ ] **Step 9: Prove the file is genuinely pure.** No winrt token may appear in either file:
+- [ ] **Step 9: Prove the file is genuinely pure.** No winrt token may appear in
+  either file **as code**. The earlier form of this check greped the raw text and
+  matched the explanatory comments this very task mandates — it reported 5 on a
+  correct file, which invites an implementer to delete correct comments to force a
+  clean number. Match code tokens only:
 
   ```
-  powershell -Command "Select-String -Path app\src\App\Demo\DemoWorld.* -Pattern 'winrt|Microsoft\.UI|pch\.h' | Measure-Object | Select-Object -ExpandProperty Count"
+  powershell -ExecutionPolicy Bypass -File app\tools\check-demoworld-purity.ps1
   ```
 
-  Expected: `0`.
+  Where that script strips `//` and `/* */` comments before matching, and looks for
+  an actual include or qualified use rather than the bare word:
+
+  ```powershell
+  $bad = 0
+  foreach ($f in Get-ChildItem app\src\App\Demo\DemoWorld.*) {
+    $code = (Get-Content -Raw $f.FullName) -replace '(?s)/\*.*?\*/','' -replace '(?m)//.*$',''
+    if ($code -match '#\s*include\s*[<"](winrt|pch\.h)' -or $code -match 'winrt::' -or $code -match 'Microsoft::UI') {
+      Write-Host "IMPURE: $($f.Name)"; $bad++
+    }
+  }
+  if ($bad -eq 0) { Write-Host "PURE: 0 winrt code tokens in DemoWorld.*" }
+  exit $bad
+  ```
+
+  Expected: `PURE: 0 winrt code tokens in DemoWorld.*` and exit code 0.
+
+  The build is the independent confirmation: `DemoWorld.cpp` compiles with
+  `PrecompiledHeader=NotUsing`, so a winrt include would fail to compile rather
+  than merely fail a grep.
 
 - [ ] **Step 10: Commit.**
 

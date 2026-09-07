@@ -816,11 +816,11 @@ urnw::kit::PaneTwoLineRowButton MakeConversationRow(urmsg::demo::Conversation co
       chip, Automation::Peers::AccessibilityView::Raw);
   cluster.Children().Append(chip);
 
-  auto muted = MakeRowGlyph(L"");  // Mute
+  auto muted = MakeRowGlyph(L"\uE74F");  // Mute
   muted.Visibility(model.showMuted ? Visibility::Visible : Visibility::Collapsed);
   cluster.Children().Append(muted);
 
-  auto timer = MakeRowGlyph(L"");  // Stopwatch
+  auto timer = MakeRowGlyph(L"\uE916");  // Stopwatch
   timer.Visibility(model.showTimer ? Visibility::Visible : Visibility::Collapsed);
   cluster.Children().Append(timer);
 
@@ -999,8 +999,8 @@ powershell -ExecutionPolicy Bypass -File app/tools/verify-render.ps1 -AppArgs "-
      never emits `kDanger`, `kUrGreen`, `kToggleAccent`, `kStatusConnecting` or `kProGold`.
 
   Both glyphs must be **drawn shapes, not hollow rectangles** — a hollow box is Segoe Fluent's
-  `.notdef` and means the codepoint is wrong. If `` (Mute) boxes, use ``
-  (QuietHours); if `` (Stopwatch) boxes, use `` (Timer). Change the literal, keep the
+  `.notdef` and means the codepoint is wrong. If `\uE74F` (Mute) boxes, use `\uE7ED`
+  (QuietHours); if `\uE916` (Stopwatch) boxes, use `\uE823` (Timer). Change the literal, keep the
   trailing name comment, rebuild, re-capture.
 
 - [ ] **Step 12: prove the plain launch is unchanged, and that the L1 diagnostics ride along.**

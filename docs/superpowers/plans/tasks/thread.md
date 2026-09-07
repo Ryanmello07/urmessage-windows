@@ -432,14 +432,14 @@ So: one new key, `UrBubbleButtonStyle`. Its hover is an **edge**, drawn by a ded
   // (contract rule 3) — every arm names its icon.
   inline std::wstring DeliveryGlyph(demo::DeliveryState s) {
     switch (s) {
-      case demo::DeliveryState::Pending:   return L"";  // Stopwatch
-      case demo::DeliveryState::Sent:      return L"";  // CheckMark
-      case demo::DeliveryState::Delivered: return L"";  // Completed (outline circled check)
-      case demo::DeliveryState::Read:      return L"";  // CompletedSolid (filled circled check)
-      case demo::DeliveryState::Failed:    return L"";  // Error
-      case demo::DeliveryState::Expired:   return L"";  // Delete
+      case demo::DeliveryState::Pending:   return L"\uE916";  // Stopwatch
+      case demo::DeliveryState::Sent:      return L"\uE73E";  // CheckMark
+      case demo::DeliveryState::Delivered: return L"\uE930";  // Completed (outline circled check)
+      case demo::DeliveryState::Read:      return L"\uEC61";  // CompletedSolid (filled circled check)
+      case demo::DeliveryState::Failed:    return L"\uE783";  // Error
+      case demo::DeliveryState::Expired:   return L"\uE74D";  // Delete
     }
-    return L"";  // CheckMark
+    return L"\uE73E";  // CheckMark
   }
 
   // The same six states as WORDS. This is the channel that keeps delivery state
@@ -958,7 +958,7 @@ The column the bubbles live in, and the first time anyone looks at this surface.
     if (row.permanentRecord) {
       FontIcon lock;
       lock.FontFamily(Media::FontFamily(L"Segoe Fluent Icons"));
-      lock.Glyph(L"");  // Lock
+      lock.Glyph(L"\uE72E");  // Lock
       lock.FontSize(12);
       lock.Foreground(urnw::colors::MutedBrush());
       lock.VerticalAlignment(VerticalAlignment::Center);
@@ -1161,7 +1161,7 @@ The column the bubbles live in, and the first time anyone looks at this surface.
   5. At least one **centred pill** with a day label ("Today", "Yesterday", …), boxed and letterspaced, sitting between two groups of bubbles.
   6. At least one **centred, non-bubble system line**, and the key-change one inside a thin rounded box with a padlock in front of it.
   7. Under the last outgoing bubble of a run, a small right-aligned glyph. Somewhere in the thread, **one red glyph with the word `Failed` beside it**.
-  8. **No hollow rectangle (tofu) anywhere in the delivery column or in front of the system line.** A tofu box means a codepoint in `DeliveryGlyph` or the `` lock is not in Segoe Fluent Icons — fix the codepoint, do not delete the glyph.
+  8. **No hollow rectangle (tofu) anywhere in the delivery column or in front of the system line.** A tofu box means a codepoint in `DeliveryGlyph` or the `\uE72E` lock is not in Segoe Fluent Icons — fix the codepoint, do not delete the glyph.
   9. The thread is scrolled to its **bottom**: the newest row is at the foot of the pane and there is no blank space under it.
   10. In a group conversation, the first bubble of a run has a **28px rounded identicon** to its left and the bubbles after it in the same run line up on that same left edge with an empty gutter.
 
@@ -1394,7 +1394,7 @@ FrameworkElement MakeKeyChangeRecord(winrt::hstring const& text) {
 
   FontIcon key;
   key.FontFamily(IconFont());
-  key.Glyph(L"");  // Segoe Fluent "Permissions" — the key glyph
+  key.Glyph(L"\uE192");  // Segoe Fluent "Permissions" — the key glyph
   key.FontSize(14);
   key.Foreground(urnw::colors::DangerBrush());
   key.VerticalAlignment(VerticalAlignment::Top);
@@ -2227,9 +2227,9 @@ FrameworkElement MakeComposer() {
     row.ColumnDefinitions().Append(c);
   }
 
-  auto attach = MakeInertIconButton(L"",  // Segoe Fluent "Attach" — paperclip
+  auto attach = MakeInertIconButton(L"\uE723",  // Segoe Fluent "Attach" — paperclip
                                     L"Attach a file (not available in the demo)");
-  auto emoji = MakeInertIconButton(L"",   // Segoe Fluent "Emoji" — outline smiley
+  auto emoji = MakeInertIconButton(L"\uE76E",   // Segoe Fluent "Emoji" — outline smiley
                                    L"Insert an emoji (not available in the demo)");
   Grid::SetColumn(attach, 0);
   Grid::SetColumn(emoji, 1);
@@ -2246,7 +2246,7 @@ FrameworkElement MakeComposer() {
     chip.Spacing(5);
     FontIcon g;
     g.FontFamily(IconFont());
-    g.Glyph(L"");  // Segoe Fluent "Timer"
+    g.Glyph(L"\uE916");  // Segoe Fluent "Timer"
     g.FontSize(14);
     chip.Children().Append(g);
     TextBlock t;
@@ -2288,7 +2288,7 @@ FrameworkElement MakeComposer() {
   {
     FontIcon plane;
     plane.FontFamily(IconFont());
-    plane.Glyph(L"");  // Segoe Fluent "Send" — outline paper plane
+    plane.Glyph(L"\uE724");  // Segoe Fluent "Send" — outline paper plane
     plane.FontSize(16);
     send.Content(plane);
   }

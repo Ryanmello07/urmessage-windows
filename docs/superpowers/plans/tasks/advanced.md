@@ -2012,7 +2012,7 @@ app\build\x64\Release\URmessage.exe --diagnose
     if (auto style = StyleByKey(L"UrPaneActionButtonStyle")) copy.Style(style);
     FontIcon glyph;
     if (auto family = FontFamilyByKey(L"UrIconFontFamily")) glyph.FontFamily(family);
-    glyph.Glyph(L"");  // Copy — the same codepoint as UrComponents.cpp:773
+    glyph.Glyph(L"\uE8C8");  // Copy — the same codepoint as UrComponents.cpp:773
     glyph.FontSize(14);
     glyph.Foreground(urnw::colors::MutedBrush());
     copy.Content(glyph);

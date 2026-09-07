@@ -1230,7 +1230,7 @@ here mutates it, so relaunching restores all three — which is right for a demo
     if (auto style = StyleByKey(L"UrPaneActionButtonStyle")) remove.Style(style);
     FontIcon removeGlyph;
     removeGlyph.FontFamily(IconFont());
-    removeGlyph.Glyph(L"");  // Delete (wastebasket), Segoe Fluent Icons
+    removeGlyph.Glyph(L"\uE74D");  // Delete (wastebasket), Segoe Fluent Icons
     removeGlyph.FontSize(14);
     removeGlyph.Foreground(urnw::colors::MutedBrush());
     remove.Content(removeGlyph);

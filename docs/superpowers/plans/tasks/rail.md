@@ -1209,7 +1209,7 @@ FrameworkElement MakeLockHeader(demo::MessageInspect const& inspect) {
   // no claim to be the exception. Only the colour is set, and the words beside
   // it say the same thing, so the colour is a restatement.
   if (auto style = StyleByKey(L"UrRowIconStyle")) lock.Style(style);
-  lock.Glyph(L"");  // Segoe Fluent E72E, Lock
+  lock.Glyph(L"\uE72E");  // Segoe Fluent E72E, Lock
   lock.Foreground(urnw::colors::MakeBrush(urnw::colors::kUrGreen));
   grid.Children().Append(lock);
 
