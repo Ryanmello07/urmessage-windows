@@ -31,7 +31,12 @@
 param(
   [string]$Configuration = "Release",
   [string]$Platform = "x64",
-  [int]$SettleMs = 1200
+  [int]$SettleMs = 1200,
+  # Switches handed to URmessage.exe, e.g. "--demo=thread". NEVER name this
+  # $Args: that shadows PowerShell's automatic $args variable inside the
+  # script and the shadowing is silent. Forwarded by SPLAT below, so an empty
+  # value passes NOTHING - Start-Process rejects an empty -ArgumentList.
+  [string]$AppArgs = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -153,7 +158,11 @@ Stop-ByPath $exe
 $env:URMESSAGE_APP_ROOT = Join-Path $repo ".localstate-verify"
 New-Item -ItemType Directory -Force $env:URMESSAGE_APP_ROOT | Out-Null
 
-$proc = Start-Process -FilePath $exe -PassThru
+# Splat rather than a ternary: -ArgumentList "" is a parameter-binding error,
+# so the argument has to be ABSENT, not empty, when there is nothing to pass.
+$extra = @{}
+if ($AppArgs) { $extra['ArgumentList'] = $AppArgs }
+$proc = Start-Process -FilePath $exe -PassThru @extra
 Write-Host "launched pid $($proc.Id): $exe" -ForegroundColor Cyan
 
 # (2) Poll for the window rather than sleeping a guess.
