@@ -35,6 +35,47 @@ std::wstring AsciiOnly(std::wstring const& s) {
   return out;
 }
 
+// The blank/width scan the rail's 28-character budget is asserted with. ONE
+// copy, and that is the point: InspectRailFieldsProbe runs it TWICE - over the
+// world's own row, where the result is GATED, and over a locally over-long row,
+// where the result is the DEMONSTRATION that the scan can trip at all. Two
+// copies would let the demonstration certify a scan the gate does not use:
+// mutate the gated copy to measure f.key and it would still print "trips at 29"
+// beside a passing gate. Hoisted here so there is nothing to keep in step.
+struct ValueScan {
+  size_t blanks = 0;
+  size_t widest = 0;
+  std::wstring widestKey = L"(none)";
+};
+
+ValueScan ScanValues(std::vector<InspectField> const& fields) {
+  ValueScan out;
+  for (auto const& f : fields) {
+    if (f.value.empty()) ++out.blanks;
+    if (out.widest < f.value.size()) {
+      out.widest = f.value.size();
+      out.widestKey = f.key;
+    }
+  }
+  return out;
+}
+
+// Does an attestation value read as the AFFIRMATIVE? Read out of the STRING, and
+// never by comparing against AttestationLabel(true): that comparison equals its
+// own input under EITHER polarity, so an INVERTED ternary cancels it exactly and
+// the gate prints "attestation 0 wrong" while the rail shows a positive
+// verification claim on a FAILED send. On this field that is the whole hazard
+// this task exists to prevent, so the polarity is read from the text a viewer
+// would read.
+//
+// THE LIMIT, STATED: the polarity is carried by the word "not". A future wording
+// that negates some other way ("unverified") makes this true for BOTH forms -
+// which fails the framing property below AND every non-Failed row above, loudly,
+// rather than passing quietly. That failure is the review this clause forces.
+bool ReadsAsVerified(std::wstring const& attestationValue) {
+  return attestationValue.find(L" not ") == std::wstring::npos;
+}
+
 }  // namespace
 
 std::wstring RetentionClassLabel(demo::RetentionClass retention) {
@@ -193,17 +234,10 @@ std::wstring InspectRailFieldsProbe() {
   // construction and would print PASS over a column of blanks; these two can
   // fail, and both name the key that tripped them so the report is actionable.
   // A blank value is a 34 DIP row of nothing; an over-long one overflows the
-  // column (see kInspectValueMaxChars).
-  size_t blanks = 0;
-  size_t widest = 0;
-  std::wstring widestKey = L"(none)";
-  for (auto const& f : advanced) {
-    if (f.value.empty()) ++blanks;
-    if (widest < f.value.size()) {
-      widest = f.value.size();
-      widestKey = f.key;
-    }
-  }
+  // column (see kInspectValueMaxChars). This is the GATED pass of ScanValues;
+  // the demonstration pass further down calls the SAME function, so mutating it
+  // breaks both.
+  const ValueScan picked = ScanValues(advanced);
 
   // ORDER, PER ROW. A count is blind to permutation: swapping the "Epoch" and
   // "Sender leaf index" push_backs leaves 8 and 12 intact, leaves no blanks and
@@ -279,6 +313,7 @@ std::wstring InspectRailFieldsProbe() {
   size_t blankReceivedNotYet = 0;
   size_t sweepUnexpected = 0;
   std::wstring unexpectedKey = L"(none)";
+  std::wstring unexpectedRow = L"(none)";
   for (auto const& c : world.conversations) {
     const bool direct = (c.kind == demo::ConversationKind::Direct);
     for (auto const& r : c.rows) {
@@ -296,8 +331,14 @@ std::wstring InspectRailFieldsProbe() {
         else if (f.key == L"Received" && notYetReceived)
           ++blankReceivedNotYet;
         else {
+          // The FIRST offender, not the last: with several, overwriting each
+          // time names the wrong one in a message whose whole job is to point
+          // at the row a person has to go and look at.
+          if (sweepUnexpected == 0) {
+            unexpectedKey = f.key;
+            unexpectedRow = c.id + L"/" + r.id;
+          }
           ++sweepUnexpected;
-          unexpectedKey = f.key;
         }
       }
     }
@@ -305,21 +346,27 @@ std::wstring InspectRailFieldsProbe() {
 
   // THE 28-CHARACTER BUDGET, PROVED LIVE. Nothing in the demo world comes near
   // 28, so "widest <= 28" above passes whether the scan works or not - an
-  // inverted comparison, or one measuring f.key, would print the same PASS. The
-  // same scan is run here over a LOCAL COPY of the picked row carrying one
-  // deliberately over-long value (DemoWorld itself is immutable and is not
-  // touched), and is required to trip on it and to name the right key.
+  // inverted comparison, or one measuring f.key, would print the same PASS. So
+  // the LITERALLY SAME FUNCTION, ScanValues, is called again over a LOCAL COPY
+  // of the picked row carrying one deliberately over-long value (DemoWorld is
+  // immutable and is not touched), and is required to trip on it and to name the
+  // right key. One function, two calls: there is no second copy for a mutation
+  // to hide in.
   demo::MessageRow overlong = *row;
   overlong.inspect.sizeBucket.assign(kInspectValueMaxChars + 1, L'x');
-  size_t overWidest = 0;
-  std::wstring overKey = L"(none)";
-  for (auto const& f : BuildMessageFields(conv, overlong, true))
-    if (overWidest < f.value.size()) {
-      overWidest = f.value.size();
-      overKey = f.key;
-    }
-  const bool budgetGateLive = kInspectValueMaxChars < overWidest &&
-                              overWidest == kInspectValueMaxChars + 1 && overKey == L"Size";
+  const ValueScan over = ScanValues(BuildMessageFields(conv, overlong, true));
+  // Split, so a failure says WHICH of the three fell rather than "no".
+  std::wstring budgetBad;
+  {
+    wchar_t const* names[3] = {L"scan trips over 28", L"trips at exactly 29",
+                               L"names the Size row"};
+    const bool got[3] = {kInspectValueMaxChars < over.widest,
+                         over.widest == kInspectValueMaxChars + 1,
+                         over.widestKey == L"Size"};
+    for (size_t i = 0; i < 3; ++i)
+      if (!got[i]) budgetBad += (budgetBad.empty() ? L"" : L", ") + std::wstring(names[i]);
+  }
+  const bool budgetGateLive = budgetBad.empty();
 
   // SHORTHEX'S TRUNCATING BRANCH IS UNREACHABLE FROM THE FIXTURE, so asserting
   // it over the world would certify a rule no value in the world can trip: every
@@ -335,11 +382,30 @@ std::wstring InspectRailFieldsProbe() {
   expectedShort += kEllipsis;
   expectedShort += kLongHex.substr(kLongHex.size() - 4);
   const std::wstring shortened = ShortHex(kLongHex);
-  const bool shortHexOk = shortened == expectedShort && shortened.size() == 13 &&
-                          shortened[8] == kEllipsis && ShortHex(boundary) == boundary &&
-                          ShortHex(justOver) != justOver && ShortHex(justOver).size() == 13 &&
-                          conv.groupIdHex.size() == 16 &&
-                          ShortHex(conv.groupIdHex) == conv.groupIdHex;
+  // Eight conjuncts, reported BY NAME. Aggregated into one "ok no", a failure
+  // would say which rule of ShortHex broke only to whoever re-derives it.
+  std::wstring shortHexBad;
+  {
+    wchar_t const* names[8] = {L"32 shortens to the expected string",
+                               L"result is 13 chars",
+                               L"ellipsis code point sits at index 8",
+                               L"16 (keep+8) comes back whole",
+                               L"17 does not come back whole",
+                               L"17 shortens to 13",
+                               L"the world's group id is 16 chars",
+                               L"the world's group id comes back whole"};
+    const bool got[8] = {shortened == expectedShort,
+                         shortened.size() == 13,
+                         9 <= shortened.size() && shortened[8] == kEllipsis,
+                         ShortHex(boundary) == boundary,
+                         ShortHex(justOver) != justOver,
+                         ShortHex(justOver).size() == 13,
+                         conv.groupIdHex.size() == 16,
+                         ShortHex(conv.groupIdHex) == conv.groupIdHex};
+    for (size_t i = 0; i < 8; ++i)
+      if (!got[i]) shortHexBad += (shortHexBad.empty() ? L"" : L", ") + std::wstring(names[i]);
+  }
+  const bool shortHexOk = shortHexBad.empty();
 
   // THE LABEL HELPERS, each against a DemoWorld field the helper never reads, so
   // that none of these is the helper compared to its own body.
@@ -376,21 +442,38 @@ std::wstring InspectRailFieldsProbe() {
       // (DemoWorld.cpp:171). A constant-returning AttestationLabel fails here on
       // c0-r22, the world's one Failed row - without that row this would be
       // vacuous, and it is the only one, so it is worth saying that it exists.
-      const bool saysVerified =
-          (AttestationLabel(r.inspect.attestationVerified) == AttestationLabel(true));
+      //
+      // The polarity comes from ReadsAsVerified, i.e. from the TEXT. It used to
+      // come from `== AttestationLabel(true)`, which equals its own input under
+      // EITHER polarity: an inverted ternary cancelled it exactly, and this
+      // printed "attestation 0 wrong" while the rail showed a positive
+      // verification on that one Failed send. A fabricated positive verification
+      // claim on a failed message is precisely what G4 forbids, so the polarity
+      // is now read the way a viewer reads it.
+      const bool saysVerified = ReadsAsVerified(AttestationLabel(r.inspect.attestationVerified));
       if (saysVerified != (r.state != demo::DeliveryState::Failed)) ++attestationWrong;
     }
 
-  // G4, made mechanical. The two attestation values must stay distinguishable
-  // from each other AND must not be the bare words a viewer reads as a completed
-  // cryptographic check. This is a regression guard on a project constraint, not
-  // a fact about the world: if a later pass "simplifies" the copy back to
-  // "Verified", this line is what says so.
-  const bool attestationFramed = AttestationLabel(true) != AttestationLabel(false) &&
-                                 !AttestationLabel(true).empty() &&
-                                 !AttestationLabel(false).empty() &&
-                                 AttestationLabel(true) != L"Verified" &&
-                                 AttestationLabel(false) != L"Not verified";
+  // G4, made mechanical - as a PROPERTY, and no longer as a blacklist of two
+  // literals. Requiring only "distinct, non-empty, and not these two strings"
+  // let lower-case "verified" through, let "Verified" with a stray tick through,
+  // and - worst - let an INVERTED ternary through, since an inversion is still
+  // distinct, still non-empty and still equal to neither literal. Three
+  // properties instead:
+  //
+  //   * both forms NAME THE MODEL, so neither can be quoted as this binary's own
+  //     finding. Any wording that drops "Demo" fails, in any case, at any length.
+  //   * the affirmative does not carry the negation, and
+  //   * the negative does - which is what makes an inversion fail HERE as well as
+  //     in attestationWrong above. Two independent gates on one polarity, because
+  //     this is the field where backwards is a false claim about crypto rather
+  //     than a cosmetic defect.
+  const std::wstring attYes = AttestationLabel(true);
+  const std::wstring attNo = AttestationLabel(false);
+  const bool attestationFramed = attYes != attNo && !attYes.empty() && !attNo.empty() &&
+                                 attYes.find(L"Demo") != std::wstring::npos &&
+                                 attNo.find(L"Demo") != std::wstring::npos &&
+                                 ReadsAsVerified(attYes) && !ReadsAsVerified(attNo);
 
   // DeliveryLabel over the ENUM rather than the world: the world never reaches
   // Expired, so a world sweep would leave that case uncovered. A dropped switch
@@ -401,10 +484,19 @@ std::wstring InspectRailFieldsProbe() {
       demo::DeliveryState::Pending, demo::DeliveryState::Sent,
       demo::DeliveryState::Delivered, demo::DeliveryState::Read,
       demo::DeliveryState::Failed, demo::DeliveryState::Expired};
+  //
+  // PINNED TO THE WORDS, not merely required to be distinct. Distinctness alone
+  // passes on ANY permutation of the six - Read captioned "Failed" and Failed
+  // captioned "Read" is still six distinct words - and R3 step 7 BRANCHES on the
+  // state word this function returns for the picked row, so a permutation is a
+  // wrong branch, not a wrong caption. Distinctness is kept beside the pin
+  // because it also catches a typo that duplicates an entry of the table itself.
+  static constexpr wchar_t const* kStateWords[kStateCount] = {
+      L"Pending", L"Sent", L"Delivered", L"Read", L"Failed", L"Expired"};
   size_t deliveryOk = 0;
   for (size_t i = 0; i < kStateCount; ++i) {
     const std::wstring d = DeliveryLabel(kStates[i]);
-    bool good = !d.empty() && d != L"Unknown";
+    bool good = (d == kStateWords[i]);
     for (size_t j = 0; j < i; ++j)
       if (DeliveryLabel(kStates[j]) == d) good = false;
     if (good) ++deliveryOk;
@@ -412,8 +504,8 @@ std::wstring InspectRailFieldsProbe() {
 
   const bool ok = normal.size() == 8 && advanced.size() == 12 &&
                   normal[0].key == L"Sender" && advanced[8].key == L"Group id" &&
-                  keysWrong == 0 && prefixWrong == 0 && blanks == 0 &&
-                  widest <= kInspectValueMaxChars && budgetGateLive && shortHexOk &&
+                  keysWrong == 0 && prefixWrong == 0 && picked.blanks == 0 &&
+                  picked.widest <= kInspectValueMaxChars && budgetGateLive && shortHexOk &&
                   convOk == world.conversations.size() && convRowsWrong == 0 &&
                   0 < sweepRows && sweepUnexpected == 0 && retentionWrong == 0 &&
                   0 < ephRows && ephRows < sweepRows && senderWrong == 0 &&
@@ -427,17 +519,21 @@ std::wstring InspectRailFieldsProbe() {
       L"prefix of advanced in {} row(s), conversation rows wrong {}; world sweep "
       L"{} values over {} message rows, {} blank = {} \"Group id\" on a direct "
       L"conversation + {} \"Received\" on an outgoing row not yet delivered + {} "
-      L"unexpected (\"{}\"); the width scan trips at {} on a locally over-long "
-      L"\"{}\"; ShortHex(32) = \"{}\", boundary and world-16 whole, ok {}; "
+      L"unexpected (first \"{}\" on {}); the width scan trips at {} on a locally "
+      L"over-long \"{}\", ok {}; ShortHex(32) = \"{}\", ok {}; "
       L"labels: retention {} wrong over {} message rows ({} disappearing), "
       L"sender {} wrong and {} blank over {} named rows, attestation {} wrong, "
-      L"G4 framing {}, delivery {}/{} distinct",
+      L"G4 framing {}, delivery {}/{} exact",
       ok ? L"PASS" : L"FAIL", normal.size(), advanced.size(), convOk,
-      world.conversations.size(), blanks, widest, widestKey, kInspectValueMaxChars,
+      world.conversations.size(), picked.blanks, picked.widest, picked.widestKey,
+      kInspectValueMaxChars,
       normal.empty() ? std::wstring{L"(none)"} : normal[0].value, keysWrong, prefixWrong,
       convRowsWrong, sweepValues, sweepRows, sweepBlanks, blankGroupIdOnDirect,
-      blankReceivedNotYet, sweepUnexpected, unexpectedKey, overWidest, overKey,
-      AsciiOnly(shortened), shortHexOk ? L"yes" : L"no", retentionWrong, sweepRows, ephRows,
+      blankReceivedNotYet, sweepUnexpected, unexpectedKey, unexpectedRow, over.widest,
+      over.widestKey, budgetBad.empty() ? std::wstring{L"yes"} : L"no (" + budgetBad + L")",
+      AsciiOnly(shortened),
+      shortHexBad.empty() ? std::wstring{L"yes"} : L"no (" + shortHexBad + L")", retentionWrong,
+      sweepRows, ephRows,
       senderWrong, senderBlank, namedRows, attestationWrong, attestationFramed ? L"yes" : L"no",
       deliveryOk, kStateCount);
 }

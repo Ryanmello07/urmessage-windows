@@ -22,6 +22,16 @@
 // performed - see AttestationLabel, the one field where the difference is not
 // academic.
 //
+// AND A FIELD THAT MUST STAY UNRENDERED, for whoever extends this list next.
+// MessageInspect::cipher carries "XChaCha20-Poly1305" (DemoWorld.cpp:172) and is
+// deliberately emitted by NOTHING here. A named cipher is a claim about what
+// encrypted a message - the most specific such claim this fixture can make - and
+// this binary has no crypto to have used it. It is not in design 6.3's eight
+// fields nor in 6.6's four Advanced additions, so nothing is missing; if a later
+// task adds a "Cipher" row it is a G4 violation on its own, whatever the label
+// says. The same test applies to any new field: does the value describe the
+// MODEL, or assert something about the message?
+//
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
@@ -48,8 +58,11 @@ struct InspectField {
 //
 // NO VALUE IN THE DEMO WORLD COMES NEAR IT. "widest <= 28" over the fixture is
 // therefore a rule nothing can trip, and a rule nothing can trip is
-// indistinguishable from a width scan that cannot see. The probe runs the same
-// scan over a locally over-long row and requires it to trip.
+// indistinguishable from a width scan that cannot see. So the probe calls ONE
+// scan function twice - once over the world's row, where the result is gated,
+// and once over a locally over-long row, where it must trip. Literally the same
+// function, not a second copy of the same loop: a demonstration that validates
+// its own private duplicate proves nothing about the code under test.
 inline constexpr size_t kInspectValueMaxChars = 28;
 
 // The rail's retention vocabulary for a MESSAGE. Deliberately NOT the same row
@@ -101,6 +114,9 @@ std::wstring ShortHex(std::wstring const& hex, size_t keep = 8);
 // leaf index is NOT one of them - §6.3 lists it among the normal fields and §6.6's
 // summary table lists it again; §6.3 is the field list and wins, so the counts
 // are 8 and 12 and the probe asserts both.
+//
+// Extending this list is a G4 decision, not a layout one - MessageInspect::cipher
+// is the specific trap, and the file header says why.
 std::vector<InspectField> BuildMessageFields(demo::Conversation const& conv,
                                              demo::MessageRow const& row, bool advanced);
 
