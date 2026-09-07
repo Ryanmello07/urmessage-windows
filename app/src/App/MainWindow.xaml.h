@@ -55,11 +55,11 @@ struct MainWindow : MainWindowT<MainWindow> {
   // in a comment somewhere else.
   void BuildConversationList();
 
-  // The ONE desktop breakpoint (urnw::kit::kWideBreakpointDip). Below it the
-  // list pane fills the window and the thread pane does not exist; at or above,
-  // the two panes sit side by side with a 1px rule between them. One function
-  // at window level: there is exactly one place where this app decides what
-  // "wide" means.
+  // The ONE window-level layout function. It consumes
+  // urmsg::demo::LayoutFor(), which answers all three content-dip thresholds
+  // (wide at kWideBreakpointDip, rail at kRailBreakpointDip, strip at
+  // kStripMinHeightDip) - there is exactly one place where this app decides
+  // what "wide", "rail" and "strip" mean.
   void ApplyBreakpoint();
 
   void ShowDestination(std::wstring_view tag);
@@ -84,14 +84,17 @@ struct MainWindow : MainWindowT<MainWindow> {
 
   urnw::WindowReveal reveal_;
   urnw::kit::PaneSearchRow search_{};
-  bool wide_ = false;
+  // The whole layout answer, not one bool: three thresholds now (list beside
+  // thread at 1000, rail at 1500, strip at 560 of HEIGHT), all in CONTENT-root
+  // dips, which is what ActualWidth/ActualHeight of Content() report.
+  urmsg::demo::Layout layout_{};
   // Whether ApplyBreakpoint has ever actually WRITTEN the layout. Without it,
-  // the first pass early-outs whenever the initial width is narrow (wide_
-  // already being false), and the window is only correct because the markup
-  // defaults happen to spell the narrow state. That is an invariant nothing
-  // enforces, living in two files — the VPN client carries the same flag for
-  // the same reason. The early-out has to test every state it applies.
-  bool breakpointApplied_ = false;
+  // the first pass early-outs whenever the initial size is narrow (layout_ is
+  // already all-false), and the window is only correct because the markup
+  // defaults happen to spell the narrow state - an invariant nothing enforces,
+  // living in two files. The VPN client carries the same flag for the same
+  // reason. It is also what DrainDeepLink waits on.
+  bool layoutApplied_ = false;
 };
 
 }  // namespace winrt::URmessage::implementation

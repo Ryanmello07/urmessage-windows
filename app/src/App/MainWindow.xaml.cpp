@@ -251,7 +251,7 @@ void MainWindow::DrainDeepLink() {
   // the nav selection before NavigationView loaded (where the markup's
   // IsSelected="True" on ChatsNavItem wins) and the message selection before the
   // rail existed.
-  if (!pendingLinkArmed_ || !breakpointApplied_) return;
+  if (!pendingLinkArmed_ || !layoutApplied_) return;
   pendingLinkArmed_ = false;
 
   // The demo nav items become visible HERE, not in EnterDemoMode (fix round 1).
@@ -296,39 +296,64 @@ void MainWindow::DrainDeepLink() {
   HomeNav().PaneDisplayMode(NavigationViewPaneDisplayMode::Auto);
 
   SelectNavTag(pendingLink_.navTag);
-  urnw::LogInfo("window: demo deep link -> tag={} conversation={} message={}",
+  urnw::LogInfo("window: demo deep link -> tag={} conversation={} message={} (rail={})",
                 urnw::Narrow(std::wstring{pendingLink_.navTag}),
-                pendingLink_.selectConversation, pendingLink_.selectMessage);
+                pendingLink_.selectConversation, pendingLink_.selectMessage,
+                layout_.rail);
 }
 
 void MainWindow::ApplyBreakpoint() {
   auto root = Content().try_as<FrameworkElement>();
   if (!root) return;
+  // CONTENT-root dips, not window dips: the frame costs about 14 of them (the
+  // shipped log has 466 for a 480-dip window and 1186 for a 1200-dip one). The
+  // thresholds in DemoShellState.h are content thresholds for this reason, and
+  // the log line below says `content` so the two can be compared.
   const double width = root.ActualWidth();
-  if (width <= 0) return;
+  const double height = root.ActualHeight();
+  if (width <= 0 || height <= 0) return;
 
-  const bool wide = urnw::kit::kWideBreakpointDip <= width;
-  // breakpointApplied_, and not just `wide == wide_`: on the very first pass
-  // wide_ is already false, so a narrow start early-outs having written
-  // NOTHING, and the window is then correct only because the markup defaults
-  // happen to spell the narrow state — an invariant living in two files that
-  // nothing enforces. Write it once for real, then early-out on genuine no-ops.
-  if (breakpointApplied_ && wide == wide_) return;
-  wide_ = wide;
-  breakpointApplied_ = true;
+  const auto next = urmsg::demo::LayoutFor(width, height);
+  if (layoutApplied_ && next.wide == layout_.wide && next.rail == layout_.rail &&
+      next.strip == layout_.strip)
+    return;
+  layout_ = next;
+  layoutApplied_ = true;
 
-  // Wide: a fixed 320dip list rail and the thread takes what is left — the
-  // reading a two-pane messenger wants, and the reason the list column is not a
-  // star weight (a proportional list column grows into dead space on a 2000dip
-  // window). Narrow: the list IS the window and the thread does not exist.
-  ListColumn().Width(wide ? GridLengthHelper::FromPixels(320)
-                          : GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
-  ThreadColumn().Width(wide ? GridLengthHelper::FromValueAndType(1, GridUnitType::Star)
-                            : GridLengthHelper::FromPixels(0));
-  const auto paneVisibility = wide ? Visibility::Visible : Visibility::Collapsed;
-  PaneRule().Visibility(paneVisibility);
-  ThreadPane().Visibility(paneVisibility);
-  urnw::LogInfo("window: breakpoint -> {} ({:.0f} dip)", wide ? "wide" : "narrow", width);
+  // Wide: a fixed 320dip list rail and the thread takes what is left. Narrow:
+  // the list IS the window and the thread does not exist.
+  ListColumn().Width(layout_.wide
+                         ? GridLengthHelper::FromPixels(320)
+                         : GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
+  ThreadColumn().Width(layout_.wide
+                           ? GridLengthHelper::FromValueAndType(1, GridUnitType::Star)
+                           : GridLengthHelper::FromPixels(0));
+  const auto threadVisibility =
+      layout_.wide ? Visibility::Visible : Visibility::Collapsed;
+  PaneRule().Visibility(threadVisibility);
+  // Exactly one of the two thread surfaces is ever live: the shipped scaffold,
+  // or the demo's ThreadView host.
+  ThreadPane().Visibility(options_.enabled ? Visibility::Collapsed : threadVisibility);
+  ThreadHost().Visibility(options_.enabled ? threadVisibility : Visibility::Collapsed);
+
+  // The rail is demo-only and exists only at or above kRailBreakpointDip. Below
+  // it, message inspect is simply unavailable - no sheet, no fallback, no error
+  // (design doc 6.5a).
+  const bool rail = options_.enabled && layout_.rail;
+  RailColumn().Width(rail ? GridLengthHelper::FromPixels(urmsg::demo::kRailWidthDip)
+                          : GridLengthHelper::FromPixels(0));
+  const auto railVisibility = rail ? Visibility::Visible : Visibility::Collapsed;
+  RailRule().Visibility(railVisibility);
+  RailHost().Visibility(railVisibility);
+
+  // The strip is hidden below kStripMinHeightDip of content HEIGHT so it can
+  // never eat a readable thread at Spec C 1.2's 480dip minimum.
+  StatusStripHost().Visibility(options_.enabled && layout_.strip
+                                   ? Visibility::Visible
+                                   : Visibility::Collapsed);
+
+  urnw::LogInfo("window: layout wide={} rail={} strip={} (content {:.0f}x{:.0f} dip)",
+                layout_.wide, layout_.rail, layout_.strip, width, height);
 }
 
 void MainWindow::ShowDestination(std::wstring_view tag) {
