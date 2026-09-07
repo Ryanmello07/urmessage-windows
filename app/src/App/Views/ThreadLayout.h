@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "Demo/DemoWorld.h"
+#include "Demo/ThreadLayout.h"  // the ROW RULES (also urmsg::views, also pure)
 
 namespace urmsg::views {
 
@@ -37,8 +38,29 @@ enum class ThreadRowShape {
 struct ThreadRowPlan {
   std::size_t rowIndex = 0;      // index into Conversation::rows
   ThreadRowShape shape = ThreadRowShape::SystemLine;
-  bool showSenderHeader = false; // first bubble of an INCOMING run, groups only
-  bool endsOutgoingRun = false;  // T5 hangs the delivery cluster under THIS row
+
+  // First bubble of a run, INCOMING, in a GROUP. Delegated verbatim to
+  // ShowsSenderHeader() in Demo/ThreadLayout.h, so there is exactly ONE
+  // definition of "starts a run" for the sender name in this app. That rule
+  // breaks a run on the SENDER (it compares senderKey); computing it here from
+  // direction alone would merge Mira-then-Tobias into one incoming run and drop
+  // Tobias's name - 5 bubbles in the shipped world, gated by "T4 sender
+  // headers" in CollectDiagnostics().
+  bool showSenderHeader = false;
+
+  // Last MESSAGE row of a same-DIRECTION outgoing stretch. A position hint, and
+  // deliberately a different rule from the one above.
+  //
+  // T5: DO NOT hang the delivery cluster on this field. Use
+  // CarriesDeliveryGlyph() from Demo/ThreadLayout.h, which additionally fires on
+  // ANY Failed row wherever it sits. The shipped world contains exactly that
+  // case - DemoWorld.cpp:277 is an outgoing Failed row followed at :279 by an
+  // outgoing Pending row - so endsOutgoingRun is FALSE there while the row must
+  // still show its reading. It is the red circle and the word "Failed" on the
+  // 12:09 row in the capture; hanging the cluster on this field alone deletes
+  // it, and a silently swallowed failure is the one delivery state this surface
+  // must never lose. endsOutgoingRun is not a substitute for that rule.
+  bool endsOutgoingRun = false;
 };
 
 // One entry per row, in order, always. Never throws.

@@ -733,9 +733,10 @@ std::vector<std::wstring> CollectDiagnostics() {
     //    outgoing name carries its delivery WORD (so state is never colour-only);
     //    the failed one carries its reason; and in a group every incoming name
     //    carries a sender EVEN ON A CONTINUATION, where the bubble draws none.
-    int named = 0, empty = 0, missingTime = 0, bodied = 0, missingBody = 0,
-        outNamed = 0, missingWord = 0;
-    int groupIncoming = 0, missingSender = 0, failedRows = 0, withReason = 0;
+    int named = 0, empty = 0, timed = 0, missingTime = 0, bodied = 0,
+        missingBody = 0, outNamed = 0, missingWord = 0;
+    int groupIncoming = 0, senderKnown = 0, missingSender = 0, failedRows = 0,
+        withReason = 0;
     for (auto const& c : world.conversations) {
       const bool group = (c.kind == demo::ConversationKind::Group);
       for (auto const& row : c.rows) {
@@ -743,8 +744,15 @@ std::vector<std::wstring> CollectDiagnostics() {
         const std::wstring n = views::BubbleAutomationName(row, group);
         ++named;
         if (n.empty()) ++empty;
-        if (!row.timeLabel.empty() && n.find(row.timeLabel) == std::wstring::npos)
-          ++missingTime;
+        // COUNT THE DENOMINATOR, exactly as the body condition below does and
+        // for the same reason: the check is guarded by "the row has a time", so
+        // a fixture that emptied timeLabel would skip every row, leave
+        // missingTime at 0 and print PASS while no announcement carried a time.
+        // timed is required to EQUAL named, and is printed as {timed}/{named}.
+        if (!row.timeLabel.empty()) {
+          ++timed;
+          if (n.find(row.timeLabel) == std::wstring::npos) ++missingTime;
+        }
         // The BODY, which nothing above looked at. Delete the one line that
         // appends it in BubbleAutomationName and every announcement in the app
         // loses the message itself while all nine other conditions here still
@@ -774,66 +782,143 @@ std::vector<std::wstring> CollectDiagnostics() {
           }
         } else if (group) {
           ++groupIncoming;
-          if (!row.inspect.senderDisplayName.empty() &&
-              n.find(row.inspect.senderDisplayName) == std::wstring::npos) ++missingSender;
+          // Same guarded-numerator hazard, same fix: senderKnown is the
+          // denominator and must equal groupIncoming, so an emptied
+          // inspect.senderDisplayName is a FAIL rather than a skipped row.
+          if (!row.inspect.senderDisplayName.empty()) {
+            ++senderKnown;
+            if (n.find(row.inspect.senderDisplayName) == std::wstring::npos) ++missingSender;
+          }
         }
       }
     }
-    const bool namesOk = named > 0 && empty == 0 && missingTime == 0 &&
-                         bodied == named && missingBody == 0 && outNamed > 0 &&
-                         missingWord == 0 && groupIncoming > 0 && missingSender == 0 &&
+    const bool namesOk = named > 0 && empty == 0 && timed == named &&
+                         missingTime == 0 && bodied == named && missingBody == 0 &&
+                         outNamed > 0 && missingWord == 0 && groupIncoming > 0 &&
+                         senderKnown == groupIncoming && missingSender == 0 &&
                          failedRows > 0 && withReason == failedRows;
     lines.push_back(std::format(
-        L"  thread T2 names  : {} - {} bubbles named ({} empty, {} missing time, "
-        L"{}/{} carry a body, {} missing body); {} outgoing, {} missing a delivery "
-        L"word; {} group incoming, {} missing a sender; {}/{} failed carry a reason",
-        namesOk ? L"PASS" : L"FAIL", named, empty, missingTime, bodied, named,
-        missingBody, outNamed, missingWord,
-        groupIncoming, missingSender, withReason, failedRows));
+        L"  thread T2 names  : {} - {} bubbles named ({} empty, {}/{} carry a time, "
+        L"{} missing time, {}/{} carry a body, {} missing body); {} outgoing, {} "
+        L"missing a delivery word; {} group incoming, {}/{} carry a sender, {} "
+        L"missing a sender; {}/{} failed carry a reason",
+        namesOk ? L"PASS" : L"FAIL", named, empty, timed, named, missingTime,
+        bodied, named, missingBody, outNamed, missingWord,
+        groupIncoming, senderKnown, groupIncoming, missingSender,
+        withReason, failedRows));
   }
 
   // ---- T4: the thread layout planner -------------------------------------
   // PlanThreadRows is pure C++, which is the only reason any of this can run
   // here at all: CollectDiagnostics is called from wWinMain BEFORE
-  // winrt::init_apartment(), so a planner that touched a winrt type could not
-  // be asserted about, only looked at.
-  //
-  // Every line prints its counts, and every condition names a floor, so a stub
-  // that returned an empty plan reads FAIL with zeros rather than PASS with
-  // nothing.
+  // winrt::init_apartment(), so a planner that touched a winrt type could not be
+  // asserted about, only looked at.
   {
-    std::size_t convs = 0, rows = 0, planned = 0, system = 0, plain = 0,
-                permanent = 0, emptyText = 0, mismatched = 0;
+    using Shape = urmsg::views::ThreadRowShape;
+
+    // THE EXPECTED SHAPE, recomputed here from the world alone.
+    //
+    // This is the assertion. Counting how many rows wear each shape is NOT: a
+    // planner that mapped RowKind::Message onto DaySeparator keeps every total
+    // balanced (66 planned of 66 rows, 2 plain + 1 permanent of 3 system rows,
+    // 1 record with 0 empty text and 0 permanent-flag mismatch) and would have
+    // read PASS on every line while DaySeparatorLabel() returned an empty label
+    // for all 60 message rows and the thread drew NOTHING. Inverting the
+    // incoming/outgoing ternary is equally invisible to a count. So the shape of
+    // EVERY row is compared against a locally recomputed expectation, across all
+    // five shapes, and every shape is required to be worn by a real row.
+    auto expectedShape = [](urmsg::demo::MessageRow const& r) {
+      switch (r.kind) {
+        case urmsg::demo::RowKind::DaySeparator:
+          return Shape::DaySeparator;
+        case urmsg::demo::RowKind::System:
+          return r.permanentRecord ? Shape::SystemPermanentRecord : Shape::SystemLine;
+        case urmsg::demo::RowKind::Message:
+          return r.outgoing ? Shape::OutgoingBubble : Shape::IncomingBubble;
+      }
+      return Shape::SystemLine;
+    };
+    auto shapeSlot = [](Shape sh) -> std::size_t {
+      switch (sh) {
+        case Shape::IncomingBubble: return 0;
+        case Shape::OutgoingBubble: return 1;
+        case Shape::DaySeparator: return 2;
+        case Shape::SystemLine: return 3;
+        case Shape::SystemPermanentRecord: return 4;
+      }
+      return 0;
+    };
+
+    std::size_t convs = 0, rows = 0, planned = 0, outOfOrder = 0, wrongShape = 0;
+    std::size_t seen[5] = {0, 0, 0, 0, 0};
+    std::size_t system = 0, plain = 0, permanent = 0, emptyText = 0, mismatched = 0;
+    std::size_t msgRows = 0, headerByRule = 0, headerByPlan = 0, headerDisagree = 0;
+
     for (auto const& c : urmsg::demo::GetWorld().conversations) {
       ++convs;
       rows += c.rows.size();
+      const bool group = (c.kind == urmsg::demo::ConversationKind::Group);
       for (auto const& r : c.rows)
         if (r.kind == urmsg::demo::RowKind::System) ++system;
+
+      std::size_t at = 0;
       for (auto const& p : urmsg::views::PlanThreadRows(c)) {
         ++planned;
+        // "One entry per row, IN ORDER, always" is part of the contract, so it
+        // is checked rather than trusted; a plan that reordered or duplicated
+        // rows would otherwise still count 66 of 66.
+        if (p.rowIndex != at++ || c.rows.size() <= p.rowIndex) {
+          ++outOfOrder;
+          continue;
+        }
         auto const& r = c.rows[p.rowIndex];
-        const bool shapedPermanent =
-            (p.shape == urmsg::views::ThreadRowShape::SystemPermanentRecord);
-        if (p.shape == urmsg::views::ThreadRowShape::SystemLine) ++plain;
-        if (shapedPermanent) {
+
+        if (p.shape != expectedShape(r)) ++wrongShape;
+        ++seen[shapeSlot(p.shape)];
+
+        if (p.shape == Shape::SystemLine) ++plain;
+        if (p.shape == Shape::SystemPermanentRecord) {
           ++permanent;
           if (r.systemText.empty()) ++emptyText;
         }
-        // The CORRESPONDENCE, in both directions: the permanent shape appears
-        // on exactly the rows the world marks permanentRecord, and on no
-        // others. Counting plain and permanent alone cannot see an INVERTED
-        // ternary (1 plain + 2 permanent still sums to 3) nor a planner that
-        // hardcoded every system row to the permanent shape (3 permanent also
-        // sums to 3). The world holds 2 plain and 1 permanent system row, so
-        // both directions of that mistake have a row that exercises them.
-        if (shapedPermanent !=
+        // The permanent shape appears on exactly the rows the world marks
+        // permanentRecord, and on no others - Spec C 7.4 stated as a property.
+        if ((p.shape == Shape::SystemPermanentRecord) !=
             (r.kind == urmsg::demo::RowKind::System && r.permanentRecord))
           ++mismatched;
+
+        // The plan's sender header must BE the app's one sender-run rule, not a
+        // second opinion about it. Before that was delegated the rule said 20
+        // and the plan said 15; this gate is why that cannot come back without
+        // a FAIL on the line.
+        if (r.kind == urmsg::demo::RowKind::Message) {
+          ++msgRows;
+          urmsg::demo::MessageRow const* prev =
+              (p.rowIndex > 0) ? &c.rows[p.rowIndex - 1] : nullptr;
+          const bool byRule = urmsg::views::ShowsSenderHeader(prev, r, group);
+          if (byRule) ++headerByRule;
+          if (p.showSenderHeader) ++headerByPlan;
+          if (byRule != p.showSenderHeader) ++headerDisagree;
+        }
       }
     }
+    // Every one of the five shapes must be worn by at least one row, or
+    // "0 wrong shapes" would be a claim about branches no row ever took.
+    std::size_t shapesUnused = 0;
+    for (std::size_t k = 0; k < 5; ++k)
+      if (seen[k] == 0) ++shapesUnused;
+
     lines.push_back(std::format(
-        L"  T4 plan covers rows  : {} — planned {} of {} rows over {} conversations",
-        (planned == rows && 0 < rows) ? L"PASS" : L"FAIL", planned, rows, convs));
+        L"  T4 plan covers rows  : {} — planned {} of {} rows over {} "
+        L"conversations, {} out of order",
+        (planned == rows && 0 < rows && outOfOrder == 0) ? L"PASS" : L"FAIL",
+        planned, rows, convs, outOfOrder));
+    lines.push_back(std::format(
+        L"  T4 row shapes        : {} — {} wrong of {} planned; in {} out {} "
+        L"day {} sys {} perm {}; {} of 5 shapes unused",
+        (wrongShape == 0 && shapesUnused == 0 && 0 < planned) ? L"PASS" : L"FAIL",
+        wrongShape, planned, seen[0], seen[1], seen[2], seen[3], seen[4],
+        shapesUnused));
     lines.push_back(std::format(
         L"  T4 system rows       : {} — {} system rows -> {} plain + {} permanent",
         (plain + permanent == system && 1 <= plain && 1 <= permanent) ? L"PASS" : L"FAIL",
@@ -843,6 +928,12 @@ std::vector<std::wstring> CollectDiagnostics() {
         L"{} shape/flag mismatch over {} planned rows",
         (1 <= permanent && emptyText == 0 && mismatched == 0) ? L"PASS" : L"FAIL",
         permanent, emptyText, mismatched, planned));
+    lines.push_back(std::format(
+        L"  T4 sender headers    : {} — rule {} vs plan {} over {} message rows, "
+        L"{} disagree",
+        (headerDisagree == 0 && 1 <= headerByRule && 1 <= headerByPlan) ? L"PASS"
+                                                                       : L"FAIL",
+        headerByRule, headerByPlan, msgRows, headerDisagree));
   }
 
   return lines;

@@ -39,25 +39,35 @@ std::vector<ThreadRowPlan> PlanThreadRows(demo::Conversation const& c) {
     plan.push_back(p);
   }
 
-  // A RUN is a maximal stretch of consecutive Message rows in the same
-  // direction. A day separator or a system row BREAKS it, deliberately: the
-  // delivery cluster belongs under the last bubble the reader actually saw, not
+  // TWO different notions of "run" live here, on purpose, and the difference is
+  // the whole reason this loop reads the way it does.
+  //
+  // endsOutgoingRun is a stretch of consecutive Message rows in the same
+  // DIRECTION. A day separator or a system row BREAKS it, deliberately: a
+  // position hint belongs under the last bubble the reader actually saw, not
   // under one that is three rows further down past a "Ana's safety number
   // changed" record.
+  //
+  // showSenderHeader is a stretch from the same SENDER, and it is NOT computed
+  // here - it is delegated to ShowsSenderHeader() in Demo/ThreadLayout.h, which
+  // compares senderKey. Spec C §5.2 names the sender on the first bubble of a
+  // run so the reader knows WHO is speaking; a direction-only run merges
+  // Mira-then-Tobias into one incoming run and Tobias loses his name. Measured
+  // on the shipped world before this delegation existed: the rule said 20
+  // headers, a direction-only computation said 15, and the 5 that disagreed
+  // were DemoWorld.cpp:258, 302, 311, 314 and 316. One definition, one caller,
+  // and "T4 sender headers" in CollectDiagnostics() gates the two staying equal.
   for (std::size_t i = 0; i < plan.size(); ++i) {
-    demo::MessageRow const& r = c.rows[plan[i].rowIndex];
+    const std::size_t row = plan[i].rowIndex;
+    demo::MessageRow const& r = c.rows[row];
     if (!IsMessage(r)) continue;
 
-    const bool startsRun = (i == 0) || !IsMessage(c.rows[plan[i - 1].rowIndex]) ||
-                           c.rows[plan[i - 1].rowIndex].outgoing != r.outgoing;
     const bool endsRun = (i + 1 == plan.size()) || !IsMessage(c.rows[plan[i + 1].rowIndex]) ||
                          c.rows[plan[i + 1].rowIndex].outgoing != r.outgoing;
 
-    // Spec C §5.2: sender name + identicon on the first bubble of a run, in
-    // GROUPS only. Never in a DM (the other name is the window title) and never
-    // on your own run (it is you).
+    demo::MessageRow const* prev = (row > 0) ? &c.rows[row - 1] : nullptr;
     plan[i].showSenderHeader =
-        startsRun && !r.outgoing && c.kind == demo::ConversationKind::Group;
+        ShowsSenderHeader(prev, r, c.kind == demo::ConversationKind::Group);
     plan[i].endsOutgoingRun = endsRun && r.outgoing;
   }
   return plan;

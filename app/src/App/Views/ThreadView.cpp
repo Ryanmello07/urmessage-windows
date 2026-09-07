@@ -256,6 +256,14 @@ FrameworkElement MakeDaySeparator(std::wstring const& label) {
 FrameworkElement MakeSystemLine(winrt::hstring const& text) {
   TextBlock line;
   line.Text(text);
+  // UrCaptionTextStyle, not a bare TextBlock: it is body-face/12/16 muted, and
+  // it is what pins the BODY face to this line from the app's own resources.
+  // Without it the face is only whatever ContentControlThemeFontFamily happens
+  // to be - correct today, but a framework default is not a guarantee. FontSize
+  // and Foreground are still set explicitly after it, the same belt-and-braces
+  // MakeDeliveryLine uses, so a missing resource key cannot silently resize or
+  // recolour the line.
+  if (auto st = StyleByKey(L"UrCaptionTextStyle")) line.Style(st);
   line.FontSize(12);
   line.Foreground(urnw::colors::MutedBrush());
   line.TextWrapping(TextWrapping::Wrap);
@@ -320,9 +328,18 @@ FrameworkElement MakeKeyChangeRecord(winrt::hstring const& text) {
 
   TextBlock body;
   body.Text(text);
+  // Same reason as MakeSystemLine: the style is what names the BODY face. The
+  // caption style's muted foreground is then overridden - this copy is the
+  // record itself, not a caption about it, so it reads at full contrast.
+  if (auto st = StyleByKey(L"UrCaptionTextStyle")) body.Style(st);
   body.FontSize(12);
   body.TextWrapping(TextWrapping::Wrap);
   body.Foreground(urnw::colors::TextBrush());
+  // The ROOT below carries this exact text in its automation name. Leaving the
+  // TextBlock in the tree as well would announce the record twice - once as the
+  // Grid's name and again as its child. Same treatment as the bubble's own body
+  // and time lines above.
+  MarkRaw(body);
   head.Children().Append(body);
   column.Children().Append(head);
 
@@ -336,7 +353,11 @@ FrameworkElement MakeKeyChangeRecord(winrt::hstring const& text) {
   review.MinHeight(26);
   review.IsEnabled(false);
   Automation::AutomationProperties::SetName(
-      review, winrt::hstring{L"Review the safety-number change (not available in the demo)"});
+      review,
+      // "identity key changed" is what the record actually says on screen; a
+      // name that said "safety number" would announce different words from the
+      // ones beside it.
+      winrt::hstring{L"Review the identity-key change (not available in the demo)"});
   column.Children().Append(review);
 
   root.Children().Append(column);
@@ -431,10 +452,16 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
 
   const bool group = (c.kind == demo::ConversationKind::Group);
 
-  // The builder renders the PLAN and decides nothing. PlanThreadRows lives in
-  // Views/ThreadLayout.h, which is pure C++, so every branch of this switch is
-  // reachable from --diagnose - a builder that classified rows inline could
-  // only ever be checked by looking at a screenshot.
+  // The builder renders the PLAN and chooses no SHAPE of its own. PlanThreadRows
+  // lives in Views/ThreadLayout.h, which is pure C++, so every branch of this
+  // switch is reachable from --diagnose - a builder that classified rows inline
+  // could only ever be checked by looking at a screenshot.
+  //
+  // NOT literally one element per plan entry, and the exception is deliberate:
+  // a DaySeparator whose label is empty draws NOTHING rather than an empty pill
+  // (see the case below). That is the only place the count of children can be
+  // less than the count of plan entries; no branch here ever draws MORE than
+  // one, and no branch reorders or invents a row.
   //
   // The plan carries the SHAPE ONLY. The bubble's own trim still comes from the
   // per-row rules in Demo/ThreadLayout.h, and that is deliberate, because the
