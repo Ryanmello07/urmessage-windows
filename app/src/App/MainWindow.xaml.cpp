@@ -206,11 +206,12 @@ void MainWindow::EnterDemoMode() {
   ThreadPane().Visibility(Visibility::Collapsed);
   ListHost().Visibility(Visibility::Visible);
 
+  // Content only, here. The Visibility flip is deferred to DrainDeepLink (fix
+  // round 1) and paired there with a PaneDisplayMode nudge - see that function
+  // for why. Isolated by disabling each call above in turn: Content() alone
+  // never triggered the regression, only Visibility() did.
   NetworkNavItem().Content(box_value(hstring{kDemoNavNetwork}));
   DeveloperNavItem().Content(box_value(hstring{kDemoNavDeveloper}));
-  NetworkNavItem().Visibility(Visibility::Visible);
-  DeveloperNavItem().Visibility(advanced_ ? Visibility::Visible
-                                          : Visibility::Collapsed);
 
   DemoChipText().Text(kDemoWatermark);
   DemoChip().Visibility(options_.watermark ? Visibility::Visible
@@ -252,6 +253,28 @@ void MainWindow::DrainDeepLink() {
   // rail existed.
   if (!pendingLinkArmed_ || !breakpointApplied_) return;
   pendingLinkArmed_ = false;
+
+  // The demo nav items become visible HERE, not in EnterDemoMode (fix round 1).
+  // Flipping a NavigationViewItem from Collapsed to Visible at ANY point -
+  // constructor or here, before or after the window reaches its final size -
+  // corrupts NavigationView's own Auto pane-mode resolution: it renders
+  // icon-only from that moment on, permanently, and does not recover on a
+  // later resize either (checked against the harness's own live 1200x800
+  // resize in the same run). Isolated with three throwaway builds: (1)
+  // dropping both Visibility() calls kept the untouched items labelled, (2)
+  // re-adding only NetworkNavItem's reproduced icon-only for every item
+  // including ones never touched, (3) moving the calls here instead of
+  // EnterDemoMode alone did not help. What DOES recover it is forcing
+  // NavigationView to fully re-run its Auto adaptive logic immediately after:
+  // stepping PaneDisplayMode away from Auto and back re-measures against the
+  // CURRENT item set and CURRENT window width, rather than whatever it cached
+  // before the Visibility flip.
+  NetworkNavItem().Visibility(Visibility::Visible);
+  DeveloperNavItem().Visibility(advanced_ ? Visibility::Visible
+                                          : Visibility::Collapsed);
+  HomeNav().PaneDisplayMode(NavigationViewPaneDisplayMode::LeftCompact);
+  HomeNav().PaneDisplayMode(NavigationViewPaneDisplayMode::Auto);
+
   SelectNavTag(pendingLink_.navTag);
   urnw::LogInfo("window: demo deep link -> tag={} conversation={} message={}",
                 urnw::Narrow(std::wstring{pendingLink_.navTag}),

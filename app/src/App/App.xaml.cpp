@@ -8,8 +8,6 @@
 #include "Log.h"
 #include "MainWindow.xaml.h"
 #include "Startup.h"
-#include <winrt/Microsoft.UI.Interop.h>
-#include <winrt/Microsoft.UI.Windowing.h>
 #include "Strings.h"
 #include "WindowShell.h"
 
@@ -76,28 +74,30 @@ void App::OnLaunched(LaunchActivatedEventArgs const&) {
       HWND hwnd = nullptr;
       native->get_WindowHandle(&hwnd);
       if (hwnd) {
-        urnw::shell::ApplyNativeShell(window_, hwnd);
-        // D7: demo mode opens at 1560x900 DIP, because the rail exists only at
-        // or above 1500 CONTENT dips (a 1560-dip window measures ~1546 of
-        // content) and the rail must be live on launch - it is the only way an
-        // agent can see that state without synthesising input. AFTER
-        // ApplyNativeShell deliberately: that function ends in MoveAndResize and
-        // would otherwise win. The options are READ BACK from the window that
-        // already parsed them, so the command line has one parser.
+        // D7 (fix round 1): demo mode opens at 1560x900 DIP, because the rail
+        // exists only at or above 1500 CONTENT dips and the rail must be live on
+        // launch - it is the only way an agent can see that state without
+        // synthesising input. FORCED THROUGH ApplyNativeShell'S OWN PARAMETERS,
+        // not a second resize issued after it: the first cut here called
+        // ApplyNativeShell with no forced size (one MoveAndResize to the compact
+        // 480x760 default) and then grew the window with a separate
+        // AppWindow::Resize - two MoveAndResize-equivalents before the window is
+        // ever shown. NavigationView's Auto pane-mode latches onto whatever it
+        // sees during that sequence and does not recover even once the final
+        // size is correct: --demo=network rendered icon-only nav at a proven
+        // 1560x900. F7 (one commit before this file existed) called
+        // ApplyNativeShell with forced dims directly - ONE MoveAndResize - and
+        // its `.verify/shot-demo.png` shows fully labelled nav at the identical
+        // 1560x900. Restored that path: the options are READ BACK from the
+        // window that already parsed them (constructed one line above), so the
+        // command line still has exactly one parser; DemoOptions() just has to
+        // be read before ApplyNativeShell now, not after.
         bool demo = false;
         if (auto self = window_.try_as<URmessage::MainWindow>())
           demo = winrt::get_self<MainWindow>(self)->DemoOptions().enabled;
-        if (demo) {
-          const UINT dpi = ::GetDpiForWindow(hwnd);
-          const double scale = (dpi ? dpi : 96u) / 96.0;
-          const auto id = winrt::Microsoft::UI::GetWindowIdFromWindow(hwnd);
-          if (auto appWindow =
-                  winrt::Microsoft::UI::Windowing::AppWindow::GetFromWindowId(id)) {
-            appWindow.Resize({static_cast<int32_t>(1560 * scale),
-                              static_cast<int32_t>(900 * scale)});
-            urnw::LogInfo("app: demo launch size 1560x900 dip (dpi {})", dpi);
-          }
-        }
+        urnw::shell::ApplyNativeShell(window_, hwnd,
+                                      demo ? urnw::shell::kDemoWidthDips : 0,
+                                      demo ? urnw::shell::kDemoHeightDips : 0);
       }
     }
 
