@@ -362,16 +362,28 @@ std::wstring DemoLayoutCheck() {
 std::wstring DemoDeepLinkCheck() {
   using urmsg::demo::DeepLinkFor;
   using urmsg::demo::DemoScreen;
-  int checked = 0;
-  auto tag = [&](DemoScreen s, std::wstring_view expect) {
-    ++checked;
-    return DeepLinkFor(s).navTag == expect;
+  // Fix round 1: `checked` used to live inside a lambda chained with &&, so
+  // short-circuit evaluation stopped counting at the FIRST failing tag - a
+  // broken 5th mapping would have printed "4 nav tags checked", quietly
+  // shrinking the very count this line exists to make trustworthy. Every
+  // mapping is now evaluated unconditionally, so `checked` is always 7 and
+  // `matches` is the number that actually agreed.
+  struct Expected {
+    DemoScreen screen;
+    std::wstring_view tag;
   };
-  const bool tags = tag(DemoScreen::None, L"chats") && tag(DemoScreen::Chats, L"chats") &&
-                    tag(DemoScreen::Thread, L"chats") && tag(DemoScreen::Inspect, L"chats") &&
-                    tag(DemoScreen::Network, L"network") &&
-                    tag(DemoScreen::Settings, L"settings") &&
-                    tag(DemoScreen::Developer, L"developer");
+  constexpr Expected kExpectedTags[] = {
+      {DemoScreen::None, L"chats"},       {DemoScreen::Chats, L"chats"},
+      {DemoScreen::Thread, L"chats"},     {DemoScreen::Inspect, L"chats"},
+      {DemoScreen::Network, L"network"},  {DemoScreen::Settings, L"settings"},
+      {DemoScreen::Developer, L"developer"},
+  };
+  int checked = 0, matches = 0;
+  for (auto const& e : kExpectedTags) {
+    ++checked;
+    if (DeepLinkFor(e.screen).navTag == e.tag) ++matches;
+  }
+  const bool tags = (matches == checked);
   // inspect is thread PLUS a message; thread is not.
   const bool ladder = !DeepLinkFor(DemoScreen::Chats).selectConversation &&
                       DeepLinkFor(DemoScreen::Thread).selectConversation &&
@@ -385,9 +397,9 @@ std::wstring DemoDeepLinkCheck() {
                         !DeepLinkFor(DemoScreen::Inspect).forceAdvanced;
   const bool ok = tags && ladder && advanced;
   return std::format(
-      L"  demo deep link   : {}  ({} nav tags checked {} | thread=conv, "
+      L"  demo deep link   : {}  ({}/{} nav tags matched {} | thread=conv, "
       L"inspect=conv+msg {} | only developer forces advanced {})",
-      ok ? L"PASS" : L"FAIL", checked, tags, ladder, advanced);
+      ok ? L"PASS" : L"FAIL", matches, checked, tags, ladder, advanced);
 }
 
 }  // namespace
