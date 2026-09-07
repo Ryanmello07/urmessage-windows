@@ -17,6 +17,7 @@
 #include "Log.h"
 #include "Paths.h"
 #include "Strings.h"
+#include "Demo/DemoWorld.h"
 
 // The Windows App SDK version this binary was BUILT against, injected from the
 // single MSBuild property that also drives the PackageReference (App.vcxproj),
@@ -157,6 +158,177 @@ bool WriteStdout(HANDLE out, std::wstring_view text) {
                      nullptr) != FALSE;
 }
 
+// ---- the demo world's ten invariants (contract section 1.1) ----------------
+//
+// These run on EVERY launch, not only under --diagnose: CollectDiagnostics is
+// called at main.cpp:168 and LogDiagnostics writes every line to the log, so a
+// world that broke overnight leaves evidence in the log of the run that broke
+// it rather than waiting for someone to think to ask.
+
+void MixU64(uint64_t& h, uint64_t v) {
+  for (int i = 0; i < 8; ++i) {
+    h ^= (v >> (i * 8)) & 0xFFull;
+    h *= 1099511628211ull;
+  }
+}
+void MixStr(uint64_t& h, std::wstring const& s) {
+  MixU64(h, static_cast<uint64_t>(s.size()));
+  for (wchar_t c : s) MixU64(h, static_cast<uint64_t>(static_cast<uint16_t>(c)));
+}
+void MixSeed(uint64_t& h, urmsg::demo::Seed const& s) {
+  for (uint8_t b : s) MixU64(h, static_cast<uint64_t>(b));
+}
+
+uint64_t WorldFingerprint(urmsg::demo::World const& w) {
+  uint64_t h = 1469598103934665603ull;
+  auto mixDevice = [&h](urmsg::demo::DeviceRef const& d) {
+    MixStr(h, d.id); MixStr(h, d.name); MixStr(h, d.ownerName);
+    MixSeed(h, d.ownerKey); MixStr(h, d.lastSeenLabel);
+    MixU64(h, d.online ? 1u : 0u); MixU64(h, d.isThisComputer ? 1u : 0u);
+  };
+  for (auto const& c : w.conversations) {
+    MixStr(h, c.id); MixU64(h, static_cast<uint64_t>(c.kind)); MixStr(h, c.name);
+    MixSeed(h, c.identityKey); MixStr(h, c.groupIdHex); MixStr(h, c.preview);
+    MixStr(h, c.timeLabel); MixU64(h, static_cast<uint64_t>(c.unread));
+    MixU64(h, c.muted ? 1u : 0u); MixU64(h, c.disappearing ? 1u : 0u);
+    MixU64(h, static_cast<uint64_t>(c.memberCount));
+    MixStr(h, c.retentionLabel); MixStr(h, c.mediaRetentionLabel);
+    for (auto const& m : c.members) {
+      MixStr(h, m.id); MixStr(h, m.displayName); MixSeed(h, m.identityKey);
+      MixU64(h, m.admin ? 1u : 0u);
+      for (auto const& d : m.devices) mixDevice(d);
+    }
+    for (auto const& r : c.rows) {
+      MixU64(h, static_cast<uint64_t>(r.kind)); MixStr(h, r.id);
+      MixStr(h, r.senderName); MixSeed(h, r.senderKey); MixStr(h, r.body);
+      MixStr(h, r.timeLabel); MixU64(h, r.outgoing ? 1u : 0u);
+      MixU64(h, static_cast<uint64_t>(r.state)); MixStr(h, r.failureReason);
+      MixStr(h, r.systemText); MixU64(h, r.permanentRecord ? 1u : 0u);
+      auto const& n = r.inspect;
+      MixU64(h, n.epoch); MixU64(h, n.senderLeafIndex);
+      MixU64(h, static_cast<uint64_t>(n.retention)); MixStr(h, n.sizeBucket);
+      MixU64(h, n.wireSizeBytes); MixU64(h, n.attestationVerified ? 1u : 0u);
+      MixStr(h, n.cipher); MixStr(h, n.groupIdHex); MixStr(h, n.senderDisplayName);
+      MixStr(h, n.sentAtLabel); MixStr(h, n.receivedAtLabel);
+      for (auto const& d : n.deliveredTo) mixDevice(d);
+      for (auto const& d : n.readBy) mixDevice(d);
+    }
+  }
+  for (auto const& d : w.myDevices) mixDevice(d);
+  for (auto const& n : w.relayPath) {
+    MixStr(h, n.label); MixStr(h, n.subLabel); MixStr(h, n.glyph);
+    MixU64(h, static_cast<uint64_t>(n.hopMs)); MixU64(h, n.healthy ? 1u : 0u);
+  }
+  MixStr(h, w.server.host); MixStr(h, w.server.jurisdiction);
+  MixU64(h, static_cast<uint64_t>(w.server.latencyMs));
+  MixU64(h, w.server.keyVerified ? 1u : 0u);
+  MixU64(h, w.currentEpoch); MixU64(h, static_cast<uint64_t>(w.connectState));
+  MixStr(h, w.sessionMode); MixU64(h, static_cast<uint64_t>(w.recordsPerSecond));
+  return h;
+}
+
+// Filled in by Step 4, from the value the first run prints. A task that
+// deliberately changes the world updates this in the SAME commit; anything
+// else that changes it is the bug this line exists to catch.
+constexpr uint64_t kExpectedWorldFingerprint = 0x97B1C149D13010C3ull;
+
+std::wstring Verdict(bool ok) { return ok ? L"PASS" : L"FAIL"; }
+
+std::vector<std::wstring> DemoWorldAssertions() {
+  using namespace urmsg::demo;
+  World const& w = GetWorld();
+  std::vector<std::wstring> out;
+
+  size_t rows = 0, members = 0, groups = 0, direct = 0;
+  for (auto const& c : w.conversations) {
+    rows += c.rows.size();
+    members += c.members.size();
+    (c.kind == ConversationKind::Group ? groups : direct) += 1;
+  }
+  out.push_back(std::format(
+      L"  demo world       : {} conversations, {} rows, {} members, {} devices",
+      w.conversations.size(), rows, members, w.myDevices.size()));
+
+  // I1
+  const bool i1 = (w.conversations.size() == 8 && groups == 2);
+  out.push_back(std::format(L"    I1  conversation count   {}  {} total, {} group, {} direct",
+                            Verdict(i1), w.conversations.size(), groups, direct));
+  // I2
+  size_t i2Agree = 0;
+  for (auto const& c : w.conversations)
+    if (c.memberCount == static_cast<int>(c.members.size())) ++i2Agree;
+  out.push_back(std::format(L"    I2  memberCount agrees   {}  {}/{} conversations, {} members counted",
+                            Verdict(i2Agree == w.conversations.size()), i2Agree,
+                            w.conversations.size(), members));
+  // I3 - the timer REPLACES a preview that exists, so the rule is falsifiable
+  size_t i3Count = 0;
+  bool i3Preview = false;
+  for (auto const& c : w.conversations)
+    if (c.disappearing) { ++i3Count; i3Preview = !c.preview.empty(); }
+  out.push_back(std::format(L"    I3  one disappearing     {}  {} of {} disappearing, preview {}",
+                            Verdict(i3Count == 1 && i3Preview), i3Count,
+                            w.conversations.size(),
+                            i3Preview ? L"non-empty" : L"EMPTY"));
+  // I4
+  size_t i4 = 0;
+  for (auto const& c : w.conversations) if (!c.preview.empty()) ++i4;
+  out.push_back(std::format(L"    I4  previews non-empty   {}  {}/{} non-empty",
+                            Verdict(i4 == w.conversations.size()), i4, w.conversations.size()));
+  // I5
+  size_t pend = 0, sent = 0, deliv = 0, read = 0, failed = 0, expired = 0, reasons = 0;
+  for (auto const& c : w.conversations)
+    for (auto const& r : c.rows) {
+      if (r.kind != RowKind::Message || !r.outgoing) continue;
+      switch (r.state) {
+        case DeliveryState::Pending:   ++pend; break;
+        case DeliveryState::Sent:      ++sent; break;
+        case DeliveryState::Delivered: ++deliv; break;
+        case DeliveryState::Read:      ++read; break;
+        case DeliveryState::Failed:    ++failed; if (!r.failureReason.empty()) ++reasons; break;
+        case DeliveryState::Expired:   ++expired; break;
+      }
+    }
+  const size_t outgoing = pend + sent + deliv + read + failed + expired;
+  const bool i5 = (pend && sent && deliv && read && failed == 1 && reasons == 1);
+  out.push_back(std::format(
+      L"    I5  delivery spread     {}  {} outgoing: pending {} sent {} delivered {} "
+      L"read {} failed {} expired {}; {} failure reason",
+      Verdict(i5), outgoing, pend, sent, deliv, read, failed, expired, reasons));
+  // I6
+  size_t systemRows = 0, permanent = 0;
+  for (auto const& c : w.conversations)
+    for (auto const& r : c.rows)
+      if (r.kind == RowKind::System) { ++systemRows; if (r.permanentRecord) ++permanent; }
+  out.push_back(std::format(L"    I6  key-change record   {}  {} permanent of {} system rows",
+                            Verdict(permanent >= 1), permanent, systemRows));
+  // I7
+  size_t emptyGlyphs = 0;
+  for (auto const& n : w.relayPath) if (n.glyph.empty()) ++emptyGlyphs;
+  out.push_back(std::format(L"    I7  relay path          {}  {} nodes, {} empty glyphs",
+                            Verdict(w.relayPath.size() == 3 && emptyGlyphs == 0),
+                            w.relayPath.size(), emptyGlyphs));
+  // I8
+  size_t thisComputer = 0;
+  for (auto const& d : w.myDevices) if (d.isThisComputer) ++thisComputer;
+  const bool i8 = (thisComputer == 1 && !w.myDevices.empty() && w.myDevices[0].isThisComputer);
+  out.push_back(std::format(L"    I8  this computer       {}  {} of {} devices, index 0 is {}",
+                            Verdict(i8), thisComputer, w.myDevices.size(),
+                            (!w.myDevices.empty() && w.myDevices[0].isThisComputer)
+                                ? L"this computer" : L"NOT this computer"));
+  // I9
+  size_t withGroupId = 0;
+  for (auto const& c : w.conversations)
+    if (c.kind == ConversationKind::Group && !c.groupIdHex.empty()) ++withGroupId;
+  out.push_back(std::format(L"    I9  group ids           {}  {}/{} groups carry a group id",
+                            Verdict(withGroupId == groups), withGroupId, groups));
+  // I10
+  const uint64_t fp = WorldFingerprint(w);
+  out.push_back(std::format(
+      L"    I10 determinism         {}  fingerprint 0x{:016X}, expected 0x{:016X}",
+      Verdict(fp == kExpectedWorldFingerprint), fp, kExpectedWorldFingerprint));
+  return out;
+}
+
 }  // namespace
 
 void StartupLogInit() {
@@ -214,6 +386,7 @@ std::vector<std::wstring> CollectDiagnostics() {
   lines.push_back(std::format(L"  fonts            : {}",
                               Presence(dir / L"Assets" / L"Fonts" /
                                        L"pp_neue_bit_bold.ttf")));
+  for (auto& line : DemoWorldAssertions()) lines.push_back(std::move(line));
   return lines;
 }
 
