@@ -630,13 +630,38 @@ std::vector<std::wstring> CollectDiagnostics() {
         }
       }
     }
+    // 3b. Synthetic case. DemoWorld's ONLY multi-row outgoing run pairs a
+    //     Failed row with the last-of-run exception (DemoWorld.cpp:277-279),
+    //     so no real row is both non-Failed and non-last-of-run: the real-
+    //     world counts above pass identically whether or not the ordinary
+    //     "last of run" rule is even implemented. Constructed locally rather
+    //     than by editing DemoWorld, whose exact bytes F3 fingerprints: an
+    //     ordinary (non-Failed) three-row outgoing run, checked at all three
+    //     positions -- the middle row is the case the world cannot provide.
+    std::vector<demo::MessageRow> synthGlyphRows(3);
+    for (auto& r : synthGlyphRows) {
+      r.kind = demo::RowKind::Message;
+      r.outgoing = true;
+      r.state = demo::DeliveryState::Sent;  // deliberately NOT Failed
+    }
+    int glyphSynthChecked = 0, glyphSynthOk = 0;
+    for (std::size_t i = 0; i < synthGlyphRows.size(); ++i) {
+      demo::MessageRow const* next =
+          (i + 1 < synthGlyphRows.size()) ? &synthGlyphRows[i + 1] : nullptr;
+      const bool expectGlyph = (i + 1 == synthGlyphRows.size());  // last row only
+      ++glyphSynthChecked;
+      if (views::CarriesDeliveryGlyph(synthGlyphRows[i], next) == expectGlyph) ++glyphSynthOk;
+    }
+
     const bool glyphOk = (carriers == runStarts + failedMidRun) && (failed > 0) &&
-                         (failedCarrying == failed) && (outgoing > runStarts);
+                         (failedCarrying == failed) && (outgoing > runStarts) &&
+                         (glyphSynthChecked == 3) && (glyphSynthOk == glyphSynthChecked);
     lines.push_back(std::format(
         L"  thread T1 glyph  : {} - {} outgoing rows in {} runs, {} carry a glyph, "
-        L"{}/{} failed carry one ({} mid-run)",
+        L"{}/{} failed carry one ({} mid-run); synthetic non-failed 3-row run "
+        L"{}/{} correct (middle false, last true)",
         glyphOk ? L"PASS" : L"FAIL", outgoing, runStarts, carriers, failedCarrying,
-        failed, failedMidRun));
+        failed, failedMidRun, glyphSynthOk, glyphSynthChecked));
 
     // 4. Day separators. Never unlabelled, never doubled, never last.
     views::DaySeparatorAudit total;
@@ -649,13 +674,33 @@ std::vector<std::wstring> CollectDiagnostics() {
       total.adjacent += a.adjacent;
       total.trailing += a.trailing;
     }
+    // 4b. Synthetic case. DemoWorld structurally never places two separators
+    //     back to back or a separator last in a conversation, so the
+    //     adjacent/trailing DETECTION logic above is never exercised by real
+    //     data: a stub that hardcodes adjacent=0, trailing=0 and ignores its
+    //     input would pass exactly as the real AuditDaySeparators does.
+    //     Constructed locally: two adjacent DaySeparator rows, then a
+    //     Message row, then a trailing DaySeparator.
+    std::vector<demo::MessageRow> synthDayRows(4);
+    synthDayRows[0].kind = demo::RowKind::DaySeparator;
+    synthDayRows[0].body = L"Synthetic Day A";
+    synthDayRows[1].kind = demo::RowKind::DaySeparator;
+    synthDayRows[1].body = L"Synthetic Day B";
+    synthDayRows[2].kind = demo::RowKind::Message;
+    synthDayRows[3].kind = demo::RowKind::DaySeparator;
+    synthDayRows[3].body = L"Synthetic Day C";
+    const auto daySynth = views::AuditDaySeparators(synthDayRows);
+    const bool daySynthOk = daySynth.adjacent >= 1 && daySynth.trailing >= 1;
+
     const bool daysOk = total.separators >= 2 && total.unlabelled == 0 &&
-                        total.adjacent == 0 && total.trailing == 0;
+                        total.adjacent == 0 && total.trailing == 0 && daySynthOk;
     lines.push_back(std::format(
         L"  thread T1 days   : {} - {} separators across {} conversations; "
-        L"{} unlabelled, {} adjacent, {} trailing",
+        L"{} unlabelled, {} adjacent, {} trailing; synthetic case {} adjacent, "
+        L"{} trailing",
         daysOk ? L"PASS" : L"FAIL", total.separators, convsWithSeparators,
-        total.unlabelled, total.adjacent, total.trailing));
+        total.unlabelled, total.adjacent, total.trailing, daySynth.adjacent,
+        daySynth.trailing));
   }
 
   return lines;
