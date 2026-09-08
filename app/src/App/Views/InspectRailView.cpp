@@ -21,6 +21,36 @@
 #include "UrMotion.h"
 #include "Views/InspectRailFields.h"
 
+// ---- ONE key/value call site in this file, enforced by the build (R3) ------
+//
+// WHAT IT CATCHES, precisely. AppendFieldRows below routes every rail value
+// through RailValueOr, which draws a blank as one em dash. Appending a row with
+// `kit::MakePaneKeyValueRow(H(field.key), H(field.value), 34)` instead skips it.
+// That is not hypothetical and it is not a style point: it is the line task R3
+// was briefed with, and message mode holds ALL 28 of the world's blank values
+// (24 "Group id" on direct conversations, 4 "Received" on outgoing rows nothing
+// has received yet), so that one line renders 28 empty cells while both
+// static_asserts below stay true, the build stays clean and --diagnose stays
+// 42 PASS / 0 FAIL. Task R2 measured the bypass and reported that nothing it
+// could write would catch it, because the second mode did not exist yet.
+//
+// So the identifier is POISONED for the whole translation unit and un-poisoned
+// for exactly the one line inside AppendFieldRows that is allowed to use it. A
+// second call site anywhere in this file - above the funnel or below it - is a
+// compile error naming the funnel, rather than 28 empty cells in a screenshot
+// nobody looked at closely enough.
+//
+// THE LIMIT, STATED ACCURATELY. It is per-FILE, deliberately: the kit builder is
+// public, and Home, the Network page and the status strip all call it directly,
+// which is correct - they have no blank-value model to funnel through. The claim
+// here is only "every row THE RAIL draws goes through the rail's funnel", which
+// is the whole of what RailValueOr needs to be unskippable. It is also a
+// PREPROCESSOR device, so it sees an identifier and not a call graph: a rail row
+// built by some new helper that calls the kit from ANOTHER file would pass this.
+// That is the failure mode to watch, and nothing mechanical in this file catches
+// it - only reading a diff does.
+#define MakePaneKeyValueRow MakePaneKeyValueRow_bypasses_RailValueOr_use_AppendFieldRows
+
 using namespace winrt::Microsoft::UI::Xaml;
 using namespace winrt::Microsoft::UI::Xaml::Controls;
 namespace kit = urnw::kit;
@@ -57,15 +87,30 @@ winrt::hstring H(std::wstring const& value) { return winrt::hstring{value}; }
 // downstream - and a "Received" row with a dash in it tells a reader more than
 // an absent row does.
 //
-// THE LIMIT, STATED ACCURATELY: no render THIS task performs reaches the
-// substituting branch. Conversation mode at the default density is
-// BuildConversationFields' two rows, "Retention" and "Media", and DemoWorld
-// fills both on all eight conversations. All 28 blanks are in message mode,
-// whose body is not defined yet. So the branch is covered here by the two
-// static_asserts below - a locally built adversarial input, the same device
-// InspectRailFields.cpp uses for ShortHex's unreachable truncating branch - and
-// NOT by this task's screenshot, which shows no blank row because there is no
-// blank value in it to show.
+// THE LIMIT, STATED ACCURATELY - AND RE-STATED BY R3, BECAUSE MESSAGE MODE NOW
+// EXISTS. R2 wrote that all 28 blanks were "in message mode, whose body is not
+// defined yet". That body is defined now, and the substituting branch is STILL
+// not reached by anything either task renders - but for a narrower reason, which
+// is the part worth writing down:
+//
+//   * conversation mode at the default density is BuildConversationFields' two
+//     rows, "Retention" and "Media", and DemoWorld fills both on all eight.
+//   * the 24 "Group id" blanks are ADVANCED-density rows on a DIRECT
+//     conversation. --demo=inspect opens conversation 0, which is a GROUP with a
+//     populated groupIdHex, and the rail's density stays false until R4 defines
+//     SetInspectRailAdvanced - so neither half of that pair is reachable yet.
+//   * the 4 "Received" blanks are outgoing rows nothing has received. The only
+//     row --demo=inspect can land on is PickInspectMessage's, which is by
+//     definition the last outgoing row in state Read (c0-r12), and a Read row
+//     has a receivedAtLabel. Reaching a Pending or Failed row means CLICKING a
+//     bubble, and the thread's onSelectMessage seam is not wired yet.
+//
+// So the branch is covered by the static_asserts below - a locally built
+// adversarial input, the same device InspectRailFields.cpp uses for ShortHex's
+// unreachable truncating branch - and NOT by any screenshot yet taken, which
+// shows no blank row because there is no blank value in it to show. What R3 adds
+// is the guarantee that when a render finally does reach a blank, it comes
+// through here: see the call-site block under this file's includes.
 constexpr wchar_t const* kBlankValue = L"\u2014";
 
 // The one funnel. Every key/value row the rail draws is built from the result of
@@ -82,6 +127,45 @@ static_assert(RailValueOr(L"") == std::wstring_view{L"\u2014"},
               "a blank value must render as one em dash, not as an empty row");
 static_assert(RailValueOr(L"Kept until deleted") == std::wstring_view{L"Kept until deleted"},
               "a value that IS present must reach the row unchanged");
+
+// ---- and the same blank, SPOKEN -------------------------------------------
+//
+// An em dash is the right mark for the eye and the wrong one for the ear: a
+// screen reader on the row above reads "Received, em dash", which is the glyph
+// and not the fact. So the row is told the spoken value separately, through
+// MakePaneKeyValueRow's accessibleValue parameter.
+//
+// AT THE KIT, NOT AT THE CALL SITE, and that is the point of the parameter
+// existing at all. The row composes its own automation name from key and value;
+// overwriting that name here would make this file a SECOND writer of one
+// property, which is the exact defect an earlier fix round in this project had
+// to undo. One writer, told what to say.
+//
+// "not set" and not "none", "empty" or "unknown": the model reported that the
+// fixture has nothing to put here, which is neither a zero nor a mystery. It
+// also stays true of both shapes the blank actually takes - a direct
+// conversation that has no group id, and an outgoing row no device has received.
+constexpr wchar_t const* kBlankSpoken = L"not set";
+
+constexpr std::wstring_view RailSpokenValueOr(std::wstring_view value) {
+  return value.empty() ? std::wstring_view{kBlankSpoken} : value;
+}
+
+// Both directions again, and for the same two reasons: dropping the
+// substitution reads the glyph aloud, substituting unconditionally announces
+// every populated field as "not set".
+static_assert(RailSpokenValueOr(L"") == std::wstring_view{L"not set"},
+              "a blank value must be SPOKEN as words, never as the em dash glyph");
+static_assert(RailSpokenValueOr(L"Kept until deleted") == std::wstring_view{L"Kept until deleted"},
+              "a value that IS present must be spoken unchanged");
+
+// AND THE TWO MUST DISAGREE. The pair above is satisfied whole by making
+// RailSpokenValueOr a second name for RailValueOr - both static_asserts pass on
+// the em dash if kBlankSpoken is changed to L"\u2014" - so the property that
+// actually matters is asserted on its own: the drawn blank and the spoken blank
+// are not the same string.
+static_assert(RailValueOr(L"") != RailSpokenValueOr(L""),
+              "the spoken blank must differ from the drawn one, or the parameter buys nothing");
 
 // ---- the rail's state, parked on its own elements --------------------------
 //
@@ -110,9 +194,15 @@ std::wstring TagId(FrameworkElement const& element) {
   return tag ? std::wstring{*tag} : std::wstring{};
 }
 
-// For the mode that re-resolves its subject at render time. Message mode is
-// the one that needs it: conversation mode is handed its Conversation by the
-// caller, so today these are written and not yet read.
+// For the caller that re-resolves the rail's subject at render time.
+//
+// CORRECTED BY R3: R2 wrote "message mode is the one that needs it". Message
+// mode exists now and does NOT - SetInspectRailMessage is handed both the
+// Conversation and the MessageRow, and stores their IDS precisely so it never
+// has to hold those references. The reader these are waiting for is
+// SetInspectRailAdvanced (R4), which re-populates whichever mode is already
+// showing and is handed no subject at all: it has only these two tags and
+// FindConversation / FindMessageRow. Still written and not yet read.
 [[maybe_unused]] std::wstring RailConversationId(InspectRailView const& v) {
   return TagId(v.conversationScroll);
 }
@@ -204,14 +294,127 @@ FrameworkElement MakeSubjectRow(demo::Conversation const& conv) {
   return root;
 }
 
-// THE file's only MakePaneKeyValueRow call site. Both modes append their fields
-// through here, which is what makes RailValueOr unskippable.
+// Message mode's subject: a padlock and what the product WILL say about a
+// message, FRAMED as a statement about the demo model rather than about this
+// message.
+//
+// THE RULING, AND WHY THE BRIEF'S VERSION IS NOT WHAT SHIPPED. Design 2 makes it
+// a hard constraint that "no copy in the demo may state that a message WAS
+// encrypted as a fact about a real operation". The plan proposed the bare
+// "End-to-end encrypted" plus MessageInspect::cipher underneath, on the grounds
+// that the DEMO chip in the title bar (D2) is the mitigation the design itself
+// names. That mitigation does not hold: the chip is removed by
+// --demo-watermark=off, and the watermark is patched out for presentations - so
+// chip-dependent honesty disappears at exactly the moment the screen is being
+// shown to people. AttestationLabel (InspectRailFields.cpp) already refused the
+// same bargain for the same reason and carries its own framing; this row is the
+// LOUDER claim of the two and cannot carry less.
+//
+// PREFIX-FIRST, not "End-to-end encrypted (demo)". A trailing qualifier leads
+// with the claim and is the half a screenshot crop, a narrow column or a
+// trimmed TextBlock throws away first. The framing has to survive being read
+// alone.
+//
+// AND THE CIPHER NAME IS NOT RENDERED AT ALL. MessageInspect::cipher holds
+// "XChaCha20-Poly1305" (DemoWorld.cpp:172). A specific algorithm is a claim
+// about what encrypted this message whatever label sits above it, this binary
+// has no crypto to have used one, and InspectRailFields.h already records that
+// the field must stay unrendered. The note under the title describes the MODEL
+// instead, which is the question a reader of this row actually has.
+//
+// If the owner wants the plain product wording back, the change is these two
+// strings and nothing else - no other row, count or check in the rail reads
+// them. The padlock and the green stay either way: the picture is fine, it was
+// the words that made the claim.
+FrameworkElement MakeLockHeader() {
+  auto root = kit::MakePaneRow(56);
+
+  Grid grid;
+  grid.ColumnSpacing(10);
+  ColumnDefinition iconColumn, textColumn;
+  iconColumn.Width(GridLengthHelper::Auto());
+  textColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
+  grid.ColumnDefinitions().Append(iconColumn);
+  grid.ColumnDefinitions().Append(textColumn);
+
+  FontIcon lock;
+  // UrRowIconStyle carries the family (Segoe Fluent Icons, named explicitly so
+  // FontIcon does not fall back to the older Segoe MDL2), the size (16) and
+  // AccessibilityView Raw. The size is NOT overridden: styles-by-key is what
+  // stops a screen acquiring a second icon weight, and the rail's one icon has
+  // no claim to be the exception. Only the colour is set, and the words beside
+  // it say the same thing, so the colour is a restatement.
+  if (auto style = kit::StyleByKey(L"UrRowIconStyle")) lock.Style(style);
+  lock.Glyph(L"\uE72E");  // Segoe Fluent E72E, Lock
+  lock.Foreground(urnw::colors::MakeBrush(urnw::colors::kUrGreen));
+  grid.Children().Append(lock);
+
+  StackPanel text;
+  text.VerticalAlignment(VerticalAlignment::Center);
+  TextBlock title;
+  if (auto style = kit::StyleByKey(L"UrBodyStrongTextStyle")) title.Style(style);
+  title.Text(L"Demo model: end-to-end encrypted");
+  text.Children().Append(title);
+  TextBlock note;
+  if (auto style = kit::StyleByKey(L"UrRowNoteStyle")) note.Style(style);
+  // The MODEL, not an algorithm. This is the line that would have named the
+  // cipher; it answers "what am I looking at" instead, and it is what keeps the
+  // 56 DIP row on conversation mode's two-line rhythm.
+  note.Text(L"Fabricated demo data, no crypto in this build");
+  text.Children().Append(note);
+  Grid::SetColumn(text, 1);
+  grid.Children().Append(text);
+
+  root.Child(grid);
+  return root;
+}
+
+// The reason AND the affordance, because design 9.1 asks for both - and the
+// button is EXPLICITLY DISABLED, because the same section forbids anything that
+// looks live and does nothing and there is no send path in the demo to retry
+// into (design 2). UrButtonBaseStyle's Disabled visual state draws the button at
+// 38% opacity (App.xaml:371-375), so "present but not available" is VISIBLE
+// rather than something a user discovers by clicking.
+//
+// UrPaneActionSecondaryStyle, not UrSecondaryButtonStyle: the latter is the
+// 48-tall, 24pt NeueBit hero button, which in a 360 DIP rail would be a slab.
+// This one is 40 tall, radius 4, outlined, with its own 12 DIP inset.
+void AppendFailureBlock(UIElementCollection const& body, std::wstring const& reason) {
+  auto row = kit::MakePaneRow(40);
+  TextBlock line;
+  if (auto style = kit::StyleByKey(L"UrRowTitleStyle")) line.Style(style);
+  line.Foreground(urnw::colors::DangerBrush());
+  line.Text(H(reason));
+  row.Child(line);
+  body.Append(row);
+
+  Button retry;
+  if (auto style = kit::StyleByKey(L"UrPaneActionSecondaryStyle")) retry.Style(style);
+  retry.Content(winrt::box_value(winrt::hstring{L"Try again"}));
+  retry.IsEnabled(false);
+  // A Button whose Content is text still gets a name from that text, but the
+  // reason it cannot be pressed is not in it. This project has paid twice for
+  // controls that reach a screen reader as "button" and nothing else.
+  automation::AutomationProperties::SetName(retry, L"Try again, not available in the demo");
+  body.Append(retry);
+}
+
+// THE file's only MakePaneKeyValueRow call site, and now that is enforced rather
+// than asserted in a comment: the identifier is poisoned everywhere else in this
+// translation unit (see the block under the includes), and the two directives
+// below are the only place it is spelled out.
+//
+// The DRAWN blank and the SPOKEN blank are different strings and go in through
+// different parameters, so one row cannot acquire two writers of its name.
 void AppendFieldRows(StackPanel const& panel, std::vector<InspectField> const& fields) {
   auto body = panel.Children();
-  for (auto const& field : fields)
-    body.Append(
-        kit::MakePaneKeyValueRow(H(field.key), winrt::hstring{RailValueOr(field.value)}, 34)
-            .root);
+  for (auto const& field : fields) {
+#undef MakePaneKeyValueRow
+    auto row = kit::MakePaneKeyValueRow(H(field.key), winrt::hstring{RailValueOr(field.value)},
+                                        34, winrt::hstring{RailSpokenValueOr(field.value)});
+#define MakePaneKeyValueRow MakePaneKeyValueRow_bypasses_RailValueOr_use_AppendFieldRows
+    body.Append(row.root);
+  }
 }
 
 // POPULATE ONLY. No storyboard, so the density switch can call this on a rail
@@ -234,6 +437,30 @@ void PopulateConversation(InspectRailView const& v, demo::Conversation const& co
 
   body.Append(kit::MakePaneGroupHeader(L"RETENTION").root);
   AppendFieldRows(panel, BuildConversationFields(conv, advanced));
+}
+
+// POPULATE ONLY, for the same reason as the conversation half above.
+void PopulateMessage(InspectRailView const& v, demo::Conversation const& conv,
+                     demo::MessageRow const& row, bool advanced) {
+  auto panel = BodyOf(v.messageScroll);
+  if (!panel) return;
+  auto body = panel.Children();
+  body.Clear();
+  body.Append(MakeLockHeader());
+
+  // failureReason is documented non-empty ONLY when state == Failed, and an
+  // empty reason must produce NO block rather than an empty one: a StackPanel
+  // gives every child its space whether or not the child drew anything, which is
+  // the measured defect SetTextOrCollapse exists for.
+  if (!row.failureReason.empty()) AppendFailureBlock(body, row.failureReason);
+
+  body.Append(kit::MakePaneGroupHeader(L"MESSAGE").root);
+  // AppendFieldRows, NOT the kit builder - the brief's line here was
+  // `kit::MakePaneKeyValueRow(H(field.key), H(field.value), 34)`, which is the
+  // one call in the module that would skip RailValueOr, on the one mode that
+  // holds every blank value in the world. It no longer compiles; see the block
+  // under this file's includes.
+  AppendFieldRows(panel, BuildMessageFields(conv, row, advanced));
 }
 
 }  // namespace
@@ -343,6 +570,19 @@ void SetInspectRailConversation(InspectRailView& v, demo::Conversation const& c)
   PresentMode(v, /*messageMode=*/false);
   urnw::LogInfo("rail: conversation mode -> {} ({} members)", winrt::to_string(c.id),
                 c.members.size());
+}
+
+void SetInspectRailMessage(InspectRailView& v, demo::Conversation const& c,
+                           demo::MessageRow const& m) {
+  if (!v.root) return;
+  PopulateMessage(v, c, m, RailAdvanced(v));
+  // IDS, not the references we were just handed: `m` is a reference into
+  // Conversation::rows, and design 9.2's ambient activity appends to that vector.
+  SetRailSubject(v, c.id, m.id);
+  PresentMode(v, /*messageMode=*/true);
+  urnw::LogInfo("rail: message mode -> {} in {} (state {}, failure \"{}\")",
+                winrt::to_string(m.id), winrt::to_string(c.id),
+                winrt::to_string(DeliveryLabel(m.state)), winrt::to_string(m.failureReason));
 }
 
 }  // namespace urmsg::views

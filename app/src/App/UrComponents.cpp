@@ -160,7 +160,7 @@ Controls::Border MakePaneRow(double height) {
 }
 
 PaneKeyValueRow MakePaneKeyValueRow(winrt::hstring const& key, winrt::hstring const& value,
-                                    double height) {
+                                    double height, winrt::hstring const& accessibleValue) {
   PaneKeyValueRow out;
   out.root = MakePaneRow(height);
 
@@ -186,10 +186,15 @@ PaneKeyValueRow MakePaneKeyValueRow(winrt::hstring const& key, winrt::hstring co
   // The key names the value; announcing it as its own static-text item beside
   // the value makes one fact into two fragments. Same treatment, same reason, as
   // MakeStatusField's caption.
+  //
+  // ONE writer of this name, and `accessibleValue` is how it stays one - see the
+  // header. Empty falls back to the drawn text, so every call site that does not
+  // pass it is announced exactly as it was before the parameter existed.
   Automation::AutomationProperties::SetAccessibilityView(
       out.key, Automation::Peers::AccessibilityView::Raw);
   Automation::AutomationProperties::SetName(
-      out.value, winrt::hstring{std::wstring{key} + L", " + std::wstring{value}});
+      out.value, winrt::hstring{std::wstring{key} + L", " +
+                                std::wstring{accessibleValue.empty() ? value : accessibleValue}});
 
   out.root.Child(grid);
   return out;

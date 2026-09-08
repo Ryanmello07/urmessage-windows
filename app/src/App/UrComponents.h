@@ -314,9 +314,29 @@ struct PaneKeyValueRow {
   winrt::Microsoft::UI::Xaml::Controls::TextBlock key{nullptr};
   winrt::Microsoft::UI::Xaml::Controls::TextBlock value{nullptr};
 };
+// `accessibleValue` IS THE SPOKEN VALUE, and it exists because a row can be
+// right on screen and wrong in speech (added by task R3).
+//
+// This row is the ONE writer of its automation name: it composes "<key>, <value>"
+// so a key/value pair reaches a screen reader as one fact rather than as two
+// fragments (see the SetName call in the .cpp). A caller that wanted a different
+// spoken value therefore had exactly one move available - overwrite the name at
+// the call site - which makes the row and the caller two writers of one property.
+// This project has already had to UNDO a fix shaped like that.
+//
+// The measured case: the inspector rail draws a blank field as one em dash, which
+// is right for the eye and useless in the ear ("Received, em dash"). The CALLER is
+// the one that knows the value is absent; only this function can put that in the
+// name. So the substitution is passed in, and there is still one writer.
+//
+// EMPTY MEANS "the same as what is drawn", which is what every existing call site
+// wants and is why none of them changed. Passing this does NOT change a single
+// drawn pixel - only the name - so it cannot be used to make the row show one
+// thing and say another: what a sighted reader sees is still `value`.
 PaneKeyValueRow MakePaneKeyValueRow(winrt::hstring const& key,
                                     winrt::hstring const& value = {},
-                                    double height = 34);
+                                    double height = 34,
+                                    winrt::hstring const& accessibleValue = {});
 
 // A list row: a leading state dot, a title that trims, and a right-aligned
 // figure. The connections table, the contracts list and the split rules are all

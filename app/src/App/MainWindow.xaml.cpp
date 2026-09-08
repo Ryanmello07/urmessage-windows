@@ -21,6 +21,7 @@
 #include "Strings.h"
 #include "UrColors.h"
 #include "UrMotion.h"
+#include "Views/InspectRailFields.h"
 #include "Views/InspectRailView.h"
 #include "Views/ThreadView.h"
 
@@ -348,7 +349,31 @@ void MainWindow::BuildInspectRail() {
 
   // Conversation 0 is what --demo opens on (fixed contract 2), and it is the
   // same conversation BuildConversationList selects a moment later.
-  urmsg::views::SetInspectRailConversation(rail_, world.conversations.front());
+  auto const& conv = world.conversations.front();
+
+  // ONE initial mode, never both.
+  //
+  // Calling SetInspectRailConversation and then SetInspectRailMessage back to
+  // back would run two crossfades over the SAME two elements in OPPOSITE
+  // directions inside one synchronous block: RunCrossfade sets
+  // incoming.Opacity(0) and begins a storyboard, so both scrollers end up driven
+  // by two clocks at once and each Completed handler collapses its outgoing by
+  // reading that contested Opacity. The end state would be a race - and it is
+  // the exact frame every --demo=inspect capture depends on.
+  //
+  // --demo=inspect is a STATE, not a screen (design 8): the thread with a
+  // message pre-selected and the rail already in message mode, which is the
+  // state a screenshot needs and the state no click can reach for an agent.
+  // PickInspectMessage is shared with the thread's selection outline, so both
+  // land on the same bubble by construction.
+  if (options_.screen == urmsg::demo::DemoScreen::Inspect) {
+    if (auto const* picked = urmsg::views::PickInspectMessage(conv)) {
+      urmsg::views::SetInspectRailMessage(rail_, conv, *picked);
+      return;
+    }
+    urnw::LogWarn("rail: --demo=inspect but conversation 0 has no message row");
+  }
+  urmsg::views::SetInspectRailConversation(rail_, conv);
 }
 
 void MainWindow::OnConversationSelected(int index) {
