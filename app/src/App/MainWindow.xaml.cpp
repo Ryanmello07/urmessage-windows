@@ -21,6 +21,7 @@
 #include "Strings.h"
 #include "UrColors.h"
 #include "UrMotion.h"
+#include "Views/InspectRailView.h"
 #include "Views/ThreadView.h"
 
 using namespace winrt;
@@ -106,6 +107,13 @@ MainWindow::MainWindow() {
   if (options_.enabled) {
     EnterDemoMode();
   }
+  // BEFORE BuildConversationList, and that ordering is load-bearing. Under
+  // --demo that function ends by calling OnConversationSelected(0) - the one
+  // selection this constructor performs, since the agent may not synthesise a
+  // click - and OnConversationSelected is where the wiring surface will drive
+  // the rail from. A rail built after it would be a rail that call cannot
+  // reach, which is this project's standing failure shape.
+  BuildInspectRail();
   BuildConversationList();
   BuildThread();
 
@@ -306,6 +314,41 @@ void MainWindow::BuildThread() {
   urmsg::views::SetThreadConversation(thread_, open);
   urnw::LogInfo("thread: mounted {} rows, {} bubbles", open.rows.size(),
                 thread_.bubbles.size());
+}
+
+void MainWindow::BuildInspectRail() {
+  // options_, NOT a second ParseDemoOptions() call - the same rule BuildThread
+  // states: ApplyBreakpoint reads options_ to decide whether the rail column
+  // exists at all, so a second read here would give the mount and the
+  // visibility two sources of truth for one flag.
+  if (!options_.enabled) return;
+
+  rail_ = urmsg::views::MakeInspectRail();
+
+  // RailHost, and NOT a host of the rail task's own. RailHost is already the
+  // Grid.Column=4 occupant of ChatsPage (MainWindow.xaml), it is already what
+  // ApplyBreakpoint shows and hides with RailColumn and RailRule, and a second
+  // Grid in that cell would mean the shell displayed its empty one while this
+  // filled the other - "mounted into the collapsed twin", the failure this
+  // window has already shipped four times. Nothing in this task writes
+  // RailColumn().Width(), RailRule().Visibility() or RailHost().Visibility():
+  // ApplyBreakpoint is their one writer, from urmsg::demo::kRailWidthDip and
+  // kRailBreakpointDip.
+  RailHost().Children().Clear();
+  RailHost().Children().Append(rail_.root);
+
+  auto const& world = urmsg::demo::GetWorld();
+  if (world.conversations.empty()) {
+    // DemoWorld's --diagnose invariant 1 requires 8 conversations, so this is a
+    // DemoWorld failure and --diagnose already names it. The rail stays empty
+    // rather than inventing a subject.
+    urnw::LogWarn("rail: not populated - the demo world has no conversations");
+    return;
+  }
+
+  // Conversation 0 is what --demo opens on (fixed contract 2), and it is the
+  // same conversation BuildConversationList selects a moment later.
+  urmsg::views::SetInspectRailConversation(rail_, world.conversations.front());
 }
 
 void MainWindow::OnConversationSelected(int index) {

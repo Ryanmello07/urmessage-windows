@@ -214,6 +214,7 @@
          before winrt::init_apartment (main.cpp:168 vs :183), so this TU must
          not pull in the pch and its winrt/ headers. -->
     <ClCompile Include="Views\InspectRailFields.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="Views\InspectRailView.cpp" />
     <ClCompile Include="Views\ThreadLayout.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="Views\ThreadView.cpp" />
     <ClCompile Include="WindowReveal.cpp" />
@@ -239,6 +240,7 @@
     <ClInclude Include="Views\ConversationListView.h" />
     <ClInclude Include="Views\ConversationRowModel.h" />
     <ClInclude Include="Views\InspectRailFields.h" />
+    <ClInclude Include="Views\InspectRailView.h" />
     <ClInclude Include="WindowReveal.h" />
     <ClInclude Include="WindowShell.h" />
     <ClInclude Include="resource.h" />

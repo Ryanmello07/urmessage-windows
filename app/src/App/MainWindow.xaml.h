@@ -23,6 +23,7 @@
 #include "Demo/DemoSwitches.h"
 #include "UrComponents.h"
 #include "Views/ConversationListView.h"
+#include "Views/InspectRailView.h"
 #include "Views/ThreadView.h"
 #include "WindowReveal.h"
 
@@ -64,6 +65,19 @@ struct MainWindow : MainWindowT<MainWindow> {
   void BuildThread();
 
   urmsg::views::ThreadView thread_{};
+
+  // The inspector rail (design 6.3). Built only under --demo, for the same
+  // reason BuildThread is: a normal launch is 480x760 and must behave exactly
+  // as it does today (design D7), and a non-demo launch at 1600 dip must not
+  // grow an empty third pane.
+  //
+  // It does NOT own the rail COLUMN. MainWindow.xaml declares RailRule and
+  // RailHost, Demo/DemoShellState.h holds kRailWidthDip and
+  // kRailBreakpointDip, and ApplyBreakpoint is the one writer of the column
+  // width and both visibilities. This builds the rail's CONTENT and mounts it.
+  void BuildInspectRail();
+
+  urmsg::views::InspectRailView rail_{};
 
   // A row was clicked. Takes the row INDEX: ConversationListView::rows[i] is
   // world.conversations[i], and nothing reorders either.
