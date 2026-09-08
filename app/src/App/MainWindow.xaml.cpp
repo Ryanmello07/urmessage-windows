@@ -400,7 +400,7 @@ void MainWindow::BuildInspectRail() {
   // The rail takes its subject from PickInspectMessage; the thread's selection
   // outline takes its own from kInspectTargetRowId. Those are TWO designations,
   // not one shared function, so they agree by GATE and not by construction:
-  // InspectRailFieldsProbe asserts the pick equals the constant, and that
+  // InspectRailDeviceProbe asserts the pick equals the constant, and that
   // assertion is the only thing keeping the rail and the outline on the same
   // bubble. If it ever fails, this deep link and the thread have parted.
   //
