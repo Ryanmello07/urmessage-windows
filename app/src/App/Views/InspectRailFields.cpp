@@ -68,10 +68,27 @@ ValueScan ScanValues(std::vector<InspectField> const& fields) {
 // this task exists to prevent, so the polarity is read from the text a viewer
 // would read.
 //
-// THE LIMIT, STATED: the polarity is carried by the word "not". A future wording
-// that negates some other way ("unverified") makes this true for BOTH forms -
-// which fails the framing property below AND every non-Failed row above, loudly,
-// rather than passing quietly. That failure is the review this clause forces.
+// THE LIMITS, STATED, and corrected after a reviewer worked them out properly.
+// The polarity is carried by the word "not", so:
+//
+//  1. A wording that negates some other way ("unverified") makes this true for
+//     BOTH forms. saysVerified is then constant true, so the 59 non-Failed rows
+//     MATCH and only c0-r22 fails: the line reads "attestation 1 wrong", not
+//     "every non-Failed row wrong" - that shape is the INVERTED ternary's
+//     signature, and an earlier version of this comment confused the two. The
+//     framing property below also fails, so it still fails loudly on two gates;
+//     the row-loop half just collapses to the single fixture row.
+//  2. Naming the model is NECESSARY, NOT SUFFICIENT. "Demo signature check:
+//     PASSED" / "... not run" contains "Demo", carries the negation correctly,
+//     and passes every clause here - while asserting a check that never ran.
+//     No mechanical test in this file catches that; only reading the copy does.
+//  3. A polarity swap hidden from the token ("Demo model: unverified" against
+//     "Demo model: not verified") passes with both forms reading negative.
+//
+// These are stated rather than closed because the honest fix for 2 and 3 is
+// review of the words, not a longer predicate - and a predicate that pretended
+// to cover them would be the thirteenth gate in this project that passes while
+// it cannot fail.
 bool ReadsAsVerified(std::wstring const& attestationValue) {
   return attestationValue.find(L" not ") == std::wstring::npos;
 }
