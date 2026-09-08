@@ -114,6 +114,33 @@ MainWindow::MainWindow() {
   // click - and OnConversationSelected is where the wiring surface will drive
   // the rail from. A rail built after it would be a rail that call cannot
   // reach, which is this project's standing failure shape.
+  //
+  // *** READ THIS BEFORE WIRING OnConversationSelected TO THE RAIL (added R3).
+  //
+  // The same ordering that makes the rail REACHABLE from that call is what will
+  // BREAK --demo=inspect the day the call is added, and nothing will fail when
+  // it does. Concretely:
+  //
+  //   BuildInspectRail() (below) puts the rail in MESSAGE mode when the deep
+  //   link is --demo=inspect. BuildConversationList() then runs, and its demo
+  //   branch ends in OnConversationSelected(0). The moment that function gains
+  //   its `SetInspectRailConversation(rail_, ...)` line - which is exactly what
+  //   R3's own deliverable says the list surface must wire - the startup
+  //   selection lands AFTER the deep link and swaps the rail straight back into
+  //   CONVERSATION mode.
+  //
+  // The failure is silent and total: --demo=inspect stops producing the state
+  // every rail capture in this plan is taken from, --diagnose stays 42 PASS /
+  // 0 FAIL because the rail has no probe, the build stays clean, and the only
+  // thing that can notice is a person looking at a screenshot. A one-line diff
+  // regresses a deliverable, on a surface with no gate to stop it.
+  //
+  // Two fixes, either acceptable, neither optional: re-apply the message deep
+  // link AFTER BuildConversationList (the deep link is the more specific
+  // request and should win), or have the startup OnConversationSelected(0) skip
+  // the rail when options_.screen == DemoScreen::Inspect. Do NOT solve it by
+  // moving BuildInspectRail() after BuildConversationList() - that reintroduces
+  // the unreachable-rail failure this comment was originally written about.
   BuildInspectRail();
   BuildConversationList();
   BuildThread();
@@ -366,6 +393,13 @@ void MainWindow::BuildInspectRail() {
   // state a screenshot needs and the state no click can reach for an agent.
   // PickInspectMessage is shared with the thread's selection outline, so both
   // land on the same bubble by construction.
+  //
+  // THIS MODE IS FRAGILE TO A CALL THAT DOES NOT EXIST YET, and the constructor
+  // comment above BuildInspectRail() states the whole hazard. In one line: this
+  // runs BEFORE BuildConversationList()'s startup OnConversationSelected(0), so
+  // the day OnConversationSelected drives the rail, that selection overwrites
+  // message mode, --demo=inspect silently regresses to conversation mode, and
+  // no gate anywhere notices. Whoever wires the list surface owns this.
   if (options_.screen == urmsg::demo::DemoScreen::Inspect) {
     if (auto const* picked = urmsg::views::PickInspectMessage(conv)) {
       urmsg::views::SetInspectRailMessage(rail_, conv, *picked);
@@ -376,6 +410,11 @@ void MainWindow::BuildInspectRail() {
   urmsg::views::SetInspectRailConversation(rail_, conv);
 }
 
+// ADDING SetInspectRailConversation HERE? Read the block above BuildInspectRail()
+// in the constructor first (R3). This function is called once at startup, from
+// BuildConversationList(), AFTER the --demo=inspect deep link has put the rail
+// in message mode - so wiring the rail here without guarding that case silently
+// regresses --demo=inspect to conversation mode, with no gate to catch it.
 void MainWindow::OnConversationSelected(int index) {
   auto const& world = urmsg::demo::GetWorld();
   if (index < 0 || world.conversations.size() <= static_cast<std::size_t>(index)) return;

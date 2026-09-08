@@ -329,10 +329,18 @@ struct PaneKeyValueRow {
 // the one that knows the value is absent; only this function can put that in the
 // name. So the substitution is passed in, and there is still one writer.
 //
-// EMPTY MEANS "the same as what is drawn", which is what every existing call site
-// wants and is why none of them changed. Passing this does NOT change a single
-// drawn pixel - only the name - so it cannot be used to make the row show one
-// thing and say another: what a sighted reader sees is still `value`.
+// EMPTY MEANS "the same as what is drawn", so a caller that does not pass it is
+// announced exactly as it was before this parameter existed. CORRECTED IN R3 FIX
+// ROUND 1: the first version of this line said that is "what every existing call
+// site wants and is why none of them changed", which implied a body of callers
+// that does not exist. Sweep the tree - this builder has exactly ONE invocation
+// in the whole repo, the inspector rail's AppendFieldRows, and it is the one
+// passing the parameter. The default is therefore for the callers the plan will
+// add (the Home, Network and Advanced pane surfaces), not for callers it spared.
+//
+// Passing this does NOT change a single drawn pixel - only the name - so it
+// cannot be used to make the row show one thing and say another: what a sighted
+// reader sees is still `value`.
 PaneKeyValueRow MakePaneKeyValueRow(winrt::hstring const& key,
                                     winrt::hstring const& value = {},
                                     double height = 34,

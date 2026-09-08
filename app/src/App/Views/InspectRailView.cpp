@@ -40,15 +40,37 @@
 // compile error naming the funnel, rather than 28 empty cells in a screenshot
 // nobody looked at closely enough.
 //
-// THE LIMIT, STATED ACCURATELY. It is per-FILE, deliberately: the kit builder is
-// public, and Home, the Network page and the status strip all call it directly,
-// which is correct - they have no blank-value model to funnel through. The claim
-// here is only "every row THE RAIL draws goes through the rail's funnel", which
-// is the whole of what RailValueOr needs to be unskippable. It is also a
-// PREPROCESSOR device, so it sees an identifier and not a call graph: a rail row
-// built by some new helper that calls the kit from ANOTHER file would pass this.
-// That is the failure mode to watch, and nothing mechanical in this file catches
-// it - only reading a diff does.
+// THE LIMIT, STATED ACCURATELY - AND CORRECTED IN FIX ROUND 1, BECAUSE THE
+// FIRST VERSION OF THIS PARAGRAPH OVERSOLD ITS OWN MECHANISM. It claimed "Home,
+// the Network page and the status strip all call it directly". They do not.
+// SWEEP THE TREE and kit::MakePaneKeyValueRow has exactly ONE invocation in the
+// whole repo - AppendFieldRows below. Every other occurrence is a declaration, a
+// definition or a comment. There is no Home view and no Network view in
+// app/src/App/Views at all; they are unimplemented plan tasks
+// (docs/superpowers/plans/tasks/advanced.md, network.md). The status strip does
+// not use this builder either - its row is MakeStatusField, a different
+// function, itself with zero call sites today.
+//
+// So state it in the FUTURE TENSE, which is what it actually is: this guards
+// against callers the PLAN will add. When the Home, Network and Advanced
+// surfaces land they will call the kit builder directly and correctly - they
+// have no blank-value model to funnel through - and on that day this file stops
+// being the obvious only user and the funnel stops being self-evident. Today it
+// is the only user.
+//
+// AND THE TRADEOFF, SO A READER CAN ACTUALLY JUDGE IT. With one call site in the
+// tree, cheaper enforcement was available: a reviewer reading this diff catches
+// the bypass as reliably as the macro does, and a comment would have cost
+// nothing. The macro was chosen because the bypass is not hypothetical - it is
+// the line THIS task was briefed with, in a group where the same class of defect
+// has now shipped thirteen times - and because its whole value is on the day
+// someone edits this file without the brief in front of them. It is not free: it
+// is the only preprocessor device of its kind in this codebase.
+//
+// It is also per-FILE and PREPROCESSOR-level, so it sees an identifier and not a
+// call graph: a rail row built by some new helper that calls the kit from
+// ANOTHER file would pass this. That is the failure mode to watch, and nothing
+// mechanical in this file catches it - only reading a diff does.
 #define MakePaneKeyValueRow MakePaneKeyValueRow_bypasses_RailValueOr_use_AppendFieldRows
 
 using namespace winrt::Microsoft::UI::Xaml;
@@ -166,6 +188,34 @@ static_assert(RailSpokenValueOr(L"Kept until deleted") == std::wstring_view{L"Ke
 // are not the same string.
 static_assert(RailValueOr(L"") != RailSpokenValueOr(L""),
               "the spoken blank must differ from the drawn one, or the parameter buys nothing");
+
+// AND DIFFERENT IS NOT ENOUGH, which a reviewer demonstrated rather than argued:
+// kBlankSpoken = L"\u2013" (EN dash) with the first assert's expectation edited
+// to match passes all three clauses above and ships "Received, en dash" - the
+// exact defect, one code point along. "Differs from the em dash" was never the
+// property; "is words" was. So that is what is asserted.
+constexpr bool IsSpeakable(std::wstring_view s) {
+  if (s.empty()) return false;
+  for (wchar_t c : s)
+    if (!((L'a' <= c && c <= L'z') || (L'A' <= c && c <= L'Z') || c == L' ')) return false;
+  return true;
+}
+
+// THE LIMIT OF THIS ONE, STATED BEFORE IT IS BELIEVED. It enforces "letters and
+// spaces only", which is a PROXY for speakable, and it rejects every punctuation
+// mark - every dash, bullet, ellipsis and arrow anyone might reach for. It does
+// NOT reject a pronounceable non-word: "xyzzy" passes. Nothing mechanical here
+// catches that, and a predicate that pretended to would be another gate that
+// cannot fail - the same limit, and the same reason, as ReadsAsVerified in
+// InspectRailFields.cpp.
+//
+// BOTH CLAUSES EARN THEIR PLACE, on different mutations: this one alone permits
+// kBlankValue and kBlankSpoken both becoming L"not set" (speakable, but the
+// parameter then buys nothing), and the clause above alone permits the en dash.
+static_assert(IsSpeakable(RailSpokenValueOr(L"")),
+              "the spoken blank must be WORDS - a punctuation mark read aloud is the defect");
+static_assert(!IsSpeakable(RailValueOr(L"")),
+              "and the DRAWN blank must still be the glyph, or these two are one string");
 
 // ---- the rail's state, parked on its own elements --------------------------
 //
@@ -360,7 +410,13 @@ FrameworkElement MakeLockHeader() {
   // The MODEL, not an algorithm. This is the line that would have named the
   // cipher; it answers "what am I looking at" instead, and it is what keeps the
   // 56 DIP row on conversation mode's two-line rhythm.
-  note.Text(L"Fabricated demo data, no crypto in this build");
+  //
+  // "Demo model:" a THIRD time, and deliberately. This note is the only one of
+  // the three G4 strings that says WHY, so it changes register - but it used to
+  // change vocabulary too ("Fabricated demo data ... this build"), naming in two
+  // ways the same object the title and AttestationLabel both call the demo
+  // model. Same prefix, and the note now DEFINES the term the other two use.
+  note.Text(L"Demo model: fabricated data, no crypto in this build");
   text.Children().Append(note);
   Grid::SetColumn(text, 1);
   grid.Children().Append(text);
@@ -401,21 +457,31 @@ void AppendFailureBlock(UIElementCollection const& body, std::wstring const& rea
 
 // THE file's only MakePaneKeyValueRow call site, and now that is enforced rather
 // than asserted in a comment: the identifier is poisoned everywhere else in this
-// translation unit (see the block under the includes), and the two directives
-// below are the only place it is spelled out.
+// translation unit (see the block under the includes), and this function is the
+// window where it is spelled out.
+//
+// FUNCTION SCOPE, NOT STATEMENT SCOPE, and that is a fix-round-1 change. The
+// directives were originally inside the `for` body, immediately around the call,
+// which is one line tighter and reads - wrongly - as if the preprocessor ran per
+// iteration. Directives are processed once, at translation, but a reader should
+// not have to know that to read a loop. The window is the function instead. What
+// that gives up: a SECOND bypassing call added inside these five lines would now
+// compile. That is a call added inside the eight-line function whose entire
+// purpose is the funnel, which is a diff a reader catches; the per-iteration
+// misreading is one a reader has.
 //
 // The DRAWN blank and the SPOKEN blank are different strings and go in through
 // different parameters, so one row cannot acquire two writers of its name.
+#undef MakePaneKeyValueRow
 void AppendFieldRows(StackPanel const& panel, std::vector<InspectField> const& fields) {
   auto body = panel.Children();
-  for (auto const& field : fields) {
-#undef MakePaneKeyValueRow
-    auto row = kit::MakePaneKeyValueRow(H(field.key), winrt::hstring{RailValueOr(field.value)},
-                                        34, winrt::hstring{RailSpokenValueOr(field.value)});
-#define MakePaneKeyValueRow MakePaneKeyValueRow_bypasses_RailValueOr_use_AppendFieldRows
-    body.Append(row.root);
-  }
+  for (auto const& field : fields)
+    body.Append(kit::MakePaneKeyValueRow(H(field.key),
+                                         winrt::hstring{RailValueOr(field.value)}, 34,
+                                         winrt::hstring{RailSpokenValueOr(field.value)})
+                    .root);
 }
+#define MakePaneKeyValueRow MakePaneKeyValueRow_bypasses_RailValueOr_use_AppendFieldRows
 
 // POPULATE ONLY. No storyboard, so the density switch can call this on a rail
 // that is already on screen without the rail flashing.
