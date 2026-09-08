@@ -112,47 +112,37 @@ MainWindow::MainWindow() {
   // --demo that function ends by calling OnConversationSelected(0) - the one
   // selection this constructor performs, since the agent may not synthesise a
   // click - and the selection handler is where the wiring surface will drive the
-  // rail from. (Which handler, precisely: OnConversationSelected is the LIST
-  // task's, and the wiring task replaces it with MainWindow::SelectConversation,
-  // driving the rail from there. Check with
-  // `git grep -c OnConversationSelected -- docs/superpowers/plans/tasks/wiring.md`
-  // which matches nothing, against 7 hits for SelectConversation in that file.)
-  // A rail built after that call would be a rail it cannot reach, which is this
-  // project's standing failure shape.
+  // rail from. (The wiring task replaces this file's OnConversationSelected with
+  // its own SelectConversation and drives the rail from there.) A rail built
+  // after that call would be a rail it cannot reach, which is this project's
+  // standing failure shape.
   //
   // *** READ THIS BEFORE GIVING THE RAIL A SECOND WRITER (R3). ***
   //
-  // The wiring task (docs/superpowers/plans/tasks/wiring.md) adds
-  // MainWindow::SelectConversation(int), which drives the rail with
-  // SetInspectRailConversation (wiring.md:153), and its own DrainDeepLink half
-  // which drives it with SetInspectRailMessage. Its ordering is already SAFE -
-  // it selects the conversation first and the message second (wiring.md:230-243)
-  // - so the hazard is NOT that ordering. It is this:
+  // The wiring task installs its own --demo=inspect deep link, in DrainDeepLink.
+  // Its ordering is already safe - conversation first, message second - so the
+  // hazard is not the ordering. It is this:
   //
   //   DELETE THE --demo=inspect BRANCH IN BuildInspectRail() BELOW WHEN THAT
   //   LANDS. Do not keep both. Two deep-link writers for one state is one too
-  //   many, and they do not even agree on the target: this file's branch uses
-  //   views::PickInspectMessage (the last OUTGOING row in state Read - c0-r12,
-  //   which is also what kInspectTargetRowId names and what the thread outlines),
-  //   while wiring.md picks the LAST Message row of any kind, which is c0-r23,
-  //   a Pending outgoing row. Whichever writes last wins, so keeping both makes
-  //   the rail's subject an ordering accident and can silently part the rail
-  //   from the thread's own selection outline.
+  //   many: whichever runs last wins, which makes the rail's subject an ordering
+  //   accident, and if the two designate different rows it silently parts the
+  //   rail from the bubble the thread outlines.
   //
-  // WHY NOTHING WOULD CATCH IT. The rail already has two --diagnose probes among
-  // the 42 - InspectRailFieldsProbe and InspectRailDeviceProbe (Startup.cpp:1521
-  // -1522) - but they probe the rail's FIELDS and DEVICES, computed from pure
-  // functions. Nothing probes which MODE the rail is in, because that decision is
-  // this inline `if` in a winrt translation unit. So a regression here leaves
-  // --diagnose at 42 PASS / 0 FAIL and the build clean, and the only thing that
-  // can notice is a person looking at a screenshot.
+  // WHY NOTHING WOULD CATCH IT. The rail has --diagnose probes for its FIELDS
+  // and its DEVICES, both computed from pure functions in InspectRailFields.
+  // Nothing probes which MODE the rail is in, because that decision is this
+  // inline `if` in a winrt translation unit. So a regression here leaves
+  // --diagnose green and the build clean, and the only thing that can notice is
+  // a person looking at a screenshot.
   //
   // R4 is assigned the extraction that closes half of this: InitialRailMode(
   // screen, conv) into InspectRailFields.h, asserting Inspect->Message,
-  // Chats->Conversation, and Inspect-with-no-message->Conversation (the LogWarn
-  // arm below, which today has zero coverage). That asserts what the mode SHOULD
-  // be, not which write lands last - so it becomes a real gate only alongside
-  // the single-writer rule stated above, which is the wiring task's half.
+  // Chats->Conversation, and Inspect-with-no-message->Conversation - that last
+  // clause being the LogWarn arm below, which R4 must cover. It asserts what the
+  // mode SHOULD be, not which write lands last, so it becomes a real gate only
+  // alongside the single-writer rule stated above, which is the wiring task's
+  // half.
   //
   // And do NOT solve any of this by moving BuildInspectRail() after
   // BuildConversationList(): that reintroduces the unreachable-rail failure this
@@ -407,17 +397,21 @@ void MainWindow::BuildInspectRail() {
   // --demo=inspect is a STATE, not a screen (design 8): the thread with a
   // message pre-selected and the rail already in message mode, which is the
   // state a screenshot needs and the state no click can reach for an agent.
-  // PickInspectMessage is shared with the thread's selection outline, so both
-  // land on the same bubble by construction.
+  // The rail takes its subject from PickInspectMessage; the thread's selection
+  // outline takes its own from kInspectTargetRowId. Those are TWO designations,
+  // not one shared function, so they agree by GATE and not by construction:
+  // InspectRailFieldsProbe asserts the pick equals the constant, and that
+  // assertion is the only thing keeping the rail and the outline on the same
+  // bubble. If it ever fails, this deep link and the thread have parted.
   //
-  // *** THE WIRING TASK MUST DELETE THIS BRANCH, NOT KEEP IT. *** wiring.md
-  // installs its own --demo=inspect deep link, in DrainDeepLink, via
-  // SelectConversation + SelectMessage. Keeping both gives one state two writers
-  // that disagree on the target: this branch uses PickInspectMessage (c0-r12,
-  // the row kInspectTargetRowId names and the thread outlines), wiring.md takes
-  // the last Message row of any kind (c0-r23). The constructor comment above
-  // BuildInspectRail() states the whole hazard and why no --diagnose line would
-  // catch it - the rail's two probes cover its fields and devices, not its mode.
+  // *** THE WIRING TASK MUST DELETE THIS BRANCH, NOT KEEP IT. *** That task
+  // installs its own --demo=inspect deep link in DrainDeepLink. Two writers of
+  // one state is one too many: whichever runs last wins, which makes the rail's
+  // subject an ordering accident, and if the two do not designate the same row
+  // it can put the rail on a different bubble from the one the thread outlines.
+  // The constructor comment above BuildInspectRail() states the hazard and why
+  // no --diagnose line would catch it: the rail's probes cover its fields and
+  // its devices, not its mode.
   if (options_.screen == urmsg::demo::DemoScreen::Inspect) {
     if (auto const* picked = urmsg::views::PickInspectMessage(conv)) {
       urmsg::views::SetInspectRailMessage(rail_, conv, *picked);

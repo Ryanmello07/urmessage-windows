@@ -23,48 +23,49 @@
 
 // ---- ONE key/value call site in this file, enforced by the build (R3) ------
 //
-// WHAT IT CATCHES, precisely. AppendFieldRows below routes every rail value
-// through RailValueOr, which draws a blank as one em dash. Appending a row with
-// `kit::MakePaneKeyValueRow(H(field.key), H(field.value), 34)` instead skips it.
-// That is not hypothetical and it is not a style point: it is the line task R3
-// was briefed with, and message mode holds ALL 28 of the world's blank values
-// (24 "Group id" on direct conversations, 4 "Received" on outgoing rows nothing
-// has received yet), so that one line renders 28 empty cells while both
-// static_asserts below stay true, the build stays clean and --diagnose stays
-// 42 PASS / 0 FAIL. Task R2 measured the bypass and reported that nothing it
-// could write would catch it, because the second mode did not exist yet.
+// THE RULE. AppendFieldRows below is the only function in this file that may
+// call kit::MakePaneKeyValueRow, and the poison enforces it: the identifier is
+// defined to a name that does not exist, so a call written outside the funnel
+// fails to compile and the error names the funnel.
 //
-// So the identifier is POISONED for the whole translation unit and un-poisoned
-// for exactly the one line inside AppendFieldRows that is allowed to use it. A
-// second call site anywhere in this file - above the funnel or below it - is a
-// compile error naming the funnel, rather than 28 empty cells in a screenshot
-// nobody looked at closely enough.
+// WHY IT IS WORTH ENFORCING. AppendFieldRows routes every rail value through
+// RailValueOr, which draws a blank as one em dash. Appending a row with
+// `kit::MakePaneKeyValueRow(H(field.key), H(field.value), 34)` instead skips
+// that. This is not hypothetical and it is not a style point: it is the line
+// task R3 was briefed with, and message mode is the surface that holds the
+// world's blank values - InspectRailFieldsProbe counts them and gates their
+// shape - so that one line renders empty cells while the static_asserts below
+// stay true, the build stays clean and --diagnose stays green. Task R2 measured
+// the bypass and reported that nothing it could write would catch it, because
+// the second mode did not exist yet.
 //
-// THE LIMIT, STATED ACCURATELY, AND CHECK IT RATHER THAN BELIEVING IT:
+// THE LIMIT. The poison is lifted for one window around the funnel, and that
+// window is wider than the call: a bypassing call added inside AppendFieldRows,
+// or a helper appended immediately after that function, lands un-poisoned. The
+// second case is the likely one - it is where a person adding a sibling
+// naturally types - so the end of the window is marked in place, and new
+// functions belong after the marker.
+//
+// It is also per-FILE and PREPROCESSOR-level: it sees an identifier, not a call
+// graph. A rail row built by a helper that calls the kit from ANOTHER file would
+// pass this. That is the failure mode to watch, and nothing mechanical here
+// catches it - only reading a diff does.
+//
+// AND THE TRADEOFF, SO A READER CAN ACTUALLY JUDGE IT. Where a builder has few
+// callers, cheaper enforcement is available: a reviewer reading the diff catches
+// the bypass as reliably as the macro does, and a comment would have cost
+// nothing. The macro was chosen because the bypass is not hypothetical, and
+// because its value is on the day someone edits this file without the brief in
+// front of them - when the plan's other pane surfaces have callers of their own
+// and this file is no longer obviously the only one. It is not free: a
+// preprocessor device is a surprising thing to meet in this codebase, and
+// surprise is a real cost.
+//
+// This comment carries no census on purpose. A comment is not re-run, and the
+// command below would count these lines among its own hits. For the current
+// picture, run it:
 //
 //     git grep -n "MakePaneKeyValueRow" -- app/
-//
-// Today every hit is a declaration, a definition or a comment except ONE
-// invocation - AppendFieldRows below. This file is the builder's only caller in
-// the tree. So the guard is PROSPECTIVE: it protects against the callers the
-// plan will add, in docs/superpowers/plans/tasks/advanced.md and network.md, and
-// on the day those land this file stops being the obvious only user and the
-// funnel stops being self-evident. Those surfaces will call the kit builder
-// directly and correctly - they have no blank-value model to funnel through.
-//
-// AND THE TRADEOFF, SO A READER CAN ACTUALLY JUDGE IT. With one call site in the
-// tree, cheaper enforcement was available: a reviewer reading this diff catches
-// the bypass as reliably as the macro does, and a comment would have cost
-// nothing. The macro was chosen because the bypass is not hypothetical - it is
-// the line THIS task was briefed with, in a group where the same class of defect
-// has now shipped thirteen times - and because its whole value is on the day
-// someone edits this file without the brief in front of them. It is not free: it
-// is the only preprocessor device of its kind in this codebase.
-//
-// It is also per-FILE and PREPROCESSOR-level, so it sees an identifier and not a
-// call graph: a rail row built by some new helper that calls the kit from
-// ANOTHER file would pass this. That is the failure mode to watch, and nothing
-// mechanical in this file catches it - only reading a diff does.
 #define MakePaneKeyValueRow MakePaneKeyValueRow_bypasses_RailValueOr_use_AppendFieldRows
 
 using namespace winrt::Microsoft::UI::Xaml;
@@ -103,30 +104,29 @@ winrt::hstring H(std::wstring const& value) { return winrt::hstring{value}; }
 // downstream - and a "Received" row with a dash in it tells a reader more than
 // an absent row does.
 //
-// THE LIMIT, STATED ACCURATELY - AND RE-STATED BY R3, BECAUSE MESSAGE MODE NOW
-// EXISTS. R2 wrote that all 28 blanks were "in message mode, whose body is not
-// defined yet". That body is defined now, and the substituting branch is STILL
-// not reached by anything either task renders - but for a narrower reason, which
-// is the part worth writing down:
+// THE LIMIT: NOTHING RENDERED SO FAR REACHES THE SUBSTITUTING BRANCH. The
+// blanks live in message mode - InspectRailFieldsProbe is what counts them and
+// gates their shape - but neither kind is reachable from what can be opened
+// today, for a structural reason rather than a lucky one:
 //
-//   * conversation mode at the default density is BuildConversationFields' two
-//     rows, "Retention" and "Media", and DemoWorld fills both on all eight.
-//   * the 24 "Group id" blanks are ADVANCED-density rows on a DIRECT
-//     conversation. --demo=inspect opens conversation 0, which is a GROUP with a
-//     populated groupIdHex, and the rail's density stays false until R4 defines
+//   * conversation mode at the default density draws only the retention rows,
+//     and DemoWorld fills those on every conversation.
+//   * the "Group id" blanks are ADVANCED-density rows on a DIRECT conversation.
+//     --demo=inspect opens conversation 0, which is a GROUP with a populated
+//     groupIdHex, and the rail's density stays false until R4 defines
 //     SetInspectRailAdvanced - so neither half of that pair is reachable yet.
-//   * the 4 "Received" blanks are outgoing rows nothing has received. The only
-//     row --demo=inspect can land on is PickInspectMessage's, which is by
-//     definition the last outgoing row in state Read (c0-r12), and a Read row
-//     has a receivedAtLabel. Reaching a Pending or Failed row means CLICKING a
-//     bubble, and the thread's onSelectMessage seam is not wired yet.
+//   * the "Received" blanks are outgoing rows nothing has received. The only row
+//     --demo=inspect can land on is PickInspectMessage's, which is by definition
+//     an outgoing row in state Read, and a Read row has a receivedAtLabel.
+//     Reaching a Pending or Failed row means CLICKING a bubble, and the thread's
+//     onSelectMessage seam is not wired yet.
 //
 // So the branch is covered by the static_asserts below - a locally built
 // adversarial input, the same device InspectRailFields.cpp uses for ShortHex's
 // unreachable truncating branch - and NOT by any screenshot yet taken, which
-// shows no blank row because there is no blank value in it to show. What R3 adds
-// is the guarantee that when a render finally does reach a blank, it comes
-// through here: see the call-site block under this file's includes.
+// shows no blank row because there is no blank value in it to show. What the
+// poison adds is the guarantee that when a render finally does reach a blank, it
+// comes through here: see the call-site block under this file's includes.
 constexpr wchar_t const* kBlankValue = L"\u2014";
 
 // The one funnel. Every key/value row the rail draws is built from the result of
@@ -179,8 +179,8 @@ static_assert(RailSpokenValueOr(L"Kept until deleted") == std::wstring_view{L"Ke
 // satisfied whole by making RailSpokenValueOr a second name for RailValueOr.
 //
 // THIS CLAUSE IS IMPLIED BY THE TWO BELOW, AND IS KEPT ANYWAY - said plainly,
-// because a clause kept for a reason that does not check out is the exact shape
-// this file's own header cites thirteen times. IsSpeakable(spoken) and
+// because a clause kept for a reason that does not check out is the dead-gate
+// shape this project has shipped over and over. IsSpeakable(spoken) and
 // !IsSpeakable(drawn) use ONE predicate, so a true result and a false result
 // cannot come from equal strings: they already entail this inequality. There is
 // NO mutation this clause catches alone.
@@ -214,8 +214,8 @@ constexpr bool IsSpeakable(std::wstring_view s) {
 //
 // THESE TWO ARE THE GATE. Between them they entail the inequality asserted
 // above, and they catch what it cannot: the en dash trips the first, and both
-// funnels collapsing onto one speakable string trips the second. If you are
-// counting clauses that can independently fail, the answer here is two.
+// funnels collapsing onto one speakable string trips the second. Of these three
+// clauses, these are the two that can fail on their own.
 static_assert(IsSpeakable(RailSpokenValueOr(L"")),
               "the spoken blank must be WORDS - a punctuation mark read aloud is the defect");
 static_assert(!IsSpeakable(RailValueOr(L"")),
@@ -432,9 +432,9 @@ FrameworkElement MakeLockHeader() {
 // The reason AND the affordance, because design 9.1 asks for both - and the
 // button is EXPLICITLY DISABLED, because the same section forbids anything that
 // looks live and does nothing and there is no send path in the demo to retry
-// into (design 2). UrButtonBaseStyle's Disabled visual state draws the button at
-// 38% opacity (App.xaml:371-375), so "present but not available" is VISIBLE
-// rather than something a user discovers by clicking.
+// into (design 2). UrButtonBaseStyle's Disabled visual state dims the button, so
+// "present but not available" is VISIBLE rather than something a user discovers
+// by clicking.
 //
 // UrPaneActionSecondaryStyle, not UrSecondaryButtonStyle: the latter is the
 // 48-tall, 24pt NeueBit hero button, which in a 360 DIP rail would be a slab.
@@ -459,23 +459,20 @@ void AppendFailureBlock(UIElementCollection const& body, std::wstring const& rea
   body.Append(retry);
 }
 
-// THE file's only MakePaneKeyValueRow call site, and now that is enforced rather
-// than asserted in a comment: the identifier is poisoned everywhere else in this
-// translation unit (see the block under the includes), and this function is the
-// window where it is spelled out.
+// THE FUNNEL. This is the one function permitted to call the kit's key/value
+// builder; the identifier is poisoned elsewhere in this translation unit (see
+// the block under the includes) and un-poisoned across this function.
 //
-// FUNCTION SCOPE, NOT STATEMENT SCOPE. Putting the directives inside the `for`
-// body is one line tighter and reads - wrongly - as if the preprocessor ran per
+// FUNCTION SCOPE, NOT STATEMENT SCOPE. Wrapping the directives around the call
+// itself is tighter, and reads - wrongly - as if the preprocessor ran per
 // iteration. Directives are processed once, at translation, but a reader should
 // not have to know that to read a loop.
 //
-// WHAT THE WINDOW COSTS, COUNTED HONESTLY. Everything between the #undef and the
-// #define is un-poisoned: this eight-line function, AND - the part that actually
-// matters - the position immediately after its closing brace, which is exactly
-// where someone adding a sibling helper "just after AppendFieldRows" would type.
-// That is a bigger hole than a second call inside the funnel, and it is the one
-// to watch. The #define below sits flush against the brace with no blank line so
-// the boundary is visible, and it is marked; a new function belongs BELOW it.
+// WHAT THE WINDOW COSTS. Anything written between the two directives is
+// un-poisoned: a second call inside this function, and - the case that actually
+// matters - a helper appended after it, which is where someone adding a sibling
+// naturally types. That is the bigger hole of the two, so the closing directive
+// carries a marker; a new function belongs after it.
 //
 // The DRAWN blank and the SPOKEN blank are different strings and go in through
 // different parameters, so one row cannot acquire two writers of its name.
