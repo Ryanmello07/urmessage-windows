@@ -40,23 +40,17 @@
 // compile error naming the funnel, rather than 28 empty cells in a screenshot
 // nobody looked at closely enough.
 //
-// THE LIMIT, STATED ACCURATELY - AND CORRECTED IN FIX ROUND 1, BECAUSE THE
-// FIRST VERSION OF THIS PARAGRAPH OVERSOLD ITS OWN MECHANISM. It claimed "Home,
-// the Network page and the status strip all call it directly". They do not.
-// SWEEP THE TREE and kit::MakePaneKeyValueRow has exactly ONE invocation in the
-// whole repo - AppendFieldRows below. Every other occurrence is a declaration, a
-// definition or a comment. There is no Home view and no Network view in
-// app/src/App/Views at all; they are unimplemented plan tasks
-// (docs/superpowers/plans/tasks/advanced.md, network.md). The status strip does
-// not use this builder either - its row is MakeStatusField, a different
-// function, itself with zero call sites today.
+// THE LIMIT, STATED ACCURATELY, AND CHECK IT RATHER THAN BELIEVING IT:
 //
-// So state it in the FUTURE TENSE, which is what it actually is: this guards
-// against callers the PLAN will add. When the Home, Network and Advanced
-// surfaces land they will call the kit builder directly and correctly - they
-// have no blank-value model to funnel through - and on that day this file stops
-// being the obvious only user and the funnel stops being self-evident. Today it
-// is the only user.
+//     git grep -n "MakePaneKeyValueRow" -- app/
+//
+// Today every hit is a declaration, a definition or a comment except ONE
+// invocation - AppendFieldRows below. This file is the builder's only caller in
+// the tree. So the guard is PROSPECTIVE: it protects against the callers the
+// plan will add, in docs/superpowers/plans/tasks/advanced.md and network.md, and
+// on the day those land this file stops being the obvious only user and the
+// funnel stops being self-evident. Those surfaces will call the kit builder
+// directly and correctly - they have no blank-value model to funnel through.
 //
 // AND THE TRADEOFF, SO A READER CAN ACTUALLY JUDGE IT. With one call site in the
 // tree, cheaper enforcement was available: a reviewer reading this diff catches
@@ -181,19 +175,28 @@ static_assert(RailSpokenValueOr(L"") == std::wstring_view{L"not set"},
 static_assert(RailSpokenValueOr(L"Kept until deleted") == std::wstring_view{L"Kept until deleted"},
               "a value that IS present must be spoken unchanged");
 
-// AND THE TWO MUST DISAGREE. The pair above is satisfied whole by making
-// RailSpokenValueOr a second name for RailValueOr - both static_asserts pass on
-// the em dash if kBlankSpoken is changed to L"\u2014" - so the property that
-// actually matters is asserted on its own: the drawn blank and the spoken blank
-// are not the same string.
+// AND THE TWO MUST DISAGREE, or the parameter buys nothing: the pair above is
+// satisfied whole by making RailSpokenValueOr a second name for RailValueOr.
+//
+// THIS CLAUSE IS IMPLIED BY THE TWO BELOW, AND IS KEPT ANYWAY - said plainly,
+// because a clause kept for a reason that does not check out is the exact shape
+// this file's own header cites thirteen times. IsSpeakable(spoken) and
+// !IsSpeakable(drawn) use ONE predicate, so a true result and a false result
+// cannot come from equal strings: they already entail this inequality. There is
+// NO mutation this clause catches alone.
+//
+// It stays because it says the point DIRECTLY, in one line, at the definition,
+// where the two-step inference through IsSpeakable does not read as obviously.
+// It is documentation the compiler checks, NOT an independent gate. Do not count
+// it as one.
 static_assert(RailValueOr(L"") != RailSpokenValueOr(L""),
               "the spoken blank must differ from the drawn one, or the parameter buys nothing");
 
-// AND DIFFERENT IS NOT ENOUGH, which a reviewer demonstrated rather than argued:
-// kBlankSpoken = L"\u2013" (EN dash) with the first assert's expectation edited
-// to match passes all three clauses above and ships "Received, en dash" - the
-// exact defect, one code point along. "Differs from the em dash" was never the
-// property; "is words" was. So that is what is asserted.
+// AND DIFFERENT IS NOT ENOUGH. Set kBlankSpoken to L"\u2013" (EN dash) and edit
+// the first assert's expectation to match: every clause above passes, and the
+// row ships "Received, en dash" - the exact defect, one code point along.
+// "Differs from the em dash" was never the property; "is words" was. So that is
+// what is asserted.
 constexpr bool IsSpeakable(std::wstring_view s) {
   if (s.empty()) return false;
   for (wchar_t c : s)
@@ -209,9 +212,10 @@ constexpr bool IsSpeakable(std::wstring_view s) {
 // cannot fail - the same limit, and the same reason, as ReadsAsVerified in
 // InspectRailFields.cpp.
 //
-// BOTH CLAUSES EARN THEIR PLACE, on different mutations: this one alone permits
-// kBlankValue and kBlankSpoken both becoming L"not set" (speakable, but the
-// parameter then buys nothing), and the clause above alone permits the en dash.
+// THESE TWO ARE THE GATE. Between them they entail the inequality asserted
+// above, and they catch what it cannot: the en dash trips the first, and both
+// funnels collapsing onto one speakable string trips the second. If you are
+// counting clauses that can independently fail, the answer here is two.
 static_assert(IsSpeakable(RailSpokenValueOr(L"")),
               "the spoken blank must be WORDS - a punctuation mark read aloud is the defect");
 static_assert(!IsSpeakable(RailValueOr(L"")),
@@ -460,15 +464,18 @@ void AppendFailureBlock(UIElementCollection const& body, std::wstring const& rea
 // translation unit (see the block under the includes), and this function is the
 // window where it is spelled out.
 //
-// FUNCTION SCOPE, NOT STATEMENT SCOPE, and that is a fix-round-1 change. The
-// directives were originally inside the `for` body, immediately around the call,
-// which is one line tighter and reads - wrongly - as if the preprocessor ran per
+// FUNCTION SCOPE, NOT STATEMENT SCOPE. Putting the directives inside the `for`
+// body is one line tighter and reads - wrongly - as if the preprocessor ran per
 // iteration. Directives are processed once, at translation, but a reader should
-// not have to know that to read a loop. The window is the function instead. What
-// that gives up: a SECOND bypassing call added inside these five lines would now
-// compile. That is a call added inside the eight-line function whose entire
-// purpose is the funnel, which is a diff a reader catches; the per-iteration
-// misreading is one a reader has.
+// not have to know that to read a loop.
+//
+// WHAT THE WINDOW COSTS, COUNTED HONESTLY. Everything between the #undef and the
+// #define is un-poisoned: this eight-line function, AND - the part that actually
+// matters - the position immediately after its closing brace, which is exactly
+// where someone adding a sibling helper "just after AppendFieldRows" would type.
+// That is a bigger hole than a second call inside the funnel, and it is the one
+// to watch. The #define below sits flush against the brace with no blank line so
+// the boundary is visible, and it is marked; a new function belongs BELOW it.
 //
 // The DRAWN blank and the SPOKEN blank are different strings and go in through
 // different parameters, so one row cannot acquire two writers of its name.
@@ -481,6 +488,7 @@ void AppendFieldRows(StackPanel const& panel, std::vector<InspectField> const& f
                                          winrt::hstring{RailSpokenValueOr(field.value)})
                     .root);
 }
+// <-- THE WINDOW ENDS HERE. New functions go BELOW this line, not above it.
 #define MakePaneKeyValueRow MakePaneKeyValueRow_bypasses_RailValueOr_use_AppendFieldRows
 
 // POPULATE ONLY. No storyboard, so the density switch can call this on a rail

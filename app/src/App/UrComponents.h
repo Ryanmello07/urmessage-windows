@@ -330,13 +330,15 @@ struct PaneKeyValueRow {
 // name. So the substitution is passed in, and there is still one writer.
 //
 // EMPTY MEANS "the same as what is drawn", so a caller that does not pass it is
-// announced exactly as it was before this parameter existed. CORRECTED IN R3 FIX
-// ROUND 1: the first version of this line said that is "what every existing call
-// site wants and is why none of them changed", which implied a body of callers
-// that does not exist. Sweep the tree - this builder has exactly ONE invocation
-// in the whole repo, the inspector rail's AppendFieldRows, and it is the one
-// passing the parameter. The default is therefore for the callers the plan will
-// add (the Home, Network and Advanced pane surfaces), not for callers it spared.
+// announced exactly as it was before this parameter existed. Check who that is
+// rather than assuming a crowd of them:
+//
+//     git grep -n "MakePaneKeyValueRow" -- app/
+//
+// Today the tree holds exactly ONE invocation - the inspector rail's
+// AppendFieldRows - and it is the one PASSING the parameter. The default is
+// therefore for the callers the plan will add (the Network and Advanced pane
+// surfaces), not for callers it spared.
 //
 // Passing this does NOT change a single drawn pixel - only the name - so it
 // cannot be used to make the row show one thing and say another: what a sighted
