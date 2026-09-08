@@ -103,6 +103,23 @@ inline constexpr double kUltraWideDip = 1800.0;
 // urmsg::demo::LayoutFor() and MainWindow::ApplyBreakpoint() actually consume.
 // Removed rather than aliased so there is exactly one name for this number.
 
+// ---- one lookup of an App.xaml style, by key (promoted R2) -----------------
+//
+// A style out of the app dictionary, or null if the key is missing. Applying
+// styles BY KEY is what keeps a pane built in code in step with App.xaml, and a
+// missing key must not throw a layout away.
+//
+// PROMOTED, not written fresh. These six lines existed verbatim in three
+// anonymous namespaces - UrComponents.cpp, Views/ThreadView.cpp and
+// Views/InspectRailView.cpp - each with its own comment explaining that the
+// others were file-local. Three verbatim copies of one lookup is one lookup
+// that can drift three ways, so it lives here now and UrComponents.cpp defines
+// it once. (ThreadView.cpp still carries its own: that unit takes no other
+// dependency on this header, and adding one for a single function was judged
+// the worse trade. It is the remaining copy, and it is the one to delete the
+// next time that file needs anything else from the kit.)
+winrt::Microsoft::UI::Xaml::Style StyleByKey(wchar_t const* key);
+
 // Set a line's text AND its visibility in one call: an empty string collapses
 // the element instead of leaving a row of nothing behind.
 //

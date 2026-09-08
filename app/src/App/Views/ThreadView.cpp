@@ -25,10 +25,14 @@ namespace {
 
 namespace demo = urmsg::demo;
 
-// UrComponents.cpp's StyleByKey/MetricByKey are file-local to that unit, so
-// this one needs its own pair. Applying styles by KEY rather than by hand is
-// what keeps the bubble in step with App.xaml; a missing key must not throw a
-// layout away.
+// MetricByKey is still file-local to UrComponents.cpp, so that half needs its
+// own. StyleByKey is NOT any more - it was promoted to urnw::kit::StyleByKey
+// (UrComponents.h) when a third verbatim copy appeared. This copy stayed only
+// because this unit takes no other dependency on UrComponents.h and adding one
+// for a single function was judged the worse trade; it is the LAST copy, and it
+// should be deleted for `kit::StyleByKey` the moment this file needs anything
+// else from the kit. Applying styles by KEY rather than by hand is what keeps
+// the bubble in step with App.xaml; a missing key must not throw a layout away.
 Style StyleByKey(wchar_t const* key) {
   auto app = Application::Current();
   if (!app) return nullptr;

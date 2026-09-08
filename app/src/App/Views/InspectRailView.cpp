@@ -35,19 +35,6 @@ namespace {
 // sites. This is the same adapter MainWindow.xaml.cpp names Loc().
 winrt::hstring H(std::wstring const& value) { return winrt::hstring{value}; }
 
-// A style out of the app dictionary by key, or null if it is missing: applying
-// styles by key is what keeps a pane built in code in step with App.xaml, and a
-// missing key must not throw a layout away. UrComponents.cpp:78-86 has the same
-// six lines in its own anonymous namespace and does not export them. A THIRD
-// copy is the signal to promote it into UrComponents.h; this is the second.
-Style StyleByKey(wchar_t const* key) {
-  auto app = Application::Current();
-  if (!app) return nullptr;
-  auto boxed = winrt::box_value(winrt::hstring{key});
-  if (!app.Resources().HasKey(boxed)) return nullptr;
-  return app.Resources().Lookup(boxed).try_as<Style>();
-}
-
 // ---- a blank value is one glyph, never a missing row -----------------------
 //
 // U+2014 EM DASH, written as an escape rather than as a literal character so the
@@ -74,7 +61,7 @@ Style StyleByKey(wchar_t const* key) {
 // substituting branch. Conversation mode at the default density is
 // BuildConversationFields' two rows, "Retention" and "Media", and DemoWorld
 // fills both on all eight conversations. All 28 blanks are in message mode,
-// which is defined by task R3. So the branch is covered here by the two
+// whose body is not defined yet. So the branch is covered here by the two
 // static_asserts below - a locally built adversarial input, the same device
 // InspectRailFields.cpp uses for ShortHex's unreachable truncating branch - and
 // NOT by this task's screenshot, which shows no blank row because there is no
@@ -123,9 +110,9 @@ std::wstring TagId(FrameworkElement const& element) {
   return tag ? std::wstring{*tag} : std::wstring{};
 }
 
-// For the mode that re-resolves its subject at render time (task R3). Nothing in
-// THIS task reads them back - conversation mode is handed its Conversation by
-// the caller - so they are written and not yet read.
+// For the mode that re-resolves its subject at render time. Message mode is
+// the one that needs it: conversation mode is handed its Conversation by the
+// caller, so today these are written and not yet read.
 [[maybe_unused]] std::wstring RailConversationId(InspectRailView const& v) {
   return TagId(v.conversationScroll);
 }
@@ -196,12 +183,12 @@ FrameworkElement MakeSubjectRow(demo::Conversation const& conv) {
   StackPanel text;
   text.VerticalAlignment(VerticalAlignment::Center);
   TextBlock name;
-  if (auto style = StyleByKey(L"UrRowTitleStyle")) name.Style(style);
+  if (auto style = kit::StyleByKey(L"UrRowTitleStyle")) name.Style(style);
   name.Text(H(conv.name));
   text.Children().Append(name);
 
   TextBlock note;
-  if (auto style = StyleByKey(L"UrRowNoteStyle")) note.Style(style);
+  if (auto style = kit::StyleByKey(L"UrRowNoteStyle")) note.Style(style);
   // members.size(), NOT memberCount. DemoWorld's --diagnose invariant 2 requires
   // them equal, and members.size() is what decides how many rows the MEMBERS
   // list below actually draws - so this line and that list cannot disagree in a
@@ -269,9 +256,9 @@ InspectRailView MakeInspectRail() {
   // MainWindow.xaml uses in markup (lines 180-188), so a pane built in code and
   // a pane declared in XAML are the same pane.
   Border header;
-  if (auto style = StyleByKey(L"UrPaneHeaderStyle")) header.Style(style);
+  if (auto style = kit::StyleByKey(L"UrPaneHeaderStyle")) header.Style(style);
   TextBlock title;
-  if (auto style = StyleByKey(L"UrPaneTitleStyle")) title.Style(style);
+  if (auto style = kit::StyleByKey(L"UrPaneTitleStyle")) title.Style(style);
   title.Text(L"Details");
   header.Child(title);
   root.Children().Append(header);

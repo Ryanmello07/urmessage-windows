@@ -70,11 +70,9 @@ FrameworkElement MakeSectionHeader(winrt::hstring const& glyph, winrt::hstring c
   return row;
 }
 
-namespace {
-
-// A style out of the app dictionary, by key, or null if it is missing. Applying
-// styles by key rather than by hand is what keeps the strip in step with
-// App.xaml; a missing key must not throw a layout away.
+// Declared in UrComponents.h and no longer file-local: two other units had
+// copied these six lines verbatim because they could not reach this one. The
+// comment on the declaration says which, and which one is left.
 Style StyleByKey(wchar_t const* key) {
   auto app = Application::Current();
   if (!app) return nullptr;
@@ -82,8 +80,6 @@ Style StyleByKey(wchar_t const* key) {
   if (!app.Resources().HasKey(boxed)) return nullptr;
   return app.Resources().Lookup(boxed).try_as<Style>();
 }
-
-}  // namespace
 
 StatusField MakeStatusField(winrt::hstring const& label, bool withDot,
                             winrt::hstring const& accessibleName) {
