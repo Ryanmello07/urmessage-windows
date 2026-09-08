@@ -114,10 +114,11 @@ inline constexpr double kUltraWideDip = 1800.0;
 // Views/InspectRailView.cpp - each with its own comment explaining that the
 // others were file-local. Three verbatim copies of one lookup is one lookup
 // that can drift three ways, so it lives here now and UrComponents.cpp defines
-// it once. (ThreadView.cpp still carries its own: that unit takes no other
-// dependency on this header, and adding one for a single function was judged
-// the worse trade. It is the remaining copy, and it is the one to delete the
-// next time that file needs anything else from the kit.)
+// it once. Both copies are gone: InspectRailView.cpp calls kit::StyleByKey, and
+// ThreadView.cpp - which took no other dependency on this header - now includes
+// it for a `using urnw::kit::StyleByKey;`, so its twelve call sites read exactly
+// as they did. A fourth unit wanting this should do one of those two, never a
+// fourth copy.
 winrt::Microsoft::UI::Xaml::Style StyleByKey(wchar_t const* key);
 
 // Set a line's text AND its visibility in one call: an empty string collapses

@@ -71,8 +71,8 @@ FrameworkElement MakeSectionHeader(winrt::hstring const& glyph, winrt::hstring c
 }
 
 // Declared in UrComponents.h and no longer file-local: two other units had
-// copied these six lines verbatim because they could not reach this one. The
-// comment on the declaration says which, and which one is left.
+// copied these six lines verbatim because they could not reach this one, and
+// both copies are gone. The comment on the declaration names them.
 Style StyleByKey(wchar_t const* key) {
   auto app = Application::Current();
   if (!app) return nullptr;

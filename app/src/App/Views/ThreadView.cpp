@@ -14,6 +14,7 @@
 #include "Demo/ThreadLayout.h"
 #include "Identicon.h"
 #include "UrColors.h"
+#include "UrComponents.h"  // urnw::kit::StyleByKey
 #include "UrMotion.h"
 #include "Views/ThreadLayout.h"
 
@@ -25,21 +26,19 @@ namespace {
 
 namespace demo = urmsg::demo;
 
-// MetricByKey is still file-local to UrComponents.cpp, so that half needs its
-// own. StyleByKey is NOT any more - it was promoted to urnw::kit::StyleByKey
-// (UrComponents.h) when a third verbatim copy appeared. This copy stayed only
-// because this unit takes no other dependency on UrComponents.h and adding one
-// for a single function was judged the worse trade; it is the LAST copy, and it
-// should be deleted for `kit::StyleByKey` the moment this file needs anything
-// else from the kit. Applying styles by KEY rather than by hand is what keeps
-// the bubble in step with App.xaml; a missing key must not throw a layout away.
-Style StyleByKey(wchar_t const* key) {
-  auto app = Application::Current();
-  if (!app) return nullptr;
-  auto boxed = winrt::box_value(winrt::hstring{key});
-  if (!app.Resources().HasKey(boxed)) return nullptr;
-  return app.Resources().Lookup(boxed).try_as<Style>();
-}
+// StyleByKey is urnw::kit::StyleByKey (UrComponents.h) and is no longer copied
+// here. It used to be: this unit, UrComponents.cpp and Views/InspectRailView.cpp
+// each held the same six lines, each with a comment explaining that the others
+// were file-local, which is one lookup that could drift three ways. A
+// using-declaration rather than a `kit::` prefix at each of the twelve call
+// sites below, so the promotion changed the DEFINITION and not the call graph.
+//
+// Applying styles by KEY rather than by hand is what keeps the bubble in step
+// with App.xaml; a missing key must not throw a layout away.
+//
+// MetricByKey is a different story: it is still file-local to UrComponents.cpp
+// and this file does not use it, so nothing here needs it.
+using urnw::kit::StyleByKey;
 
 Media::Brush BrushByKey(wchar_t const* key, winrt::Windows::UI::Color fallback) {
   auto app = Application::Current();
