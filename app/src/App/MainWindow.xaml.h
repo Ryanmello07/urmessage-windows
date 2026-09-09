@@ -25,6 +25,7 @@
 #include "Views/ConversationListView.h"
 #include "Views/InspectRailView.h"
 #include "Views/NetworkPageView.h"
+#include "Views/SettingsView.h"
 #include "Views/StatusStripView.h"
 #include "Views/ThreadView.h"
 #include "WindowReveal.h"
@@ -89,6 +90,16 @@ struct MainWindow : MainWindowT<MainWindow> {
   void BuildNetworkPage();
 
   urmsg::views::NetworkPageView network_{};
+
+  // The Settings destination's whole content, built in code into SettingsHost
+  // (MainWindow.xaml:284 — the d7 audit's A3 override: mount into the existing
+  // host, do NOT add a SettingsPage Grid). Demo-gated for the same reason
+  // BuildNetworkPage is: the page reads the demo world, so building it on a
+  // normal launch would construct that world on the shipping path (design
+  // D7/D8).
+  void BuildSettings();
+
+  urmsg::views::SettingsView settings_{};
 
   // The connect indicator (design 6.5, D4). Built ONCE and never rebuilt: the
   // strip is window chrome, so it outlives every destination change. Returns

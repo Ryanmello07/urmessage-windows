@@ -201,6 +201,13 @@
          (<windows.h>, <shellapi.h>) for CommandLineToArgvW. -->
     <ClCompile Include="Demo\DemoSwitches.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="Demo\AdvancedMode.cpp" />
+    <!-- Uses the pch for the same reason Demo\AdvancedMode.cpp beside it does:
+         its diagnostics run from CollectDiagnostics() before
+         winrt::init_apartment, but the one winrt-touching call they make
+         (motion::ShouldAnimate) is only ever reached with the override
+         engaged, which returns before UISettings — the TU states this at the
+         call. -->
+    <ClCompile Include="Demo\DeveloperSwitches.cpp" />
     <ClCompile Include="Identicon.cpp" />
     <ClCompile Include="MainWindow.xaml.cpp"><DependentUpon>MainWindow.xaml</DependentUpon></ClCompile>
     <ClCompile Include="Localization.cpp" />
@@ -220,6 +227,9 @@
          block AFTER winrt::init_apartment (main.cpp:191 vs :202), so the
          before-init purity rule that NotUsing serves never reaches this TU. -->
     <ClCompile Include="Views\NetworkPageView.cpp" />
+    <!-- Uses the pch (it builds XAML): the whole file is element-tree work,
+         exactly the reason NetworkPageView.cpp above states. -->
+    <ClCompile Include="Views\SettingsView.cpp" />
     <!-- NotUsing for the same reason as Views\InspectRailFields.cpp above:
          Startup.cpp's `strip fields` line asserts these functions from
          CollectDiagnostics(), which runs before winrt::init_apartment
@@ -246,6 +256,7 @@
     <ClInclude Include="Views\ThreadView.h" />
     <ClInclude Include="Demo\DemoSwitches.h" />
     <ClInclude Include="Demo\AdvancedMode.h" />
+    <ClInclude Include="Demo\DeveloperSwitches.h" />
     <ClInclude Include="Identicon.h" />
     <ClInclude Include="MainWindow.xaml.h"><DependentUpon>MainWindow.xaml</DependentUpon></ClInclude>
     <ClInclude Include="Localization.h" />
@@ -259,6 +270,7 @@
     <ClInclude Include="Views\InspectRailFields.h" />
     <ClInclude Include="Views\InspectRailView.h" />
     <ClInclude Include="Views\NetworkPageView.h" />
+    <ClInclude Include="Views\SettingsView.h" />
     <ClInclude Include="Views\StatusStripRules.h" />
     <ClInclude Include="Views\StatusStripView.h" />
     <ClInclude Include="WindowReveal.h" />

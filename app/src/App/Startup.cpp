@@ -28,6 +28,7 @@
 #include "Views/StatusStripRules.h"
 #include "Demo/DemoShellState.h"
 #include "Demo/AdvancedMode.h"
+#include "Demo/DeveloperSwitches.h"
 #include "Demo/DemoWorld.h"
 #include "Demo/ThreadLayout.h"
 #include "Views/ThreadLayout.h"
@@ -550,6 +551,12 @@ std::vector<std::wstring> CollectDiagnostics() {
         urmsg::demo::ParseDemoOptions().advanced ? L"yes" : L"no"));
   }
   for (auto& line : DemoWorldAssertions()) lines.push_back(std::move(line));
+  // The Developer surface's session switches (design §6.6). Immediately after
+  // the world assertions, per the d7 audit's A2 override — there is no
+  // AdvancedModeDiagnostics() in this tree; the Advanced Mode content above is
+  // an inline report line, not an assertion loop.
+  for (auto& line : urmsg::demo::DeveloperSwitchDiagnostics())
+    lines.push_back(std::move(line));
   {
     using namespace urmsg::demo;
     World const& w = GetWorld();

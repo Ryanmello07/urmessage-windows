@@ -53,6 +53,8 @@ bool ShouldAnimate() {
 
 void SetMotionOverride(std::optional<bool> engaged) { g_motionOverride = engaged; }
 
+bool HasMotionOverride() { return g_motionOverride.has_value(); }
+
 TimeSpan Ms(int64_t ms) {
   return std::chrono::duration_cast<TimeSpan>(std::chrono::milliseconds(ms));
 }

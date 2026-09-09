@@ -94,6 +94,13 @@ bool ShouldAnimate();
 // inserted to capture the motion-off render and removed in the same session.
 void SetMotionOverride(std::optional<bool> engaged);
 
+// Whether the override is currently engaged. The --diagnose gate for the hook
+// (urmsg::demo::DeveloperSwitchDiagnostics) must PROVE it left nothing engaged
+// behind it — an override left set flips every animation in the app for the
+// rest of the session, which is exactly the failure shape the hook exists to
+// test — and it cannot prove that through a write-only API.
+bool HasMotionOverride();
+
 // ---- TimeSpan / Duration helpers --------------------------------------------
 winrt::Windows::Foundation::TimeSpan Ms(int64_t ms);
 winrt::Microsoft::UI::Xaml::Duration XamlDuration(int64_t ms);

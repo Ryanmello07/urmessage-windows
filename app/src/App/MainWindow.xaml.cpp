@@ -159,6 +159,7 @@ MainWindow::MainWindow() {
   BuildConversationList();
   BuildThread();
   BuildNetworkPage();
+  BuildSettings();
   BuildStatusStrip();
 
   // The window reveal: bind now that the content tree exists, then arm BEFORE
@@ -479,6 +480,36 @@ void MainWindow::BuildNetworkPage() {
   // established call at :365 and the rail's at :518.
   urmsg::views::SetNetworkPageAdvanced(network_, urmsg::AdvancedModeEnabled());
   urnw::LogInfo("window: network page built");
+}
+
+void MainWindow::BuildSettings() {
+  // options_, NOT a second ParseDemoOptions() call — the same rule
+  // BuildThread/BuildNetworkPage state. It also keeps GetWorld() off a normal
+  // launch (design §8: the app behaves exactly as it does today).
+  if (!options_.enabled) return;
+
+  // The callback IS the preference's one writer (Demo/AdvancedMode.h): the
+  // view owns the switch and follows itself, so there is no Set*Advanced seed
+  // here and no subscription — the live fan-out to the OTHER surfaces is the
+  // wiring task's ONE OnAdvancedModeChanged subscriber (W7), which no task in
+  // this wave registers. AdvancedModeEnabled() is already resolved:
+  // EnterDemoMode ran InitAdvancedMode before any Build* call.
+  settings_ = urmsg::views::MakeSettings(
+      [](bool on) { urmsg::SetAdvancedModeEnabled(on); },
+      urmsg::AdvancedModeEnabled());
+  // SettingsHost, NOT a Grid of this task's own: MainWindow.xaml:284 already
+  // declares it and ShowDestination's settings arm routes to it (the d7
+  // audit's A3 override — do not add a SettingsPage Grid; that is "mounted
+  // into the collapsed twin", the failure this window has already shipped).
+  SettingsHost().Children().Clear();
+  if (settings_.root) {
+    SettingsHost().Children().Append(settings_.root);
+  } else {
+    urnw::LogWarn("window: MakeSettings returned no root; the Settings "
+                  "destination is empty");
+  }
+  urnw::LogInfo("window: settings page built (advanced={})",
+                urmsg::AdvancedModeEnabled() ? "on" : "off");
 }
 
 void MainWindow::BuildStatusStrip() {
@@ -1059,7 +1090,7 @@ void MainWindow::ShowDestination(std::wstring_view tag) {
     incoming = StubPage();
     header = hstring{kDemoNavDeveloper};
   } else if (tag == L"settings" && options_.enabled) {
-    incoming = StubPage();
+    incoming = SettingsHost();
     header = Loc("nav_settings");
   }
 
