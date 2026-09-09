@@ -32,7 +32,16 @@ struct IdenticonPattern {
 // MakeIdenticonPattern's definition in the .cpp.
 constexpr IdenticonPattern MakeIdenticonPattern(urmsg::demo::Seed const& seed);
 
-// Applies its own CornerRadius(8) - callers must NOT set one.
+// The corner radius, as pure arithmetic so --diagnose can read it without an
+// apartment (Startup.cpp asserts it as gate P5). PROPORTIONAL to size — every
+// identicon in the app is the same shape whatever surface it lands on, and a
+// fixed 8 read as an almost-circle on the rail's 20px member chips while
+// under-rounding the 40px list avatars. 20px -> 8 is the value the old fixed
+// literal gave every size.
+constexpr double IdenticonCornerRadius(double size) { return size / 2.5; }
+
+// Applies its own corner radius (IdenticonCornerRadius) - callers must NOT
+// set one.
 // Palette is constrained to hues that cannot be mistaken for state: fix
 // round 1 replaced an exact-colour-match check (which a Tint() toward an
 // achromatic surface can never trip, since mixing with grey cannot change

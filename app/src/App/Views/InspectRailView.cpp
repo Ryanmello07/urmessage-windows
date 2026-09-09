@@ -534,6 +534,41 @@ void PopulateMessage(InspectRailView const& v, demo::Conversation const& conv,
   AppendFieldRows(panel, BuildMessageFields(conv, row, advanced));
 }
 
+// The 20px mini-identicon (design d1 §7): what turns MEMBERS and the device
+// list into the Session-style connected-clients view the owner named, using
+// the one vivid element the app already has. The presence dot STAYS - it
+// badges the chip's corner; removing it would strip the row's second presence
+// channel (the meta words are the first).
+//
+// The kit grid is not rebuilt for this: the dot is re-parented into a
+// chip-sized host that takes the dot's old column, so "one row species per
+// pane layout" survives and MakePaneListRowButton stays in step.
+void SeatIdenticonBadge(kit::PaneListRow const& row, Border const& chip) {
+  auto grid = row.root.Child().try_as<Grid>();
+  if (!grid) return;
+  uint32_t index = 0;
+  if (!grid.Children().IndexOf(row.dot, index)) return;
+  grid.Children().RemoveAt(index);
+
+  Grid host;
+  host.Width(20);
+  host.Height(20);
+  host.VerticalAlignment(VerticalAlignment::Center);
+  // Decorative only: the row's automation name already carries the identity
+  // and the presence words, so the chip announces nothing of its own.
+  automation::AutomationProperties::SetAccessibilityView(
+      chip, automation::Peers::AccessibilityView::Raw);
+  host.Children().Append(chip);
+  // Badged on the chip's corner and poked just past it, so the dot straddles
+  // the edge instead of covering two pattern cells outright.
+  row.dot.HorizontalAlignment(HorizontalAlignment::Right);
+  row.dot.VerticalAlignment(VerticalAlignment::Bottom);
+  row.dot.Margin(ThicknessHelper::FromLengths(0, 0, -2, -2));
+  host.Children().Append(row.dot);
+  Grid::SetColumn(host, 1);
+  grid.Children().Append(host);
+}
+
 }  // namespace
 
 InspectRailView MakeInspectRail() {
@@ -543,7 +578,12 @@ InspectRailView MakeInspectRail() {
   // The view paints its own surface rather than depending on the host's style:
   // a view module that is transparent unless its container happens to carry
   // UrPaneStyle is a module with an invisible dependency.
-  root.Background(urnw::colors::BackgroundBrush());
+  //
+  // The surface is SHEET, not page (design d1 §1.2): the rail is chrome ABOUT
+  // content - a key/value inspector - and chrome sits one tonal step above the
+  // ground it flanks, so the frame reads nav | list | thread | rail as
+  // chrome | content | content | chrome. One existing token, no new key.
+  root.Background(urnw::colors::SheetBrush());
   RowDefinition headerRow, bodyRow;
   headerRow.Height(GridLengthHelper::Auto());
   bodyRow.Height(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
@@ -582,6 +622,10 @@ kit::PaneListRow MakeMemberRow(demo::MemberRef const& member) {
   row.dot.Fill(0 < online ? urnw::colors::MakeBrush(urnw::colors::kUrGreen)
                           : urnw::colors::FaintBrush());
 
+  // The member's own mark, from the key whose change would change the picture
+  // - identity is exactly what an identicon is FOR (Identicon.h).
+  SeatIdenticonBadge(row, urmsg::MakeIdenticon(member.identityKey, 20));
+
   std::wstring title = member.displayName;
   if (member.admin) title += L" \u00B7 Admin";  // U+00B7 MIDDLE DOT
   row.title.Text(H(title));
@@ -611,6 +655,10 @@ kit::PaneListRow MakeDeviceRow(demo::DeviceRef const& device) {
   auto row = kit::MakePaneListRow(36);
   row.dot.Fill(device.online ? urnw::colors::MakeBrush(urnw::colors::kUrGreen)
                              : urnw::colors::FaintBrush());
+
+  // The OWNER's mark, not the device's: the device list has no per-device key,
+  // and ownerKey is the identity this row is actually about (DemoWorld.h).
+  SeatIdenticonBadge(row, urmsg::MakeIdenticon(device.ownerKey, 20));
 
   std::wstring title = device.name;
   const std::wstring owner =

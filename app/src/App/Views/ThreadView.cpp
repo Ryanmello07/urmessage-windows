@@ -122,34 +122,105 @@ void RunBubbleEntrance(FrameworkElement const& el) {
   sb.Begin();
 }
 
+// The selection outline's home inside UrBubbleButtonStyle's template
+// (App.xaml): a 2px UrAccentBrush layer at Opacity 0. FindName from the Button
+// would not reach the template's own namescope from code, so the walk compares
+// names directly; the tree here is three levels deep, so the recursion is
+// bounded by the template, not by the page.
+FrameworkElement FindTemplateChild(DependencyObject const& parent, wchar_t const* name) {
+  const int count = Media::VisualTreeHelper::GetChildrenCount(parent);
+  for (int i = 0; i < count; ++i) {
+    auto child = Media::VisualTreeHelper::GetChild(parent, i);
+    if (auto fe = child.try_as<FrameworkElement>())
+      if (fe.Name() == name) return fe;
+    if (auto found = FindTemplateChild(child, name)) return found;
+  }
+  return nullptr;
+}
+
 // THE ONE WRITER of a bubble's edge — resting AND selected, because they are
 // the same two properties and a property with two writers is a property that
 // can half-change. MakeBubbleRow calls it with selected=false when it builds a
 // bubble; SetThreadSelectedMessage calls it for every bubble on every selection
 // change. There is no third caller and there must not be one.
 //
-// Spec C §5.2 gives the RESTING edge: a 1px UrBorderBrush edge on an outgoing
-// bubble, none on an incoming one. Selection replaces it with 2px UrAccentBrush
-// — an OUTLINE, never a fill, and the 1px -> 2px step is a SHAPE change, so
-// selection survives colour being taken away.
+// The RESTING edge (Spec C §5.2): a 1px UrBorderBrush edge on an outgoing
+// bubble, none on an incoming one. "None" is still thickness 1 with a
+// Transparent brush — the style's own rule (App.xaml:750-752) — so the two
+// directions have identical inner metrics (design d2 §2.2).
 //
-// UrBubbleButtonStyle (App.xaml:753) template-binds BorderBrush and
-// BorderThickness onto its template root, which is what makes both of these
-// paint at all.
+// SELECTION no longer touches that edge at all. It draws the template's
+// SelectEdge layer — the same 2px UrAccentBrush outline as before, on its own
+// layer (design d1 §2.3ii, motion M1) — on over kMicroMs, and removes it
+// instantly on deselect (exits one step faster; kMicroMs is the floor, so
+// removal is immediate). Because the resting metrics never change, selecting a
+// bubble cannot shift its content in either direction.
 void SetBubbleEdge(Button const& bubble, bool outgoing, bool selected) {
   if (!bubble) return;
-  bubble.BorderThickness(
-      ThicknessHelper::FromUniformLength(selected ? 2.0 : (outgoing ? 1.0 : 0.0)));
+  // Rest first, on every call, so a later branch can never leave a stale
+  // selection treatment behind.
+  bubble.BorderThickness(ThicknessHelper::FromUniformLength(1.0));
   // A local rather than a nested ternary: two of the arms would be a
   // SolidColorBrush and a nullptr, and letting the compiler pick a common type
   // for those is how a null edge quietly becomes a transparent one.
   Media::Brush edge{nullptr};
-  if (selected) {
-    edge = urnw::colors::AccentBrush();
-  } else if (outgoing) {
+  if (outgoing) {
     edge = BrushByKey(L"UrBorderBrush", urnw::colors::kBorder);
+  } else {
+    edge = urnw::colors::MakeBrush({0, 0, 0, 0});  // Transparent
   }
   bubble.BorderBrush(edge);
+
+  // The template is applied on first measure; a property-write selection (the
+  // --demo=inspect deep link) can land before that, so force it. A no-op once
+  // applied. UrBubbleButtonStyle template-binds BorderBrush and BorderThickness
+  // onto its template root, which is what makes the rest edge above paint.
+  if (selected) bubble.ApplyTemplate();
+  const FrameworkElement layer = FindTemplateChild(bubble, L"SelectEdge");
+
+  if (!selected) {
+    // Deselect removes instantly. A draw-on still in flight is stopped FIRST:
+    // a running storyboard's value beats the local write, and without the stop
+    // the outline would linger for the remainder of its kMicroMs.
+    if (layer) {
+      if (auto sb = layer.Tag().try_as<anim::Storyboard>()) sb.Stop();
+      layer.Tag(nullptr);
+      layer.Opacity(0.0);
+    }
+    return;
+  }
+  if (!layer) {
+    // If the template ever stops carrying the layer (a style drift), selection
+    // must still draw SOMETHING: the pre-layer rendering, a 2px accent write on
+    // the rest edge itself.
+    bubble.BorderThickness(ThicknessHelper::FromUniformLength(2.0));
+    bubble.BorderBrush(urnw::colors::AccentBrush());
+    return;
+  }
+  // Already drawn (a held animation or the instant write below both leave
+  // Opacity at 1): re-writing the SAME selection is not a new selection and
+  // must not restart the draw-on.
+  if (layer.Opacity() >= 1.0) return;
+  if (auto sb = layer.Tag().try_as<anim::Storyboard>()) sb.Stop();
+  layer.Tag(nullptr);
+  if (!urnw::motion::ShouldAnimate()) {
+    // Motion GONE, not shortened: the edge appears instantly, exactly as it did
+    // before it had a layer. This branch has never executed on this machine
+    // (SPI_GETCLIENTAREAANIMATION = 1) — unverified beyond code inspection.
+    layer.Opacity(1.0);
+    return;
+  }
+  auto a = urnw::motion::MakeSplineDouble(0.0, 1.0, urnw::motion::kMicroMs, 0,
+                                          urnw::motion::kStandardP1,
+                                          urnw::motion::kStandardP2);
+  anim::Storyboard::SetTarget(a, layer);
+  anim::Storyboard::SetTargetProperty(a, L"Opacity");
+  anim::Storyboard sb;
+  sb.Children().Append(a);
+  // Remembered on the layer itself so the next call can stop a draw-on still
+  // in flight; dropped by the deselect/re-select branches above.
+  layer.Tag(sb);
+  sb.Begin();
 }
 
 // THE delivery cluster. design §6.2: right-aligned, under the last bubble that
@@ -394,7 +465,7 @@ BubbleRow MakeBubbleRow(demo::MessageRow const& row, bool group, bool showSender
   gutterRow.ColumnDefinitions().Append(content);
 
   if (wantsGutter && showSenderHeader) {
-    // MakeIdenticon applies its OWN CornerRadius(8) — do not set one here.
+    // MakeIdenticon applies its OWN corner radius — do not set one here.
     auto ident = urmsg::MakeIdenticon(row.senderKey, kThreadIdenticonDip);
     ident.VerticalAlignment(VerticalAlignment::Top);
     ident.HorizontalAlignment(HorizontalAlignment::Left);
@@ -459,9 +530,12 @@ struct ThreadParts {
 
   // The typing indicator (design §7). typingStory is stopped and dropped on
   // every state change so two waves can never run over one another.
+  // typingRowStory is the row's own one-shot entrance (design d1 motion M3) —
+  // a different storyboard on different properties, so the two cannot fight.
   FrameworkElement typingRow{nullptr};
   std::vector<winrt::Microsoft::UI::Xaml::Shapes::Ellipse> typingDots;
   anim::Storyboard typingStory{nullptr};
+  anim::Storyboard typingRowStory{nullptr};
 };
 
 std::map<void const*, std::shared_ptr<ThreadParts>>& Registry() {
@@ -636,7 +710,11 @@ FrameworkElement MakeTypingIndicator(std::shared_ptr<ThreadParts> const& parts) 
   row.Orientation(Orientation::Horizontal);
   row.Spacing(6);
   row.VerticalAlignment(VerticalAlignment::Center);
-  row.Margin(ThicknessHelper::FromLengths(20, 0, 0, 6));
+  // The left edge is the incoming bubble column: the thread pad, plus the
+  // identicon gutter in a group (design d2 §5). This is only the value before
+  // any conversation is known — SetThreadConversation owns the real one,
+  // because `group` is first known there.
+  row.Margin(ThicknessHelper::FromLengths(kThreadPadDip, 0, 0, 6));
   row.Visibility(Visibility::Collapsed);
 
   StackPanel dots;
@@ -721,8 +799,11 @@ Button MakeInertIconButton(wchar_t const* glyph, wchar_t const* name) {
 FrameworkElement MakeComposer() {
   Border bar;
   bar.Background(urnw::colors::CardBrush());
-  bar.BorderBrush(urnw::colors::BorderBrush());
-  bar.BorderThickness(ThicknessHelper::FromLengths(0, 1, 0, 0));
+  // The top hairline is NOT the bar's BorderBrush: it is its own pair of
+  // elements below (`seam`/`seamFocus`), because focus has to LIFT it from
+  // kBorder to kBorderStrong (design d1 §1.3) and FadeFocusRule animates
+  // opacity — a BorderBrush colour cannot be faded.
+  bar.BorderThickness(ThicknessHelper::FromUniformLength(0));
   bar.Padding(ThicknessHelper::FromLengths(12, 8, 12, 10));
 
   StackPanel column;
@@ -788,6 +869,19 @@ FrameworkElement MakeComposer() {
   box.MaxHeight(96);
   box.BorderThickness(ThicknessHelper::FromUniformLength(0));
   box.Background(nullptr);
+  // The caret is accent (design d1 §4, an approved micro-extension of the
+  // reservation): a 1.5px blinking line in the demo's one live input, which is
+  // the same class as every sanctioned use — a point-sized mark singling out
+  // where you can act. Never a fill, and off whenever the box is unfocused.
+  //
+  // WinUI 3's TextBox has NO CaretBrush property (the UWP one was never
+  // ported; the WindowsAppSDK 2.2 projection proves it) — the caret's colour
+  // is the theme resource its template binds, so the per-control override of
+  // that key below is the only way to spend it. If the template's key ever
+  // changes this degrades silently to the default caret, which is the design's
+  // sanctioned fallback.
+  box.Resources().Insert(winrt::box_value(winrt::hstring{L"TextControlCaretBrush"}),
+                         urnw::colors::AccentBrush());
   box.VerticalAlignment(VerticalAlignment::Center);
   Automation::AutomationProperties::SetName(box, L"Message (the demo does not send)");
   Grid::SetColumn(box, 3);
@@ -831,8 +925,29 @@ FrameworkElement MakeComposer() {
   focusRule.Opacity(0.0);
   column.Children().Append(focusRule);
 
-  box.GotFocus([focusRule](auto const&, auto const&) { FadeFocusRule(focusRule, true); });
-  box.LostFocus([focusRule](auto const&, auto const&) { FadeFocusRule(focusRule, false); });
+  // The bar's TOP hairline (design d1 §1.3): `seam` is the resting kBorder
+  // line, `seamFocus` the kBorderStrong lift stacked exactly over it, faded in
+  // by the same helper and on the same tokens as the interior rule above —
+  // kFastMs in on the standard curve, kMicroMs out on the exit curve, instant
+  // both ways when ShouldAnimate() is false. The composer is the one working
+  // object pinned to the stage; focus waking its surface boundary is what makes
+  // the bar read as resting ON the thread rather than floating under it.
+  Border seam;
+  seam.Height(1);
+  seam.Background(urnw::colors::BorderBrush());
+  Border seamFocus;
+  seamFocus.Height(1);
+  seamFocus.Background(urnw::colors::MakeBrush(kBorderStrong));
+  seamFocus.Opacity(0.0);
+
+  box.GotFocus([focusRule, seamFocus](auto const&, auto const&) {
+    FadeFocusRule(focusRule, true);
+    FadeFocusRule(seamFocus, true);
+  });
+  box.LostFocus([focusRule, seamFocus](auto const&, auto const&) {
+    FadeFocusRule(focusRule, false);
+    FadeFocusRule(seamFocus, false);
+  });
 
   // Said ONCE, here, instead of on every inert control in the window: the
   // failed message's [ Try again ], the [ Review ] on the key-change record and
@@ -845,7 +960,19 @@ FrameworkElement MakeComposer() {
   note.Foreground(urnw::colors::FaintBrush());
   column.Children().Append(note);
 
-  bar.Child(column);
+  // seam and seamFocus share row 0 so the focus lift lands on the SAME pixels
+  // as the resting hairline; the column sits below them.
+  Grid surface;
+  RowDefinition seamRow, bodyRow;
+  seamRow.Height(GridLengthHelper::Auto());
+  bodyRow.Height(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
+  surface.RowDefinitions().Append(seamRow);
+  surface.RowDefinitions().Append(bodyRow);
+  Grid::SetRow(column, 1);
+  surface.Children().Append(seam);
+  surface.Children().Append(seamFocus);
+  surface.Children().Append(column);
+  bar.Child(surface);
   // A click in the composer is NOT a click in empty thread space. Without this
   // it bubbles to MakeThread's root.Tapped and deselects the message the rail
   // is showing, the moment you go to type — the same reason a bubble marks its
@@ -1006,6 +1133,13 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
   // continuation bubble in a GROUP still reserves the identicon gutter.
   parts->group = group;
 
+  // The typing row aligns with the incoming bubble column (design d2 §5):
+  // thread pad + the 36dip identicon gutter in a group, the pad alone
+  // otherwise. Set here because this is where `group` is first known.
+  if (parts->typingRow)
+    parts->typingRow.Margin(ThicknessHelper::FromLengths(
+        kThreadPadDip + (group ? kThreadGutterDip : 0.0), 0, 0, 6));
+
   // The builder renders the PLAN and chooses no SHAPE of its own. PlanThreadRows
   // lives in Views/ThreadLayout.h, which is pure C++, so every branch of this
   // switch is reachable from --diagnose - a builder that classified rows inline
@@ -1145,10 +1279,11 @@ void SetThreadSelectedMessage(ThreadView& v, std::wstring const& id) {
     const bool outgoing = (b.root.HorizontalAlignment() == HorizontalAlignment::Right);
 
     // Three channels, the same rule SetPaneListRowSelected already follows
-    // (UrComponents.h): the accent EDGE, a 1px -> 2px thickness (a SHAPE change),
-    // and the automation name. The first two are SetBubbleEdge's — the same
-    // writer MakeBubbleRow used to build this bubble's resting edge, so there is
-    // exactly one place that decides what a bubble's border is.
+    // (UrComponents.h): the accent OUTLINE (the SelectEdge layer, drawn on over
+    // kMicroMs — a SHAPE appearing, not a colour swap), and the automation
+    // name. The outline is SetBubbleEdge's — the same writer MakeBubbleRow
+    // used to build this bubble's resting edge, so there is exactly one place
+    // that decides what a bubble's border is.
     SetBubbleEdge(b.root, outgoing, on);
 
     // The name is a channel too, and it is idempotent: the suffix is stripped
@@ -1184,6 +1319,47 @@ void SetThreadTyping(ThreadView& v, bool typing) {
   if (parts->typingStory) {
     parts->typingStory.Stop();
     parts->typingStory = nullptr;
+  }
+
+  // The ROW's own entrance (design d1 motion M3): fade + a 4dip rise at
+  // kFastMs on the standard curve, as ONE one-shot storyboard targeting the
+  // row's Opacity and TranslateY — never the dots' properties, so it cannot
+  // fight their wave. Exit is the instant collapse the Visibility write above
+  // already performs (one step faster than the kMicroMs floor).
+  if (parts->typingRowStory) {
+    parts->typingRowStory.Stop();
+    parts->typingRowStory = nullptr;
+  }
+  if (typing && urnw::motion::ShouldAnimate()) {
+    Media::CompositeTransform rise;
+    rise.TranslateY(urnw::motion::kDist4);
+    parts->typingRow.RenderTransform(rise);
+    parts->typingRow.Opacity(0.0);
+    anim::Storyboard sb;
+    auto fade = urnw::motion::MakeSplineDouble(0.0, 1.0, urnw::motion::kFastMs, 0,
+                                               urnw::motion::kStandardP1,
+                                               urnw::motion::kStandardP2);
+    anim::Storyboard::SetTarget(fade, parts->typingRow);
+    anim::Storyboard::SetTargetProperty(fade, L"Opacity");
+    sb.Children().Append(fade);
+    auto lift = urnw::motion::MakeSplineDouble(urnw::motion::kDist4, 0.0,
+                                               urnw::motion::kFastMs, 0,
+                                               urnw::motion::kStandardP1,
+                                               urnw::motion::kStandardP2);
+    anim::Storyboard::SetTarget(lift, parts->typingRow);
+    anim::Storyboard::SetTargetProperty(
+        lift, L"(UIElement.RenderTransform).(CompositeTransform.TranslateY)");
+    sb.Children().Append(lift);
+    parts->typingRowStory = sb;
+    sb.Begin();
+  } else {
+    // Motion GONE, not reduced — or the row is going away: the final pose,
+    // immediately, and no residual transform for a later layout pass to trip
+    // over (the same rule RunBubbleEntrance's empty-plan branch follows). The
+    // reduce-motion half of this branch has never executed on this machine
+    // (SPI_GETCLIENTAREAANIMATION = 1) — unverified beyond code inspection.
+    parts->typingRow.Opacity(1.0);
+    parts->typingRow.RenderTransform(nullptr);
   }
 
   // The same table --diagnose asserts, and one call to the reduce-motion gate.

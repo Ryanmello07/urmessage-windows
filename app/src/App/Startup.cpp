@@ -558,6 +558,20 @@ std::vector<std::wstring> CollectDiagnostics() {
         L"    P4  no collisions       {}  {} distinct of {} unique identities",
         uniqueIdentities && distinctIdentities == uniqueIdentities ? L"PASS" : L"FAIL",
         distinctIdentities, uniqueIdentities));
+
+    // P5: the corner-radius rule, asserted as ARITHMETIC because MakeIdenticon
+    // constructs a Border and is therefore unreachable from this pre-apartment
+    // harness — what IS reachable is the pure function the render spends
+    // (IdenticonCornerRadius, Identicon.h), the same pattern as the
+    // entrance/typing timeline tables. The pairs below pin the rule, not a
+    // count: 20px keeps the 8 the old fixed literal gave every size, and every
+    // other size rounds proportionally, so a regression to a fixed literal or
+    // a changed proportion fails here rather than in a screenshot review.
+    const bool radiusOk = urmsg::IdenticonCornerRadius(20.0) == 8.0 &&
+                          urmsg::IdenticonCornerRadius(28.0) == 11.2 &&
+                          urmsg::IdenticonCornerRadius(40.0) == 16.0;
+    lines.push_back(std::format(L"    P5  proportional radius {}  20px->8, 28px->11.2, 40px->16",
+                                radiusOk ? L"PASS" : L"FAIL"));
   }
   lines.push_back(DemoLayoutCheck());
   lines.push_back(DemoDeepLinkCheck());

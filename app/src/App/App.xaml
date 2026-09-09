@@ -772,7 +772,17 @@
                                   CornerRadius="{TemplateBinding CornerRadius}"
                                   Background="{TemplateBinding Background}"
                                   BorderBrush="{TemplateBinding BorderBrush}"
-                                  BorderThickness="{TemplateBinding BorderThickness}">
+                                  BorderThickness="{TemplateBinding BorderThickness}"
+                                  RenderTransformOrigin="0.5,0.5">
+                                <!-- the press-scale transform (kPressScale,
+                                     UrMotion.h). It lives on the template Root,
+                                     NOT on the Button: RunBubbleEntrance
+                                     (ThreadView.cpp) writes RenderTransform as a
+                                     local value on the bubble ROW, and a local
+                                     write there can never replace this one. -->
+                                <Grid.RenderTransform>
+                                    <CompositeTransform x:Name="RootTransform" />
+                                </Grid.RenderTransform>
                                 <!-- the hover/press edge, on its own layer so no
                                      visual state ever writes Root.Background or
                                      Root.BorderBrush -->
@@ -780,6 +790,24 @@
                                       CornerRadius="{TemplateBinding CornerRadius}"
                                       BorderBrush="{StaticResource UrBorderStrongBrush}"
                                       BorderThickness="1" />
+                                <!-- the selection outline, on its OWN layer above
+                                     EdgeLayer (design d1 §2.3ii / motion M1).
+                                     SetBubbleEdge (ThreadView.cpp) stays the one
+                                     writer: it draws this layer on over kMicroMs
+                                     when a bubble is selected and removes it
+                                     instantly on deselect, gated on
+                                     ShouldAnimate(). No visual state touches it,
+                                     and because the outline lives here the
+                                     resting edge below no longer changes on
+                                     selection - so selecting a bubble cannot
+                                     shift its content. The 2px accent outline is
+                                     the already-sanctioned selection use of
+                                     UrAccentBrush; this animates an existing
+                                     mark, it does not add one. -->
+                                <Grid x:Name="SelectEdge" Opacity="0"
+                                      CornerRadius="{TemplateBinding CornerRadius}"
+                                      BorderBrush="{StaticResource UrAccentBrush}"
+                                      BorderThickness="2" />
                                 <!-- the three font properties are template-bound
                                      for the reason UrButtonBaseStyle spells out:
                                      ContentPresenter declares its own defaults,
@@ -797,7 +825,23 @@
                                 <VisualStateManager.VisualStateGroups>
                                     <VisualStateGroup x:Name="CommonStates">
                                         <VisualStateGroup.Transitions>
-                                            <VisualTransition GeneratedDuration="0:0:0.15" />
+                                            <!-- press is a tick (kMicroMs, 90ms -
+                                                 pressing should feel instant);
+                                                 release and hover are kFastMs
+                                                 (150ms). The durations mirror
+                                                 UrMotion.h's tokens; stock VSM
+                                                 transitions are the platform's
+                                                 own business (UrMotion.h), so no
+                                                 ShouldAnimate gate applies.
+                                                 The specific PointerOver<->Pressed
+                                                 pairs come first: XAML uses the
+                                                 first transition that matches. -->
+                                            <VisualTransition From="PointerOver" To="Pressed" GeneratedDuration="0:0:0.09" />
+                                            <VisualTransition From="Pressed" To="PointerOver" GeneratedDuration="0:0:0.15" />
+                                            <VisualTransition To="Pressed" GeneratedDuration="0:0:0.09" />
+                                            <VisualTransition From="Pressed" GeneratedDuration="0:0:0.15" />
+                                            <VisualTransition From="Normal" To="PointerOver" GeneratedDuration="0:0:0.15" />
+                                            <VisualTransition From="PointerOver" To="Normal" GeneratedDuration="0:0:0.15" />
                                         </VisualStateGroup.Transitions>
                                         <VisualState x:Name="Normal" />
                                         <VisualState x:Name="PointerOver">
@@ -809,6 +853,12 @@
                                             <VisualState.Setters>
                                                 <Setter Target="EdgeLayer.Opacity" Value="1" />
                                                 <Setter Target="Root.Opacity" Value="0.92" />
+                                                <!-- kPressScale 0.97 (UrMotion.h):
+                                                     a dim AND a give, so a press
+                                                     reads physically without any
+                                                     fill repaint. -->
+                                                <Setter Target="RootTransform.ScaleX" Value="0.97" />
+                                                <Setter Target="RootTransform.ScaleY" Value="0.97" />
                                             </VisualState.Setters>
                                         </VisualState>
                                         <VisualState x:Name="Disabled">

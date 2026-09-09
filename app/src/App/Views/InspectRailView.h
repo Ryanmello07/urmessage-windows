@@ -75,12 +75,12 @@ void SetInspectRailAdvanced(InspectRailView& v, bool advanced);
 // species of it. Both are urnw::kit::MakePaneListRow(36), so the rail's three
 // lists share one height, one left edge and one rhythm.
 //
-// Neither carries an identicon: MakePaneListRow has a dot, a title and a meta
-// and no icon slot, and adding one would be a second row species in a pane
-// layout whose whole claim is that it has exactly one. MemberRef::identityKey
-// and DeviceRef::ownerKey do exist, so if member identicons are wanted the right
-// move is a MakePaneListRow variant in UrComponents.h, not a bespoke row here.
-// The rail's one identicon is the conversation's, on the subject row.
+// Both carry a 20px identicon of the identity the row is about (design d1 §7):
+// the presence dot is re-parented onto the chip as its corner badge, INSIDE the
+// same kit grid, so the one-row-species claim above survives — same builder,
+// same height, same columns. What this deliberately is NOT is a new
+// MakePaneListRow variant in UrComponents.h: the variant would be the second
+// species.
 urnw::kit::PaneListRow MakeMemberRow(demo::MemberRef const& member);
 urnw::kit::PaneListRow MakeDeviceRow(demo::DeviceRef const& device);
 

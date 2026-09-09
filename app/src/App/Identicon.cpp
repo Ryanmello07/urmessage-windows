@@ -219,10 +219,10 @@ Border MakeIdenticon(urmsg::demo::Seed const& seed, double size) {
   Border root;
   root.Width(size);
   root.Height(size);
-  // ITS OWN radius. Callers must not set one, so that every identicon in the
-  // app is the same shape whatever surface it lands on. Border clips its
+  // ITS OWN radius, from the pure rule IdenticonCornerRadius (the .h): one
+  // shape rule for every size, so callers must not set one. Border clips its
   // Child to this radius, which is what keeps the corner cells inside it.
-  root.CornerRadius(CornerRadiusHelper::FromUniformRadius(8));
+  root.CornerRadius(CornerRadiusHelper::FromUniformRadius(IdenticonCornerRadius(size)));
   root.Background(urnw::colors::MakeBrush(urnw::colors::WithAlpha(hue, 0x33)));
 
   Grid grid;
