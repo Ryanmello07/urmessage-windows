@@ -220,6 +220,18 @@
          block AFTER winrt::init_apartment (main.cpp:191 vs :202), so the
          before-init purity rule that NotUsing serves never reaches this TU. -->
     <ClCompile Include="Views\NetworkPageView.cpp" />
+    <!-- NotUsing for the same reason as Views\InspectRailFields.cpp above:
+         Startup.cpp's `strip fields` line asserts these functions from
+         CollectDiagnostics(), which runs before winrt::init_apartment
+         (main.cpp:176 vs :191), so this TU must not pull in the pch and its
+         winrt/ headers. The strip's XAML half is StatusStripView.cpp, which
+         uses the pch for the same reason NetworkPageView.cpp does. -->
+    <ClCompile Include="Views\StatusStripRules.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <!-- Uses the pch (it builds XAML): its whole surface is element-tree work,
+         and the pre-apartment purity rule never reaches it for the same reason
+         NetworkPageView.cpp states. The pure half it spends lives in
+         StatusStripRules.cpp. -->
+    <ClCompile Include="Views\StatusStripView.cpp" />
     <ClCompile Include="Views\ThreadLayout.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="Views\ThreadView.cpp" />
     <ClCompile Include="WindowReveal.cpp" />
@@ -247,6 +259,8 @@
     <ClInclude Include="Views\InspectRailFields.h" />
     <ClInclude Include="Views\InspectRailView.h" />
     <ClInclude Include="Views\NetworkPageView.h" />
+    <ClInclude Include="Views\StatusStripRules.h" />
+    <ClInclude Include="Views\StatusStripView.h" />
     <ClInclude Include="WindowReveal.h" />
     <ClInclude Include="WindowShell.h" />
     <ClInclude Include="resource.h" />

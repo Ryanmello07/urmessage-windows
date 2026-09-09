@@ -25,6 +25,7 @@
 #include "Views/InspectRailFields.h"
 #include "Views/InspectRailView.h"
 #include "Views/NetworkPageView.h"
+#include "Views/StatusStripView.h"
 #include "Views/ThreadView.h"
 
 using namespace winrt;
@@ -158,6 +159,7 @@ MainWindow::MainWindow() {
   BuildConversationList();
   BuildThread();
   BuildNetworkPage();
+  BuildStatusStrip();
 
   // The window reveal: bind now that the content tree exists, then arm BEFORE
   // Activate() so the first composed frame is already the start pose rather
@@ -477,6 +479,68 @@ void MainWindow::BuildNetworkPage() {
   // established call at :365 and the rail's at :518.
   urmsg::views::SetNetworkPageAdvanced(network_, urmsg::AdvancedModeEnabled());
   urnw::LogInfo("window: network page built");
+}
+
+void MainWindow::BuildStatusStrip() {
+  // The whole surface is demo-only. Design 8: without --demo "the app behaves
+  // exactly as it does today", and design 2's hard constraint is that nothing
+  // may overstate what exists — a strip reading "Connected | server
+  // urmsg-01.ur.io" on a plain double-click of a build with no protocol would
+  // do exactly that. This early return is also why demo::GetWorld() is never
+  // constructed on a normal launch. options_, NOT a second ParseDemoOptions()
+  // call — the same rule BuildThread/BuildNetworkPage state.
+  if (!options_.enabled) {
+    urnw::LogInfo("window: status strip not built (demo off)");
+    return;
+  }
+
+  statusStrip_ = urmsg::views::MakeStatusStrip(urmsg::demo::GetWorld());
+  // StatusStripHost (MainWindow.xaml:309) already exists with its Collapsed
+  // markup default, and ApplyBreakpoint is the one writer of its Visibility
+  // (options_.enabled && layout_.strip, at the foot of ApplyBreakpoint) — the
+  // d7 audit's S2 override skips the brief's host-row surgery entirely, so
+  // this mount changes nothing about WHEN the strip shows.
+  StatusStripHost().Children().Clear();
+  StatusStripHost().Children().Append(statusStrip_.root);
+  // The drawer mounts into StatusDrawerHost in Grid.Row 1 — ABOVE the
+  // destination, never into the strip's own Auto row, which a raised drawer
+  // would grow (d5 4.4).
+  StatusDrawerHost().Children().Clear();
+  if (statusStrip_.drawer) {
+    StatusDrawerHost().Children().Append(statusStrip_.drawer);
+  } else {
+    urnw::LogWarn("window: demo status strip has no drawer; activation will "
+                  "paint nothing");
+  }
+  // S3 owns the toggle and this wiring (the d7 audit's resolution alpha):
+  // the drawer's own Visibility is the only state — there is no drawerOpen_
+  // bool to disagree with the tree.
+  statusStrip_.strip.Click([weak = get_weak()](auto const&, auto const&) {
+    if (auto self = weak.get()) self->ToggleStatusDrawer();
+  });
+
+  // S4 SEEDS ONLY (the d7 distillation's 1.2 ruling): the live subscription
+  // is the wiring task's ONE OnAdvancedModeChanged subscriber (W7), which no
+  // task in this wave registers — its probe greps this file for
+  // OnAdvancedModeChanged and expects zero call sites. This is the
+  // launch-time read of the same truth, matching the network page's
+  // established call above.
+  const bool advanced = urmsg::AdvancedModeEnabled();
+  urmsg::views::SetStatusStripAdvanced(statusStrip_, advanced);
+  urnw::LogInfo("window: status strip built");
+  urnw::LogInfo("window: status strip advanced -> {}", advanced ? "on" : "off");
+}
+
+void MainWindow::ToggleStatusDrawer() {
+  if (!statusStrip_.drawer) return;
+  // Visibility IS the state; there is no second bool to disagree with the
+  // tree. During the 150 ms dismiss the drawer is still Visible, so a second
+  // activation inside that window re-reads "open" and dismisses again —
+  // which is the same thing the user asked for, and cheaper than a state
+  // machine.
+  const bool open = statusStrip_.drawer.Visibility() != Visibility::Visible;
+  urmsg::views::SetStatusStripDrawerOpen(statusStrip_, open);
+  urnw::LogInfo("window: status drawer -> {}", open ? "open" : "closed");
 }
 
 void MainWindow::BuildInspectRail() {
@@ -960,6 +1024,13 @@ void MainWindow::ApplyBreakpoint() {
   StatusStripHost().Visibility(options_.enabled && layout_.strip
                                    ? Visibility::Visible
                                    : Visibility::Collapsed);
+  // A drawer standing on a strip that has just collapsed would be left on the
+  // window's bottom edge with its deliberately-missing fourth hairline and
+  // nothing beneath it — and its toggle would be unreachable. The strip going
+  // away takes its drawer with it (S3). On a non-demo launch statusStrip_ is
+  // empty and SetStatusStripDrawerOpen no-ops on the null drawer.
+  if (!(options_.enabled && layout_.strip))
+    urmsg::views::SetStatusStripDrawerOpen(statusStrip_, false);
 
   urnw::LogInfo("window: layout wide={} rail={} strip={} listW={:.0f} navRule={} (content {:.0f}x{:.0f} dip)",
                 layout_.wide, layout_.rail, layout_.strip, listWidth_, navDocked_, width, height);

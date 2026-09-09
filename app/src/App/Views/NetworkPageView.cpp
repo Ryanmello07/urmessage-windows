@@ -21,6 +21,7 @@
 #include "UrColors.h"
 #include "UrComponents.h"
 #include "UrMotion.h"
+#include "Views/StatusStripView.h"  // kStatusDrawerName, for the framing gate
 
 using namespace winrt::Microsoft::UI::Xaml;
 using namespace winrt::Microsoft::UI::Xaml::Controls;
@@ -556,12 +557,17 @@ std::vector<std::wstring> CollectNetworkDiagnostics() {
 
   // The framing header is the page's single always-on honesty frame (d5 §3.4),
   // so its prefix cannot be dropped silently (d5 §6): the page renders
-  // kRelayPathGroupTitle and this gate reads the SAME constant.
+  // kRelayPathGroupTitle and this gate reads the SAME constant. The strip's
+  // preview drawer renders that same constant for its header (one owner, one
+  // sentence — d5 §4.4), so the drawer's own always-present string is what
+  // gets checked beside it: the automation name kStatusDrawerName.
   const std::wstring relayTitle{kRelayPathGroupTitle};
+  const std::wstring drawerName{kStatusDrawerName};
   lines.push_back(std::format(
-      L"  net framing      : {}  relay group title opens with \"demo model:\" "
-      L"(either casing) -> \"{}\"",
-      Check(StartsWithDemoModel(relayTitle)), relayTitle));
+      L"  net framing      : {}  relay group title + strip drawer name open "
+      L"with \"demo model:\" (either casing) -> \"{}\" | \"{}\"",
+      Check(StartsWithDemoModel(relayTitle) && StartsWithDemoModel(drawerName)),
+      relayTitle, drawerName));
 
   return lines;
 }

@@ -25,6 +25,7 @@
 #include "UrMotion.h"
 #include "Views/ConversationRowModel.h"
 #include "Views/InspectRailFields.h"
+#include "Views/StatusStripRules.h"
 #include "Demo/DemoShellState.h"
 #include "Demo/AdvancedMode.h"
 #include "Demo/DemoWorld.h"
@@ -419,6 +420,59 @@ std::wstring DemoDeepLinkCheck() {
       ok ? L"PASS" : L"FAIL", matches, checked, tags, ladder, advanced);
 }
 
+// ---- the status strip's pure rules (design §6.5) ----------------------------
+//
+// ONE line, per the d7 audit's S1 override: the 560 content-dip collapse rule
+// has exactly one owner already (urmsg::demo::kStripMinHeightDip,
+// DemoShellState.h:41) and one boundary assertion already (DemoLayoutCheck's
+// stripEdge term above), so there is no `strip collapse` line here and
+// StatusStripRules.h declares no second threshold. What remains is what only
+// this surface owns: the three state words, the two lock glyphs and the two
+// Advanced Mode number formats.
+//
+// PURE on the same terms as the rest of this function: it builds no demo
+// world (the enum values are constructed, GetWorld() is never called),
+// touches no XAML and calls no Localized(), so it is as safe on a plain
+// launch as under --diagnose — which it has to be, because LogDiagnostics()
+// writes every one of these lines into a normal launch's log file.
+std::wstring StatusStripFieldsAssertion() {
+  namespace demo = urmsg::demo;
+  const std::wstring_view offline =
+      urmsg::views::StatusStateWord(demo::ConnectState::Offline);
+  const std::wstring_view connecting =
+      urmsg::views::StatusStateWord(demo::ConnectState::Connecting);
+  const std::wstring_view connected =
+      urmsg::views::StatusStateWord(demo::ConnectState::Connected);
+  const std::wstring lockOn = urmsg::views::StatusLockGlyph(true);
+  const std::wstring lockOff = urmsg::views::StatusLockGlyph(false);
+  const std::wstring epoch = urmsg::views::StatusEpochValue(41);
+  const std::wstring records = urmsg::views::StatusRecordsValue(12);
+
+  // Compared against LITERALS, not restated constants, so a wrong answer fails
+  // here rather than agreeing with itself (the same rule DemoLayoutCheck
+  // states for its list-step figures).
+  const bool wordsOk = offline == L"Offline" && connecting == L"Connecting" &&
+                       connected == L"Connected";
+  // e72e = Lock (closed padlock), e785 = Unlock (open padlock), Segoe Fluent
+  // Icons — escapes, never the pasted PUA character (a dropped one renders
+  // blank in every terminal and is invisible).
+  const bool glyphsOk = lockOn == L"\ue72e" && lockOff == L"\ue785";
+  const bool valuesOk = epoch == L"41" && records == L"12";
+  if (wordsOk && glyphsOk && valuesOk)
+    return L"  strip fields     : PASS (3 words, lock e72e/e785, epoch 41, rec 12)";
+
+  // The glyphs are reported as CODE UNITS, not as characters: a private-use
+  // codepoint written to a console is an empty box, which is exactly the shape
+  // of the defect being looked for.
+  const auto code = [](std::wstring const& s) -> unsigned {
+    return s.empty() ? 0u : static_cast<unsigned>(s[0]);
+  };
+  return std::format(
+      L"  strip fields     : FAIL (words \"{}\"/\"{}\"/\"{}\", lock {:04x}/{:04x}, "
+      L"epoch \"{}\", rec \"{}\")",
+      offline, connecting, connected, code(lockOn), code(lockOff), epoch, records);
+}
+
 }  // namespace
 
 void StartupLogInit() {
@@ -584,6 +638,10 @@ std::vector<std::wstring> CollectDiagnostics() {
   }
   lines.push_back(DemoLayoutCheck());
   lines.push_back(DemoDeepLinkCheck());
+  // The status strip's own pure rules. Unguarded for the same reason the two
+  // lines above are: it builds no world and names no hostname, so a plain
+  // launch's log gains nothing fabricated by carrying it.
+  lines.push_back(StatusStripFieldsAssertion());
   // The demo surfaces' own invariants. One collector per surface, and every one
   // of them must be pure C++: this function runs before winrt::init_apartment
   // (main.cpp:168 vs :180), so a WinRT object built from here would die on the

@@ -41,6 +41,13 @@ void StartupLogInit();
 // by: App Runtime presence + path (the path carries the version), the
 // bootstrap dll, resources.pri, the log file. Logged at startup and printed by
 // --diagnose. Pure Win32 — safe to call before COM/WinRT is up.
+//
+// It also carries the app's PURE surface assertions (one PASS/FAIL line each),
+// because this repo has no test project and --diagnose is the test runner. The
+// bar for adding one here is the bar this function already sets: no COM, no
+// WinRT activation, no Localized(), and nothing that fabricates data into the
+// log of a normal launch. Anything needing the demo world is gated on the demo
+// switch by its own caller instead.
 std::vector<std::wstring> CollectDiagnostics();
 
 // Log every line at info, under the "startup:" prefix the rest of the path uses.

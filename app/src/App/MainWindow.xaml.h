@@ -25,6 +25,7 @@
 #include "Views/ConversationListView.h"
 #include "Views/InspectRailView.h"
 #include "Views/NetworkPageView.h"
+#include "Views/StatusStripView.h"
 #include "Views/ThreadView.h"
 #include "WindowReveal.h"
 
@@ -88,6 +89,34 @@ struct MainWindow : MainWindowT<MainWindow> {
   void BuildNetworkPage();
 
   urmsg::views::NetworkPageView network_{};
+
+  // The connect indicator (design 6.5, D4). Built ONCE and never rebuilt: the
+  // strip is window chrome, so it outlives every destination change. Returns
+  // without building anything when the demo is off — design 8: "Without it
+  // the app behaves exactly as it does today", and a build with no protocol
+  // must not show a message-server hostname as chrome on every launch
+  // (design 2, 11). The d7 audit's ownership ruling (resolution alpha) gives
+  // the strip group — not the wiring task — the member, the mount and the
+  // toggle; the member name stays `statusStrip_`.
+  void BuildStatusStrip();
+
+  // Raise or dismiss the strip's preview drawer. The ONLY thing that opens it
+  // is an activation of the strip — design 9.2: the autoplay loop "never
+  // opens or closes the rail or the drawer", and everything in the demo that
+  // is not ambient activity happens because a person clicked it.
+  //
+  // Click-outside and Escape dismissal are deliberately NOT built, and that
+  // is a decision rather than an omission: the strip is a toggle, so the same
+  // control both raises and dismisses, it is reachable by Tab and invoked by
+  // Enter or Space, and the drawer is chrome rather than a modal — nothing
+  // behind it is blocked while it stands. ApplyBreakpoint closes it when the
+  // strip collapses, which is the one case where the toggle would otherwise
+  // become unreachable. Click-outside would be a RevealRoot-level pointer
+  // handler and belongs to whoever owns RevealRoot's input, not to this
+  // surface.
+  void ToggleStatusDrawer();
+
+  urmsg::views::StatusStripView statusStrip_{};
 
   // A row was clicked. Takes the row INDEX: ConversationListView::rows[i] is
   // world.conversations[i], and nothing reorders either.

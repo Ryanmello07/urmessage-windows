@@ -303,9 +303,20 @@
             </Grid>
         </muxc:NavigationView>
 
+        <!-- The strip's preview drawer (design doc 6.5, d5 4.4). Grid.Row="1"
+             - the SAME row as the NavigationView, declared after it, so it
+             draws OVER the destination rather than displacing it; bottom-
+             aligned so it stands on the strip's top edge. Left-aligned,
+             because it belongs to the connect dot at the strip's left end,
+             not to the window. Nothing here is ever collapsed: the drawer
+             inside carries the Visibility state. -->
+        <Grid x:Name="StatusDrawerHost" Grid.Row="1"
+              VerticalAlignment="Bottom" HorizontalAlignment="Left" />
+
         <!-- The persistent connect indicator (design doc 6.5, D4). Window level,
-             not per-destination: it is one strip along the bottom of the app,
-             and its preview drawer opens ABOVE it inside this same host. -->
+             not per-destination: it is one strip along the bottom of the app;
+             its preview drawer is hosted by StatusDrawerHost in Grid.Row 1, so
+             raising it cannot grow this Auto row. -->
         <Grid x:Name="StatusStripHost" Grid.Row="2" Visibility="Collapsed" />
     </Grid>
     </Grid>
