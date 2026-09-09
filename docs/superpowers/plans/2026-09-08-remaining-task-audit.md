@@ -956,9 +956,9 @@ MY ATTEMPT TO MAKE IT WRONG — the network.md "Step 1 grep already handles it" 
 
 **Actual output.**
 ```
-386:  w.relayPath.push_back({L"This device", L"This computer", L"", 0, true});   // Devices
-387:  w.relayPath.push_back({L"URnetwork", L"3 hops", L"", 41, true});           // Globe
-388:  w.relayPath.push_back({L"Message server", L"urmsg-01.ur.io", L"", 18, true}); // Server
+386:  w.relayPath.push_back({L"This device", L"This computer", L"\uE977", 0, true});   // Devices
+387:  w.relayPath.push_back({L"URnetwork", L"3 hops", L"\uE774", 41, true});           // Globe
+388:  w.relayPath.push_back({L"Message server", L"urmsg-01.ur.io", L"\uE968", 18, true}); // Server
 233:    MixU64(h, static_cast<uint64_t>(n.hopMs)); MixU64(h, n.healthy ? 1u : 0u);
 246:constexpr uint64_t kExpectedWorldFingerprint = 0x97B1C149D13010C3ull;
 341:      Verdict(fp == kExpectedWorldFingerprint), fp, kExpectedWorldFingerprint));
