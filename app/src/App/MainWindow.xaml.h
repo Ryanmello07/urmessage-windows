@@ -86,6 +86,13 @@ struct MainWindow : MainWindowT<MainWindow> {
   // anything that appends, and ambient activity appends.
   int OpenConversationIndex() const;
 
+  // The ONE subscriber of urmsg::OnAdvancedModeChanged (contract v2 section
+  // 5, the d7 distillation's 1.2 ruling: N6/S4/A4 only SEED at their build
+  // sites; this is the single registration). No view reads the preference;
+  // they are all told, from here, in one order. Private, matching the
+  // wiring.md:533 and advanced.md:986 declarations.
+  void ApplyAdvanced(bool on);
+
   urmsg::views::ThreadView thread_{};
   urmsg::views::InspectRailView rail_{};
   std::wstring openConversationId_;
@@ -117,8 +124,8 @@ struct MainWindow : MainWindowT<MainWindow> {
   // building it on a normal launch would construct that world on the
   // shipping path (design D7/D8). Built ONCE here: contract §4 gives the
   // view no Set*Advanced, and the live rebuild on a mode toggle belongs to
-  // the wiring task's ONE OnAdvancedModeChanged subscriber (W7, the d7
-  // distillation's §1.2 ruling) — this wave registers no subscription.
+  // the ONE OnAdvancedModeChanged registration in EnterDemoMode (W7, the
+  // d7 distillation's §1.2 ruling).
   void BuildDeveloper();
 
   urmsg::views::DeveloperView developer_{};

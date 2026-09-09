@@ -373,9 +373,9 @@ void MainWindow::RebuildConversationList() {
   }
 
   // Contract 5: Advanced Mode has ONE owner and no view reads the preference.
-  // This is the initial application; the live subscription that re-calls this
-  // on every toggle is registered by the wiring surface, which owns
-  // OnAdvancedModeChanged.
+  // This is the launch-time read of the same truth; the live subscription
+  // that re-applies it on every toggle is the ONE OnAdvancedModeChanged
+  // registration in EnterDemoMode (W7).
   urmsg::views::SetConversationListAdvanced(list_, urmsg::AdvancedModeEnabled());
 
   const int open = OpenConversationIndex();
@@ -427,7 +427,7 @@ void MainWindow::BuildDemoViews() {
   // conversation list's established call above (contract 5 allows one reader,
   // not two). NOT options_.advanced: the switch is session-only and
   // InitAdvancedMode has already folded it in. The LIVE toggle subscription
-  // is W7's, below.
+  // is the ONE OnAdvancedModeChanged registration in EnterDemoMode (W7).
   urmsg::views::SetInspectRailAdvanced(rail_, urmsg::AdvancedModeEnabled());
 }
 
@@ -486,6 +486,37 @@ void MainWindow::ClearMessageSelection() {
   urnw::LogInfo("window: message inspect cleared");
 }
 
+void MainWindow::ApplyAdvanced(bool on) {
+  advanced_ = on;
+
+  // Developer is a destination that exists only under Advanced Mode. Leaving
+  // it selected while it disappears would strand the window on a hidden
+  // destination with no way back.
+  DeveloperNavItem().Visibility(on ? Visibility::Visible : Visibility::Collapsed);
+  // WORKAROUND, not a design choice - the same Windows App SDK 2.2.0
+  // NavigationView Auto pane-mode corruption DrainDeepLink documents: a
+  // NavigationViewItem's Collapsed -> Visible transition must be followed
+  // immediately by forcing NavigationView to re-run its Auto adaptive logic,
+  // or the whole pane renders icon-only from that moment on (the d7 audit's
+  // A5-class-9 override: EVERY DeveloperNavItem().Visibility write carries
+  // this cycle, copied from DrainDeepLink rather than restated).
+  HomeNav().PaneDisplayMode(NavigationViewPaneDisplayMode::LeftCompact);
+  HomeNav().PaneDisplayMode(NavigationViewPaneDisplayMode::Auto);
+  if (!on && currentTag_ == L"developer") SelectNavTag(L"chats");
+
+  urmsg::views::SetConversationListAdvanced(list_, on);
+  urmsg::views::SetStatusStripAdvanced(statusStrip_, on);
+  urmsg::views::SetNetworkPageAdvanced(network_, on);
+  // DENSITY only (contract v2 section 4). NOT SetInspectRailMessage: that
+  // runs the rail's conversation<->message crossfade, which would fade the
+  // pane the viewer is looking at out over itself for a change that is not a
+  // mode change. The one SetInspectRailMessage call site in this file sits
+  // inside SelectMessage; this function must never grow one.
+  urmsg::views::SetInspectRailAdvanced(rail_, on);
+
+  urnw::LogInfo("window: advanced mode {}", on);
+}
+
 void MainWindow::BuildNetworkPage() {
   // options_, NOT a second ParseDemoOptions() call: one flag, parsed once in
   // the constructor. ShowDestination's network arm reads options_ to decide
@@ -510,11 +541,10 @@ void MainWindow::BuildNetworkPage() {
   }
 
   // N6 SEEDS ONLY (the d7 distillation's §1.2 tightening): the live
-  // subscription is the wiring task's ONE OnAdvancedModeChanged subscriber
-  // (W7), which no task in this wave registers — its probe greps this file
-  // for OnAdvancedModeChanged and expects zero call sites. This is the
-  // launch-time read of the same truth, matching the conversation list's
-  // established call at :365 and the rail's at :518.
+  // subscription is the ONE OnAdvancedModeChanged registration in
+  // EnterDemoMode (W7), which fans out to SetNetworkPageAdvanced from
+  // ApplyAdvanced. This is the launch-time read of the same truth, matching
+  // the conversation list's and the rail's established calls.
   urmsg::views::SetNetworkPageAdvanced(network_, urmsg::AdvancedModeEnabled());
   urnw::LogInfo("window: network page built");
 }
@@ -527,9 +557,9 @@ void MainWindow::BuildSettings() {
 
   // The callback IS the preference's one writer (Demo/AdvancedMode.h): the
   // view owns the switch and follows itself, so there is no Set*Advanced seed
-  // here and no subscription — the live fan-out to the OTHER surfaces is the
-  // wiring task's ONE OnAdvancedModeChanged subscriber (W7), which no task in
-  // this wave registers. AdvancedModeEnabled() is already resolved:
+  // here and no second subscription — the live fan-out to the OTHER surfaces
+  // is the ONE OnAdvancedModeChanged registration in EnterDemoMode (W7).
+  // AdvancedModeEnabled() is already resolved:
   // EnterDemoMode ran InitAdvancedMode before any Build* call.
   settings_ = urmsg::views::MakeSettings(
       [](bool on) { urmsg::SetAdvancedModeEnabled(on); },
@@ -611,9 +641,8 @@ void MainWindow::BuildStatusStrip() {
   });
 
   // S4 SEEDS ONLY (the d7 distillation's 1.2 ruling): the live subscription
-  // is the wiring task's ONE OnAdvancedModeChanged subscriber (W7), which no
-  // task in this wave registers — its probe greps this file for
-  // OnAdvancedModeChanged and expects zero call sites. This is the
+  // is the ONE OnAdvancedModeChanged registration in EnterDemoMode (W7),
+  // which fans out to SetStatusStripAdvanced from ApplyAdvanced. This is the
   // launch-time read of the same truth, matching the network page's
   // established call above.
   const bool advanced = urmsg::AdvancedModeEnabled();
@@ -758,6 +787,17 @@ void MainWindow::EnterDemoMode() {
   // the deep link below owns the one pre-selection an agent may reach.
   BuildDemoViews();
 
+  // The ONE subscription (contract v2 section 5; W7). Registered after the
+  // views exist, so the first notification cannot reach a half-built window.
+  // InitAdvancedMode deliberately notifies nobody, which is why the initial
+  // apply is an explicit call here: ONE path into Advanced Mode whatever
+  // turned it on - the launch switch, a --demo=developer deep link, the
+  // persisted preference, or a click in Settings.
+  urmsg::OnAdvancedModeChanged([weak = get_weak()](bool on) {
+    if (auto self = weak.get()) self->ApplyAdvanced(on);
+  });
+  ApplyAdvanced(urmsg::AdvancedModeEnabled());
+
   // Armed, not run. See DrainDeepLink.
   pendingLink_ = link;
   pendingLinkArmed_ = true;
@@ -795,7 +835,12 @@ void MainWindow::DrainDeepLink() {
   if (!pendingLinkArmed_ || !layoutApplied_) return;
   pendingLinkArmed_ = false;
 
-  // The demo nav items become visible HERE, not in EnterDemoMode (fix round 1).
+  // NetworkNavItem becomes visible HERE, not in EnterDemoMode (fix round 1).
+  // DeveloperNavItem's Visibility is ApplyAdvanced's write now (W7, the d7
+  // audit's class-6 override: the line this used to be sat here, ahead of the
+  // cycle below), followed there by the same PaneDisplayMode cycle - every
+  // Visibility flip on a NavigationViewItem must be, because:
+  //
   // Flipping a NavigationViewItem from Collapsed to Visible at ANY point -
   // constructor or here, before or after the window reaches its final size -
   // corrupts NavigationView's own Auto pane-mode resolution: it renders
@@ -809,7 +854,8 @@ void MainWindow::DrainDeepLink() {
   // NavigationView to fully re-run its Auto adaptive logic immediately after:
   // stepping PaneDisplayMode away from Auto and back re-measures against the
   // CURRENT item set and CURRENT window width, rather than whatever it cached
-  // before the Visibility flip.
+  // before the Visibility flip. This cycle still runs after the LAST
+  // Visibility flip of a launch (the NetworkNavItem line above).
   //
   // WORKAROUND, not a design choice - fix round 2. This is a platform defect in
   // Windows App SDK 2.2.0 (the version this build logs under "built against"
@@ -827,12 +873,10 @@ void MainWindow::DrainDeepLink() {
   // for whoever picks this up next but NOT attempted and NOT proven: building
   // NetworkNavItem/DeveloperNavItem in code and Append/InsertAt-ing them into
   // HomeNav().MenuItems()/FooterMenuItems() only inside EnterDemoMode, instead
-  // of declaring them Collapsed in XAML and toggling Visibility here, would
+  // of declaring them Collapsed in XAML and toggling Visibility, would
   // never perform the corrupting transition at all - a candidate, not a
   // verified fix.
   NetworkNavItem().Visibility(Visibility::Visible);
-  DeveloperNavItem().Visibility(advanced_ ? Visibility::Visible
-                                          : Visibility::Collapsed);
   HomeNav().PaneDisplayMode(NavigationViewPaneDisplayMode::LeftCompact);
   HomeNav().PaneDisplayMode(NavigationViewPaneDisplayMode::Auto);
 
