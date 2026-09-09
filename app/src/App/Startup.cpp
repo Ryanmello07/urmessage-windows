@@ -354,17 +354,26 @@ std::vector<std::wstring> DemoWorldAssertions() {
 // the function whatever the frame inset is.
 std::wstring DemoLayoutCheck() {
   using urmsg::demo::LayoutFor;
+  using urmsg::demo::ListWidthFor;
   const bool wideEdge = LayoutFor(1000.0, 800.0).wide && !LayoutFor(999.9, 800.0).wide;
   const bool railEdge = LayoutFor(1500.0, 800.0).rail && !LayoutFor(1499.9, 800.0).rail;
   const bool stripEdge = LayoutFor(1200.0, 560.0).strip && !LayoutFor(1200.0, 559.9).strip;
   // width and height decide different things and must not leak into each other.
   const bool axes = LayoutFor(1600.0, 400.0).rail && !LayoutFor(1600.0, 400.0).strip &&
                     LayoutFor(800.0, 900.0).strip && !LayoutFor(800.0, 900.0).wide;
-  const bool ok = wideEdge && railEdge && stripEdge && axes;
+  // The list-width step (d3 section 4): 320 below 1200 of content, 360 at or
+  // above it, with NO upper bound - at rail widths the flanks read 360|360.
+  // Compared against LITERALS, not the constants, so a wrong constant fails
+  // here rather than agreeing with itself; the rail edge above is asserted
+  // unchanged beside it, since the step and the rail threshold are neighbours
+  // at 1200/1500 and a move in one must not drag the other.
+  const bool listStep = ListWidthFor(999.9) == 320.0 && ListWidthFor(1199.9) == 320.0 &&
+                        ListWidthFor(1200.0) == 360.0 && ListWidthFor(1500.0) == 360.0;
+  const bool ok = wideEdge && railEdge && stripEdge && axes && listStep;
   return std::format(
       L"  demo layout      : {}  (CONTENT dips. wide@1000 {} | rail@1500 {} | "
-      L"strip@560h {} | width/height independent {})",
-      ok ? L"PASS" : L"FAIL", wideEdge, railEdge, stripEdge, axes);
+      L"strip@560h {} | width/height independent {} | list step 320->360@1200 {})",
+      ok ? L"PASS" : L"FAIL", wideEdge, railEdge, stripEdge, axes, listStep);
 }
 
 std::wstring DemoDeepLinkCheck() {

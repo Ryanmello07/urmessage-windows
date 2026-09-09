@@ -249,4 +249,51 @@ Border MakeIdenticon(urmsg::demo::Seed const& seed, double size) {
   return root;
 }
 
+void SetIdenticonPlateAlpha(Border const& identicon, uint8_t alpha) {
+  if (!identicon) return;
+  auto brush = identicon.Background().try_as<Media::SolidColorBrush>();
+  if (!brush) return;
+  auto color = brush.Color();
+  color.A = alpha;
+  brush.Color(color);
+}
+
+Border MakeIdenticonLattice(double size) {
+  Border root;
+  root.Width(size);
+  root.Height(size);
+  // The same shape rule MakeIdenticon owns (IdenticonCornerRadius), so a
+  // lattice and an identicon at one size are the same silhouette. No plate:
+  // the frame is the whole point.
+  root.CornerRadius(CornerRadiusHelper::FromUniformRadius(IdenticonCornerRadius(size)));
+
+  Grid grid;
+  for (int i = 0; i < 5; ++i) {
+    RowDefinition r;
+    r.Height(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
+    grid.RowDefinitions().Append(r);
+    ColumnDefinition c;
+    c.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
+    grid.ColumnDefinitions().Append(c);
+  }
+  // One brush for all 25 cells: kTextFaint at 0x33, achromatic, so no hue
+  // enters the app and the palette's separation proof has nothing new to
+  // clear. The margin keeps adjacent outlines from merging into a mesh.
+  auto line = urnw::colors::MakeBrush(urnw::colors::WithAlpha(urnw::colors::kTextFaint, 0x33));
+  for (int row = 0; row < 5; ++row) {
+    for (int col = 0; col < 5; ++col) {
+      Border cell;
+      cell.BorderBrush(line);
+      cell.BorderThickness(ThicknessHelper::FromUniformLength(1));
+      cell.CornerRadius(CornerRadiusHelper::FromUniformRadius(2));
+      cell.Margin(ThicknessHelper::FromUniformLength(1));
+      Grid::SetRow(cell, row);
+      Grid::SetColumn(cell, col);
+      grid.Children().Append(cell);
+    }
+  }
+  root.Child(grid);
+  return root;
+}
+
 }  // namespace urmsg

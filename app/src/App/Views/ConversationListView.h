@@ -28,6 +28,9 @@ inline constexpr double kConversationRowHeight = 64.0;
 
 struct ConversationListView {
   winrt::Microsoft::UI::Xaml::FrameworkElement root{nullptr};
+  // The RECENT group header, kept so the entrance can include it at delay 0
+  // (d3 2.6): the chrome must not pop a frame ahead of the rows it titles.
+  winrt::Microsoft::UI::Xaml::FrameworkElement header{nullptr};
   // rows[i] is world.conversations[i]. Nothing reorders this vector: contract 1
   // limits MutableWorld() to appending a MessageRow and advancing one
   // DeliveryState, so an index stays valid for the life of the view.
@@ -48,13 +51,15 @@ ConversationListView MakeConversationList(urmsg::demo::World const& world,
 // carries, for the same reason (UrComponents.h:333-340).
 void SetConversationSelected(ConversationListView& v, int index);
 
-// Start the staggered row entrance. Call AFTER Window.Activate(), from
+// Start the staggered row entrance: opacity PLUS an 8dip rise per row, and
+// the RECENT header at delay 0 (d3 2.6). Call AFTER Window.Activate(), from
 // MainWindow::StartReveal -- MakeConversationList already wrote the start pose,
 // because it runs from the MainWindow constructor and WindowReveal.h:50-54 fixes
 // that split for every reveal in this app.
 //
-// A no-op when motion::ShouldAnimate() is false, in which case the rows were
-// never dimmed and there is nothing to settle.
+// A no-op when motion::ShouldAnimate() is false, in which case neither the
+// opacity nor the transform start pose was ever written and there is nothing
+// to settle.
 void AnimateConversationListEntrance(ConversationListView& v);
 
 // Hide every row whose conversation does not match `query`, show the rest, and

@@ -53,4 +53,23 @@ constexpr double IdenticonCornerRadius(double size) { return size / 2.5; }
 winrt::Microsoft::UI::Xaml::Controls::Border MakeIdenticon(
     urmsg::demo::Seed const& seed, double size = 40);
 
+// Rewrites the plate's alpha IN PLACE on the identicon's own Background
+// brush (the WithAlpha(palette hue, 0x33) one MakeIdenticon built). A hover
+// lift is a one-step alpha change on that SAME brush, never a new colour:
+// the hue stays the compile-time-proven palette entry, so the palette's
+// state-colour separation proof is untouched. No-op on a null border or a
+// background that is not a solid brush.
+void SetIdenticonPlateAlpha(
+    winrt::Microsoft::UI::Xaml::Controls::Border const& identicon, uint8_t alpha);
+
+// The EMPTY inverse of an identicon (d3 2.3): the same 5x5 star grid, but no
+// seed, no plate and no fill - every cell a 1px rounded-square OUTLINE in
+// kTextFaint at 0x33, the frame a person-mark would occupy. Achromatic by
+// construction (grey has no hue), so it provably cannot collide with the
+// palette's hue-separation proof or any state colour, and no new brand
+// colour enters the app. For empty/loading states and decorative echoes -
+// never a stand-in for a person. Applies its own corner radius
+// (IdenticonCornerRadius) - callers must NOT set one.
+winrt::Microsoft::UI::Xaml::Controls::Border MakeIdenticonLattice(double size);
+
 }  // namespace urmsg

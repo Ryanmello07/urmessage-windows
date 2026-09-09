@@ -571,7 +571,11 @@ FrameworkElement MakePaneEmptyLine(winrt::hstring const& text) {
 PaneSearchRow MakePaneSearchRow(winrt::hstring const& placeholder) {
   PaneSearchRow out;
   out.root = MakePaneRow(MetricByKey(L"UrPaneHeaderHeight", 40));
-  out.root.Background(urnw::colors::BackgroundBrush());
+  // Sheet, not page (d3 2.5): the pane header above is already UrSheetBrush,
+  // so this fuses header + search into one 80px chrome slab above the rows -
+  // d1's L1 chrome flanking L0 content, with the row's own bottom hairline
+  // (MakePaneRow) still separating the slab from the list body.
+  out.root.Background(urnw::colors::SheetBrush());
 
   Controls::Grid grid;
   grid.ColumnSpacing(8);
@@ -589,6 +593,7 @@ PaneSearchRow MakePaneSearchRow(winrt::hstring const& placeholder) {
   glyph.VerticalAlignment(VerticalAlignment::Center);
   Automation::AutomationProperties::SetAccessibilityView(
       glyph, Automation::Peers::AccessibilityView::Raw);
+  out.glyph = glyph;  // the focus treatment's only handle on it
   grid.Children().Append(glyph);
 
   out.box = Controls::TextBox();

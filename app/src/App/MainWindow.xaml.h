@@ -87,6 +87,11 @@ struct MainWindow : MainWindowT<MainWindow> {
   // the pane header's count cannot disagree.
   void ApplyConversationFilter();
 
+  // The search empty state's one visibility writer (d3 2.5): fade in at
+  // kBaseMs on the standard curve, out at kFastMs on the exit curve (exits
+  // one step faster), an instant swap when motion::ShouldAnimate() is false.
+  void SetSearchEmptyVisible(bool show);
+
   // The ONE window-level layout function. It consumes
   // urmsg::demo::LayoutFor(), which answers all three content-dip thresholds
   // (wide at kWideBreakpointDip, rail at kRailBreakpointDip, strip at
@@ -116,6 +121,12 @@ struct MainWindow : MainWindowT<MainWindow> {
 
   urnw::WindowReveal reveal_;
   urnw::kit::PaneSearchRow search_{};
+  // The search empty state (d3 2.5), built only under --demo where the filter
+  // is wired; null on a normal launch and SetSearchEmptyVisible no-ops.
+  // searchEmptyShown_ is the TARGET state, so a late exit-fade Completed
+  // handler never collapses a module that was re-shown mid-fade.
+  winrt::Microsoft::UI::Xaml::Controls::Grid searchEmpty_{nullptr};
+  bool searchEmptyShown_ = false;
   // Empty on a non-demo launch: BuildConversationList only fills it under --demo.
   urmsg::views::ConversationListView list_{};
   // -1 until something is selected. Held on the window because the window is
@@ -125,6 +136,13 @@ struct MainWindow : MainWindowT<MainWindow> {
   // thread at 1000, rail at 1500, strip at 560 of HEIGHT), all in CONTENT-root
   // dips, which is what ActualWidth/ActualHeight of Content() report.
   urmsg::demo::Layout layout_{};
+  // The two layout decisions LayoutFor does not carry: the list-width step
+  // stays OUT of the gate-asserted Layout struct (d3 section 4) and the nav
+  // pane's docked/overlay state is the platform's own threshold, not a demo
+  // constant. Tracked beside layout_ so ApplyBreakpoint's early-out cannot
+  // skip a real change in either.
+  double listWidth_ = 0.0;
+  bool navDocked_ = false;
   // Whether ApplyBreakpoint has ever actually WRITTEN the layout. Without it,
   // the first pass early-outs whenever the initial size is narrow (layout_ is
   // already all-false), and the window is only correct because the markup

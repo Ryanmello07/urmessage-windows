@@ -158,6 +158,15 @@
                             <SolidColorBrush x:Key="NavigationViewItemForegroundPressed" Color="#F8F8F8" />
                             <SolidColorBrush x:Key="NavigationViewItemForegroundSelectedPointerOver" Color="#F8F8F8" />
                             <SolidColorBrush x:Key="NavigationViewItemForegroundSelectedPressed" Color="#F8F8F8" />
+                            <!-- InfoBadge (d3 3.2, optional): the unread count on
+                                 the Chats nav item. NEUTRAL, deliberately: not
+                                 accent (reserved for send/selection, G3), not
+                                 green (presence), not red (danger) - a neutral
+                                 badge beside a neutral glyph. Without these
+                                 overrides the badge renders system-accent blue,
+                                 a colour this app does not have. -->
+                            <SolidColorBrush x:Key="InfoBadgeBackground" Color="#242424" />
+                            <SolidColorBrush x:Key="InfoBadgeForeground" Color="#F8F8F8" />
                         </ResourceDictionary>
                     </ResourceDictionary.ThemeDictionaries>
                 </ResourceDictionary>

@@ -73,8 +73,17 @@
                         BorderBrush="{StaticResource UrBorderBrush}"
                         BorderThickness="1" CornerRadius="4" Padding="6,1"
                         Margin="4,0,0,0" VerticalAlignment="Center">
-                    <TextBlock x:Name="DemoChipText"
-                               Style="{StaticResource UrCaptionTextStyle}" />
+                    <StackPanel Orientation="Horizontal" Spacing="5">
+                        <!-- the identicon lattice prefix (d3 3.4): the chip's
+                             only decoration. A HOST, not the lattice itself -
+                             MakeIdenticonLattice exists only in code
+                             (Identicon.h) and EnterDemoMode mounts it here.
+                             It adds no WORDS, so nothing honesty-bearing
+                             depends on a chip demo-watermark=off removes. -->
+                        <Grid x:Name="DemoChipLatticeHost" VerticalAlignment="Center" />
+                        <TextBlock x:Name="DemoChipText"
+                                   Style="{StaticResource UrCaptionTextStyle}" />
+                    </StackPanel>
                 </Border>
             </StackPanel>
         </Grid>
@@ -131,6 +140,14 @@
                 </muxc:NavigationViewItem>
             </muxc:NavigationView.MenuItems>
             <muxc:NavigationView.FooterMenuItems>
+                <!-- the pane model's hairline between the destination stack
+                     and the utility row (d3 3.2); its foreground is already
+                     themed (NavigationViewItemSeparatorForeground #1FFFFFFF).
+                     Declared in markup from the start: the WASDK 2.2.0
+                     Auto-mode defect DrainDeepLink works around is about an
+                     item's Collapsed -> Visible transition, which a static
+                     separator never performs. -->
+                <muxc:NavigationViewItemSeparator />
                 <muxc:NavigationViewItem x:Name="DeveloperNavItem" Tag="developer"
                                          Visibility="Collapsed">
                     <muxc:NavigationViewItem.Icon>
@@ -268,6 +285,20 @@
                       Style="{StaticResource UrPaneStyle}" />
                 <Grid x:Name="DeveloperHost" Visibility="Collapsed"
                       Style="{StaticResource UrPaneStyle}" />
+
+                <!-- the nav pane's right edge gets the same 1px rule every
+                     other pane boundary has (PaneRule, RailRule): panes are
+                     divided by 1px rules and the nav pane is a pane (d3 3.1).
+                     LAST child of the content Grid - the destination pages are
+                     opaque and fill it, so an earlier slot would paint UNDER
+                     them and the rule would never draw (the design doc's
+                     "first child" had to invert to achieve its own goal).
+                     ApplyBreakpoint is its one writer: visible whenever the
+                     pane is docked (above 640 content dips, Auto mode's own
+                     overlay threshold), hidden when it is an overlay. -->
+                <Border x:Name="NavPaneRule" HorizontalAlignment="Left"
+                        Style="{StaticResource UrPaneVRuleStyle}"
+                        Visibility="Collapsed" />
 
             </Grid>
         </muxc:NavigationView>

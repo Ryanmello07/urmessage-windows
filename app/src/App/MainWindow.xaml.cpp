@@ -16,6 +16,7 @@
 #include "Demo/DemoShellState.h"
 #include "Demo/DemoSwitches.h"
 #include "Demo/DemoWorld.h"
+#include "Identicon.h"
 #include "Localization.h"
 #include "Log.h"
 #include "Strings.h"
@@ -47,6 +48,14 @@ winrt::hstring Loc(std::string_view key) { return winrt::hstring{urnw::Localized
 constexpr const wchar_t* kDemoNavNetwork = L"Network";
 constexpr const wchar_t* kDemoNavDeveloper = L"Developer";
 constexpr const wchar_t* kDemoWatermark = L"DEMO";
+
+// NavigationView Auto's overlay threshold (the platform default,
+// ExpandedModeThresholdWidth = 640 effective pixels): below it the pane is an
+// overlay flyout floating OVER the content, so there is no docked boundary to
+// draw a rule on (d3 3.1). ApplyBreakpoint compares content-root dips against
+// it - the nav fills the window's full width, so the two measures are the
+// same quantity here.
+constexpr double kNavOverlayMaxDip = 640.0;
 
 // The conversation-list placeholder.
 //
@@ -208,6 +217,14 @@ void MainWindow::ApplyStrings() {
   ContactsNavItem().Content(box_value(Loc("nav_contacts")));
   SettingsNavItem().Content(box_value(Loc("nav_settings")));
 
+  // Compact-rail mode (641-1007epx, icons only) names its destinations on
+  // hover (d3 3.2); zero visual change in expanded mode. The tooltip IS the
+  // label's string, so the two can never disagree. The demo destinations get
+  // theirs in EnterDemoMode beside the Content() writes there.
+  Controls::ToolTipService::SetToolTip(ChatsNavItem(), box_value(Loc("nav_chats")));
+  Controls::ToolTipService::SetToolTip(ContactsNavItem(), box_value(Loc("nav_contacts")));
+  Controls::ToolTipService::SetToolTip(SettingsNavItem(), box_value(Loc("nav_settings")));
+
   ListPaneTitle().Text(Loc("pane_conversations"));
   ThreadPaneTitle().Text(Loc("pane_thread"));
   HomeNav().Header(box_value(Loc("nav_chats")));
@@ -232,6 +249,27 @@ void MainWindow::BuildConversationList() {
   SearchHost().Children().Clear();
   SearchHost().Children().Append(search_.root);
 
+  // The search row's interactive engineering (d3 2.5), registered for BOTH
+  // launches: harmless on the placeholder list, and the two launches stay
+  // identical. Focus wakes the glyph muted -> off-white - the same channel
+  // nav items use on hover - and deliberately NOT an accent underline:
+  // accent is reserved for the send button and selection outlines, and a
+  // focused field is neither (G3). Esc clears the box; under --demo the
+  // TextChanged handler below does the rest, and on the placeholder list
+  // clearing a box nobody filters on is still the least surprising thing
+  // Esc can do.
+  search_.box.GotFocus([glyph = search_.glyph](auto const&, auto const&) {
+    if (glyph) glyph.Foreground(urnw::colors::TextBrush());
+  });
+  search_.box.LostFocus([glyph = search_.glyph](auto const&, auto const&) {
+    if (glyph) glyph.Foreground(urnw::colors::MutedBrush());
+  });
+  search_.box.KeyDown([](winrt::Windows::Foundation::IInspectable const& sender,
+                         Input::KeyRoutedEventArgs const& e) {
+    if (e.Key() == winrt::Windows::System::VirtualKey::Escape)
+      sender.as<Controls::TextBox>().Text(L"");
+  });
+
   auto list = ConversationList().Children();
   list.Clear();
 
@@ -253,6 +291,23 @@ void MainWindow::BuildConversationList() {
     ListPaneCount().Text(winrt::to_hstring(static_cast<int>(world.conversations.size())));
     urnw::LogInfo("window: demo conversation list built with {} rows",
                   world.conversations.size());
+
+    // The unread InfoBadge on the Chats nav item (d3 3.2, the wave's
+    // optional item): the summed unread, set ONCE here - the world's unread
+    // counts never change at runtime, so a live binding would have nothing
+    // to do. The badge is neutral by the App.xaml theme overrides
+    // (InfoBadgeBackground/Foreground): not accent (reserved), not green
+    // (presence), not red (danger). A property set at build, never a
+    // Visibility flip - the WASDK 2.2.0 Auto-mode defect DrainDeepLink
+    // documents is about Collapsed -> Visible transitions, which this does
+    // not perform; the nav is still screenshot-verified after the change.
+    int unreadTotal = 0;
+    for (auto const& c : world.conversations) unreadTotal += c.unread;
+    if (0 < unreadTotal) {
+      Controls::InfoBadge badge;
+      badge.Value(unreadTotal);
+      ChatsNavItem().InfoBadge(badge);
+    }
     // TextChanged, not KeyDown: it fires for paste, for undo and for a
     // programmatic Text() write, and the filter must be true of the box's
     // CONTENT rather than of the last key that touched it.
@@ -260,6 +315,49 @@ void MainWindow::BuildConversationList() {
                                                 TextChangedEventArgs const&) {
       if (auto self = weak.get()) self->ApplyConversationFilter();
     });
+
+    // The search empty state (d3 2.5): when the filter returns nothing, the
+    // pane says WHY rather than going blank - the identicon lattice (an
+    // empty frame where a person-mark would go, the honest inverse of an
+    // avatar: no seed, no hue) and one line naming what the search reads.
+    // G4: the second line describes the search's BEHAVIOUR and is strictly
+    // true of ConversationRowMatches (name always; preview only when the row
+    // draws it) - it claims no crypto, and it teaches the privacy property
+    // demo.list.search asserts at the moment that property is operating.
+    // Both strings are English literals from code (DemoChip precedent;
+    // Resources.resw is generated). Mounted as ListScaffold's row-2 child
+    // AFTER the ScrollViewer so it paints above the emptied row area - into
+    // ListScaffold itself, never a new container: ListHost (MainWindow.xaml)
+    // is the standing warning about writing into a collapsed twin.
+    {
+      Controls::StackPanel column;
+      column.Spacing(8);
+      column.HorizontalAlignment(HorizontalAlignment::Center);
+      column.VerticalAlignment(VerticalAlignment::Center);
+      auto lattice = urmsg::MakeIdenticonLattice(64);
+      lattice.HorizontalAlignment(HorizontalAlignment::Center);
+      // Decorative: the two lines below carry all of the meaning.
+      Automation::AutomationProperties::SetAccessibilityView(
+          lattice, Automation::Peers::AccessibilityView::Raw);
+      column.Children().Append(lattice);
+      Controls::TextBlock headline;
+      headline.Text(L"No conversations match");
+      headline.FontSize(12);
+      headline.Foreground(urnw::colors::MutedBrush());
+      headline.TextAlignment(TextAlignment::Center);
+      column.Children().Append(headline);
+      Controls::TextBlock detail;
+      detail.Text(L"Search checks names and visible previews only.");
+      detail.FontSize(11);
+      detail.Foreground(urnw::colors::FaintBrush());
+      detail.TextAlignment(TextAlignment::Center);
+      column.Children().Append(detail);
+      searchEmpty_ = Controls::Grid();
+      searchEmpty_.Children().Append(column);
+      Controls::Grid::SetRow(searchEmpty_, 2);
+      searchEmpty_.Visibility(Visibility::Collapsed);
+      ListScaffold().Children().Append(searchEmpty_);
+    }
 
     // Contract 5: Advanced Mode has ONE owner and no view reads the preference.
     // This is the initial application; the live subscription that re-calls this
@@ -456,7 +554,70 @@ void MainWindow::ApplyConversationFilter() {
   // The ONE count of "how many rows are on screen". The RECENT group header
   // deliberately carries no count (MakeConversationList): a second readout this
   // function did not update would be a readout that had stopped being true.
-  ListPaneCount().Text(winrt::to_hstring(static_cast<int>(visible)));
+  // While filtering it reads "3 of 8" - what the filter DID - returning to the
+  // bare total unfiltered so the one readout is never ambiguous (d3 2.5). The
+  // fragment is an English literal (DemoChip precedent; resw is generated).
+  const std::size_t total = world.conversations.size();
+  ListPaneCount().Text(visible == total
+                           ? winrt::to_hstring(static_cast<int>(total))
+                           : winrt::to_hstring(static_cast<int>(visible)) + L" of " +
+                                 winrt::to_hstring(static_cast<int>(total)));
+  // The empty state answers a zero-result SEARCH. The query guard keeps it
+  // one: an empty world with no query would also be visible == 0, and that is
+  // a different, already-gated failure (I1 requires 8 conversations) - not a
+  // search result this module should explain.
+  SetSearchEmptyVisible(visible == 0 && !query.empty());
+}
+
+void MainWindow::SetSearchEmptyVisible(bool show) {
+  if (!searchEmpty_) return;  // a non-demo launch never built it
+  searchEmptyShown_ = show;
+  const bool drawn = searchEmpty_.Visibility() == Visibility::Visible;
+  // Instant swap with motion off (MOT): the gate means GONE, not reduced.
+  // This branch is code-inspection only - reduce-motion has never executed
+  // on this machine.
+  if (!urnw::motion::ShouldAnimate()) {
+    searchEmpty_.Opacity(1.0);
+    searchEmpty_.Visibility(show ? Visibility::Visible : Visibility::Collapsed);
+    return;
+  }
+  namespace anim = winrt::Microsoft::UI::Xaml::Media::Animation;
+  if (show) {
+    if (drawn && searchEmpty_.Opacity() == 1.0) return;  // already settled
+    // Entrance: kBaseMs on the standard curve (d3 2.5). A re-show mid-exit
+    // resumes from the current opacity instead of popping back to 0.
+    const double from = drawn ? searchEmpty_.Opacity() : 0.0;
+    searchEmpty_.Visibility(Visibility::Visible);
+    auto fade = urnw::motion::MakeSplineDouble(from, 1.0, urnw::motion::kBaseMs, 0,
+                                               urnw::motion::kStandardP1,
+                                               urnw::motion::kStandardP2);
+    anim::Storyboard::SetTarget(fade, searchEmpty_);
+    anim::Storyboard::SetTargetProperty(fade, L"Opacity");
+    anim::Storyboard board;
+    board.Children().Append(fade);
+    board.Begin();
+    return;
+  }
+  if (!drawn) return;  // already gone: nothing to fade
+  // Exit one step faster than the entrance (MOT) on the exit curve.
+  auto fade = urnw::motion::MakeSplineDouble(searchEmpty_.Opacity(), 0.0,
+                                             urnw::motion::kFastMs, 0,
+                                             urnw::motion::kExitP1,
+                                             urnw::motion::kExitP2);
+  anim::Storyboard::SetTarget(fade, searchEmpty_);
+  anim::Storyboard::SetTargetProperty(fade, L"Opacity");
+  anim::Storyboard board;
+  board.Children().Append(fade);
+  board.Completed([weak = get_weak()](auto const&, auto const&) {
+    auto self = weak.get();
+    // A re-show during the fade owns the module now (searchEmptyShown_ is the
+    // TARGET state); collapsing here would strand it invisible over an
+    // emptied list.
+    if (!self || self->searchEmptyShown_) return;
+    self->searchEmpty_.Visibility(Visibility::Collapsed);
+    self->searchEmpty_.Opacity(1.0);
+  });
+  board.Begin();
 }
 
 void MainWindow::EnterDemoMode() {
@@ -485,8 +646,18 @@ void MainWindow::EnterDemoMode() {
   // never triggered the regression, only Visibility() did.
   NetworkNavItem().Content(box_value(hstring{kDemoNavNetwork}));
   DeveloperNavItem().Content(box_value(hstring{kDemoNavDeveloper}));
+  // The compact-rail tooltip, same string as the label - ApplyStrings does
+  // the three permanent destinations for the same reason (d3 3.2).
+  Controls::ToolTipService::SetToolTip(NetworkNavItem(), box_value(hstring{kDemoNavNetwork}));
+  Controls::ToolTipService::SetToolTip(DeveloperNavItem(), box_value(hstring{kDemoNavDeveloper}));
 
   DemoChipText().Text(kDemoWatermark);
+  // d3 3.4: the identicon lattice as the chip's prefix - decorative, links
+  // the chip to the identicon language. It adds no WORDS, so nothing
+  // honesty-bearing depends on a chip --demo-watermark=off removes (G4).
+  // 10dip, achromatic; MakeIdenticonLattice owns its corner radius.
+  DemoChipLatticeHost().Children().Clear();
+  DemoChipLatticeHost().Children().Append(urmsg::MakeIdenticonLattice(10));
   DemoChip().Visibility(options_.watermark ? Visibility::Visible
                                            : Visibility::Collapsed);
 
@@ -678,16 +849,27 @@ void MainWindow::ApplyBreakpoint() {
   if (width <= 0 || height <= 0) return;
 
   const auto next = urmsg::demo::LayoutFor(width, height);
+  // The list column's fixed width (320, stepping to 360 at
+  // kListWideBreakpointDip - d3 section 4) and whether the nav pane is
+  // docked: LayoutFor deliberately carries neither (the step stays out of
+  // the gate-asserted Layout struct; the overlay threshold is the
+  // platform's), so both are tracked beside layout_ and joined into the
+  // early-out - a resize that crosses only the 1200 or the 640 line must
+  // not be skipped.
+  const double listWidth = urmsg::demo::ListWidthFor(width);
+  const bool navDocked = kNavOverlayMaxDip < width;
   if (layoutApplied_ && next.wide == layout_.wide && next.rail == layout_.rail &&
-      next.strip == layout_.strip)
+      next.strip == layout_.strip && listWidth == listWidth_ && navDocked == navDocked_)
     return;
   layout_ = next;
+  listWidth_ = listWidth;
+  navDocked_ = navDocked;
   layoutApplied_ = true;
 
-  // Wide: a fixed 320dip list rail and the thread takes what is left. Narrow:
+  // Wide: a fixed list rail and the thread takes what is left. Narrow:
   // the list IS the window and the thread does not exist.
   ListColumn().Width(layout_.wide
-                         ? GridLengthHelper::FromPixels(320)
+                         ? GridLengthHelper::FromPixels(listWidth_)
                          : GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
   ThreadColumn().Width(layout_.wide
                            ? GridLengthHelper::FromValueAndType(1, GridUnitType::Star)
@@ -695,6 +877,12 @@ void MainWindow::ApplyBreakpoint() {
   const auto threadVisibility =
       layout_.wide ? Visibility::Visible : Visibility::Collapsed;
   PaneRule().Visibility(threadVisibility);
+  // The nav pane's right-edge rule (d3 3.1): every other pane boundary has
+  // its 1px rule; the nav pane is a pane. Only while the pane is DOCKED -
+  // below kNavOverlayMaxDip it is an overlay flyout and there is no boundary
+  // to draw on. ApplyBreakpoint is this element's one writer, as it is for
+  // PaneRule and RailRule.
+  NavPaneRule().Visibility(navDocked_ ? Visibility::Visible : Visibility::Collapsed);
   // Exactly one of the two thread surfaces is ever live: the shipped scaffold,
   // or the demo's ThreadView host.
   ThreadPane().Visibility(options_.enabled ? Visibility::Collapsed : threadVisibility);
@@ -716,8 +904,8 @@ void MainWindow::ApplyBreakpoint() {
                                    ? Visibility::Visible
                                    : Visibility::Collapsed);
 
-  urnw::LogInfo("window: layout wide={} rail={} strip={} (content {:.0f}x{:.0f} dip)",
-                layout_.wide, layout_.rail, layout_.strip, width, height);
+  urnw::LogInfo("window: layout wide={} rail={} strip={} listW={:.0f} navRule={} (content {:.0f}x{:.0f} dip)",
+                layout_.wide, layout_.rail, layout_.strip, listWidth_, navDocked_, width, height);
 }
 
 void MainWindow::ShowDestination(std::wstring_view tag) {

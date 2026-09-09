@@ -44,6 +44,25 @@ inline constexpr double kStripMinHeightDip = 560.0;
 // fixed: a proportional rail grows into dead space on a 2000dip window.
 inline constexpr double kRailWidthDip = 360.0;
 
+// The list column's FIXED width once the thread sits beside it (d3 section 4):
+// 320 up to kListWideBreakpointDip of content, 360 at or above it. A STEP, not
+// a star weight - the fixed-not-proportional rule above is about star weights,
+// not about steps. The extra 40 buys name+preview room at exactly the widths
+// where the rail is absent and the list is the only left-hand content; above
+// the rail breakpoint the step stays, so the two flanks read symmetrically
+// (list 360 | thread | rail 360). The step is deliberately OUT of LayoutFor's
+// Layout struct: that struct is gate-asserted field by field, and this width
+// has its own boundary probes in Startup.cpp's DemoLayoutCheck instead.
+inline constexpr double kListWidthDip = 320.0;
+inline constexpr double kListWideWidthDip = 360.0;
+inline constexpr double kListWideBreakpointDip = 1200.0;
+
+// Only meaningful at or above urnw::kit::kWideBreakpointDip; below it the list
+// column is a star and ApplyBreakpoint never consults this.
+inline constexpr double ListWidthFor(double contentWidthDip) {
+  return kListWideBreakpointDip <= contentWidthDip ? kListWideWidthDip : kListWidthDip;
+}
+
 struct Layout {
   bool wide;   // the thread pane sits beside the list
   bool rail;   // the 360dip inspector rail exists

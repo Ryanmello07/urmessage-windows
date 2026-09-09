@@ -7,6 +7,7 @@
 
 #include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
+#include <winrt/Microsoft.UI.Xaml.Input.h>
 #include <winrt/Microsoft.UI.Xaml.Media.h>
 #include <winrt/Windows.UI.Text.h>
 
@@ -29,6 +30,17 @@ constexpr wchar_t kTagSelectionBar[] = L"ur.selbar";
 constexpr wchar_t kTagTrailing[] = L"ur.trailing";
 constexpr wchar_t kTagCluster[] = L"ur.cluster";
 constexpr wchar_t kTagGroupChip[] = L"ur.groupchip";
+
+// Channel-exact brush comparison (A,R,G,B all compared): the hover protocol in
+// MakeConversationRow recognises its own repaint by the bar's brush being the
+// brand hairline, and winrt::Windows::UI::Color has no operator== in the
+// projection.
+bool IsBrush(Media::Brush const& brush, winrt::Windows::UI::Color const& color) {
+  auto solid = brush.try_as<Media::SolidColorBrush>();
+  if (!solid) return false;
+  auto const c = solid.Color();
+  return c.A == color.A && c.R == color.R && c.G == color.G && c.B == color.B;
+}
 
 // Segoe Fluent Icons out of the app dictionary, so this file and App.xaml cannot
 // name two different families. FontIcon otherwise defaults to the older Segoe
@@ -109,6 +121,51 @@ Controls::Panel TaggedPanel(Controls::Panel const& parent, wchar_t const* tag) {
   return child.try_as<Controls::Panel>();
 }
 
+// The same narrowing, to a Border: SetConversationSelected writes the
+// selection bar's BRUSH as well as its opacity (see it for why), which a
+// FrameworkElement cannot do.
+Controls::Border TaggedBorder(Controls::Panel const& parent, wchar_t const* tag) {
+  auto child = TaggedChild(parent, tag);
+  if (!child) return nullptr;
+  return child.try_as<Controls::Border>();
+}
+
+// The entrance start pose (d3 2.6): invisible AND 8dip low. Only ever written
+// under ShouldAnimate() - the two-pose-skip MakeConversationList documents -
+// so the reduce-motion path has no pose to clear and no residual transform for
+// a later layout pass to trip on.
+void EntranceStartPose(FrameworkElement const& element) {
+  element.Opacity(0.0);
+  Media::CompositeTransform pose;
+  pose.TranslateY(urnw::motion::kDist8);
+  element.RenderTransform(pose);
+}
+
+// One element's entrance as two timelines on `board` sharing kBaseMs, the
+// standard bezier and `beginMs` (d3 2.6): the fade this file already ran,
+// extended with the rise rather than restructured. No new duration, no new
+// curve, no new stagger constant anywhere in the wave - the stagger is
+// ConversationRowDelayMs, whose cap L1's demo.list.stagger asserts
+// exhaustively at index 0/5/6/50.
+void AppendEntrance(winrt::Microsoft::UI::Xaml::Media::Animation::Storyboard const& board,
+                    FrameworkElement const& target, int64_t beginMs) {
+  namespace anim = winrt::Microsoft::UI::Xaml::Media::Animation;
+  auto fade = urnw::motion::MakeSplineDouble(0.0, 1.0, urnw::motion::kBaseMs, beginMs,
+                                             urnw::motion::kStandardP1,
+                                             urnw::motion::kStandardP2);
+  anim::Storyboard::SetTarget(fade, target);
+  anim::Storyboard::SetTargetProperty(fade, L"Opacity");
+  board.Children().Append(fade);
+  auto rise = urnw::motion::MakeSplineDouble(urnw::motion::kDist8, 0.0,
+                                             urnw::motion::kBaseMs, beginMs,
+                                             urnw::motion::kStandardP1,
+                                             urnw::motion::kStandardP2);
+  anim::Storyboard::SetTarget(rise, target);
+  anim::Storyboard::SetTargetProperty(
+      rise, L"(UIElement.RenderTransform).(CompositeTransform.TranslateY)");
+  board.Children().Append(rise);
+}
+
 // The kit row's content Grid. MakePaneTwoLineRowButton ends with
 // out.root.Content(grid) (UrComponents.cpp:478), so this is the documented
 // shape rather than a guess.
@@ -181,6 +238,42 @@ urnw::kit::PaneTwoLineRowButton MakeConversationRow(urmsg::demo::Conversation co
   grid.Children().Append(identicon);
   if (text) text.Margin(ThicknessHelper::FromLengths(52, 0, 0, 0));
 
+  // A timer row's second line names the STATE instead of showing a preview
+  // (d3 2.4): the model REFUSES the preview for a disappearing conversation
+  // (ConversationRowModel.cpp, the property demo.list.timer asserts), which
+  // leaves the kit's note collapsed and the 64px row reading half-empty.
+  // What lands instead is the timer glyph plus "Disappearing messages", both
+  // textFaint at UrRowNoteStyle's 11px. G4: the string describes the FIELD,
+  // never a claim - and a screen reader hears no change, because the row's
+  // automation name already says exactly these words (which is also why both
+  // elements are AccessibilityView=Raw). An English literal from code:
+  // Resources.resw is generated and no task here may add a key (DemoChip
+  // precedent). The search privacy gate is untouched: ConversationRowMatches
+  // reads the name and the hidden preview, never this label.
+  if (model.showTimer && text) {
+    Controls::StackPanel note;
+    note.Orientation(Controls::Orientation::Horizontal);
+    note.Spacing(4);
+    Controls::FontIcon glyph;
+    glyph.FontFamily(IconFont());
+    glyph.FontSize(12);
+    glyph.Glyph(L"\uE916");  // Stopwatch
+    glyph.Foreground(urnw::colors::FaintBrush());
+    glyph.VerticalAlignment(VerticalAlignment::Center);
+    Automation::AutomationProperties::SetAccessibilityView(
+        glyph, Automation::Peers::AccessibilityView::Raw);
+    Controls::TextBlock label;
+    label.Text(L"Disappearing messages");
+    label.FontSize(11);
+    label.Foreground(urnw::colors::FaintBrush());
+    label.VerticalAlignment(VerticalAlignment::Center);
+    Automation::AutomationProperties::SetAccessibilityView(
+        label, Automation::Peers::AccessibilityView::Raw);
+    note.Children().Append(glyph);
+    note.Children().Append(label);
+    text.Children().Append(note);
+  }
+
   // 4. The trailing column: the time on the title's line, the state marks under
   //    it. row.value is the kit's own trailing TextBlock (UrValueTextStyle,
   //    muted, already AccessibilityView=Raw, UrComponents.cpp:448-474) and is
@@ -197,6 +290,12 @@ urnw::kit::PaneTwoLineRowButton MakeConversationRow(urmsg::demo::Conversation co
     if (grid.Children().IndexOf(row.value, at)) grid.Children().RemoveAt(at);
     row.value.Text(winrt::hstring{model.timeLabel});
     row.value.HorizontalAlignment(HorizontalAlignment::Right);
+    // 13 -> 11 (d3 2.1): at 13 the time outweighed the preview line and tied
+    // with the name; at 11 it aligns with the cluster beneath it and the 13px
+    // name becomes the clear primary. A one-off override on a code-built row,
+    // not a new text species - UrValueTextStyle and its muted brush stay (G3:
+    // no new colour, no new key).
+    row.value.FontSize(11);
     trailing.Children().Append(row.value);
   }
 
@@ -240,6 +339,91 @@ urnw::kit::PaneTwoLineRowButton MakeConversationRow(urmsg::demo::Conversation co
   trailing.Children().Append(cluster);
   grid.Children().Append(trailing);
 
+  // 5. Hover and press (d3 2.2/2.3). Hover rehearses selection channel 2's
+  //    GEOMETRY without spending its colour: the bar - accent-coloured,
+  //    transparent and in place on every row - is painted with the brand
+  //    hairline (UrBorderBrush, white at 12%) exactly where selection would
+  //    land, and selection later COMMITS that slot to accent. A shape change,
+  //    not colour alone, and border-white cannot be mistaken for #EFF7BB.
+  //    The protocol with SetConversationSelected: selection writes the accent
+  //    brush AND the opacity, hover writes the border brush and the opacity,
+  //    so a bar in the border brush is recognisably hover's own repaint and
+  //    PointerExited only ever undoes that - an accent brush at exit means
+  //    selection wrote the bar while the pointer was over the row, and the
+  //    slot belongs to selection. Hover on the selected row is a no-op: the
+  //    accent bar already owns the slot. One accepted wrinkle: any selection
+  //    write restores every unselected bar to accent+transparent, so a hover
+  //    tick does not survive an unrelated selection change until re-entry.
+  //    In the same pair the identicon plate's alpha lifts one step
+  //    (0x33 -> 0x4D, 20% -> 30% of the row's own hue): the avatar visibly
+  //    wakes under the pointer with no new colour entering the app - the
+  //    plate is already WithAlpha(hue, ...), so this is a parameter change
+  //    on an existing brush (G3: the hue is the compile-time-proven palette;
+  //    only alpha moves).
+  row.root.PointerEntered([bar, identicon](auto const&, auto const&) {
+    if (bar.Opacity() != 1.0) {  // a selected row: the accent bar owns the slot
+      bar.Background(urnw::colors::BorderBrush());
+      bar.Opacity(1.0);
+    }
+    urmsg::SetIdenticonPlateAlpha(identicon, 0x4D);
+  });
+  row.root.PointerExited([bar, identicon](auto const&, auto const&) {
+    if (IsBrush(bar.Background(), urnw::colors::kBorder)) {
+      bar.Background(urnw::colors::AccentBrush());
+      bar.Opacity(0.0);
+    }
+    urmsg::SetIdenticonPlateAlpha(identicon, 0x33);
+  });
+
+  // 6. Press feedback is the identicon's, not the row's (d3 2.2): a
+  //    full-width pane row shrinking reads as a bug, so the avatar takes the
+  //    press - kPressScale over kMicroMs and back. Installed ONLY when
+  //    ShouldAnimate(): with motion off there is no animation to run and
+  //    never installing the handlers IS the instant fallback (that branch is
+  //    code-inspection only: reduce-motion has never executed on this
+  //    machine). AddHandler with handledEventsToo because ButtonBase marks
+  //    PointerPressed/Released handled for its own click logic, which would
+  //    otherwise eat the event before these handlers see it.
+  if (urnw::motion::ShouldAnimate()) {
+    Media::ScaleTransform scale;
+    scale.CenterX(20);  // half the 40dip identicon: shrink in place
+    scale.CenterY(20);
+    identicon.RenderTransform(scale);
+    auto runScale = [identicon](double from, double to) {
+      namespace anim = winrt::Microsoft::UI::Xaml::Media::Animation;
+      anim::Storyboard sb;
+      for (wchar_t const* property :
+           {L"(UIElement.RenderTransform).(ScaleTransform.ScaleX)",
+            L"(UIElement.RenderTransform).(ScaleTransform.ScaleY)"}) {
+        auto step = urnw::motion::MakeSplineDouble(from, to, urnw::motion::kMicroMs, 0,
+                                                   urnw::motion::kStandardP1,
+                                                   urnw::motion::kStandardP2);
+        anim::Storyboard::SetTarget(step, identicon);
+        anim::Storyboard::SetTargetProperty(step, property);
+        sb.Children().Append(step);
+      }
+      sb.Begin();
+    };
+    row.root.AddHandler(
+        UIElement::PointerPressedEvent(),
+        winrt::box_value(Input::PointerEventHandler(
+            [runScale](auto const&, auto const&) { runScale(1.0, urnw::motion::kPressScale); })),
+        true);
+    auto restore = Input::PointerEventHandler(
+        [runScale](auto const&, auto const&) { runScale(urnw::motion::kPressScale, 1.0); });
+    row.root.AddHandler(UIElement::PointerReleasedEvent(), winrt::box_value(restore), true);
+    // A press that loses capture mid-hold (drag off, window change) still
+    // restores, or the avatar would stay shrunk.
+    row.root.AddHandler(UIElement::PointerCaptureLostEvent(), winrt::box_value(restore), true);
+  }
+
+  // Unread rows bold the NAME, never anything chromatic (d3 2.1): Signal's
+  // unread-bold as a WEIGHT channel, so the pill stays the only chromatic
+  // mark a row may carry (Spec C 4.1). Weight is not colour (G3), and rows
+  // with nothing unread change by zero pixels.
+  if (!model.unread.empty() && row.title)
+    row.title.FontWeight(winrt::Windows::UI::Text::FontWeights::SemiBold());
+
   // The row's WHOLE announcement. The kit set Name to the title and
   // FullDescription to the note (UrComponents.cpp:475-476); this name already
   // carries both, plus the unread count, the muted state and the time, so the
@@ -272,6 +456,7 @@ ConversationListView MakeConversationList(urmsg::demo::World const& world,
   // exists in the generated resw with the value "RECENT", so no key is added.
   auto group = urnw::kit::MakePaneGroupHeader(winrt::hstring{urnw::Localized("group_recent")});
   stack.Children().Append(group.root);
+  view.header = group.root;
 
   view.rows.reserve(world.conversations.size());
   for (std::size_t i = 0; i < world.conversations.size(); ++i) {
@@ -284,11 +469,18 @@ ConversationListView MakeConversationList(urmsg::demo::World const& world,
   // MainWindow CONSTRUCTOR, before Activate(). WindowReveal.h:50-54 is the rule:
   // write the start pose synchronously ahead of the first composed frame and
   // START after Activate -- which AnimateConversationListEntrance does from
-  // MainWindow::StartReveal. Gated, so that with animations off in Windows no row
-  // is ever written to 0 and none can be left there.
-  if (urnw::motion::ShouldAnimate())
+  // MainWindow::StartReveal. Gated, so that with animations off in Windows no
+  // element is ever written to 0 and none can be left there. d3 2.6 extended
+  // the SAME two-pose-skip rather than restructuring it: the rise's start
+  // pose (a CompositeTransform at TranslateY kDist8) lives inside the same
+  // `if` as the opacity's, so the reduce-motion path still writes nothing at
+  // all (code-inspection only: that branch has never executed on this
+  // machine).
+  if (urnw::motion::ShouldAnimate()) {
     for (auto const& row : view.rows)
-      if (row.root) row.root.Opacity(0.0);
+      if (row.root) EntranceStartPose(row.root);
+    if (view.header) EntranceStartPose(view.header);
+  }
 
   view.root = stack;
   urnw::LogInfo("list: built {} conversation rows at {:.0f} dip", view.rows.size(),
@@ -311,8 +503,15 @@ void SetConversationSelected(ConversationListView& v, int index) {
                                  : urnw::colors::MakeBrush({0, 0, 0, 0}));
 
     // Channel 2: the 2px leading accent bar. A SHAPE change, not colour alone.
-    if (auto bar = TaggedChild(RowGrid(row), kTagSelectionBar))
+    // The brush write is load-bearing, not hygiene: hover rehearses this same
+    // bar in the border hairline (MakeConversationRow section 5), and writing
+    // the accent brush here means selection always reclaims the bar's colour
+    // outright - a hover repaint can never survive INTO selection and turn
+    // the selected bar white.
+    if (auto bar = TaggedBorder(RowGrid(row), kTagSelectionBar)) {
+      bar.Background(urnw::colors::AccentBrush());
       bar.Opacity(selected ? 1.0 : 0.0);
+    }
 
     // Channel 3: the announcement. A fill step and a bar say nothing to a screen
     // reader, so the row's own Name carries the state.
@@ -334,19 +533,14 @@ void AnimateConversationListEntrance(ConversationListView& v) {
   // this app already uses (UrMotion.cpp:90-115), because a running Storyboard is
   // held by the timing manager.
   anim::Storyboard board;
+  // The RECENT header at delay 0 (d3 2.6), so the chrome doesn't pop a frame
+  // ahead of the rows it titles. Same kBaseMs, same standard bezier - the
+  // header is one more target, not a new timeline shape.
+  if (v.header) AppendEntrance(board, v.header, 0);
   for (std::size_t i = 0; i < v.rows.size(); ++i) {
     auto const& row = v.rows[i];
     if (!row.root) continue;
-    // No new duration and no new curve: kBaseMs on the standard spline
-    // (design 7). The stagger is ConversationRowDelayMs, whose cap L1's
-    // demo.list.stagger asserts exhaustively at index 0/5/6/50.
-    auto fade = urnw::motion::MakeSplineDouble(0.0, 1.0, urnw::motion::kBaseMs,
-                                               ConversationRowDelayMs(i),
-                                               urnw::motion::kStandardP1,
-                                               urnw::motion::kStandardP2);
-    anim::Storyboard::SetTarget(fade, row.root);
-    anim::Storyboard::SetTargetProperty(fade, L"Opacity");
-    board.Children().Append(fade);
+    AppendEntrance(board, row.root, ConversationRowDelayMs(i));
   }
   board.Begin();
   urnw::LogInfo("list: entrance armed ({} rows, last begins at {} ms)", v.rows.size(),

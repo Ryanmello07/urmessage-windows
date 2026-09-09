@@ -480,10 +480,13 @@ winrt::Microsoft::UI::Xaml::FrameworkElement MakePaneEmptyLine(winrt::hstring co
 
 // The search field row at the top of a list pane: a squared-off TextBox on the
 // pane's 40px row metrics with the row's bottom hairline. Returns the row and
-// the box.
+// the box, and the glyph too: the field's focus treatment repaints the glyph
+// (muted -> off-white while focused) and a caller cannot reach it through the
+// box.
 struct PaneSearchRow {
   winrt::Microsoft::UI::Xaml::Controls::Border root{nullptr};
   winrt::Microsoft::UI::Xaml::Controls::TextBox box{nullptr};
+  winrt::Microsoft::UI::Xaml::Controls::FontIcon glyph{nullptr};
 };
 PaneSearchRow MakePaneSearchRow(winrt::hstring const& placeholder);
 
