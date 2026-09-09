@@ -15,10 +15,12 @@
 // UrmCompileGeneratedXamlImpl adds to the build, not from this header.
 #include "MainWindow.g.h"
 
+#include <memory>
 #include <string>
 #include <string_view>
 
 #include "Demo/AdvancedMode.h"
+#include "Demo/DemoAutoplayLoop.h"
 #include "Demo/DemoShellState.h"
 #include "Demo/DemoSwitches.h"
 #include "UrComponents.h"
@@ -97,6 +99,18 @@ struct MainWindow : MainWindowT<MainWindow> {
   urmsg::views::InspectRailView rail_{};
   std::wstring openConversationId_;
   std::wstring selectedMessageId_;
+
+  // Ambient activity (design doc 9.2). Off unless --demo-autoplay. None of
+  // these may change destination, move the selection, or open or close the
+  // rail or the drawer - and none of them can, because none of them calls
+  // anything that does.
+  void StartAmbientActivity();
+  // Re-sets the open thread from the world. Called ONLY when the loop has
+  // moved a delivery state, because contract v2's ThreadView has no per-row
+  // delivery setter and this is the one API that redraws the glyph.
+  void RefreshOpenThread();
+
+  std::unique_ptr<urmsg::demo::Autoplay> autoplay_;
 
   // The Network destination's whole content, built in code into NetworkHost
   // (MainWindow.xaml:282 — the d7 audit's N3 override; there is no
@@ -193,6 +207,12 @@ struct MainWindow : MainWindowT<MainWindow> {
   winrt::Microsoft::UI::Xaml::FrameworkElement currentPage_{nullptr};
   urmsg::demo::DeepLink pendingLink_{};
   bool pendingLinkArmed_ = false;
+  // The demo's Developer nav item. BUILT in code (EnterDemoMode), never
+  // declared in markup: ApplyAdvanced inserts/removes it from the footer
+  // collection because a Visibility flip triggers the WASDK 2.2.0 Auto-mode
+  // corruption that no runtime PaneDisplayMode cycle recovers from. Null on
+  // a normal launch.
+  winrt::Microsoft::UI::Xaml::Controls::NavigationViewItem developerNavItem_{nullptr};
 
   urnw::WindowReveal reveal_;
   urnw::kit::PaneSearchRow search_{};

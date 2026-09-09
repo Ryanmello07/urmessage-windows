@@ -625,6 +625,21 @@ struct ThreadParts {
   std::vector<winrt::Microsoft::UI::Xaml::Shapes::Ellipse> typingDots;
   anim::Storyboard typingStory{nullptr};
   anim::Storyboard typingRowStory{nullptr};
+
+  // False until the first bottom pin has actually landed. The stack.SizeChanged
+  // pin below asks ShouldPinToBottom, which pins unconditionally while unarmed
+  // (the first real extent is indistinguishable from "scrolled to the top")
+  // and guards by distance to the foot after that (design 9.2's do-not-yank).
+  bool pinArmed = false;
+  // The scrollable extent the LAST pin decision was made against. The handler
+  // measures the reader's offset against THIS, not against
+  // ScrollableHeight() at fire time: an arriving row, a rewrap or a font
+  // metric swap GROWS the extent under a stationary offset, and "at the foot
+  // when the last decision was made" must not read as "scrolled away" —
+  // measuring against the live extent opened the thread ~50dip above the foot
+  // at launch, with the newest row half-cut (caught in a capture). Updated
+  // only when a pin lands, so a scrolled-away reader's slack can only grow.
+  double pinExtent = 0.0;
 };
 
 std::map<void const*, std::shared_ptr<ThreadParts>>& Registry() {
@@ -637,6 +652,19 @@ std::shared_ptr<ThreadParts> Find(FrameworkElement const& root) {
   auto it = Registry().find(winrt::get_abi(root));
   return it == Registry().end() ? nullptr : it->second;
 }
+
+}  // namespace
+
+// Pure by construction: no winrt, no element tree, three numbers in and one
+// decision out - which is what lets Startup.cpp's `demo scroll pin` line walk
+// all four cases from CollectDiagnostics() before winrt::init_apartment,
+// even though the scroll event itself cannot be synthesised. ThreadView.h
+// carries the rule and the 48-dip reason.
+bool ShouldPinToBottom(bool armed, double offset, double scrollableHeight) {
+  return !armed || scrollableHeight - offset <= 48.0;
+}
+
+namespace {
 
 void ApplyColumnWidth(std::shared_ptr<ThreadParts> const& parts) {
   if (!parts) return;
@@ -1200,41 +1228,42 @@ ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
   });
 
   // A thread opens at its NEWEST row, and SetThreadConversation alone cannot
-  // put it there: BuildThread runs from the window constructor, before any
+  // put it there: BuildDemoViews runs from the window constructor, before any
   // layout pass and while ThreadHost is still collapsed, so the ChangeView down
   // there sees ScrollableHeight 0 and lands on nothing. VERIFIED, not assumed -
   // the first capture of this surface opened on "Yesterday" at the top with the
   // failed row an entire viewport below the fold. The stack's own SizeChanged
   // is the first moment a real extent exists, and it fires again whenever the
-  // column resizes, which is also when a thread should stay at its foot rather
-  // than drift up the backlog. Nothing here loops: ChangeView moves the OFFSET,
-  // which is not a size.
+  // column resizes. Nothing here loops: ChangeView moves the OFFSET, which is
+  // not a size.
   //
-  // WHAT IS MISSING, stated accurately. An earlier version of this comment
-  // implied nothing scrolls yet. That was false: the scroller is created with
-  // VerticalScrollBarVisibility::Auto just above, and a measured run of this
-  // thread reports 892.8 dip of scrollable extent, so the reader CAN wheel away
-  // from the foot today. What they cannot do is STAY away across a window
-  // resize - this handler fires on width-only changes too and yanks them back.
-  //
-  // T6 GAVE IT A SECOND JOB, and it is the more important one now. Appending a
-  // row adds a child to this stack, so this handler fires and re-pins — which
-  // is what keeps an arriving message visible and is why AppendThreadRow writes
-  // no scroll offset of its own (two writers of one property, and the later one
-  // wins by accident of ordering). It also means design §9.2's "do not yank a
-  // reader who has scrolled away" is unimplemented on the APPEND path too, not
-  // only across a resize, and for the same reason: the guard belongs here.
-  //
-  // The obvious two-line guard ("return if we are far from the bottom") is
-  // WRONG here and was deliberately not added: on the construction path the
-  // first size change that carries a real extent has offset 0 and a large
-  // scrollable height, which is indistinguishable from "the reader scrolled to
-  // the top" - so the guard would skip the very first pin and put the thread
-  // straight back into the bug this handler exists to fix. A correct guard
-  // needs an ARMED flag (pin unconditionally until the first pin lands, guard
-  // after that), and proving it needs a scrolled-away state, which needs input
-  // this task may not synthesize. The task that owns scroll behaviour owns it.
+  // T6 GAVE IT A SECOND JOB, and W9 gave the job its guard. Appending a row
+  // adds a child to this stack, so this handler fires and re-pins - which is
+  // what keeps an arriving message visible and is why AppendThreadRow writes
+  // no scroll offset of its own (two writers of one property, and the later
+  // one wins by accident of ordering). The guard is design 9.2's do-not-yank
+  // rule, decided by the pure ShouldPinToBottom (ThreadView.h): pin
+  // unconditionally until the FIRST pin has landed (pinArmed - the first real
+  // extent has offset 0 and a large scrollable height, indistinguishable from
+  // "the reader scrolled to the top", so an unarmed guard would skip the very
+  // pin this handler exists to make), then pin only while the reader is within
+  // 48 dip of the foot. A reader who scrolled up to read the backlog is not
+  // yanked down when an ambient row lands; a reader at the bottom stays
+  // pinned. The four cases are asserted in --diagnose; the scrolled-away
+  // branch of a live window is code-inspection only, because input may not be
+  // synthesised.
   stack.SizeChanged([parts](auto const&, auto const&) {
+    // The offset is measured against pinExtent (the extent the LAST decision
+    // was made at), not ScrollableHeight() at fire time: this SizeChanged is
+    // the extent CHANGING - an arriving row or a rewrap grows it under a
+    // stationary offset - and "at the foot when the last decision was made"
+    // must not read as "scrolled away". ShouldPinToBottom stays the one pure
+    // decision; the handler only chooses what to feed it.
+    if (!ShouldPinToBottom(parts->pinArmed, parts->scroller.VerticalOffset(),
+                           parts->pinExtent))
+      return;
+    parts->pinArmed = true;
+    parts->pinExtent = parts->scroller.ScrollableHeight();
     parts->scroller.ChangeView(nullptr, parts->scroller.ScrollableHeight(), nullptr, true);
   });
 
@@ -1410,21 +1439,23 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
   }
 
   ApplyColumnWidth(parts);
-  // THIS PAIR IS INERT ON THE ONLY PATH THAT RUNS TODAY, and it is NOT the
-  // thing that opens a thread at its newest row. BuildThread calls us from the
-  // window constructor, before ApplyBreakpoint has made ThreadHost visible and
+  // THIS PAIR IS INERT ON THE CONSTRUCTOR PATH, and it is not what opens a
+  // thread at its newest row. BuildDemoViews builds the view from the window
+  // constructor, before ApplyBreakpoint has made ThreadHost visible and
   // before any layout pass; UpdateLayout() on a collapsed host measures
   // nothing, ScrollableHeight() is 0, and this ChangeView lands on offset 0.
-  // The bottom pin in MakeThread (stack.SizeChanged) is what actually puts the
-  // thread at its foot - deleting that pin because "SetThreadConversation
-  // already does this" regresses the surface straight back to opening on
-  // "Yesterday" with the newest rows a viewport below the fold, which is a bug
-  // that was already shipped once and caught in a capture.
+  // The bottom pin in MakeThread (stack.SizeChanged) is what actually puts
+  // the thread at its foot there - deleting that pin because
+  // "SetThreadConversation already does this" regresses the surface straight
+  // back to opening on "Yesterday" with the newest rows a viewport below the
+  // fold, which is a bug that was already shipped once and caught in a
+  // capture.
   //
-  // Kept because it IS the right path for a later caller that re-points an
-  // already-measured column at a different conversation: there ScrollableHeight
-  // is real and this is the jump. disableAnimation is true because it is a jump
-  // to a position, not a motion the user asked for.
+  // And it is NOT inert on the paths W5/W9 added: SelectConversation and
+  // RefreshOpenThread re-point an already-measured column at a conversation,
+  // where ScrollableHeight is real and this is the jump to the foot.
+  // disableAnimation is true because it is a jump to a position, not a motion
+  // the user asked for.
   // Nothing is selected in a freshly built thread, so this settles every bubble
   // onto its RESTING edge. It reaches that edge through SetBubbleEdge, the same
   // single writer MakeBubbleRow used when it built each bubble — one function
@@ -1434,6 +1465,14 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
   SetThreadSelectedMessage(v, L"");
 
   parts->scroller.UpdateLayout();
+  // The jump to the foot IS a pin landing, so it is recorded like one: the
+  // next stack.SizeChanged measures the reader against THIS extent
+  // (pinExtent's rule, stated on the member), not against a stale one from
+  // before the rebuild - which on a conversation switch would be a different
+  // thread's extent entirely. On the constructor path ScrollableHeight is 0
+  // and both writes are as inert as the ChangeView below them.
+  parts->pinArmed = true;
+  parts->pinExtent = parts->scroller.ScrollableHeight();
   parts->scroller.ChangeView(nullptr, parts->scroller.ScrollableHeight(), nullptr, true);
 }
 
@@ -1680,15 +1719,12 @@ void AppendThreadRow(ThreadView& v, demo::MessageRow const& row) {
 
   // NO SCROLL WRITE HERE, deliberately. MakeThread's stack.SizeChanged pin
   // already fires on this append — a new child changes the stack's height — and
-  // it re-pins to the foot unconditionally, which is what keeps the arriving
-  // message visible. A second ChangeView from here would be a second writer of
-  // one property, and the one that ran last would win by accident of ordering.
-  //
-  // So design §9.2's "do not yank a reader who has scrolled away" is NOT
-  // implemented, here or anywhere: a conditional follow written here would be
-  // overridden by that unconditional pin a moment later, which would look
-  // implemented and not be. The guard belongs on the pin, and T3's comment on
-  // it says why it needs an armed flag and a scrolled-away state to prove.
+  // it re-pins when ShouldPinToBottom says the reader is at the foot, which is
+  // what keeps the arriving message visible. A second ChangeView from here
+  // would be a second writer of one property, and the one that ran last would
+  // win by accident of ordering. Design 9.2's do-not-yank rule lives on that
+  // pin (W9): a reader who scrolled away is not followed down, and the four
+  // cases of the pure decision are asserted in --diagnose.
 }
 
 }  // namespace urmsg::views

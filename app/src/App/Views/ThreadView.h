@@ -39,6 +39,26 @@ void SetThreadSelectedMessage(ThreadView& v, std::wstring const& id);
 void SetThreadTyping(ThreadView& v, bool typing);
 void AppendThreadRow(ThreadView& v, urmsg::demo::MessageRow const& row);
 
+// Design 9.2's do-not-yank rule, as a PURE decision: true means the thread may
+// re-pin to its foot when the stack's size changes. Unarmed (no pin has landed
+// yet) always pins - the first size change that carries a real extent has
+// offset 0 and a large scrollable height, which is indistinguishable from "the
+// reader scrolled to the top", so the naive guard would skip the very first
+// pin and reopen the bug the handler exists to fix. Once armed, the pin holds
+// only while the reader is within 48 dip of the foot: a reader who scrolled up
+// to read history is NOT yanked down when an ambient row lands or the column
+// resizes, and a reader at the bottom stays pinned. 48 is one short bubble
+// row of slack - near enough that "at the foot" survives a sub-row rounding,
+// far enough that an arriving row does not drag the backlog with it. The
+// decision can be pure even where the event cannot be synthesised: Startup.cpp
+// walks all four cases in --diagnose (W9, the d7 audit's class-6 override).
+// What the handler feeds as `scrollableHeight` is the extent the LAST
+// decision was made at (ThreadParts::pinExtent), not the live extent - a
+// size change IS the extent moving, and measuring the reader against the
+// moving target misreads "the extent grew under a pinned reader" as
+// "scrolled away".
+bool ShouldPinToBottom(bool armed, double offset, double scrollableHeight);
+
 // ---- the thread's own internals (NOT in the contract) --------------------
 // The identicon gutter. 28 + 8 of air: Spec C §W9's 40x40 is the LIST row's
 // avatar, and 40 beside a 20 DIP line of body text in a thread is a portrait,

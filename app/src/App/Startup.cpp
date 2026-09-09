@@ -34,6 +34,7 @@
 #include "Demo/DemoWorld.h"
 #include "Demo/ThreadLayout.h"
 #include "Views/ThreadLayout.h"
+#include "Views/ThreadView.h"  // ShouldPinToBottom, for the scroll-pin line below
 #include "Demo/DemoSwitches.h"
 
 // The Windows App SDK version this binary was BUILT against, injected from the
@@ -467,6 +468,32 @@ std::wstring DemoAutoplayCheck() {
       round1, derived);
 }
 
+std::wstring DemoScrollPinCheck() {
+  // Design 9.2's do-not-yank rule, walked as a pure function (W9, the d7
+  // audit's class-6 override): the DECISION can be pure even where the event
+  // cannot be synthesised. The four cases, with 892.8 as the scrollable
+  // extent a measured run of this thread reports:
+  //   unarmed pins unconditionally - the first real extent has offset 0 and a
+  //     large scrollable height, indistinguishable from "scrolled to the
+  //     top", so an unarmed guard would skip the very pin the handler exists
+  //     to make;
+  //   armed at the foot (zero slack) stays pinned;
+  //   armed within 48 dip of the foot still counts as at the foot;
+  //   armed and scrolled away is NOT pinned - the reader keeps their place
+  //   when an ambient row lands.
+  using urmsg::views::ShouldPinToBottom;
+  const bool firstPin = ShouldPinToBottom(false, 0.0, 892.8);
+  const bool atFoot = ShouldPinToBottom(true, 892.8, 892.8);
+  const bool nearFoot = ShouldPinToBottom(true, 860.0, 892.8);
+  const bool scrolledAway = !ShouldPinToBottom(true, 100.0, 892.8);
+  const bool ok = firstPin && atFoot && nearFoot && scrolledAway;
+  return std::format(
+      L"  demo scroll pin  : {}  (ShouldPinToBottom over extent 892.8: unarmed "
+      L"first pin {} | armed at foot {} | armed 32.8dip off foot (within 48) {} "
+      L"| armed scrolled away blocked {})",
+      ok ? L"PASS" : L"FAIL", firstPin, atFoot, nearFoot, scrolledAway);
+}
+
 // ---- the status strip's pure rules (design §6.5) ----------------------------
 //
 // ONE line, per the d7 audit's S1 override: the 560 content-dip collapse rule
@@ -698,6 +725,7 @@ std::vector<std::wstring> CollectDiagnostics() {
   lines.push_back(DemoLayoutCheck());
   lines.push_back(DemoDeepLinkCheck());
   lines.push_back(DemoAutoplayCheck());
+  lines.push_back(DemoScrollPinCheck());
   // The status strip's own pure rules. Unguarded for the same reason the two
   // lines above are: it builds no world and names no hostname, so a plain
   // launch's log gains nothing fabricated by carrying it.

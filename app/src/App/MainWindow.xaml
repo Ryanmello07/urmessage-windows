@@ -148,12 +148,14 @@
                      item's Collapsed -> Visible transition, which a static
                      separator never performs. -->
                 <muxc:NavigationViewItemSeparator />
-                <muxc:NavigationViewItem x:Name="DeveloperNavItem" Tag="developer"
-                                         Visibility="Collapsed">
-                    <muxc:NavigationViewItem.Icon>
-                        <FontIcon FontFamily="{StaticResource UrIconFontFamily}" FontSize="20" Glyph="&#xE943;" />
-                    </muxc:NavigationViewItem.Icon>
-                </muxc:NavigationViewItem>
+                <!-- NO DeveloperNavItem in markup: the demo's Developer item
+                     is built in code (MainWindow.xaml.cpp's EnterDemoMode) and
+                     INSERTED/REMOVED from this collection, because the WASDK
+                     2.2.0 Auto-mode defect is triggered by a Collapsed ->
+                     Visible transition and at runtime no PaneDisplayMode cycle
+                     recovers from it (measured: the pane renders icon-only
+                     permanently). A collection mutation never performs the
+                     corrupting transition. -->
                 <muxc:NavigationViewItem x:Name="SettingsNavItem" Tag="settings">
                     <muxc:NavigationViewItem.Icon>
                         <FontIcon FontFamily="{StaticResource UrIconFontFamily}" FontSize="20" Glyph="&#xE713;" />

@@ -491,17 +491,32 @@ void MainWindow::ApplyAdvanced(bool on) {
 
   // Developer is a destination that exists only under Advanced Mode. Leaving
   // it selected while it disappears would strand the window on a hidden
-  // destination with no way back.
-  DeveloperNavItem().Visibility(on ? Visibility::Visible : Visibility::Collapsed);
-  // WORKAROUND, not a design choice - the same Windows App SDK 2.2.0
-  // NavigationView Auto pane-mode corruption DrainDeepLink documents: a
-  // NavigationViewItem's Collapsed -> Visible transition must be followed
-  // immediately by forcing NavigationView to re-run its Auto adaptive logic,
-  // or the whole pane renders icon-only from that moment on (the d7 audit's
-  // A5-class-9 override: EVERY DeveloperNavItem().Visibility write carries
-  // this cycle, copied from DrainDeepLink rather than restated).
-  HomeNav().PaneDisplayMode(NavigationViewPaneDisplayMode::LeftCompact);
-  HomeNav().PaneDisplayMode(NavigationViewPaneDisplayMode::Auto);
+  // destination with no way back. The item is INSERTED and REMOVED, never
+  // Visibility-flipped: the WASDK 2.2.0 Auto-mode defect DrainDeepLink
+  // documents is triggered by a Collapsed -> Visible transition, and at
+  // runtime no PaneDisplayMode cycle recovers from it - measured, not
+  // theorized: flip + cycle and flip + cycle + UpdateLayout both left the
+  // whole pane icon-only permanently (the w7-live captures). A collection
+  // mutation never performs the corrupting transition, so this function
+  // carries NO PaneDisplayMode cycle; DrainDeepLink keeps its own, which
+  // protects NetworkNavItem's startup flip. EnterDemoMode builds the item;
+  // this is the ONE writer of its membership.
+  if (developerNavItem_) {
+    auto footer = HomeNav().FooterMenuItems();
+    uint32_t devIndex = 0;
+    const bool present = footer.IndexOf(developerNavItem_, devIndex);
+    if (on && !present) {
+      // Developer above Settings (design 6.6's nav table), below the
+      // separator: at Settings' own index when it is found.
+      uint32_t settingsIndex = 0;
+      if (footer.IndexOf(SettingsNavItem(), settingsIndex))
+        footer.InsertAt(settingsIndex, developerNavItem_);
+      else
+        footer.Append(developerNavItem_);
+    } else if (!on && present) {
+      footer.RemoveAt(devIndex);
+    }
+  }
   if (!on && currentTag_ == L"developer") SelectNavTag(L"chats");
 
   urmsg::views::SetConversationListAdvanced(list_, on);
@@ -515,6 +530,52 @@ void MainWindow::ApplyAdvanced(bool on) {
   urmsg::views::SetInspectRailAdvanced(rail_, on);
 
   urnw::LogInfo("window: advanced mode {}", on);
+}
+
+void MainWindow::RefreshOpenThread() {
+  const int index = OpenConversationIndex();
+  if (index < 0) return;
+  auto const& conversation =
+      urmsg::demo::GetWorld().conversations[static_cast<size_t>(index)];
+  urmsg::views::SetThreadConversation(thread_, conversation);
+  // SetThreadConversation rebuilds the bubbles, so the selection outline has
+  // to be put back. Restoring a selection is the opposite of moving one:
+  // after this returns, the same message id is selected that was selected
+  // before.
+  if (!selectedMessageId_.empty())
+    urmsg::views::SetThreadSelectedMessage(thread_, selectedMessageId_);
+}
+
+void MainWindow::StartAmbientActivity() {
+  if (!options_.enabled || !options_.autoplay) return;
+
+  urmsg::demo::AutoplayCallbacks callbacks;
+  callbacks.openConversationIndex = [weak = get_weak()]() -> int {
+    auto self = weak.get();
+    return self ? self->OpenConversationIndex() : -1;
+  };
+  callbacks.setTyping = [weak = get_weak()](bool on) {
+    if (auto self = weak.get()) urmsg::views::SetThreadTyping(self->thread_, on);
+  };
+  callbacks.onDeliveryAdvanced = [weak = get_weak()]() {
+    if (auto self = weak.get()) self->RefreshOpenThread();
+  };
+  callbacks.onIncoming = [weak = get_weak()](urmsg::demo::MessageRow const& row) {
+    // AppendThreadRow, not SetThreadConversation: the row springs in (design
+    // doc 7's bubble entrance) instead of the whole thread being redrawn
+    // under it. The row is already in the world, so any later rebuild still
+    // has it.
+    if (auto self = weak.get()) urmsg::views::AppendThreadRow(self->thread_, row);
+  };
+
+  // The static GetForCurrentThread(), not Window::DispatcherQueue(): both are
+  // real, but the static is the one this repo's projection definitely carries
+  // (Microsoft.UI.Dispatching.h:554), and EnterDemoMode runs on the UI thread,
+  // which is the thread that owns the queue.
+  autoplay_ = urmsg::demo::MakeAutoplay(
+      winrt::Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread(),
+      std::move(callbacks));
+  urmsg::demo::StartAutoplay(*autoplay_);
 }
 
 void MainWindow::BuildNetworkPage() {
@@ -762,11 +823,42 @@ void MainWindow::EnterDemoMode() {
   // for why. Isolated by disabling each call above in turn: Content() alone
   // never triggered the regression, only Visibility() did.
   NetworkNavItem().Content(box_value(hstring{kDemoNavNetwork}));
-  DeveloperNavItem().Content(box_value(hstring{kDemoNavDeveloper}));
   // The compact-rail tooltip, same string as the label - ApplyStrings does
   // the three permanent destinations for the same reason (d3 3.2).
   Controls::ToolTipService::SetToolTip(NetworkNavItem(), box_value(hstring{kDemoNavNetwork}));
-  Controls::ToolTipService::SetToolTip(DeveloperNavItem(), box_value(hstring{kDemoNavDeveloper}));
+
+  // The Developer item is BUILT in code, never declared in markup and never
+  // Visibility-flipped: the WASDK 2.2.0 Auto-mode defect DrainDeepLink
+  // documents is triggered by a NavigationViewItem's Collapsed -> Visible
+  // transition, and at runtime no PaneDisplayMode cycle recovers from it -
+  // measured, not theorized (a live toggle left the whole pane icon-only
+  // permanently, with UpdateLayout between the cycle's writes; the w7-live
+  // captures). ApplyAdvanced INSERTS and REMOVES this item instead: a
+  // collection mutation never performs the corrupting transition - the route
+  // DrainDeepLink's comment names as the untried cleaner candidate, now
+  // tried and verified. Built here, empty-handed: the one writer of the
+  // item's collection MEMBERSHIP is ApplyAdvanced, which runs below.
+  developerNavItem_ = Controls::NavigationViewItem();
+  developerNavItem_.Content(box_value(hstring{kDemoNavDeveloper}));
+  developerNavItem_.Tag(box_value(hstring{L"developer"}));
+  {
+    // Segoe Fluent Icons out of the app dictionary, with the same fallback
+    // ConversationListView.cpp's IconFont() records: FontIcon otherwise
+    // defaults to the older Segoe MDL2 Assets, whose metrics differ.
+    Media::FontFamily family{L"Segoe Fluent Icons"};
+    if (auto app = Application::Current()) {
+      auto key = box_value(hstring{L"UrIconFontFamily"});
+      if (app.Resources().HasKey(key))
+        if (auto found = app.Resources().Lookup(key).try_as<Media::FontFamily>())
+          family = found;
+    }
+    Controls::FontIcon icon;
+    icon.FontFamily(family);
+    icon.FontSize(20);
+    icon.Glyph(L"\uE943");  // Code
+    developerNavItem_.Icon(icon);
+  }
+  Controls::ToolTipService::SetToolTip(developerNavItem_, box_value(hstring{kDemoNavDeveloper}));
 
   DemoChipText().Text(kDemoWatermark);
   // d3 3.4: the identicon lattice as the chip's prefix - decorative, links
@@ -836,10 +928,13 @@ void MainWindow::DrainDeepLink() {
   pendingLinkArmed_ = false;
 
   // NetworkNavItem becomes visible HERE, not in EnterDemoMode (fix round 1).
-  // DeveloperNavItem's Visibility is ApplyAdvanced's write now (W7, the d7
-  // audit's class-6 override: the line this used to be sat here, ahead of the
-  // cycle below), followed there by the same PaneDisplayMode cycle - every
-  // Visibility flip on a NavigationViewItem must be, because:
+  // The Developer item is NOT here: it is built in code by EnterDemoMode and
+  // inserted/removed by ApplyAdvanced, because at runtime no PaneDisplayMode
+  // cycle recovers from a Visibility flip - the "untried cleaner route" this
+  // comment used to name, now tried on the Developer item and verified (the
+  // w7-live captures). NetworkNavItem keeps the markup declaration and the
+  // cycle below: flipping it at runtime never happens (it is always visible
+  // under --demo), so the startup-only cycle remains sufficient for it.
   //
   // Flipping a NavigationViewItem from Collapsed to Visible at ANY point -
   // constructor or here, before or after the window reaches its final size -
@@ -850,12 +945,13 @@ void MainWindow::DrainDeepLink() {
   // dropping both Visibility() calls kept the untouched items labelled, (2)
   // re-adding only NetworkNavItem's reproduced icon-only for every item
   // including ones never touched, (3) moving the calls here instead of
-  // EnterDemoMode alone did not help. What DOES recover it is forcing
-  // NavigationView to fully re-run its Auto adaptive logic immediately after:
-  // stepping PaneDisplayMode away from Auto and back re-measures against the
-  // CURRENT item set and CURRENT window width, rather than whatever it cached
-  // before the Visibility flip. This cycle still runs after the LAST
-  // Visibility flip of a launch (the NetworkNavItem line above).
+  // EnterDemoMode alone did not help. What DOES recover it at startup is
+  // forcing NavigationView to fully re-run its Auto adaptive logic
+  // immediately after: stepping PaneDisplayMode away from Auto and back
+  // re-measures against the CURRENT item set and CURRENT window width,
+  // rather than whatever it cached before the Visibility flip. This cycle
+  // still runs after the LAST Visibility flip of a launch (the
+  // NetworkNavItem line above).
   //
   // WORKAROUND, not a design choice - fix round 2. This is a platform defect in
   // Windows App SDK 2.2.0 (the version this build logs under "built against"
@@ -869,13 +965,7 @@ void MainWindow::DrainDeepLink() {
   // because it looks redundant - delete it, then rebuild and confirm the nav
   // still shows TEXT LABELS beside Chats/Contacts/Network/Developer/Settings
   // at 1560x900 under `--demo=network --demo-advanced`. If it does not, the
-  // defect is still present and the cycle stays. UNTRIED CLEANER ROUTE, noted
-  // for whoever picks this up next but NOT attempted and NOT proven: building
-  // NetworkNavItem/DeveloperNavItem in code and Append/InsertAt-ing them into
-  // HomeNav().MenuItems()/FooterMenuItems() only inside EnterDemoMode, instead
-  // of declaring them Collapsed in XAML and toggling Visibility, would
-  // never perform the corrupting transition at all - a candidate, not a
-  // verified fix.
+  // defect is still present and the cycle stays.
   NetworkNavItem().Visibility(Visibility::Visible);
   HomeNav().PaneDisplayMode(NavigationViewPaneDisplayMode::LeftCompact);
   HomeNav().PaneDisplayMode(NavigationViewPaneDisplayMode::Auto);
@@ -942,10 +1032,22 @@ void MainWindow::DrainDeepLink() {
   // post-layout on a realized tree, which is the only place a bubble entrance
   // can actually play. DrainDeepLink is one-shot, so this fires exactly once.
   //
-  // The demo WORLD is not mutated: MutableWorld() belongs to that ambient loop
-  // (DemoWorld.h) and this is a capture seed, not the loop.
+  // The rows go INTO THE WORLD FIRST (the d7 audit's W9-class-8 override):
+  // the ambient loop's first RefreshOpenThread re-sets the thread from
+  // World::conversations, and a row that lived only in the ThreadView would
+  // vanish ~40s into a presentation - two messages the viewer already read
+  // disappearing with no cause, the one thing design 9.2 says ambient
+  // activity must never do. This is a runtime append through the world's
+  // existing mutation seam, the same path the loop's own rows take (contract
+  // v2 section 1); the fixture FILE stays byte-frozen, because I10
+  // fingerprints the seeded world at --diagnose time, before any window
+  // exists.
   if (options_.autoplay && options_.screen == urmsg::demo::DemoScreen::Thread &&
-      thread_.root) {
+      thread_.root && !urmsg::demo::GetWorld().conversations.empty()) {
+    // front() is the open conversation: DeepLinkFor(Thread).selectConversation
+    // is true, so SelectConversation(0) ran above, and c0-ambient-*'s ids name
+    // that conversation.
+    auto& front = urmsg::demo::MutableWorld().conversations.front();
     urmsg::demo::MessageRow out{};
     out.kind = urmsg::demo::RowKind::Message;
     out.id = L"c0-ambient-1";
@@ -957,6 +1059,7 @@ void MainWindow::DrainDeepLink() {
     // row nothing reads it — BubbleAutomationName says "You" — but a row that
     // left it empty would be the first in the world to do so.
     out.inspect.senderDisplayName = L"You";
+    front.rows.push_back(out);
     urmsg::views::AppendThreadRow(thread_, out);
 
     // The sender is LIFTED from the conversation rather than invented: the
@@ -964,12 +1067,11 @@ void MainWindow::DrainDeepLink() {
     // who appears nowhere else in the thread and the capture could not be
     // checked against anything. The last incoming row of c0 is Elena Vasquez at
     // 12:02, whose identicon is still on screen a few rows up — so "the same
-    // face twice" is the concrete thing to look for.
-    auto const& world = urmsg::demo::GetWorld();
+    // face twice" is the concrete thing to look for. (`out` is outgoing, so
+    // pushing it above does not change this scan's answer.)
     urmsg::demo::MessageRow const* speaker = nullptr;
-    if (!world.conversations.empty())
-      for (auto const& r : world.conversations.front().rows)
-        if (r.kind == urmsg::demo::RowKind::Message && !r.outgoing) speaker = &r;
+    for (auto const& r : front.rows)
+      if (r.kind == urmsg::demo::RowKind::Message && !r.outgoing) speaker = &r;
     if (speaker) {
       urmsg::demo::MessageRow in{};
       in.kind = urmsg::demo::RowKind::Message;
@@ -983,6 +1085,7 @@ void MainWindow::DrainDeepLink() {
       in.timeLabel = L"12:16";
       in.outgoing = false;
       in.state = urmsg::demo::DeliveryState::Sent;
+      front.rows.push_back(in);
       urmsg::views::AppendThreadRow(thread_, in);
     }
     urnw::LogInfo("thread: ambient seed appended {} rows -> {} bubbles", speaker ? 2 : 1,
@@ -993,6 +1096,12 @@ void MainWindow::DrainDeepLink() {
                 urnw::Narrow(std::wstring{pendingLink_.navTag}),
                 pendingLink_.selectConversation, pendingLink_.selectMessage,
                 layout_.rail);
+
+  // Started here rather than in EnterDemoMode: the loop's first act is to ask
+  // which conversation is open, and the deep link is what opens one. Starting
+  // it in the constructor would have every round before the first click skip
+  // whole. Gated inside on options_.enabled && options_.autoplay.
+  StartAmbientActivity();
 }
 
 void MainWindow::ApplyBreakpoint() {
