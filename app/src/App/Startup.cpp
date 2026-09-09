@@ -1257,6 +1257,72 @@ std::vector<std::wstring> CollectDiagnostics() {
         sy != nullptr, off.size(), dv::kBubbleRiseDip, dv::kBubbleFromScale,
         urnw::motion::kBaseMs));
 
+    // design d2 §8.2: the conversation-OPEN stagger, asserted on both of its
+    // pure halves.
+    //
+    // Half one: EntranceTimelines(animate, staggerMs) must carry staggerMs
+    // into EVERY beginMs while leaving the four timelines otherwise identical
+    // to the staggerMs=0 shape — a staggered entrance is still ONE gesture,
+    // so the channels never slide relative to one another. `on` above is the
+    // staggerMs=0 table the pair is compared against.
+    //
+    // Half two: OpenStaggerBeginMs must name exactly the visible foot — -1
+    // above it (those rows do not animate at all), 0-based kStaggerMs steps
+    // within it, capped at kMaxStaggerSteps rows, newest settling last —
+    // probed exhaustively at counts 0/1/3/10/50 rather than sampled.
+    //
+    // WHAT THIS CANNOT SEE: RenderTransformOrigin, which d2 §8.1 makes
+    // direction-aware in RunBubbleEntrance — a pure function of one bool did
+    // not earn a table row, and the winrt write sits in a TU this harness
+    // cannot enter. The bloom's side is capture-verified instead.
+    const auto stag = dv::EntranceTimelines(true, urnw::motion::kStaggerMs);
+    bool staggerShape = (stag.size() == on.size() && !stag.empty());
+    for (std::size_t i = 0; i < stag.size() && i < on.size(); ++i) {
+      if (stag[i].path == nullptr || on[i].path == nullptr ||
+          std::wstring_view{stag[i].path} != std::wstring_view{on[i].path} ||
+          stag[i].from != on[i].from || stag[i].to != on[i].to ||
+          stag[i].autoReverse != on[i].autoReverse || stag[i].forever != on[i].forever ||
+          stag[i].beginMs != urnw::motion::kStaggerMs || on[i].beginMs != 0)
+        staggerShape = false;
+    }
+    const int64_t step = urnw::motion::kStaggerMs;
+    bool footOk = true;
+    for (std::size_t i = 0; i < 10; ++i) {
+      // count 10: the last kMaxStaggerSteps (indices 4..9) animate, 0..5*step
+      // oldest-to-newest; everything above the foot gets -1.
+      const int64_t want =
+          (i < 10 - static_cast<std::size_t>(urnw::motion::kMaxStaggerSteps))
+              ? -1
+              : static_cast<int64_t>(i - (10 - static_cast<std::size_t>(
+                                               urnw::motion::kMaxStaggerSteps))) *
+                    step;
+      if (dv::OpenStaggerBeginMs(i, 10) != want) footOk = false;
+    }
+    // count 3: every row animates. count 1: the one row begins at 0 (it is
+    // the whole foot). count 0 and an out-of-range index: -1, guarded.
+    if (dv::OpenStaggerBeginMs(0, 3) != 0 || dv::OpenStaggerBeginMs(2, 3) != 2 * step ||
+        dv::OpenStaggerBeginMs(0, 1) != 0 || dv::OpenStaggerBeginMs(0, 0) != -1 ||
+        dv::OpenStaggerBeginMs(3, 3) != -1)
+      footOk = false;
+    // count 50: the foot is still exactly kMaxStaggerSteps, and its newest
+    // still settles at (steps-1)*step — an uncapped stagger would keep
+    // growing with the backlog.
+    if (dv::OpenStaggerBeginMs(43, 50) != -1 || dv::OpenStaggerBeginMs(44, 50) != 0 ||
+        dv::OpenStaggerBeginMs(49, 50) !=
+            static_cast<int64_t>(urnw::motion::kMaxStaggerSteps - 1) * step)
+      footOk = false;
+    lines.push_back(std::format(
+        L"  T6 open stagger      : {} — staggered table keeps the 4 timelines, every "
+        L"beginMs {} ms, endpoints identical to the unstaggered shape; open foot -1 "
+        L"above the last {}, 0..{} ms oldest->newest within it (counts 0/1/3/10/50 "
+        L"probed)",
+        (staggerShape && footOk && urnw::motion::kStaggerMs == 40 &&
+         urnw::motion::kMaxStaggerSteps == 6)
+            ? L"PASS"
+            : L"FAIL",
+        urnw::motion::kStaggerMs, urnw::motion::kMaxStaggerSteps,
+        (urnw::motion::kMaxStaggerSteps - 1) * urnw::motion::kStaggerMs));
+
     // The three phases are 0/140/280 and every one of them must be INSIDE the
     // pulse it offsets: a phase >= kPulseMs is not a wave, it is three dots
     // taking turns. Read off the SPECS, so a builder that dropped a dot's
@@ -1522,6 +1588,198 @@ std::vector<std::wstring> CollectDiagnostics() {
         bits(naive), naiveWrong, bits(msgOnly), msgOnlyWrong, bits(head),
         bits(rebuilt.header), headWrong, headFalseWrong, removals, additions, failedKept,
         runs, runEndReadings, stray, failedExtras, clusters));
+  }
+
+  // ---- T7: run-shape geometry (design d2 §1) -------------------------------
+  //
+  //  The corner language is pure planner work (Views/ThreadLayout.h), which is
+  //  the only reason any of it is assertable here. Four parts, each aimed at
+  //  a different failure class:
+  //
+  //  1. THE CORNER TABLE, cell by cell against a hand-written expectation. A
+  //     census of radii would not feel two cells swapped — permuting
+  //     categories leaves totals identical (the lesson T4's shape gate paid
+  //     for). MUTATION CAUGHT: swapping the incoming/outgoing tables, or
+  //     tightening TL where BL belongs — both read as plausible corners in a
+  //     screenshot and both FAIL here. GapAboveDip is asserted with it (2
+  //     continuation / 10 run-start — the rhythm that replaced
+  //     stack.Spacing(6)).
+  //
+  //  2. PER ROW over the whole world: the plan's runPos against the rule
+  //     recomputed here from the rows alone. This catches the plan mis-wiring
+  //     its prev/next (runPos silently Single everywhere, or judged from the
+  //     wrong neighbour) — the recomputation shares the RULE, so it cannot
+  //     catch the rule itself being wrong. That is what part 3 is for.
+  //
+  //  3. THE NAMED ROWS, d2 §1's concrete anchors: c0's Mira/Mira/Tobias
+  //     stretch (DemoWorld.cpp:256-258) is First/Last/SINGLE — a boundary the
+  //     senderKey comparison draws and direction alone does not — and the
+  //     12:09-12:11 outgoing pair (:277-279) is First/Last. A direction-only
+  //     run rule (the historical bug class here: T4's sender-header gate was
+  //     born of exactly it, 20 headers vs 15) reads the stretch as
+  //     First/Middle/Last and FAILS. Anchored by row id, and all five are
+  //     REQUIRED to be found — a fixture that loses one fails rather than
+  //     going quietly vacuous (the same reason `divergent >= 1` is required
+  //     in `T5 cluster rows`).
+  //
+  //  4. THE CASES THE WORLD CANNOT PROVIDE, built locally — never by editing
+  //     Demo/DemoWorld.cpp, whose bytes I10 fingerprints. The world HAS
+  //     exactly one Middle (conv-freya's 11:29-11:44 three-row stretch — the
+  //     walk below counts it), so the position is exercised on real data.
+  //     What the world still cannot prove: an OUTGOING Middle — every
+  //     outgoing row there carries the same "me" senderKey, so unification
+  //     under one speaker is indistinguishable from merely sharing a key —
+  //     and a system row / day separator breaking a run mid-stretch. The
+  //     synthetic fixture covers all three.
+  {
+    namespace dv = urmsg::views;
+    using RunPos = dv::BubbleRunPos;
+
+    struct CornerProbe {
+      RunPos pos;
+      bool outgoing;
+      double want[4];  // TL,TR,BR,BL — the order CornerRadiusFromCorners writes
+    };
+    const CornerProbe kCorners[] = {
+        {RunPos::Single, false, {12, 12, 12, 12}},
+        {RunPos::Single, true, {12, 12, 12, 12}},
+        {RunPos::First, false, {12, 12, 12, 4}},
+        {RunPos::First, true, {12, 12, 4, 12}},
+        {RunPos::Middle, false, {4, 12, 12, 4}},
+        {RunPos::Middle, true, {12, 4, 4, 12}},
+        {RunPos::Last, false, {4, 12, 12, 12}},
+        {RunPos::Last, true, {12, 4, 12, 12}},
+    };
+    std::size_t cornersOk = 0;
+    for (auto const& probe : kCorners) {
+      double got[4] = {0, 0, 0, 0};
+      dv::BubbleCornerDip(probe.pos, probe.outgoing, got);
+      if (got[0] == probe.want[0] && got[1] == probe.want[1] && got[2] == probe.want[2] &&
+          got[3] == probe.want[3])
+        ++cornersOk;
+    }
+    const bool gapsOk = dv::GapAboveDip(RunPos::Single) == 10.0 &&
+                        dv::GapAboveDip(RunPos::First) == 10.0 &&
+                        dv::GapAboveDip(RunPos::Middle) == 2.0 &&
+                        dv::GapAboveDip(RunPos::Last) == 2.0;
+
+    // The rule, restated from the spec for the per-row walk (part 2).
+    auto expectedRunPos = [](urmsg::demo::MessageRow const* prev,
+                             urmsg::demo::MessageRow const& cur,
+                             urmsg::demo::MessageRow const* next) {
+      auto cont = [](urmsg::demo::MessageRow const& a, urmsg::demo::MessageRow const& b) {
+        if (a.kind != urmsg::demo::RowKind::Message ||
+            b.kind != urmsg::demo::RowKind::Message)
+          return false;
+        if (a.outgoing != b.outgoing) return false;
+        return a.outgoing || a.senderKey == b.senderKey;
+      };
+      const bool up = prev != nullptr && cont(*prev, cur);
+      const bool down = next != nullptr && cont(cur, *next);
+      if (!up) return down ? RunPos::First : RunPos::Single;
+      return down ? RunPos::Middle : RunPos::Last;
+    };
+
+    std::size_t msgRows = 0, runWrong = 0;
+    std::size_t singles = 0, firsts = 0, middles = 0, lasts = 0;
+    std::size_t anchorsFound = 0, anchorsOk = 0;
+    for (auto const& c : urmsg::demo::GetWorld().conversations) {
+      for (auto const& p : dv::PlanThreadRows(c)) {
+        auto const& r = c.rows[p.rowIndex];
+        if (r.kind != urmsg::demo::RowKind::Message) continue;
+        ++msgRows;
+        urmsg::demo::MessageRow const* prev =
+            (p.rowIndex > 0) ? &c.rows[p.rowIndex - 1] : nullptr;
+        urmsg::demo::MessageRow const* next =
+            (p.rowIndex + 1 < c.rows.size()) ? &c.rows[p.rowIndex + 1] : nullptr;
+        if (p.runPos != expectedRunPos(prev, r, next)) ++runWrong;
+        switch (p.runPos) {
+          case RunPos::Single: ++singles; break;
+          case RunPos::First: ++firsts; break;
+          case RunPos::Middle: ++middles; break;
+          case RunPos::Last: ++lasts; break;
+        }
+        // d2 §1's named rows, by id. Any message row not named here adds
+        // nothing to the anchor count.
+        RunPos anchor = RunPos::Single;
+        bool isAnchor = true;
+        if (r.id == L"c0-r1" || r.id == L"c0-r22")
+          anchor = RunPos::First;
+        else if (r.id == L"c0-r2" || r.id == L"c0-r23")
+          anchor = RunPos::Last;
+        else if (r.id == L"c0-r3")
+          anchor = RunPos::Single;
+        else
+          isAnchor = false;
+        if (isAnchor) {
+          ++anchorsFound;
+          if (p.runPos == anchor) ++anchorsOk;
+        }
+      }
+    }
+
+    // The synthetic fixture (part 4). Keys distinguish senders; a single byte
+    // is enough because ContinuesBubbleRun compares the whole Seed for
+    // equality (the T6 append gate's mkMsg sets senderKey the same way).
+    auto mkMsg = [](bool outgoing, uint8_t key) {
+      urmsg::demo::MessageRow r{};
+      r.kind = urmsg::demo::RowKind::Message;
+      r.outgoing = outgoing;
+      r.senderKey[0] = key;
+      return r;
+    };
+    urmsg::demo::Conversation synth{};
+    synth.kind = urmsg::demo::ConversationKind::Group;
+    synth.rows.push_back(mkMsg(false, 1));  // s0 First  } incoming 3-run in a
+    synth.rows.push_back(mkMsg(false, 1));  // s1 Middle } GROUP (the world's
+    synth.rows.push_back(mkMsg(false, 1));  // s2 Last   } one Middle is in a DM)
+    synth.rows.push_back(mkMsg(false, 2));  // s3 Single — senderKey breaks it
+    {
+      urmsg::demo::MessageRow sys{};
+      sys.kind = urmsg::demo::RowKind::System;
+      sys.systemText = L"synthetic system row";
+      synth.rows.push_back(sys);  // s4 — not a message; breaks runs
+    }
+    synth.rows.push_back(mkMsg(false, 1));  // s5 Single — the system row broke it
+    synth.rows.push_back(mkMsg(true, 1));   // s6 First  } outgoing, three
+    synth.rows.push_back(mkMsg(true, 9));   // s7 Middle } DIFFERENT keys and
+    synth.rows.push_back(mkMsg(true, 2));   // s8 Last   } still one run ("You")
+    {
+      urmsg::demo::MessageRow sep{};
+      sep.kind = urmsg::demo::RowKind::DaySeparator;
+      sep.body = L"Today";
+      synth.rows.push_back(sep);  // s9 — breaks runs
+    }
+    synth.rows.push_back(mkMsg(true, 3));  // s10 Single — the separator broke it
+    const RunPos kSynthWant[] = {RunPos::First, RunPos::Middle, RunPos::Last,
+                                 RunPos::Single, RunPos::Single, RunPos::First,
+                                 RunPos::Middle, RunPos::Last,   RunPos::Single};
+    std::size_t synthChecked = 0, synthOk = 0;
+    for (auto const& p : dv::PlanThreadRows(synth)) {
+      auto const& r = synth.rows[p.rowIndex];
+      if (r.kind != urmsg::demo::RowKind::Message) continue;
+      // s0..s3 are 0..3, s5..s8 are 4..7, s10 is 8 in the want table.
+      const std::size_t slot = (p.rowIndex <= 3) ? p.rowIndex
+                               : (p.rowIndex <= 8) ? p.rowIndex - 1
+                                                   : 8;
+      ++synthChecked;
+      if (p.runPos == kSynthWant[slot]) ++synthOk;
+    }
+
+    lines.push_back(std::format(
+        L"  T7 run geometry      : {} — corner table {}/8 cells (base 12, attached 4), "
+        L"gaps 2/10 {}; {} message rows per-row vs rule ({} wrong): {} single {} first "
+        L"{} middle {} last; named rows {}/5 found and correct (c0-r1/r2/r3 "
+        L"First/Last/Single, c0-r22/r23 First/Last); synthetic fixture {}/{} message rows "
+        L"(Middle in+out, sender break, system break, separator break, outgoing unifies "
+        L"across keys)",
+        (cornersOk == 8 && gapsOk && runWrong == 0 && 1 <= singles && 1 <= firsts &&
+         1 <= lasts && anchorsFound == 5 && anchorsOk == 5 && synthChecked == 9 &&
+         synthOk == 9)
+            ? L"PASS"
+            : L"FAIL",
+        cornersOk, gapsOk ? L"ok" : L"WRONG", msgRows, runWrong, singles, firsts, middles,
+        lasts, anchorsOk, synthOk, synthChecked));
   }
 
   // GUARDED, and the guard is not a nicety. CollectDiagnostics() is NOT the

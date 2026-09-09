@@ -17,6 +17,7 @@
 #include <winrt/Microsoft.UI.Xaml.h>
 
 #include "Demo/DemoWorld.h"
+#include "Views/ThreadLayout.h"  // BubbleRunPos, for MakeBubbleRow
 
 namespace urmsg::views {
 
@@ -46,10 +47,12 @@ void AppendThreadRow(ThreadView& v, urmsg::demo::MessageRow const& row);
 inline constexpr double kThreadGutterDip = 36.0;
 inline constexpr double kThreadIdenticonDip = 28.0;
 
-// One row of the thread stack for a MESSAGE row: the identicon gutter, the
-// bubble Button, and — when this row carries it — the delivery CLUSTER under
-// the bubble, which is the ONE element on a row that draws a delivery
-// indication (the bubble itself draws none).
+// One row of the thread stack for a MESSAGE row: the sender-name line on a
+// run-start (OUTSIDE the bubble, d2 §1 — every bubble interior is then
+// uniformly body + time), the identicon gutter, the bubble Button, and — when
+// this row carries it — the delivery CLUSTER under the bubble, which is the
+// ONE element on a row that draws a delivery indication (the bubble itself
+// draws none).
 // Two elements come back because they have different owners: `root`
 // goes into ThreadView::stack, `bubble` goes into ThreadView::bubbles, and
 // ThreadBubble::root stays the Button exactly as the contract requires (the
@@ -58,7 +61,10 @@ struct BubbleRow {
   winrt::Microsoft::UI::Xaml::FrameworkElement root{nullptr};
   ThreadBubble bubble;
 };
+// `runPos` is the plan's GEOMETRIC run position (Views/ThreadLayout.h): it
+// sets the bubble's asymmetric corners and the row's top margin.
 BubbleRow MakeBubbleRow(urmsg::demo::MessageRow const& row, bool group,
-                        bool showSenderHeader, bool carriesDeliveryGlyph);
+                        bool showSenderHeader, bool carriesDeliveryGlyph,
+                        BubbleRunPos runPos);
 
 }  // namespace urmsg::views

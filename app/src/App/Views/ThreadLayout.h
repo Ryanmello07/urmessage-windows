@@ -38,9 +38,60 @@ enum class ThreadRowShape {
   SystemPermanentRecord,  // Spec C §7.4: 2px UrDangerBrush left rule, non-dismissible
 };
 
+// ---- run-shape geometry (design d2 §1) -------------------------------------
+// A THIRD notion of "run", beside showSenderHeader (same SENDER, delegated to
+// ShowsSenderHeader in Demo/ThreadLayout.h) and endsOutgoingRun (same
+// DIRECTION, a position hint no renderer consumes). This one is the GEOMETRIC
+// run a reader's eye actually uses: same speaker, adjacent Message rows,
+// nothing between. Its boundary is exactly where the sender header and
+// identicon already appear, which is why the corner language and the header
+// rule can never disagree about where a run starts.
+enum class BubbleRunPos { Single, First, Middle, Last };
+
+// Both Message rows, same direction, and — incoming only — the same senderKey.
+// Outgoing rows are one speaker ("You"), so outgoing runs unify: the same
+// assumption the direction-only code already makes everywhere else.
+// Symmetric, so the "is the row above/below in my run" questions share one
+// predicate.
+inline bool ContinuesBubbleRun(demo::MessageRow const& a, demo::MessageRow const& b) {
+  if (a.kind != demo::RowKind::Message || b.kind != demo::RowKind::Message) return false;
+  if (a.outgoing != b.outgoing) return false;
+  if (a.outgoing) return true;  // one speaker: "You"
+  return a.senderKey == b.senderKey;
+}
+
+// Where `cur` sits in its geometric run. `prev`/`next` are the rows
+// immediately above/below in Conversation::rows, or nullptr at an end. A day
+// separator or a system row breaks a run (ContinuesBubbleRun is false for
+// one), which is exactly what DemoWorld does when it clears previousSender.
+BubbleRunPos RunPosFor(demo::MessageRow const* prev, demo::MessageRow const& cur,
+                       demo::MessageRow const* next);
+
+// The corner table, as TL,TR,BR,BL in `out`. Base radius 12 — the card radius
+// used app-wide — with the corners that face an adjacent same-speaker bubble
+// tightened to 4. The tightened corner is always on the spine (left for
+// incoming, right for outgoing); Single stays fully round so DMs, which are
+// almost all singles, do not get a harsh look. Asymmetric corners instead of
+// tails because they flow through UrBubbleButtonStyle's CornerRadius
+// template-binding to EdgeLayer and SelectEdge with no template fork — a tail
+// would be a second painter of the direction fill and would break press-dim,
+// the selection outline and the one-writer edge invariant (d2 §1).
+void BubbleCornerDip(BubbleRunPos runPos, bool outgoing, double out[4]);
+
+// The vertical rhythm that replaced stack.Spacing(6): 10 above a run
+// start/single, 2 above a continuation, so runs read as blocks. Non-bubble
+// rows keep their own margins and never consult this.
+double GapAboveDip(BubbleRunPos runPos);
+
 struct ThreadRowPlan {
   std::size_t rowIndex = 0;      // index into Conversation::rows
   ThreadRowShape shape = ThreadRowShape::SystemLine;
+
+  // The GEOMETRIC run position above, computed for Message rows in the
+  // PlanThreadRows loop from the same prev/next the loop already knows.
+  // Meaningless (and left Single) on every other shape — day separators,
+  // system lines and the record draw no bubble corners.
+  BubbleRunPos runPos = BubbleRunPos::Single;
 
   // First bubble of a run, INCOMING, in a GROUP. Delegated verbatim to
   // ShowsSenderHeader() in Demo/ThreadLayout.h, so there is exactly ONE
@@ -143,7 +194,12 @@ struct TimelineSpec {
 // ScaleY — and EMPTY when `animate` is false, because "off" means the motion is
 // gone rather than shortened. The empty half is the one worth asserting: a
 // table that is the same length either way is not a gate.
-std::vector<TimelineSpec> EntranceTimelines(bool animate);
+//
+// `staggerMs` delays the WHOLE entrance (every timeline begins together at
+// staggerMs); it is how design d2 §8.2's conversation-open stagger reuses one
+// table. The default keeps the append path's shape, and the "T6 bubble
+// entrance" gate asserts the staggerMs=0 shape exactly as before.
+std::vector<TimelineSpec> EntranceTimelines(bool animate, int64_t staggerMs = 0);
 
 // design §7, "Typing indicator". One per dot, in dot order, each offset by
 // TypingDotPhaseMs. Empty when `animate` is false.
@@ -152,6 +208,27 @@ std::vector<TimelineSpec> TypingTimelines(bool animate);
 // == EntranceTimelines(animate).size() / TypingTimelines(animate).size().
 int EntranceTimelineCount(bool animate);
 int TypingTimelineCount(bool animate);
+
+// ---- conversation-open stagger (design d2 §8.2) -----------------------------
+// A freshly built thread used to pop in whole while the conversation list
+// beside it staggers. Now only the visible FOOT animates: the last
+// min(kMaxStaggerSteps, bubbleCount) bubble rows, kStaggerMs apart,
+// oldest-to-newest so the newest settles last. Only the foot animates because
+// rows above the fold animating invisibly would be waste, and 6 is the cap the
+// list already uses (ConversationRowDelayMs, gated by demo.list.stagger).
+//
+// Returns -1 for "does not animate" (every row above the foot) and a begin
+// delay >= 0 for a foot row — the SelectedBubbleIndex precedent: 0 is a valid
+// begin (the foot's oldest), so "skip me" cannot also be 0. The delay is
+// 0-based within the foot, matching the list's convention (its index 0 also
+// starts at 0 ms). d2's sketch signed this as a function of the count alone;
+// a count cannot answer a per-row question, so the row's index among bubble
+// rows is the first parameter.
+//
+// kStaggerMs/kMaxStaggerSteps live in UrMotion.h, which pulls in winrt — the
+// .cpp reads them off it textually, the ConversationRowModel.cpp pattern; this
+// header stays winrt-free.
+int64_t OpenStaggerBeginMs(std::size_t bubbleIndex, std::size_t bubbleCount);
 
 // ---- what an APPEND does to the row above it (T6) -------------------------
 // Appending a row does not only ADD a cluster. It can also TAKE one away, and

@@ -4,12 +4,79 @@
 // is enforced by the compiler rather than by a comment at the top of a file.
 #include "Views/ThreadLayout.h"
 
+#include <algorithm>  // (std::min), parenthesised against the windows.h max/min macros
+
+// UrMotion.h textually drags in winrt/Microsoft.UI.Composition.h and
+// winrt/Microsoft.UI.Xaml.Media.Animation.h on its own account; this file
+// reads exactly two plain integers off it (kStaggerMs, kMaxStaggerSteps, for
+// OpenStaggerBeginMs) and constructs nothing from either header. The same
+// arrangement ConversationRowModel.cpp already ships, and the same review
+// obligation: no WinRT type may ever be named on this path, because
+// CollectDiagnostics reaches this unit before winrt::init_apartment().
+#include "UrMotion.h"
+
 namespace urmsg::views {
 namespace {
 
 bool IsMessage(demo::MessageRow const& r) { return r.kind == demo::RowKind::Message; }
 
 }  // namespace
+
+// The corner table of design d2 §1. The tightened corner is always on the
+// edge facing the adjacent same-speaker bubble — the spine, left for
+// incoming, right for outgoing — and Single keeps all four at the base 12 so
+// a solo bubble never gets a harsh look.
+void BubbleCornerDip(BubbleRunPos runPos, bool outgoing, double out[4]) {
+  constexpr double kBase = 12.0;      // the card radius used app-wide
+  constexpr double kAttached = 4.0;   // the corner facing a same-speaker neighbour
+  out[0] = out[1] = out[2] = out[3] = kBase;
+  switch (runPos) {
+    case BubbleRunPos::Single:
+      break;
+    case BubbleRunPos::First:  // attached BELOW, on the spine side
+      if (outgoing)
+        out[2] = kAttached;  // BR
+      else
+        out[3] = kAttached;  // BL
+      break;
+    case BubbleRunPos::Middle:  // attached above AND below, on the spine side
+      if (outgoing) {
+        out[1] = kAttached;  // TR
+        out[2] = kAttached;  // BR
+      } else {
+        out[0] = kAttached;  // TL
+        out[3] = kAttached;  // BL
+      }
+      break;
+    case BubbleRunPos::Last:  // attached ABOVE, on the spine side
+      if (outgoing)
+        out[1] = kAttached;  // TR
+      else
+        out[0] = kAttached;  // TL
+      break;
+  }
+}
+
+double GapAboveDip(BubbleRunPos runPos) {
+  return (runPos == BubbleRunPos::Middle || runPos == BubbleRunPos::Last) ? 2.0 : 10.0;
+}
+
+BubbleRunPos RunPosFor(demo::MessageRow const* prev, demo::MessageRow const& cur,
+                       demo::MessageRow const* next) {
+  const bool continuesUp = prev != nullptr && ContinuesBubbleRun(*prev, cur);
+  const bool continuesDown = next != nullptr && ContinuesBubbleRun(cur, *next);
+  if (!continuesUp) return continuesDown ? BubbleRunPos::First : BubbleRunPos::Single;
+  return continuesDown ? BubbleRunPos::Middle : BubbleRunPos::Last;
+}
+
+int64_t OpenStaggerBeginMs(std::size_t bubbleIndex, std::size_t bubbleCount) {
+  if (bubbleCount == 0 || bubbleCount <= bubbleIndex) return -1;
+  const std::size_t steps =
+      (std::min)(bubbleCount, static_cast<std::size_t>(urnw::motion::kMaxStaggerSteps));
+  const std::size_t footStart = bubbleCount - steps;
+  if (bubbleIndex < footStart) return -1;  // above the fold: does not animate
+  return static_cast<int64_t>(bubbleIndex - footStart) * urnw::motion::kStaggerMs;
+}
 
 std::vector<ThreadRowPlan> PlanThreadRows(demo::Conversation const& c) {
   std::vector<ThreadRowPlan> plan;
@@ -66,9 +133,15 @@ std::vector<ThreadRowPlan> PlanThreadRows(demo::Conversation const& c) {
                          c.rows[plan[i + 1].rowIndex].outgoing != r.outgoing;
 
     demo::MessageRow const* prev = (row > 0) ? &c.rows[row - 1] : nullptr;
+    demo::MessageRow const* next = (row + 1 < c.rows.size()) ? &c.rows[row + 1] : nullptr;
     plan[i].showSenderHeader =
         ShowsSenderHeader(prev, r, c.kind == demo::ConversationKind::Group);
     plan[i].endsOutgoingRun = endsRun && r.outgoing;
+    // The geometric run position (d2 §1), from the same prev/next. It AGREES
+    // with the header rule about where runs start by construction — both break
+    // on senderKey — so the corner language can never contradict the name and
+    // identicon above a run. `T7 run geometry` walks this per row.
+    plan[i].runPos = RunPosFor(prev, r, next);
   }
   return plan;
 }
@@ -124,16 +197,18 @@ int64_t TypingDotPhaseMs(int dot) {
 // The four channels of design §7's bubble entrance, in the order they are
 // started. RunBubbleEntrance walks exactly this vector, so deleting an entry
 // here deletes the timeline there and the --diagnose count follows.
-std::vector<TimelineSpec> EntranceTimelines(bool animate) {
+// `staggerMs` shifts every begin together — the entrance is one gesture, so
+// the four never slide relative to one another.
+std::vector<TimelineSpec> EntranceTimelines(bool animate, int64_t staggerMs) {
   if (!animate) return {};  // motion GONE, not shortened
   return {
-      {L"Opacity", 0.0, 1.0, 0, false, false},
+      {L"Opacity", 0.0, 1.0, staggerMs, false, false},
       {L"(UIElement.RenderTransform).(CompositeTransform.TranslateY)", kBubbleRiseDip, 0.0,
-       0, false, false},
-      {L"(UIElement.RenderTransform).(CompositeTransform.ScaleX)", kBubbleFromScale, 1.0, 0,
-       false, false},
-      {L"(UIElement.RenderTransform).(CompositeTransform.ScaleY)", kBubbleFromScale, 1.0, 0,
-       false, false},
+       staggerMs, false, false},
+      {L"(UIElement.RenderTransform).(CompositeTransform.ScaleX)", kBubbleFromScale, 1.0,
+       staggerMs, false, false},
+      {L"(UIElement.RenderTransform).(CompositeTransform.ScaleY)", kBubbleFromScale, 1.0,
+       staggerMs, false, false},
   };
 }
 

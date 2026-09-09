@@ -55,6 +55,19 @@ void MarkRaw(UIElement const& e) {
       e, Automation::Peers::AccessibilityView::Raw);
 }
 
+// CornerRadiusHelper::FromCorners does not exist in the WinUI 3 projection
+// (only FromUniformRadius survived the port), so d2 §1's four corner values
+// are written onto the struct directly — TL,TR,BR,BL, the same order the
+// corner table in Views/ThreadLayout.cpp speaks.
+CornerRadius CornerRadiusFromCorners(double const c[4]) {
+  CornerRadius cr;
+  cr.TopLeft = c[0];
+  cr.TopRight = c[1];
+  cr.BottomRight = c[2];
+  cr.BottomLeft = c[3];
+  return cr;
+}
+
 // The icon face, named EVERY time. FontIcon defaults to the older
 // "Segoe MDL2 Assets", whose metrics differ and whose coverage is not the same
 // set of codepoints, so a glyph picked from the Fluent set can land on a
@@ -72,7 +85,16 @@ namespace anim = winrt::Microsoft::UI::Xaml::Media::Animation;
 // no longer a hand-written list to keep in step with a literal. --diagnose
 // asserts it INCLUDING the zero: "motion off" means the timelines are never
 // created at all, not that they run short.
-void RunBubbleEntrance(FrameworkElement const& el) {
+//
+// design d2 §8.1: the 0.96->1.0 scale blooms from the SPEAKER's side —
+// origin (0,1) incoming / (1,1) outgoing — rather than the old hard-coded
+// (0.5,1). `staggerMs` is design d2 §8.2's open stagger (0 on the append
+// path). Neither is in the pure table, stated as a gate gap: the "T6 bubble
+// entrance" gate asserts the four timelines' endpoints and the staggered
+// beginMs, but it cannot see RenderTransformOrigin — a pure function of one
+// bool did not earn a table row. The origin is correct-by-inspection and the
+// captures show which side the bloom comes from.
+void RunBubbleEntrance(FrameworkElement const& el, bool outgoing, int64_t staggerMs) {
   if (!el) return;
 
   // ShouldAnimate() is consulted ONCE and its answer goes straight into the
@@ -81,12 +103,11 @@ void RunBubbleEntrance(FrameworkElement const& el) {
   //
   // What that does NOT buy, stated because an earlier version of this comment
   // overclaimed it: the `plan.empty()` branch below is still deletable, and
-  // deleting it leaves a reduce-motion bubble at Opacity(0.0) with a residual
-  // transform — permanently invisible — while --diagnose still prints PASS.
+  // deleting it leaves --diagnose printing PASS over a render nobody checked.
   // No pure gate can reach that; only looking at the reduce-motion render can,
   // and this machine reports SPI_GETCLIENTAREAANIMATION = 1, so that path has
   // never executed here. A2's motion override is the first task that can.
-  const auto plan = EntranceTimelines(urnw::motion::ShouldAnimate());
+  const auto plan = EntranceTimelines(urnw::motion::ShouldAnimate(), staggerMs);
   if (plan.empty()) {
     // Motion GONE, not reduced: the final pose, immediately, and no transform
     // left on the element for a later layout pass to trip over.
@@ -95,14 +116,23 @@ void RunBubbleEntrance(FrameworkElement const& el) {
     return;
   }
 
+  // The LOCAL pose is the FINAL one — identity transform, full opacity — and
+  // the storyboard alone carries the from-pose. This used to be the other way
+  // round (local from-pose, storyboard to final), which is only safe when the
+  // storyboard certainly plays. The d2 §8.2 open stagger is begun from
+  // SetThreadConversation's first build, which runs in the window constructor
+  // before ThreadHost is realized; a storyboard dropped unplayed there would
+  // have stranded those bubbles at Opacity 0, permanently invisible. With the
+  // final pose local, an unplayed storyboard costs the motion and never the
+  // pixels — the same shape AnimateConversationListEntrance already uses
+  // (ConversationListView.cpp), which is also how we know the from-pose
+  // applies before the first rendered frame rather than flashing.
   Media::CompositeTransform t;
-  t.TranslateY(kBubbleRiseDip);
-  t.ScaleX(kBubbleFromScale);
-  t.ScaleY(kBubbleFromScale);
   el.RenderTransform(t);
-  // The bubble grows from where it will end up, not from its own middle.
-  el.RenderTransformOrigin(winrt::Windows::Foundation::Point{0.5f, 1.0f});
-  el.Opacity(0.0);
+  // The bubble grows from where it will end up, and from its speaker's side.
+  el.RenderTransformOrigin(
+      winrt::Windows::Foundation::Point{outgoing ? 1.0f : 0.0f, 1.0f});
+  el.Opacity(1.0);
 
   // ONE Storyboard for all four so they finish on the same frame — two
   // independent storyboards can land a frame apart, which reads as a hitch
@@ -250,7 +280,11 @@ FrameworkElement MakeDeliveryCluster(demo::MessageRow const& row) {
   cluster.Orientation(Orientation::Horizontal);
   cluster.Spacing(4);
   cluster.HorizontalAlignment(HorizontalAlignment::Right);
-  cluster.Margin(ThicknessHelper::FromLengths(0, 2, 2, 6));
+  // design d2 §6: (0,1,2,4) binds the cluster to ITS bubble — 1 dip above,
+  // the wider gap below left to §1's row margins — so ownership is
+  // unambiguous (it used to float near-equidistant between its bubble and the
+  // next run at (0,2,2,6)).
+  cluster.Margin(ThicknessHelper::FromLengths(0, 1, 2, 4));
 
   StackPanel glyphs;
   glyphs.Orientation(Orientation::Horizontal);
@@ -296,7 +330,11 @@ FrameworkElement MakeDeliveryCluster(demo::MessageRow const& row) {
   StackPanel column;
   column.HorizontalAlignment(HorizontalAlignment::Right);
   column.Spacing(3);
-  column.Margin(ThicknessHelper::FromLengths(0, 0, 2, 6));
+  // The §6 margin change applied to the Failed cluster's outer element, the
+  // same (0,1,2,4) the plain cluster carries; the reason line and the
+  // disabled [ Try again ] below are otherwise exactly as they were (d2 §6.3
+  // — this row is the surface's most important honesty artifact).
+  column.Margin(ThicknessHelper::FromLengths(0, 1, 2, 4));
   cluster.Margin(ThicknessHelper::FromUniformLength(0));
   column.Children().Append(cluster);
 
@@ -373,6 +411,18 @@ int DeliveryClusterIndex(Controls::Panel const& rowRoot) {
 // printing it. This stays a total "make it match" rather than a one-way clear
 // so it is still correct the day CarriesDeliveryGlyph grows a clause that can
 // turn a reading ON.
+//
+// design d2 §6.2: an APPEARING cluster fades in over kFastMs on the standard
+// curve, gated by ShouldAnimate — the honest subset of design §7's "delivery
+// morph" (a true Sent->Delivered morph never occurs in this build: ambient
+// activity only appends, and nothing mutates a rendered row's state).
+// Removal stays instant: the only removal event is a newer outgoing row
+// arriving below, whose own bubble entrance is where the eye already is, and
+// an async fade-out would make this gate-treated-synchronous function
+// stateful for no visible gain. The local opacity is left at 1.0 and the
+// storyboard alone carries the 0 — an unplayed storyboard then costs the
+// fade, never the reading (the same final-pose-local shape RunBubbleEntrance
+// uses).
 void SetRowCluster(FrameworkElement const& rowRoot, demo::MessageRow const& row,
                    bool carries) {
   if (!rowRoot) return;
@@ -380,22 +430,44 @@ void SetRowCluster(FrameworkElement const& rowRoot, demo::MessageRow const& row,
   if (!panel) return;
   const int at = DeliveryClusterIndex(panel);
   if (carries == (0 <= at)) return;  // already right
-  if (carries)
-    panel.Children().Append(MakeTaggedDeliveryCluster(row));
-  else
+  if (carries) {
+    auto cluster = MakeTaggedDeliveryCluster(row);
+    panel.Children().Append(cluster);
+    if (urnw::motion::ShouldAnimate() && cluster) {
+      anim::Storyboard sb;
+      auto a = urnw::motion::MakeSplineDouble(0.0, 1.0, urnw::motion::kFastMs, 0,
+                                              urnw::motion::kStandardP1,
+                                              urnw::motion::kStandardP2);
+      anim::Storyboard::SetTarget(a, cluster);
+      anim::Storyboard::SetTargetProperty(a, L"Opacity");
+      sb.Children().Append(a);
+      sb.Begin();
+    }
+  } else {
     panel.Children().RemoveAt(static_cast<uint32_t>(at));
+  }
 }
 
 }  // namespace
 
 BubbleRow MakeBubbleRow(demo::MessageRow const& row, bool group, bool showSenderHeader,
-                        bool carriesDeliveryGlyph) {
+                        bool carriesDeliveryGlyph, BubbleRunPos runPos) {
   BubbleRow out;
   out.bubble.id = row.id;
 
   // ---- the bubble ---------------------------------------------------------
   Button bubble;
   if (auto style = StyleByKey(L"UrBubbleButtonStyle")) bubble.Style(style);
+
+  // The run-shape corners (design d2 §1): a local CornerRadius write, which
+  // beats the style's uniform-12 setter and flows through the template's
+  // {TemplateBinding CornerRadius} to Root, EdgeLayer AND SelectEdge — so the
+  // hover edge and the selection outline track the asymmetric corners with no
+  // template change. This, and the append-time re-plan in AppendThreadRow,
+  // are the only two writers of a bubble's corners.
+  double corners[4];
+  BubbleCornerDip(runPos, row.outgoing, corners);
+  bubble.CornerRadius(CornerRadiusFromCorners(corners));
 
   // Design §6.2: incoming UrCardBrush #1C1C1C left, outgoing UrCardHoverBrush
   // #242424 with a 1px UrBorderBrush right. UrAccentBrush is NEVER a bubble
@@ -415,15 +487,9 @@ BubbleRow MakeBubbleRow(demo::MessageRow const& row, bool group, bool showSender
   StackPanel column;
   column.Spacing(2);
 
-  if (showSenderHeader && !row.senderName.empty()) {
-    TextBlock name;
-    name.Text(winrt::hstring{row.senderName});
-    if (auto s = StyleByKey(L"UrCaptionTextStyle")) name.Style(s);
-    name.Foreground(urnw::colors::MutedBrush());
-    name.TextTrimming(TextTrimming::CharacterEllipsis);
-    MarkRaw(name);
-    column.Children().Append(name);
-  }
+  // The sender name is NOT here: it moved out of the bubble to a line above
+  // the run-start bubble (design d2 §1, below at rowRoot), so every bubble
+  // interior is uniformly body + time.
 
   // THE BODY FACE. UrBodyTextStyle is UrBodyFontFamily at 14/20 — never
   // UrHeadingFontFamily, which is the display face for titles and the hero.
@@ -478,6 +544,29 @@ BubbleRow MakeBubbleRow(demo::MessageRow const& row, bool group, bool showSender
 
   StackPanel rowRoot;
   rowRoot.Spacing(0);
+  // The §1 rhythm, replacing MakeThread's old uniform stack.Spacing(6): 10 dip
+  // above a run start/single, 2 above a continuation, so runs read as blocks.
+  rowRoot.Margin(ThicknessHelper::FromLengths(0, GapAboveDip(runPos), 0, 0));
+
+  if (showSenderHeader && !row.senderName.empty()) {
+    // The sender name, OUT of the bubble and above it (design d2 §1), aligned
+    // with the bubble's TEXT: the 36 dip gutter plus the bubble's own 12 dip
+    // padding (UrBubbleButtonStyle's Padding 12,8 — if that ever changes, this
+    // alignment goes with it). Group-only by way of showSenderHeader, which
+    // delegates to ShowsSenderHeader — DMs never draw it. 11px muted caption,
+    // the same voice the cluster's word speaks. MarkRaw as it was inside the
+    // bubble: BubbleAutomationName reads no visual tree, so automation is
+    // unchanged by the move.
+    TextBlock name;
+    name.Text(winrt::hstring{row.senderName});
+    if (auto s = StyleByKey(L"UrCaptionTextStyle")) name.Style(s);
+    name.FontSize(11);
+    name.Foreground(urnw::colors::MutedBrush());
+    name.TextTrimming(TextTrimming::CharacterEllipsis);
+    name.Margin(ThicknessHelper::FromLengths(kThreadGutterDip + 12.0, 0, 0, 2));
+    MarkRaw(name);
+    rowRoot.Children().Append(name);
+  }
   rowRoot.Children().Append(gutterRow);
   // ONE cluster, or none. The CALLER decides, with CarriesDeliveryGlyph()
   // (Demo/ThreadLayout.h) - never with ThreadRowPlan::endsOutgoingRun, which is
@@ -560,15 +649,17 @@ void ApplyColumnWidth(std::shared_ptr<ThreadParts> const& parts) {
 // letterspaced muted is UrGroupHeaderTextStyle - the same voice every group
 // header in the app already speaks, so the thread does not grow a caption
 // species of its own.
+//
+// design d2 §4: NO border (a bordered pill competes with bubble edges; the
+// card fill alone lifts it off the #101010 page), radius 8 rather than 10,
+// and the §1 rhythm owns its margins ((0,16,0,8)) now that stack.Spacing is 0.
 FrameworkElement MakeDaySeparator(std::wstring const& label) {
   Border pill;
   pill.Background(BrushByKey(L"UrCardBrush", urnw::colors::kCard));
-  pill.BorderBrush(BrushByKey(L"UrBorderBrush", urnw::colors::kBorder));
-  pill.BorderThickness(ThicknessHelper::FromUniformLength(1));
-  pill.CornerRadius(CornerRadiusHelper::FromUniformRadius(10));
-  pill.Padding(ThicknessHelper::FromLengths(10, 2, 10, 3));
+  pill.CornerRadius(CornerRadiusHelper::FromUniformRadius(8));
+  pill.Padding(ThicknessHelper::FromLengths(12, 3, 12, 4));
   pill.HorizontalAlignment(HorizontalAlignment::Center);
-  pill.Margin(ThicknessHelper::FromLengths(0, 14, 0, 6));
+  pill.Margin(ThicknessHelper::FromLengths(0, 16, 0, 8));
 
   TextBlock text;
   text.Text(winrt::hstring{label});
@@ -600,7 +691,10 @@ FrameworkElement MakeSystemLine(winrt::hstring const& text) {
   line.TextAlignment(TextAlignment::Center);
   line.HorizontalAlignment(HorizontalAlignment::Center);
   line.MaxWidth(420);
-  line.Margin(ThicknessHelper::FromLengths(0, 10, 0, 10));
+  // (0,8,0,8) — the §1 row-margin rhythm owns the gaps now that stack.Spacing
+  // is 0 (design d2 §4; nothing else about the line changes — restraint is
+  // the design there, and 12px muted stays for legibility).
+  line.Margin(ThicknessHelper::FromLengths(0, 8, 0, 8));
   return line;
 }
 
@@ -617,6 +711,11 @@ FrameworkElement MakeSystemLine(winrt::hstring const& text) {
 // The copy is the WORLD's - it says what this client OBSERVED (a key changed,
 // verify before sending). Nothing here claims a message was encrypted or that
 // anything was cryptographically checked: there is no crypto in this demo.
+//
+// design d2 §7 adds the chrome header: PERMANENT RECORD in
+// UrGroupHeaderTextStyle (the app's chrome voice, DangerBrush). It labels
+// PERSISTENCE — the record's actual property, mirrored from the automation
+// name below — and makes no claim about crypto.
 FrameworkElement MakeKeyChangeRecord(winrt::hstring const& text) {
   Grid root;
   root.HorizontalAlignment(HorizontalAlignment::Center);
@@ -642,19 +741,43 @@ FrameworkElement MakeKeyChangeRecord(winrt::hstring const& text) {
   column.Margin(ThicknessHelper::FromLengths(12, 2, 0, 2));
   Grid::SetColumn(column, 1);
 
+  TextBlock mark;
+  mark.Text(L"PERMANENT RECORD");
+  if (auto st = StyleByKey(L"UrGroupHeaderTextStyle")) mark.Style(st);
+  mark.Foreground(urnw::colors::DangerBrush());
+  // The ROOT below already announces "Permanent record, cannot be dismissed.";
+  // leaving this line in the tree would say it twice.
+  MarkRaw(mark);
+  column.Children().Append(mark);
+
   StackPanel head;
   head.Orientation(Orientation::Horizontal);
   head.Spacing(8);
+
+  // The key glyph seated in its own chip (design d2 §7's flourish): a 24x24,
+  // radius-6 tile of danger at 10% alpha — WithAlpha over the existing
+  // kDanger, no new colour token — so the record's glyph reads as an emblem
+  // rather than as text. A full danger border was rejected there: one red
+  // rule is a record; a red box is an alert banner.
+  Border keyChip;
+  keyChip.Width(24);
+  keyChip.Height(24);
+  keyChip.CornerRadius(CornerRadiusHelper::FromUniformRadius(6));
+  keyChip.Background(
+      urnw::colors::MakeBrush(urnw::colors::WithAlpha(urnw::colors::kDanger, 0x1A)));
+  keyChip.VerticalAlignment(VerticalAlignment::Top);
 
   FontIcon key;
   key.FontFamily(IconFont());
   key.Glyph(L"\uE192");  // Segoe Fluent "Permissions" - the key glyph
   key.FontSize(14);
   key.Foreground(urnw::colors::DangerBrush());
-  key.VerticalAlignment(VerticalAlignment::Top);
+  key.HorizontalAlignment(HorizontalAlignment::Center);
+  key.VerticalAlignment(VerticalAlignment::Center);
   // decoration beside a line that already carries the words
   MarkRaw(key);
-  head.Children().Append(key);
+  keyChip.Child(key);
+  head.Children().Append(keyChip);
 
   TextBlock body;
   body.Text(text);
@@ -798,7 +921,12 @@ Button MakeInertIconButton(wchar_t const* glyph, wchar_t const* name) {
 
 FrameworkElement MakeComposer() {
   Border bar;
-  bar.Background(urnw::colors::CardBrush());
+  // design d2 §3: the bar is SHEET (#151515, one step above the page) and the
+  // input sits in a CARD well on it — the palette's own page -> sheet -> card
+  // layering (UrColors.h) instead of one tonal step with the controls
+  // floating in it. It also future-proofs the thread header: UrPaneHeaderStyle
+  // is the same sheet fill, so header and composer become matching bookends.
+  bar.Background(BrushByKey(L"UrSheetBrush", urnw::colors::kSheet));
   // The top hairline is NOT the bar's BorderBrush: it is its own pair of
   // elements below (`seam`/`seamFocus`), because focus has to LIFT it from
   // kBorder to kBorderStrong (design d1 §1.3) and FadeFocusRule animates
@@ -808,6 +936,19 @@ FrameworkElement MakeComposer() {
 
   StackPanel column;
   column.Spacing(6);
+
+  // The WELL (design d2 §3): one card surface holding the controls, with the
+  // focus channel as a 1px overlay on its edge — the overlay pattern borrowed
+  // from UrBubbleButtonStyle's EdgeLayer, so focus draws a ring around the
+  // well instead of the old 1px rule under the whole row.
+  Grid well;
+
+  Border inputWell;
+  inputWell.Background(BrushByKey(L"UrCardBrush", urnw::colors::kCard));
+  inputWell.CornerRadius(CornerRadiusHelper::FromUniformRadius(12));
+  inputWell.BorderBrush(BrushByKey(L"UrBorderBrush", urnw::colors::kBorder));
+  inputWell.BorderThickness(ThicknessHelper::FromUniformLength(1));
+  inputWell.Padding(ThicknessHelper::FromLengths(6, 2, 6, 2));
 
   Grid row;
   row.ColumnSpacing(4);
@@ -846,7 +987,11 @@ FrameworkElement MakeComposer() {
     chip.Children().Append(t);
     timer.Content(chip);
   }
-  timer.Background(nullptr);
+  // design d2 §3 (its optional seating): cardHover fill, so the chip reads as
+  // a control seated ON the card well rather than floating in it. Still
+  // disabled — design §9.1 — with the border and the automation name as they
+  // were.
+  timer.Background(BrushByKey(L"UrCardHoverBrush", urnw::colors::kCardHover));
   timer.BorderBrush(urnw::colors::BorderBrush());
   timer.BorderThickness(ThicknessHelper::FromUniformLength(1));
   timer.CornerRadius(CornerRadiusHelper::FromUniformRadius(12));
@@ -908,26 +1053,38 @@ FrameworkElement MakeComposer() {
   }
   send.MinWidth(40);
   send.Padding(ThicknessHelper::FromLengths(10, 6, 10, 6));
+  // design d2 §3: a real pill (16) against the 12 dip well and chips. The
+  // enable-motion bullet of d2 §3 is NOT taken — it needs design §9.1
+  // sign-off it does not have — so the pill stays platform-disabled at 0.38
+  // opacity in every state, glyph and wash unchanged.
+  send.CornerRadius(CornerRadiusHelper::FromUniformRadius(16));
   send.IsEnabled(false);  // design §9.1 — the disabled accent reads as inert
   Automation::AutomationProperties::SetName(send, L"Send (not available in the demo)");
   Grid::SetColumn(send, 4);
   row.Children().Append(send);
-  column.Children().Append(row);
+  inputWell.Child(row);
+  well.Children().Append(inputWell);
 
   // The focus channel. Not the accent — that is the send button and the
-  // selection outline only — so focus lifts a 1px rule from nothing to
-  // UrBorderStrongBrush, which is the same edge step UrCardButtonStyle's hover
-  // state already spends.
-  Border focusRule;
-  focusRule.Height(1);
-  focusRule.HorizontalAlignment(HorizontalAlignment::Stretch);
-  focusRule.Background(urnw::colors::MakeBrush(kBorderStrong));
-  focusRule.Opacity(0.0);
-  column.Children().Append(focusRule);
+  // selection outline only — so focus lifts UrBorderStrongBrush, the same
+  // edge step UrCardButtonStyle's hover state already spends. It now draws a
+  // 1px ring on the WELL's edge (design d2 §3): same radius 12 and same
+  // thickness 1 as the well beneath it, so it lands on exactly the well's
+  // pixels — the overlay pattern borrowed from UrBubbleButtonStyle's
+  // EdgeLayer. Retargeted from wave 1's 1px rule under the whole row: same
+  // FadeFocusRule helper, same durations (kFastMs standard in / kMicroMs exit
+  // out), same ShouldAnimate gate, zero new motion code.
+  Border focusEdge;
+  focusEdge.CornerRadius(CornerRadiusHelper::FromUniformRadius(12));
+  focusEdge.BorderThickness(ThicknessHelper::FromUniformLength(1));
+  focusEdge.BorderBrush(urnw::colors::MakeBrush(kBorderStrong));
+  focusEdge.Opacity(0.0);
+  well.Children().Append(focusEdge);
+  column.Children().Append(well);
 
   // The bar's TOP hairline (design d1 §1.3): `seam` is the resting kBorder
   // line, `seamFocus` the kBorderStrong lift stacked exactly over it, faded in
-  // by the same helper and on the same tokens as the interior rule above —
+  // by the same helper and on the same tokens as the well's focus ring above —
   // kFastMs in on the standard curve, kMicroMs out on the exit curve, instant
   // both ways when ShouldAnimate() is false. The composer is the one working
   // object pinned to the stage; focus waking its surface boundary is what makes
@@ -940,12 +1097,12 @@ FrameworkElement MakeComposer() {
   seamFocus.Background(urnw::colors::MakeBrush(kBorderStrong));
   seamFocus.Opacity(0.0);
 
-  box.GotFocus([focusRule, seamFocus](auto const&, auto const&) {
-    FadeFocusRule(focusRule, true);
+  box.GotFocus([focusEdge, seamFocus](auto const&, auto const&) {
+    FadeFocusRule(focusEdge, true);
     FadeFocusRule(seamFocus, true);
   });
-  box.LostFocus([focusRule, seamFocus](auto const&, auto const&) {
-    FadeFocusRule(focusRule, false);
+  box.LostFocus([focusEdge, seamFocus](auto const&, auto const&) {
+    FadeFocusRule(focusEdge, false);
     FadeFocusRule(seamFocus, false);
   });
 
@@ -1010,7 +1167,11 @@ ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
   scroller.Padding(ThicknessHelper::FromLengths(kThreadPadDip, 8, kThreadPadDip, 12));
 
   StackPanel stack;
-  stack.Spacing(6);
+  // Spacing 0: the §1 run rhythm is carried by each bubble row's own top
+  // margin (GapAboveDip — 2 continuation / 10 run-start, set in MakeBubbleRow)
+  // and by the separators'/system rows'/record's own margins, so runs read as
+  // blocks. A uniform inter-row gap here would flatten exactly that.
+  stack.Spacing(0);
   scroller.Content(stack);
   Grid::SetRow(scroller, 0);
   root.Children().Append(scroller);
@@ -1172,6 +1333,14 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
   //
   // endsOutgoingRun is the field that is still direction-only, and it is NOT a
   // substitute for CarriesDeliveryGlyph - see Views/ThreadLayout.h.
+  //
+  // bubbleCount is known BEFORE the loop because design d2 §8.2's open stagger
+  // is a function of a bubble row's index among bubble rows AND the total —
+  // only the last min(kMaxStaggerSteps, count) animate.
+  std::size_t bubbleCount = 0;
+  for (auto const& r : c.rows)
+    if (r.kind == demo::RowKind::Message) ++bubbleCount;
+  std::size_t bubbleIndex = 0;
   for (auto const& p : PlanThreadRows(c)) {
     demo::MessageRow const& row = c.rows[p.rowIndex];
     demo::MessageRow const* next =
@@ -1206,7 +1375,7 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
         // Gating the cluster on that field deletes the one delivery state this
         // surface must never swallow.
         auto built = MakeBubbleRow(row, group, p.showSenderHeader,
-                                   CarriesDeliveryGlyph(row, next));
+                                   CarriesDeliveryGlyph(row, next), p.runPos);
         built.bubble.root.Click([parts, id = row.id](auto const&, auto const&) {
           if (parts->onSelect) parts->onSelect(id);
         });
@@ -1214,6 +1383,19 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
         v.bubbles.push_back(built.bubble);
         parts->stack.Children().Append(built.root);
         clusterHost = built.root;
+        // design d2 §8.2: on OPEN only the visible foot animates — the last
+        // min(kMaxStaggerSteps, count) bubble rows, kStaggerMs apart, newest
+        // last; rows above the fold return -1 and are not animated at all.
+        // RenderTransform/Opacity do not affect layout, so the bottom-pin
+        // stack.SizeChanged handler is not re-triggered (no interaction with
+        // the W9 do-not-yank scroll work). Begun here rather than on a Loaded
+        // hook: RunBubbleEntrance leaves the FINAL pose as the local value, so
+        // a storyboard that cannot play yet (this first build runs from the
+        // window constructor, before ThreadHost is realized) costs the motion
+        // and never the pixels.
+        const int64_t stagger = OpenStaggerBeginMs(bubbleIndex, bubbleCount);
+        if (0 <= stagger) RunBubbleEntrance(built.root, row.outgoing, stagger);
+        ++bubbleIndex;
         break;
       }
     }
@@ -1420,6 +1602,23 @@ void AppendThreadRow(ThreadView& v, demo::MessageRow const& row) {
   const AppendClusterPlan plan = PlanAppendCluster(prev, row);
   if (prev) SetRowCluster(parts->rows.back().clusterHost, *prev, plan.prevCarriesNow);
 
+  // The row above's CORNERS are re-decided too. Its runPos was planned with
+  // next == nullptr (Single/Last), and a message landing under it can make it
+  // First/Middle — the spine corner facing the new bubble tightens 12 -> 4.
+  // Same "re-ask the row above" discipline as the cluster, for the same
+  // reason: incremental must equal rebuild, and a rebuild would draw the
+  // tightened corner. The --demo-autoplay seed exercises this live — its
+  // outgoing row lands under c0's 12:11 Pending bubble, a Last that becomes
+  // a Middle. bubbles.back() IS prev's bubble exactly when prev is a Message
+  // row (bubbles records message rows only, in order).
+  if (prev && prev->kind == demo::RowKind::Message && !parts->bubbles.empty()) {
+    demo::MessageRow const* prevPrev =
+        (2 <= parts->rows.size()) ? &parts->rows[parts->rows.size() - 2].row : nullptr;
+    double corners[4];
+    BubbleCornerDip(RunPosFor(prevPrev, *prev, &row), prev->outgoing, corners);
+    parts->bubbles.back().CornerRadius(CornerRadiusFromCorners(corners));
+  }
+
   // ---- 2. the new row ----------------------------------------------------
   FrameworkElement added{nullptr};
   FrameworkElement clusterHost{nullptr};
@@ -1450,8 +1649,11 @@ void AppendThreadRow(ThreadView& v, demo::MessageRow const& row) {
       // surface is gated on, broken in an attribute the gate was not looking
       // at — so `T6 append cluster` now compares the header per row too.
       const bool showSenderHeader = ShowsSenderHeader(prev, row, parts->group);
+      // The newest row's runPos is judged with next == nullptr: it can only
+      // CONTINUE the run above (Last) or stand alone (Single). If it
+      // continues, the re-corner above has already tightened the row over it.
       auto built = MakeBubbleRow(row, parts->group, showSenderHeader,
-                                 plan.appendedCarries);
+                                 plan.appendedCarries, RunPosFor(prev, row, nullptr));
       built.bubble.root.Click([parts, id = row.id](auto const&, auto const&) {
         if (parts->onSelect) parts->onSelect(id);
       });
@@ -1472,7 +1674,9 @@ void AppendThreadRow(ThreadView& v, demo::MessageRow const& row) {
   // ApplyColumnWidth only ever runs on a resize; a bubble appended between two
   // resizes would otherwise keep MakeBubbleRow's unmeasured 640 DIP fallback.
   ApplyColumnWidth(parts);
-  RunBubbleEntrance(added);
+  // No stagger on append (design d2 §8.2 staggers the OPEN only): a single
+  // arriving row plays its entrance at once, from its own side.
+  RunBubbleEntrance(added, row.outgoing, 0);
 
   // NO SCROLL WRITE HERE, deliberately. MakeThread's stack.SizeChanged pin
   // already fires on this append — a new child changes the stack's height — and
