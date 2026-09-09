@@ -29,6 +29,7 @@
 #include "Views/StatusStripRules.h"
 #include "Demo/DemoShellState.h"
 #include "Demo/AdvancedMode.h"
+#include "Demo/DemoAutoplay.h"
 #include "Demo/DeveloperSwitches.h"
 #include "Demo/DemoWorld.h"
 #include "Demo/ThreadLayout.h"
@@ -422,6 +423,50 @@ std::wstring DemoDeepLinkCheck() {
       ok ? L"PASS" : L"FAIL", matches, checked, tags, ladder, advanced);
 }
 
+std::wstring DemoAutoplayCheck() {
+  using namespace urmsg::demo;
+  const bool ladder = AdvanceDelivery(DeliveryState::Pending) == DeliveryState::Sent &&
+                      AdvanceDelivery(DeliveryState::Sent) == DeliveryState::Delivered &&
+                      AdvanceDelivery(DeliveryState::Delivered) == DeliveryState::Read &&
+                      AdvanceDelivery(DeliveryState::Read) == DeliveryState::Read &&
+                      AdvanceDelivery(DeliveryState::Failed) == DeliveryState::Failed &&
+                      AdvanceDelivery(DeliveryState::Expired) == DeliveryState::Expired;
+  int rounds = 0;
+  bool cadence = true;
+  for (int round = 0; round < 8; ++round) {
+    ++rounds;
+    const int64_t typing = TypingMsForRound(round);
+    const int64_t idle = IdleMsForRound(round);
+    if (typing < 3000 || 6000 < typing) cadence = false;
+    if (idle < 38000 || 42000 < idle) cadence = false;
+  }
+  // Deterministic, not random: the demo world is seeded and a second run of the
+  // same demo has to behave like the first.
+  const bool stable = IdleMsForRound(0) == IdleMsForRound(4) &&
+                      TypingMsForRound(1) == TypingMsForRound(5) &&
+                      IdleMsForRound(0) != IdleMsForRound(1);
+  // The ambient row's clock is DERIVED from the conversation, never the wall
+  // clock (the d7 audit's W8-class-4 override): round 0 lands strictly after
+  // the open conversation's last seeded message and strictly before round 1.
+  // String order is time order for zero-padded HH:MM. The tautology this
+  // replaces compared IncomingForRound's label to itself.
+  std::wstring lastSeeded;
+  auto const& conv = GetWorld().conversations.front();
+  for (auto const& row : conv.rows)
+    if (row.kind == RowKind::Message) lastSeeded = row.timeLabel;
+  const std::wstring round0 = IncomingForRound(conv, 0).timeLabel;
+  const std::wstring round1 = IncomingForRound(conv, 1).timeLabel;
+  const bool derived = lastSeeded < round0 && round0 < round1;
+  const bool ok = ladder && cadence && stable && derived;
+  return std::format(
+      L"  demo autoplay    : {}  (ladder Pending->Sent->Delivered->Read->Read, "
+      L"Failed/Expired terminal {} | {} rounds each with typing in 3000-6000ms and "
+      L"idle in 38000-42000ms {} | period 4 and not constant {} | ambient clock "
+      L"derived: last seeded {} < round 0 {} < round 1 {} {})",
+      ok ? L"PASS" : L"FAIL", ladder, rounds, cadence, stable, lastSeeded, round0,
+      round1, derived);
+}
+
 // ---- the status strip's pure rules (design §6.5) ----------------------------
 //
 // ONE line, per the d7 audit's S1 override: the 560 content-dip collapse rule
@@ -652,6 +697,7 @@ std::vector<std::wstring> CollectDiagnostics() {
   }
   lines.push_back(DemoLayoutCheck());
   lines.push_back(DemoDeepLinkCheck());
+  lines.push_back(DemoAutoplayCheck());
   // The status strip's own pure rules. Unguarded for the same reason the two
   // lines above are: it builds no world and names no hostname, so a plain
   // launch's log gains nothing fabricated by carrying it.

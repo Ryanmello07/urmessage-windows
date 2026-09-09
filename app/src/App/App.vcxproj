@@ -200,6 +200,16 @@
          winrt/ headers even though (unlike DemoWorld.cpp) it needs Win32
          (<windows.h>, <shellapi.h>) for CommandLineToArgvW. -->
     <ClCompile Include="Demo\DemoSwitches.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <!-- NotUsing for the same reason as Demo\DemoWorld.cpp above: Startup.cpp's
+         `demo autoplay` line asserts this unit's ladder, cadence and derived
+         clock from CollectDiagnostics() before winrt::init_apartment, so the
+         pure half must not pull in the pch and its winrt/ headers. The timer
+         half winrt reaches is DemoAutoplayLoop.cpp below. -->
+    <ClCompile Include="Demo\DemoAutoplay.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <!-- Uses the pch: the whole file is the DispatcherQueueTimer half, exactly
+         the winrt work the pure DemoAutoplay.cpp beside it must not see - the
+         same split StatusStripRules/StatusStripView ships. -->
+    <ClCompile Include="Demo\DemoAutoplayLoop.cpp" />
     <ClCompile Include="Demo\AdvancedMode.cpp" />
     <!-- Uses the pch for the same reason Demo\AdvancedMode.cpp beside it does:
          its diagnostics run from CollectDiagnostics() before
@@ -266,6 +276,8 @@
     <ClInclude Include="Views\ThreadLayout.h" />
     <ClInclude Include="Views\ThreadView.h" />
     <ClInclude Include="Demo\DemoSwitches.h" />
+    <ClInclude Include="Demo\DemoAutoplay.h" />
+    <ClInclude Include="Demo\DemoAutoplayLoop.h" />
     <ClInclude Include="Demo\AdvancedMode.h" />
     <ClInclude Include="Demo\DeveloperSwitches.h" />
     <ClInclude Include="Identicon.h" />
