@@ -23,6 +23,7 @@
 #include "Demo/DemoSwitches.h"
 #include "UrComponents.h"
 #include "Views/ConversationListView.h"
+#include "Views/DeveloperView.h"
 #include "Views/InspectRailView.h"
 #include "Views/NetworkPageView.h"
 #include "Views/SettingsView.h"
@@ -100,6 +101,19 @@ struct MainWindow : MainWindowT<MainWindow> {
   void BuildSettings();
 
   urmsg::views::SettingsView settings_{};
+
+  // The Developer destination's whole content, built in code into
+  // DeveloperHost (MainWindow.xaml:286 — the d7 audit's A5 override: mount
+  // into the existing host, do NOT add a DeveloperPage Grid). Demo-gated for
+  // the same reason BuildSettings is: the page reads the demo world, so
+  // building it on a normal launch would construct that world on the
+  // shipping path (design D7/D8). Built ONCE here: contract §4 gives the
+  // view no Set*Advanced, and the live rebuild on a mode toggle belongs to
+  // the wiring task's ONE OnAdvancedModeChanged subscriber (W7, the d7
+  // distillation's §1.2 ruling) — this wave registers no subscription.
+  void BuildDeveloper();
+
+  urmsg::views::DeveloperView developer_{};
 
   // The connect indicator (design 6.5, D4). Built ONCE and never rebuilt: the
   // strip is window chrome, so it outlives every destination change. Returns

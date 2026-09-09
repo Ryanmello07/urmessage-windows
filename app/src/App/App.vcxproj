@@ -216,6 +216,17 @@
     <ClCompile Include="UrMotion.cpp" />
     <ClCompile Include="Views\ConversationListView.cpp" />
     <ClCompile Include="Views\ConversationRowModel.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <!-- NotUsing for the same reason as Demo\DemoWorld.cpp above:
+         WorldDumpDiagnostics() in this unit is called from
+         CollectDiagnostics(), which runs before winrt::init_apartment, so
+         this TU must not pull in the pch and its winrt/ headers. The XAML
+         half of the Developer surface is DeveloperView.cpp below, the same
+         split StatusStripRules/StatusStripView ships. -->
+    <ClCompile Include="Views\DeveloperDump.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <!-- Uses the pch (it builds XAML): the whole file is element-tree work,
+         exactly the reason NetworkPageView.cpp below states. The pure dump
+         half it spends lives in DeveloperDump.cpp. -->
+    <ClCompile Include="Views\DeveloperView.cpp" />
     <!-- NotUsing for the same reason as Demo\DemoWorld.cpp above: the two
          probes in this unit are called from CollectDiagnostics(), which runs
          before winrt::init_apartment (main.cpp:168 vs :183), so this TU must
@@ -267,6 +278,8 @@
     <ClInclude Include="UrMotion.h" />
     <ClInclude Include="Views\ConversationListView.h" />
     <ClInclude Include="Views\ConversationRowModel.h" />
+    <ClInclude Include="Views\DeveloperDump.h" />
+    <ClInclude Include="Views\DeveloperView.h" />
     <ClInclude Include="Views\InspectRailFields.h" />
     <ClInclude Include="Views\InspectRailView.h" />
     <ClInclude Include="Views\NetworkPageView.h" />

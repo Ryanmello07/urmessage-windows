@@ -24,6 +24,7 @@
 #include "Strings.h"
 #include "UrMotion.h"
 #include "Views/ConversationRowModel.h"
+#include "Views/DeveloperDump.h"
 #include "Views/InspectRailFields.h"
 #include "Views/StatusStripRules.h"
 #include "Demo/DemoShellState.h"
@@ -556,6 +557,12 @@ std::vector<std::wstring> CollectDiagnostics() {
   // AdvancedModeDiagnostics() in this tree; the Advanced Mode content above is
   // an inline report line, not an assertion loop.
   for (auto& line : urmsg::demo::DeveloperSwitchDiagnostics())
+    lines.push_back(std::move(line));
+  // The Developer surface's world dump (design §6.6). Immediately after the
+  // session-switch assertions, per the d7 audit's A2/A6 sequencing. The dump
+  // module is pure C++ with PrecompiledHeader=NotUsing for the same reason
+  // DemoWorld.cpp is: this runs before winrt::init_apartment.
+  for (auto& line : urmsg::views::WorldDumpDiagnostics())
     lines.push_back(std::move(line));
   {
     using namespace urmsg::demo;

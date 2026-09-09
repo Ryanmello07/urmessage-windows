@@ -160,6 +160,7 @@ MainWindow::MainWindow() {
   BuildThread();
   BuildNetworkPage();
   BuildSettings();
+  BuildDeveloper();
   BuildStatusStrip();
 
   // The window reveal: bind now that the content tree exists, then arm BEFORE
@@ -510,6 +511,28 @@ void MainWindow::BuildSettings() {
   }
   urnw::LogInfo("window: settings page built (advanced={})",
                 urmsg::AdvancedModeEnabled() ? "on" : "off");
+}
+
+void MainWindow::BuildDeveloper() {
+  // options_, NOT a second ParseDemoOptions() call — the same rule
+  // BuildThread/BuildNetworkPage/BuildSettings state. It also keeps
+  // GetWorld() off a normal launch (design §8: the app behaves exactly as it
+  // does today).
+  if (!options_.enabled) return;
+
+  developer_ = urmsg::views::MakeDeveloper(urmsg::demo::GetWorld());
+  // DeveloperHost, NOT a Grid of this task's own: MainWindow.xaml:286 already
+  // declares it and ShowDestination's developer arm routes to it (the d7
+  // audit's A5 override — do not add a DeveloperPage Grid; that is "mounted
+  // into the collapsed twin", the failure this window has already shipped).
+  DeveloperHost().Children().Clear();
+  if (developer_.root) {
+    DeveloperHost().Children().Append(developer_.root);
+  } else {
+    urnw::LogWarn("window: MakeDeveloper returned no root; the Developer "
+                  "destination is empty");
+  }
+  urnw::LogInfo("window: developer page built");
 }
 
 void MainWindow::BuildStatusStrip() {
@@ -1087,7 +1110,7 @@ void MainWindow::ShowDestination(std::wstring_view tag) {
     incoming = NetworkHost();
     header = hstring{kDemoNavNetwork};
   } else if (tag == L"developer" && options_.enabled) {
-    incoming = StubPage();
+    incoming = DeveloperHost();
     header = hstring{kDemoNavDeveloper};
   } else if (tag == L"settings" && options_.enabled) {
     incoming = SettingsHost();

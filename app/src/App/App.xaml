@@ -194,6 +194,17 @@
             <FontFamily x:Key="UrHeadingCondensedFontFamily">ms-appx:///Assets/Fonts/abcgravity_extra_condensed.otf#ABC Gravity Extra Condensed</FontFamily>
             <FontFamily x:Key="UrBodyFontFamily">ms-appx:///Assets/Fonts/pp_neue_montreal_regular.ttf#PP Neue Montreal</FontFamily>
             <FontFamily x:Key="UrWordmarkFontFamily">ms-appx:///Assets/Fonts/pp_neue_bit_bold.ttf#PP NeueBit</FontFamily>
+            <!-- The one monospaced face in the app, for raw ids, hex and the
+                 DemoWorld dump on the Developer page. None of the existing Ur*
+                 families can serve: they are the three proportional brand
+                 faces above, and a dump of ids and aligned figures is
+                 unreadable in a proportional face. NOT a brand face — nothing
+                 user-facing in the product is set in it. Cascadia Mono ships
+                 with Windows 11 and Consolas is the floor, so the stack never
+                 falls through to a proportional face the way a single
+                 unavailable family would. If another surface ever wants a
+                 mono face it REUSES this key — it must not be defined twice. -->
+            <FontFamily x:Key="UrMonoFontFamily">Cascadia Mono, Consolas, Courier New</FontFamily>
 
             <!-- ================= THE TYPE RAMP (R1) =============================
                  The spec's Windows type ramp (Caption / Body / Body strong /
