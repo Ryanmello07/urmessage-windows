@@ -62,30 +62,38 @@ struct MainWindow : MainWindowT<MainWindow> {
   // in a comment somewhere else.
   void BuildConversationList();
 
-  // The demo thread. Built only under --demo: a normal launch is 480x760 and
-  // must behave exactly as it does today (design D7), so the pane keeps its
-  // "nothing selected" line. The conversation this opens on, and the two
-  // callbacks, become the click graph's when that task wires the rail.
-  void BuildThread();
+  // The click graph (design doc 9.1) and the demo's three content views.
+  // BuildDemoViews is the SOLE builder of list_, thread_ and rail_ (the d7
+  // audit's W5 Step-0 override: the placeholder-era BuildThread /
+  // BuildInspectRail / OnConversationSelected are deleted, not kept as second
+  // writers). Demo-only for the same reason the old builders were: a normal
+  // launch is 480x760 and must behave exactly as it does today (design D7),
+  // and building the views would build the demo world on the shipping path.
+  //
+  // Every one of the Select*/Clear* entry points is reached through a callback
+  // a view was CONSTRUCTED with, so MainWindow never walks a view's element
+  // tree looking for something to attach to.
+  void BuildDemoViews();
+  void RebuildConversationList();
+  void SelectConversation(int index);
+  // By value, not string_view: this is called with selectedMessageId_ and it
+  // writes selectedMessageId_. A view aliasing the member it is about to change
+  // is a use-after-free one edit away, with no compiler warning.
+  void SelectMessage(std::wstring id);
+  void ClearMessageSelection();
+  // -1 when nothing is open. Derived from the world every time rather than
+  // cached: a Conversation const* into World::conversations is invalidated by
+  // anything that appends, and ambient activity appends.
+  int OpenConversationIndex() const;
 
   urmsg::views::ThreadView thread_{};
-
-  // The inspector rail (design 6.3). Built only under --demo, for the same
-  // reason BuildThread is: a normal launch is 480x760 and must behave exactly
-  // as it does today (design D7), and a non-demo launch at 1600 dip must not
-  // grow an empty third pane.
-  //
-  // It does NOT own the rail COLUMN. MainWindow.xaml declares RailRule and
-  // RailHost, Demo/DemoShellState.h holds kRailWidthDip and
-  // kRailBreakpointDip, and ApplyBreakpoint is the one writer of the column
-  // width and both visibilities. This builds the rail's CONTENT and mounts it.
-  void BuildInspectRail();
-
   urmsg::views::InspectRailView rail_{};
+  std::wstring openConversationId_;
+  std::wstring selectedMessageId_;
 
   // The Network destination's whole content, built in code into NetworkHost
   // (MainWindow.xaml:282 — the d7 audit's N3 override; there is no
-  // NetworkBody). Demo-gated for the same reason BuildThread is: a normal
+  // NetworkBody). Demo-gated: a normal
   // launch must behave exactly as it does today (design D7/D8), and building
   // the page would build the demo world on the shipping path.
   void BuildNetworkPage();
@@ -143,10 +151,6 @@ struct MainWindow : MainWindowT<MainWindow> {
 
   urmsg::views::StatusStripView statusStrip_{};
 
-  // A row was clicked. Takes the row INDEX: ConversationListView::rows[i] is
-  // world.conversations[i], and nothing reorders either.
-  void OnConversationSelected(int index);
-
   // Reads search_.box and applies it to list_. One place, so the box's text and
   // the pane header's count cannot disagree.
   void ApplyConversationFilter();
@@ -191,11 +195,8 @@ struct MainWindow : MainWindowT<MainWindow> {
   // handler never collapses a module that was re-shown mid-fade.
   winrt::Microsoft::UI::Xaml::Controls::Grid searchEmpty_{nullptr};
   bool searchEmptyShown_ = false;
-  // Empty on a non-demo launch: BuildConversationList only fills it under --demo.
+  // Empty on a non-demo launch: BuildDemoViews only fills it under --demo.
   urmsg::views::ConversationListView list_{};
-  // -1 until something is selected. Held on the window because the window is
-  // what will also drive the thread and the rail.
-  int selectedConversation_ = -1;
   // The whole layout answer, not one bool: three thresholds now (list beside
   // thread at 1000, rail at 1500, strip at 560 of HEIGHT), all in CONTENT-root
   // dips, which is what ActualWidth/ActualHeight of Content() report.

@@ -108,56 +108,17 @@ MainWindow::MainWindow() {
   // fades the incoming page in and never collapses the old one, so both would be
   // drawn on top of each other.
   currentPage_ = ChatsPage();
-  // EnterDemoMode arms Advanced Mode, the DEMO chip and the deep link.
-  // Previously this ordering was ALSO load-bearing for which of
-  // ListScaffold/ListHost BuildConversationList had to fill; that split is
-  // gone (EnterDemoMode no longer collapses ListScaffold -- see its own
-  // comment -- and the demo's rows land in the same ConversationList the
-  // shipped placeholder rows use), so nothing below depends on this ordering
-  // for the list any more. Left as-is regardless: EnterDemoMode's other
-  // effects are naturally wanted before the list that can read them exists.
+  // The search row (and, on a normal launch, the placeholder rows) FIRST:
+  // RebuildConversationList, reached through EnterDemoMode -> BuildDemoViews,
+  // wires the box this builds. EnterDemoMode second: it resolves Advanced Mode
+  // (InitAdvancedMode) before any Set*Advanced seed reads it, arms the DEMO
+  // chip and the deep link, and builds the demo's three content views. Under
+  // --demo BuildConversationList early-returns without touching the list
+  // children, so the two never write the same container.
+  BuildConversationList();
   if (options_.enabled) {
     EnterDemoMode();
   }
-  // BEFORE BuildConversationList, and that ordering is load-bearing. Under
-  // --demo that function ends by calling OnConversationSelected(0) - the one
-  // selection this constructor performs, since the agent may not synthesise a
-  // click - and the selection handler is where the wiring surface will drive the
-  // rail from. (The wiring task replaces this file's OnConversationSelected with
-  // its own SelectConversation and drives the rail from there.) A rail built
-  // after that call would be a rail it cannot reach, which is this project's
-  // standing failure shape.
-  //
-  // *** READ THIS BEFORE GIVING THE RAIL A SECOND WRITER (R3). ***
-  //
-  // The wiring task installs its own --demo=inspect deep link, in DrainDeepLink.
-  // Its ordering is already safe - conversation first, message second - so the
-  // hazard is not the ordering. It is this:
-  //
-  //   DELETE THE --demo=inspect BRANCH IN BuildInspectRail() BELOW WHEN THAT
-  //   LANDS. Do not keep both. Two deep-link writers for one state is one too
-  //   many: whichever runs last wins, which makes the rail's subject an ordering
-  //   accident, and if the two designate different rows it silently parts the
-  //   rail from the bubble the thread outlines.
-  //
-  // WHY NOTHING WOULD CATCH IT. The rail has --diagnose probes for its FIELDS
-  // and its DEVICES, both computed from pure functions in InspectRailFields.
-  // The MODE decision used to be unreachable the same way - an inline `if` in
-  // this winrt translation unit - which is why R4 extracted it:
-  // InitialRailMode(screen, conv) is pure now, and InspectRailDeviceProbe
-  // asserts Inspect->Message, Chats->Conversation, and
-  // Inspect-with-no-message->Conversation (that last clause being the LogWarn
-  // arm below, at BuildInspectRail - NOT InspectRailView.cpp, which contains
-  // no LogWarn). The probe asserts what the mode SHOULD be, not which write
-  // lands last, so it becomes a real gate only alongside the single-writer
-  // rule stated above, which is the wiring task's half.
-  //
-  // And do NOT solve any of this by moving BuildInspectRail() after
-  // BuildConversationList(): that reintroduces the unreachable-rail failure this
-  // comment was originally written about.
-  BuildInspectRail();
-  BuildConversationList();
-  BuildThread();
   BuildNetworkPage();
   BuildSettings();
   BuildDeveloper();
@@ -170,7 +131,7 @@ MainWindow::MainWindow() {
   // the third of WindowReveal's three documented fallbacks and never fails.
   //
   // ConversationList unconditionally, not a demo/non-demo ternary: the demo's
-  // rows land there too now (BuildConversationList), so it is the one element
+  // rows land there too (RebuildConversationList), so it is the one element
   // that is ever actually visible as the list ring in either mode. ListHost,
   // which this used to switch to under --demo, is never made visible any more.
   const FrameworkElement listRing = ConversationList().as<FrameworkElement>();
@@ -234,10 +195,12 @@ void MainWindow::ApplyStrings() {
 
   // The thread pane's empty state: ONE muted line centred in a full-height
   // pane, not a card. A card inside a pane is two edges 16px apart, which is
-  // the reading the pane model exists to delete.
-  ThreadBody().Children().Clear();
-  ThreadBody().Children().Append(
-      urnw::kit::MakePaneEmptyLine(Loc("thread_none_selected")));
+  // the reading the pane model exists to delete. The line is DECLARED in
+  // markup (ThreadEmptyLine, inside ThreadBody) and only its text is set
+  // here: a .Children() write into ThreadBody is a write into the pane the
+  // demo collapses, which is the stale-mount failure mount_check exists to
+  // name — it flagged this line until it became markup.
+  ThreadEmptyLine().Text(Loc("thread_none_selected"));
 
   StubBody().Children().Clear();
   StubBody().Children().Append(
@@ -273,108 +236,18 @@ void MainWindow::BuildConversationList() {
       sender.as<Controls::TextBox>().Text(L"");
   });
 
+  // --demo: the demo world's rows are RebuildConversationList's job (W5, the
+  // d7 audit's Step-0 override - BuildDemoViews is the SOLE builder of list_,
+  // thread_ and rail_). This function runs first only because it builds the
+  // search row that builder wires, and it returns here so that nothing on the
+  // placeholder path - the Clear() below especially - can touch the container
+  // the demo's rows are already sitting in. Without --demo every line below
+  // is byte-for-byte what it was: design doc 8, "without --demo the app
+  // behaves exactly as it does today".
+  if (urmsg::demo::ParseDemoOptions().enabled) return;
+
   auto list = ConversationList().Children();
   list.Clear();
-
-  // --demo replaces the placeholder rows with the demo world. Without it, every
-  // line below is byte-for-byte what it was: design doc 8, "without --demo the
-  // app behaves exactly as it does today", which step 12 verifies in pixels.
-  if (urmsg::demo::ParseDemoOptions().enabled) {
-    auto const& world = urmsg::demo::GetWorld();
-    list_ = urmsg::views::MakeConversationList(world, [weak = get_weak()](int index) {
-      if (auto self = weak.get()) self->OnConversationSelected(index);
-    });
-    // `list` (ConversationList), now that EnterDemoMode no longer collapses
-    // ListScaffold: the demo's rows land in the SAME scaffold -- header,
-    // search row and all -- that the shipped placeholder rows below use. This
-    // was routed through the separate ListHost for a while (see git history);
-    // that detour existed only because ListScaffold was collapsed, and
-    // restoring the scaffold restores L2's originally intended target too.
-    list.Append(list_.root);
-    ListPaneCount().Text(winrt::to_hstring(static_cast<int>(world.conversations.size())));
-    urnw::LogInfo("window: demo conversation list built with {} rows",
-                  world.conversations.size());
-
-    // The unread InfoBadge on the Chats nav item (d3 3.2, the wave's
-    // optional item): the summed unread, set ONCE here - the world's unread
-    // counts never change at runtime, so a live binding would have nothing
-    // to do. The badge is neutral by the App.xaml theme overrides
-    // (InfoBadgeBackground/Foreground): not accent (reserved), not green
-    // (presence), not red (danger). A property set at build, never a
-    // Visibility flip - the WASDK 2.2.0 Auto-mode defect DrainDeepLink
-    // documents is about Collapsed -> Visible transitions, which this does
-    // not perform; the nav is still screenshot-verified after the change.
-    int unreadTotal = 0;
-    for (auto const& c : world.conversations) unreadTotal += c.unread;
-    if (0 < unreadTotal) {
-      Controls::InfoBadge badge;
-      badge.Value(unreadTotal);
-      ChatsNavItem().InfoBadge(badge);
-    }
-    // TextChanged, not KeyDown: it fires for paste, for undo and for a
-    // programmatic Text() write, and the filter must be true of the box's
-    // CONTENT rather than of the last key that touched it.
-    search_.box.TextChanged([weak = get_weak()](winrt::Windows::Foundation::IInspectable const&,
-                                                TextChangedEventArgs const&) {
-      if (auto self = weak.get()) self->ApplyConversationFilter();
-    });
-
-    // The search empty state (d3 2.5): when the filter returns nothing, the
-    // pane says WHY rather than going blank - the identicon lattice (an
-    // empty frame where a person-mark would go, the honest inverse of an
-    // avatar: no seed, no hue) and one line naming what the search reads.
-    // G4: the second line describes the search's BEHAVIOUR and is strictly
-    // true of ConversationRowMatches (name always; preview only when the row
-    // draws it) - it claims no crypto, and it teaches the privacy property
-    // demo.list.search asserts at the moment that property is operating.
-    // Both strings are English literals from code (DemoChip precedent;
-    // Resources.resw is generated). Mounted as ListScaffold's row-2 child
-    // AFTER the ScrollViewer so it paints above the emptied row area - into
-    // ListScaffold itself, never a new container: ListHost (MainWindow.xaml)
-    // is the standing warning about writing into a collapsed twin.
-    {
-      Controls::StackPanel column;
-      column.Spacing(8);
-      column.HorizontalAlignment(HorizontalAlignment::Center);
-      column.VerticalAlignment(VerticalAlignment::Center);
-      auto lattice = urmsg::MakeIdenticonLattice(64);
-      lattice.HorizontalAlignment(HorizontalAlignment::Center);
-      // Decorative: the two lines below carry all of the meaning.
-      Automation::AutomationProperties::SetAccessibilityView(
-          lattice, Automation::Peers::AccessibilityView::Raw);
-      column.Children().Append(lattice);
-      Controls::TextBlock headline;
-      headline.Text(L"No conversations match");
-      headline.FontSize(12);
-      headline.Foreground(urnw::colors::MutedBrush());
-      headline.TextAlignment(TextAlignment::Center);
-      column.Children().Append(headline);
-      Controls::TextBlock detail;
-      detail.Text(L"Search checks names and visible previews only.");
-      detail.FontSize(11);
-      detail.Foreground(urnw::colors::FaintBrush());
-      detail.TextAlignment(TextAlignment::Center);
-      column.Children().Append(detail);
-      searchEmpty_ = Controls::Grid();
-      searchEmpty_.Children().Append(column);
-      Controls::Grid::SetRow(searchEmpty_, 2);
-      searchEmpty_.Visibility(Visibility::Collapsed);
-      ListScaffold().Children().Append(searchEmpty_);
-    }
-
-    // Contract 5: Advanced Mode has ONE owner and no view reads the preference.
-    // This is the initial application; the live subscription that re-calls this
-    // on every toggle is registered by the wiring surface, which owns
-    // OnAdvancedModeChanged.
-    urmsg::views::SetConversationListAdvanced(list_, urmsg::AdvancedModeEnabled());
-
-    // The agent may not synthesise input, so a selection that only ever happens
-    // on a click is a state no capture can reach. Contract 2 already requires
-    // --demo=inspect to pre-select conversation 0; --demo=chats does the same so
-    // the three selection channels are visible at launch.
-    OnConversationSelected(0);
-    return;
-  }
 
   // A group header on the 28px rhythm, then the rows. Both come out of the kit,
   // which is what makes a list built in code and a pane declared in markup the
@@ -395,65 +268,228 @@ void MainWindow::BuildConversationList() {
                 kSampleConversations.size());
 }
 
-void MainWindow::BuildThread() {
-  // Gated on --demo. Without it this window is the 480x760 shell it is today,
-  // where ApplyBreakpoint collapses the thread column below 1000 dip anyway,
-  // and mounting fabricated messages into a normal launch would change the one
-  // thing design D7 says not to change.
-  //
-  // options_, NOT a second ParseDemoOptions() call. options_ is parsed once in
-  // the constructor and it is what ApplyBreakpoint reads to decide WHICH of the
-  // two thread surfaces is visible (ThreadPane vs ThreadHost). Re-parsing here
-  // would give the mount and the visibility two sources of truth for the one
-  // flag, and "mounted into the collapsed twin" is the failure this project has
-  // shipped four times. One flag, one read.
-  if (!options_.enabled) return;
+int MainWindow::OpenConversationIndex() const {
+  if (openConversationId_.empty()) return -1;
+  auto const& conversations = urmsg::demo::GetWorld().conversations;
+  for (size_t i = 0; i < conversations.size(); ++i)
+    if (conversations[i].id == openConversationId_) return static_cast<int>(i);
+  return -1;
+}
 
+void MainWindow::RebuildConversationList() {
+  // The view wires its own rows and calls back with an INDEX into
+  // World::conversations (contract v2 section 4), so there is one place that
+  // knows how a row maps to a conversation and it is not here.
   auto const& world = urmsg::demo::GetWorld();
-  if (world.conversations.empty()) return;
-  auto const& open = world.conversations.front();
+  list_ = urmsg::views::MakeConversationList(world, [weak = get_weak()](int index) {
+    if (auto self = weak.get()) self->SelectConversation(index);
+  });
+  // ConversationList, NOT ListHost (the d7 audit's W5-class-1 override):
+  // ListHost is Visibility="Collapsed" by XAML attribute at MainWindow.xaml:213,
+  // its own XAML comment says "never made Visible, nothing ever appended to it
+  // again", and no line of code ever flips it - mount_check reports it "ok"
+  // because it reads only .Visibility(Collapsed) WRITES in this file, a
+  // documented false pass for a XAML-declared Collapsed.
+  auto rows = ConversationList().Children();
+  rows.Clear();
+  if (!list_.root) {
+    urnw::LogError("window: MakeConversationList returned no root - the demo list pane is empty");
+    return;
+  }
+  rows.Append(list_.root);
+  ListPaneCount().Text(winrt::to_hstring(static_cast<int>(world.conversations.size())));
+  urnw::LogInfo("window: demo conversation list built with {} rows",
+                world.conversations.size());
 
-  // Both callbacks now DO the selection half of their job: SetThreadSelectedMessage
-  // owns the bubble edge (T5), so a click paints the accent outline and a click
-  // in empty thread space takes it away. What is still a seam is the RAIL - it
-  // does not exist yet, so nothing opens beside the selected bubble; the rail
-  // task adds that here without touching this file's structure.
-  //
-  // get_weak(), not `this`: MakeThread stores these for the window's life, and a
-  // raw capture would outlive a closed window.
+  // The unread InfoBadge on the Chats nav item (d3 3.2): the summed unread,
+  // set ONCE here - the world's unread counts never change at runtime, so a
+  // live binding would have nothing to do. The badge is neutral by the
+  // App.xaml theme overrides (InfoBadgeBackground/Foreground): not accent
+  // (reserved), not green (presence), not red (danger). A property set at
+  // build, never a Visibility flip - the WASDK 2.2.0 Auto-mode defect
+  // DrainDeepLink documents is about Collapsed -> Visible transitions, which
+  // this does not perform; the nav is still screenshot-verified after the
+  // change.
+  int unreadTotal = 0;
+  for (auto const& c : world.conversations) unreadTotal += c.unread;
+  if (0 < unreadTotal) {
+    Controls::InfoBadge badge;
+    badge.Value(unreadTotal);
+    ChatsNavItem().InfoBadge(badge);
+  }
+  // TextChanged, not KeyDown: it fires for paste, for undo and for a
+  // programmatic Text() write, and the filter must be true of the box's
+  // CONTENT rather than of the last key that touched it. The box is built by
+  // BuildConversationList, which is why the constructor runs that function
+  // before EnterDemoMode reaches this one.
+  search_.box.TextChanged([weak = get_weak()](winrt::Windows::Foundation::IInspectable const&,
+                                              TextChangedEventArgs const&) {
+    if (auto self = weak.get()) self->ApplyConversationFilter();
+  });
+
+  // The search empty state (d3 2.5): when the filter returns nothing, the
+  // pane says WHY rather than going blank - the identicon lattice (an
+  // empty frame where a person-mark would go, the honest inverse of an
+  // avatar: no seed, no hue) and one line naming what the search reads.
+  // G4: the second line describes the search's BEHAVIOUR and is strictly
+  // true of ConversationRowMatches (name always; preview only when the row
+  // draws it) - it claims no crypto, and it teaches the privacy property
+  // demo.list.search asserts at the moment that property is operating.
+  // Both strings are English literals from code (DemoChip precedent;
+  // Resources.resw is generated). Mounted as ListScaffold's row-2 child
+  // AFTER the ScrollViewer so it paints above the emptied row area - into
+  // ListScaffold itself, never a new container: ListHost (MainWindow.xaml)
+  // is the standing warning about writing into a collapsed twin. Built once
+  // (searchEmpty_ is the guard): this builder runs once today, but its name
+  // invites a second call and a second Append would throw.
+  if (!searchEmpty_) {
+    Controls::StackPanel column;
+    column.Spacing(8);
+    column.HorizontalAlignment(HorizontalAlignment::Center);
+    column.VerticalAlignment(VerticalAlignment::Center);
+    auto lattice = urmsg::MakeIdenticonLattice(64);
+    lattice.HorizontalAlignment(HorizontalAlignment::Center);
+    // Decorative: the two lines below carry all of the meaning.
+    Automation::AutomationProperties::SetAccessibilityView(
+        lattice, Automation::Peers::AccessibilityView::Raw);
+    column.Children().Append(lattice);
+    Controls::TextBlock headline;
+    headline.Text(L"No conversations match");
+    headline.FontSize(12);
+    headline.Foreground(urnw::colors::MutedBrush());
+    headline.TextAlignment(TextAlignment::Center);
+    column.Children().Append(headline);
+    Controls::TextBlock detail;
+    detail.Text(L"Search checks names and visible previews only.");
+    detail.FontSize(11);
+    detail.Foreground(urnw::colors::FaintBrush());
+    detail.TextAlignment(TextAlignment::Center);
+    column.Children().Append(detail);
+    searchEmpty_ = Controls::Grid();
+    searchEmpty_.Children().Append(column);
+    Controls::Grid::SetRow(searchEmpty_, 2);
+    searchEmpty_.Visibility(Visibility::Collapsed);
+    ListScaffold().Children().Append(searchEmpty_);
+  }
+
+  // Contract 5: Advanced Mode has ONE owner and no view reads the preference.
+  // This is the initial application; the live subscription that re-calls this
+  // on every toggle is registered by the wiring surface, which owns
+  // OnAdvancedModeChanged.
+  urmsg::views::SetConversationListAdvanced(list_, urmsg::AdvancedModeEnabled());
+
+  const int open = OpenConversationIndex();
+  if (0 <= open) urmsg::views::SetConversationSelected(list_, open);
+}
+
+void MainWindow::BuildDemoViews() {
+  RebuildConversationList();
+
+  // Built ONCE. SetThreadConversation re-points it; rebuilding it per
+  // selection would drop the two callbacks it was constructed with, and would
+  // re-run the bubble entrance animation for a conversation the viewer is
+  // already in. get_weak(), not `this`: MakeThread stores these for the
+  // window's life, and a raw capture would outlive a closed window.
   thread_ = urmsg::views::MakeThread(
       [weak = get_weak()](std::wstring id) {
-        auto self = weak.get();
-        if (!self) return;
-        urmsg::views::SetThreadSelectedMessage(self->thread_, id);
-        urnw::LogInfo("thread: bubble selected {}", winrt::to_string(id));
+        if (auto self = weak.get()) self->SelectMessage(std::move(id));
       },
       [weak = get_weak()]() {
-        auto self = weak.get();
-        if (!self) return;
-        urmsg::views::SetThreadSelectedMessage(self->thread_, L"");
-        urnw::LogInfo("thread: deselected");
+        if (auto self = weak.get()) self->ClearMessageSelection();
       });
-
   // ThreadHost, NOT ThreadBody. ApplyBreakpoint gives exactly one of the two
   // thread surfaces to a run: under --demo it collapses ThreadPane outright
-  // (EnterDemoMode does too) and shows ThreadHost, so anything appended to
-  // ThreadBody here would compile, log and render ZERO pixels. ThreadHost is a
-  // bare UrPaneStyle Grid with no header row, which is why nothing below writes
-  // a pane title: ApplyStrings already set ThreadPaneTitle once to
-  // Loc("pane_thread"), and UrPaneTitleStyle is the letterspaced CHROME voice -
-  // a mixed-case personal name set in it reads wrong. The conversation's name
-  // belongs to the wiring task that gives this host a header.
+  // and shows ThreadHost, so anything appended to ThreadBody here would
+  // compile, log and render ZERO pixels - the failure this window has already
+  // shipped, and the one mount_check reads this file to catch.
   ThreadHost().Children().Clear();
-  ThreadHost().Children().Append(thread_.root);
-  urmsg::views::SetThreadConversation(thread_, open);
-  urnw::LogInfo("thread: mounted {} rows, {} bubbles", open.rows.size(),
-                thread_.bubbles.size());
+  if (thread_.root)
+    ThreadHost().Children().Append(thread_.root);
+  else
+    urnw::LogError("window: MakeThread returned no root - the demo thread pane is empty");
+
+  rail_ = urmsg::views::MakeInspectRail();
+  // RailHost, and NOT a host of the rail task's own. RailHost is already the
+  // Grid.Column=4 occupant of ChatsPage (MainWindow.xaml), it is already what
+  // ApplyBreakpoint shows and hides with RailColumn and RailRule, and a second
+  // Grid in that cell would mean the shell displayed its empty one while this
+  // filled the other - "mounted into the collapsed twin" again.
+  RailHost().Children().Clear();
+  if (rail_.root)
+    RailHost().Children().Append(rail_.root);
+  else
+    urnw::LogError("window: MakeInspectRail returned no root - the inspector rail is empty");
+
+  // The density seed (R4, carried here by the d7 audit's W5 sequencing note:
+  // this line lived in BuildInspectRail, which W5's Step 0 deleted, and it
+  // moves beside the rail mount or the rail opens at normal density under
+  // --demo-advanced). ONE reader of the Advanced Mode truth, matching the
+  // conversation list's established call above (contract 5 allows one reader,
+  // not two). NOT options_.advanced: the switch is session-only and
+  // InitAdvancedMode has already folded it in. The LIVE toggle subscription
+  // is W7's, below.
+  urmsg::views::SetInspectRailAdvanced(rail_, urmsg::AdvancedModeEnabled());
+}
+
+void MainWindow::SelectConversation(int index) {
+  auto const& conversations = urmsg::demo::GetWorld().conversations;
+  if (index < 0 || conversations.size() <= static_cast<size_t>(index)) return;
+  auto const& conversation = conversations[static_cast<size_t>(index)];
+  // Re-clicking the conversation that is already open is a NO-OP, not a
+  // rebuild. A rebuild would re-run the thread's entrance animation and drop
+  // the message selection for something the viewer did not ask to change.
+  if (conversation.id == openConversationId_) return;
+
+  openConversationId_ = conversation.id;
+  selectedMessageId_.clear();
+  urmsg::views::SetConversationSelected(list_, index);
+  urmsg::views::SetThreadConversation(thread_, conversation);
+  urmsg::views::SetInspectRailConversation(rail_, conversation);
+  urnw::LogInfo("window: conversation -> {} (index {})",
+                urnw::Narrow(openConversationId_), index);
+}
+
+void MainWindow::SelectMessage(std::wstring id) {
+  // Below kRailBreakpointDip there IS no rail, so selecting a message does
+  // nothing visible and message inspect is unavailable until the window is
+  // widened again (design doc 6.5a). No sheet, no fallback, no error - a
+  // narrowed demo window is a smaller demo, not a broken one.
+  if (!layout_.rail) {
+    urnw::LogInfo("window: message inspect unavailable below {:.0f} dip of content width",
+                  urmsg::demo::kRailBreakpointDip);
+    return;
+  }
+  const int index = OpenConversationIndex();
+  if (index < 0) return;
+  auto const& conversation =
+      urmsg::demo::GetWorld().conversations[static_cast<size_t>(index)];
+  for (auto const& row : conversation.rows) {
+    if (row.id != id) continue;
+    selectedMessageId_ = id;
+    urmsg::views::SetThreadSelectedMessage(thread_, selectedMessageId_);
+    urmsg::views::SetInspectRailMessage(rail_, conversation, row);
+    urnw::LogInfo("window: message inspect -> {}", urnw::Narrow(selectedMessageId_));
+    return;
+  }
+  urnw::LogWarn("window: no row {} in conversation {}", urnw::Narrow(id),
+                urnw::Narrow(conversation.id));
+}
+
+void MainWindow::ClearMessageSelection() {
+  if (selectedMessageId_.empty()) return;
+  selectedMessageId_.clear();
+  urmsg::views::SetThreadSelectedMessage(thread_, std::wstring{});
+  const int index = OpenConversationIndex();
+  if (0 <= index)
+    urmsg::views::SetInspectRailConversation(
+        rail_, urmsg::demo::GetWorld().conversations[static_cast<size_t>(index)]);
+  urnw::LogInfo("window: message inspect cleared");
 }
 
 void MainWindow::BuildNetworkPage() {
-  // options_, NOT a second ParseDemoOptions() call - the same rule BuildThread
-  // states: ShowDestination's network arm reads options_ to decide whether the
+  // options_, NOT a second ParseDemoOptions() call: one flag, parsed once in
+  // the constructor. ShowDestination's network arm reads options_ to decide
+  // whether the host is routable at all, so a second read here would give the
   // host is routable at all, so a second read here would give the mount and
   // the route two sources of truth for one flag. It also keeps GetWorld() off
   // a normal launch (design §8: the app behaves exactly as it does today).
@@ -484,8 +520,8 @@ void MainWindow::BuildNetworkPage() {
 }
 
 void MainWindow::BuildSettings() {
-  // options_, NOT a second ParseDemoOptions() call — the same rule
-  // BuildThread/BuildNetworkPage state. It also keeps GetWorld() off a normal
+  // options_, NOT a second ParseDemoOptions() call — one flag, parsed once
+  // in the constructor (the rule BuildNetworkPage states). It also keeps GetWorld() off a normal
   // launch (design §8: the app behaves exactly as it does today).
   if (!options_.enabled) return;
 
@@ -514,8 +550,8 @@ void MainWindow::BuildSettings() {
 }
 
 void MainWindow::BuildDeveloper() {
-  // options_, NOT a second ParseDemoOptions() call — the same rule
-  // BuildThread/BuildNetworkPage/BuildSettings state. It also keeps
+  // options_, NOT a second ParseDemoOptions() call — one flag, parsed once
+  // in the constructor (the rule BuildNetworkPage states). It also keeps
   // GetWorld() off a normal launch (design §8: the app behaves exactly as it
   // does today).
   if (!options_.enabled) return;
@@ -542,7 +578,8 @@ void MainWindow::BuildStatusStrip() {
   // urmsg-01.ur.io" on a plain double-click of a build with no protocol would
   // do exactly that. This early return is also why demo::GetWorld() is never
   // constructed on a normal launch. options_, NOT a second ParseDemoOptions()
-  // call — the same rule BuildThread/BuildNetworkPage state.
+  // call — one flag, parsed once in the constructor (the rule
+  // BuildNetworkPage states).
   if (!options_.enabled) {
     urnw::LogInfo("window: status strip not built (demo off)");
     return;
@@ -595,129 +632,6 @@ void MainWindow::ToggleStatusDrawer() {
   const bool open = statusStrip_.drawer.Visibility() != Visibility::Visible;
   urmsg::views::SetStatusStripDrawerOpen(statusStrip_, open);
   urnw::LogInfo("window: status drawer -> {}", open ? "open" : "closed");
-}
-
-void MainWindow::BuildInspectRail() {
-  // options_, NOT a second ParseDemoOptions() call - the same rule BuildThread
-  // states: ApplyBreakpoint reads options_ to decide whether the rail column
-  // exists at all, so a second read here would give the mount and the
-  // visibility two sources of truth for one flag.
-  if (!options_.enabled) return;
-
-  rail_ = urmsg::views::MakeInspectRail();
-
-  // RailHost, and NOT a host of the rail task's own. RailHost is already the
-  // Grid.Column=4 occupant of ChatsPage (MainWindow.xaml), it is already what
-  // ApplyBreakpoint shows and hides with RailColumn and RailRule, and a second
-  // Grid in that cell would mean the shell displayed its empty one while this
-  // filled the other - "mounted into the collapsed twin", the failure this
-  // window has already shipped four times. Nothing in this task writes
-  // RailColumn().Width(), RailRule().Visibility() or RailHost().Visibility():
-  // ApplyBreakpoint is their one writer, from urmsg::demo::kRailWidthDip and
-  // kRailBreakpointDip.
-  RailHost().Children().Clear();
-  RailHost().Children().Append(rail_.root);
-
-  // The density seed (R4): ONE reader of the Advanced Mode truth, matching
-  // the conversation list's established call above (contract 5 allows one
-  // reader, not two). NOT demo_.advanced (does not exist) and NOT
-  // options_.advanced (the wrong source - the switch is session-only and
-  // InitAdvancedMode has already folded it in). This runs before the initial
-  // populate below, so the first render reads the right density from the
-  // tag; SetInspectRailAdvanced itself re-populates nothing yet because
-  // neither body is visible. The LIVE toggle subscription is the wiring
-  // task's (wiring.md:578), not this task's.
-  //
-  // W5 CARRY-OVER (the d7 distillation's sequencing note): when the wiring
-  // task deletes BuildInspectRail, this seeding line must move into
-  // BuildDemoViews beside the rail mount, or the rail opens at normal
-  // density under --demo-advanced.
-  urmsg::views::SetInspectRailAdvanced(rail_, urmsg::AdvancedModeEnabled());
-
-  auto const& world = urmsg::demo::GetWorld();
-  if (world.conversations.empty()) {
-    // DemoWorld's --diagnose invariant 1 requires 8 conversations, so this is a
-    // DemoWorld failure and --diagnose already names it. The rail stays empty
-    // rather than inventing a subject.
-    urnw::LogWarn("rail: not populated - the demo world has no conversations");
-    return;
-  }
-
-  // Conversation 0 is what --demo opens on (fixed contract 2), and it is the
-  // same conversation BuildConversationList selects a moment later.
-  auto const& conv = world.conversations.front();
-
-  // ONE initial mode, never both.
-  //
-  // Calling SetInspectRailConversation and then SetInspectRailMessage back to
-  // back would run two crossfades over the SAME two elements in OPPOSITE
-  // directions inside one synchronous block: RunCrossfade sets
-  // incoming.Opacity(0) and begins a storyboard, so both scrollers end up driven
-  // by two clocks at once and each Completed handler collapses its outgoing by
-  // reading that contested Opacity. The end state would be a race - and it is
-  // the exact frame every --demo=inspect capture depends on.
-  //
-  // --demo=inspect is a STATE, not a screen (design 8): the thread with a
-  // message pre-selected and the rail already in message mode, which is the
-  // state a screenshot needs and the state no click can reach for an agent.
-  // The rail takes its subject from PickInspectMessage; the thread's selection
-  // outline takes its own from kInspectTargetRowId. Those are TWO designations,
-  // not one shared function, so they agree by GATE and not by construction:
-  // InspectRailDeviceProbe asserts the pick equals the constant, and that
-  // assertion is the only thing keeping the rail and the outline on the same
-  // bubble. If it ever fails, this deep link and the thread have parted.
-  //
-  // THE DECISION ITSELF IS PURE NOW (R4): InitialRailMode lives in
-  // InspectRailFields, so InspectRailDeviceProbe asserts what the mode SHOULD
-  // be - the deep link, the default, and the no-message arm below. What the
-  // probe cannot assert is which write lands LAST; that half stays the wiring
-  // task's single-writer rule.
-  //
-  // *** THE WIRING TASK MUST DELETE THIS BRANCH, NOT KEEP IT. *** That task
-  // installs its own --demo=inspect deep link in DrainDeepLink. Two writers of
-  // one state is one too many: whichever runs last wins, which makes the rail's
-  // subject an ordering accident, and if the two do not designate the same row
-  // it can put the rail on a different bubble from the one the thread outlines.
-  // The constructor comment above BuildInspectRail() states the hazard.
-  if (urmsg::views::InitialRailMode(options_.screen, conv) ==
-      urmsg::views::RailMode::Message) {
-    // InitialRailMode returns Message only when the pick is non-null, so the
-    // second pick here cannot miss; it is the same pure, deterministic call
-    // the function itself made.
-    urmsg::views::SetInspectRailMessage(rail_, conv, *urmsg::views::PickInspectMessage(conv));
-    return;
-  }
-  if (options_.screen == urmsg::demo::DemoScreen::Inspect) {
-    // The arm InitialRailMode's third probe clause covers: Inspect asked, but
-    // this conversation has no message row to be about.
-    urnw::LogWarn("rail: --demo=inspect but conversation 0 has no message row");
-  }
-  urmsg::views::SetInspectRailConversation(rail_, conv);
-}
-
-// DRIVING THE RAIL FROM A SELECTION HANDLER? Read the block above
-// BuildInspectRail() in the constructor first (R3). The wiring task replaces
-// this function with SelectConversation and drives the rail from there; the rule
-// that matters is that --demo=inspect must end up with exactly ONE writer, which
-// means deleting BuildInspectRail()'s deep-link branch rather than keeping both.
-// Nothing in --diagnose checks the rail's MODE, so getting this wrong is silent.
-void MainWindow::OnConversationSelected(int index) {
-  auto const& world = urmsg::demo::GetWorld();
-  if (index < 0 || world.conversations.size() <= static_cast<std::size_t>(index)) return;
-  selectedConversation_ = index;
-  urmsg::views::SetConversationSelected(list_, index);
-
-  // The pane TITLE stays "THREAD": UrPaneTitleStyle is the letterspaced chrome
-  // voice (App.xaml:838-847) and a mixed-case name set in it reads wrong. The
-  // conversation's name goes in the BODY as one muted centred line -- an
-  // acknowledged interim state, replaced wholesale when the ThreadView surface
-  // lands. A centred muted line is an empty state, not an affordance, so it does
-  // not read as something that looks live and does nothing (design 9.1).
-  ThreadBody().Children().Clear();
-  ThreadBody().Children().Append(
-      urnw::kit::MakePaneEmptyLine(winrt::hstring{world.conversations[index].name}));
-  urnw::LogInfo("window: conversation {} selected ({})", index,
-                winrt::to_string(winrt::hstring{world.conversations[index].name}));
 }
 
 void MainWindow::ApplyConversationFilter() {
@@ -807,12 +721,11 @@ void MainWindow::EnterDemoMode() {
   // The shipped THREAD scaffold steps aside for the demo's ThreadHost; the
   // LIST scaffold does not, and ListHost is never made visible. Unlike the
   // thread (a genuinely different view the demo swaps in), the list pane's
-  // shape does not change under --demo -- BuildConversationList fills the
-  // same ConversationList/SearchHost/ListPaneCount either way -- so there is
-  // no second list host to switch to, and collapsing ListScaffold here used
-  // to take the search row and the pane header count down with it for no
-  // reason tied to the demo/non-demo split itself (fixed: see
-  // BuildConversationList's comment on the demo branch).
+  // shape does not change under --demo -- RebuildConversationList fills the
+  // same ConversationList/SearchHost/ListPaneCount the placeholder rows use --
+  // so there is no second list host to switch to, and collapsing ListScaffold
+  // here used to take the search row and the pane header count down with it
+  // for no reason tied to the demo/non-demo split itself.
   ThreadPane().Visibility(Visibility::Collapsed);
 
   // Content only, here. The Visibility flip is deferred to DrainDeepLink (fix
@@ -835,6 +748,15 @@ void MainWindow::EnterDemoMode() {
   DemoChipLatticeHost().Children().Append(urmsg::MakeIdenticonLattice(10));
   DemoChip().Visibility(options_.watermark ? Visibility::Visible
                                            : Visibility::Collapsed);
+
+  // The demo's three content views, built ONCE here (W5: BuildDemoViews is
+  // their sole builder - the placeholder-era BuildThread/BuildInspectRail/
+  // OnConversationSelected are gone, so nothing after this line reassigns
+  // list_, thread_ or rail_). After InitAdvancedMode, so the Set*Advanced
+  // seeds inside read the resolved truth; after BuildConversationList, so the
+  // search box RebuildConversationList wires exists. Nothing is SELECTED yet:
+  // the deep link below owns the one pre-selection an agent may reach.
+  BuildDemoViews();
 
   // Armed, not run. See DrainDeepLink.
   pendingLink_ = link;
@@ -916,19 +838,36 @@ void MainWindow::DrainDeepLink() {
 
   SelectNavTag(pendingLink_.navTag);
 
-  // The MESSAGE half of the deep link, which used to be logged and not done.
-  // DemoShellState.h defines --demo=inspect as "thread PLUS a message
-  // pre-selected", and DemoWorld::kInspectTargetRowId names it: c0-r12, an
-  // outgoing row in state Read.
+  // The CONVERSATION half of the deep link. Conversation 0 is named explicitly
+  // rather than taken from the view's first row: World is seeded and
+  // deterministic (design doc 5), so it is a stable target, and it stays the
+  // right target even if something later reorders the list's children.
   //
   // IT HAS TO HAPPEN HERE, not in the constructor. A property written during
   // construction is written against a template that has not been applied and a
   // tree that has not been laid out, so the border it sets never repaints. This
   // runs from the content root's first SizeChanged, after ApplyBreakpoint - i.e.
   // post-layout on a realized tree - which is the same reason the nav selection
-  // was moved here.
-  if (pendingLink_.selectMessage && thread_.root)
-    urmsg::views::SetThreadSelectedMessage(thread_, urmsg::demo::kInspectTargetRowId);
+  // was moved here. Conversation first, message second: SelectMessage reads
+  // OpenConversationIndex(), so the order is load-bearing.
+  if (pendingLink_.selectConversation) SelectConversation(0);
+  // The MESSAGE half, and the ONE `pendingLink_.selectMessage` branch in this
+  // file (the d7 audit's three-writers override: BuildInspectRail's deep-link
+  // branch and DrainDeepLink's old SetThreadSelectedMessage line are both
+  // deleted, so the rail's subject can never be an ordering accident). The
+  // pick is the shared one - PickInspectMessage, c0-r12 (Read, delivered-by 7,
+  // read-by 7) - NOT the last RowKind::Message: that is c0-r23, Pending, with
+  // no received-at and no device lists, and it would open the showcase capture
+  // on a blank Received row (the d7 distillation's §2.2 ruling).
+  // InspectRailDeviceProbe asserts the pick equals kInspectTargetRowId, so the
+  // rail and the outline cannot part.
+  if (pendingLink_.selectMessage) {
+    auto const& conv = urmsg::demo::GetWorld().conversations.front();
+    if (auto const* picked = urmsg::views::PickInspectMessage(conv))
+      SelectMessage(picked->id);
+    else
+      urnw::LogWarn("window: --demo=inspect but conversation 0 has no message row");
+  }
 
   // The AMBIENT-APPEND seed (T6). AppendThreadRow is design §9.2's one entry
   // point for ambient activity and the loop that will drive it is not built
@@ -1072,6 +1011,9 @@ void MainWindow::ApplyBreakpoint() {
   const auto railVisibility = rail ? Visibility::Visible : Visibility::Collapsed;
   RailRule().Visibility(railVisibility);
   RailHost().Visibility(railVisibility);
+  // An outlined bubble with no rail beside it is an affordance pointing at
+  // nothing. Dropping below the breakpoint drops the selection with the rail.
+  if (!rail && !selectedMessageId_.empty()) ClearMessageSelection();
 
   // The strip is hidden below kStripMinHeightDip of content HEIGHT so it can
   // never eat a readable thread at Spec C 1.2's 480dip minimum.

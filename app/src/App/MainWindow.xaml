@@ -245,7 +245,22 @@
                             <TextBlock x:Name="ThreadPaneTitle"
                                        Style="{StaticResource UrPaneTitleStyle}" />
                         </Border>
-                        <Grid x:Name="ThreadBody" Grid.Row="1" />
+                        <Grid x:Name="ThreadBody" Grid.Row="1">
+                            <!-- the pane's empty state, declared in markup so no
+                                 .Children() write into this pane exists in code:
+                                 ThreadPane is collapsed under the demo flag, and
+                                 a code mount into it is the stale-mount failure
+                                 mount_check.py exists to name. ApplyStrings sets
+                                 only this line's Text. Same shape as
+                                 UrComponents' MakePaneEmptyLine. -->
+                            <TextBlock x:Name="ThreadEmptyLine"
+                                       Style="{StaticResource UrSupportingTextStyle}"
+                                       Foreground="{StaticResource UrTextFaintBrush}"
+                                       TextAlignment="Center" TextWrapping="Wrap"
+                                       MaxWidth="320" Margin="16"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center" />
+                        </Grid>
                     </Grid>
 
                     <!-- the demo's ThreadView -->
