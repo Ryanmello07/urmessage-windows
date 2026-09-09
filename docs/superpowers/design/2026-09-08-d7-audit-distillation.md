@@ -474,3 +474,331 @@ group and the owner of the honesty string.
   `ScrollViewer` with `HorizontalScrollBarVisibility=Disabled`, `VerticalScrollBarVisibility=Auto`
   wrapping the `column` StackPanel." Structure sketch (tokens already in App.xaml —
   `UrPaneHeaderStyle` = 40 DIP, `UrSheetBrush` #151515, 1 px bottom hairline):
+  ```xml
+  <!-- root returned by MakeNetworkPage (Views/NetworkPageView.cpp) -->
+  <Grid>                                   <!-- UrPaneStyle ground, page #101010 -->
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>       <!-- 40 DIP header -->
+      <RowDefinition Height="*"/>
+    </Grid.RowDefinitions>
+    <Border Grid.Row="0" Style="{StaticResource UrPaneHeaderStyle}">
+      <TextBlock Style="{StaticResource UrPaneTitleStyle}" Text="NETWORK"/>
+    </Border>
+    <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled"
+                  VerticalScrollBarVisibility="Auto">
+      <StackPanel x:Name="column"/>        <!-- N3 relay path, N4 server group, N5 devices -->
+    </ScrollViewer>
+  </Grid>
+  ```
+  Per N2's override: in `MakeNode`, the hop figure renders only when `node.hopMs > 0` — the
+  "This device" node shows no `0 ms`.
+
+### N4 — message-server group (network.md:1013-1132) · 1 finding
+- **CONFIRMED (G4)** — green bare `Verified`. → §2.4 (N4 override). Keep the colour rule
+  (kUrGreen #87FB67 / danger #F8523B); the words carry the framing.
+
+### N5 — your devices (network.md:1133-1343) · 1 finding
+- **CONFIRMED** — Step 9's screenshot expectations contradict the fixture. Override: "Correct
+  Step 9's expectations before you capture: the three rows read `This computer · Online` (Windows
+  desktop), `Online` (Pixel 9 — it ships online=true, so its lastSeenLabel `2 min ago` is
+  deliberately NOT shown), and `Last seen 3 days ago` (Linux laptop). Item 4 reads: TWO green
+  `#87FB67` dots (Windows desktop and Pixel 9) and ONE faint `#5A5A5A` dot (Linux laptop). Do NOT
+  edit Demo/DemoWorld.cpp to make the original text true — device `online` is inside the I10
+  fingerprint (Startup.cpp:200)."
+
+### N6 — Advanced Mode on the Network page (network.md:1344-end) · 2 findings
+- **UNVERIFIED → ruled here** — the subscriber guard greps the wrong name. → §1.2 (probe
+  override; N6 seeds only, adds no function and no registration).
+- **CONFIRMED** — Step 12's expected log order is swapped against the mandated code. Override:
+  "Fix Step 12's expected output to the order the mandated code actually emits: `network: relay
+  pulse animate=true shouldAnimate=true loaded=false`, then `network: advanced mode -> true`,
+  then `network: relay pulse begun on Loaded`. Do not reorder the LogInfo calls in
+  `SetNetworkPageAdvanced` to match the brief — the pulse line belongs inside
+  `SetRelayPathAnimated` where it reads the values it prints." Motion note (constraint: UrMotion
+  gate): the wire pulse must read `ShouldAnimate()` (its log line already prints it), any pulse
+  durations come from the UrMotion tokens (kMicroMs 90 / kFastMs 150 / kBaseMs 250 / kSlowMs 400,
+  standard bezier (0.10,0.90)→(0.20,1.00)), and N6 Step 13's reduce-motion re-render is the only
+  reduce-motion capture of this surface — do not skip it.
+
+### S1 — pure strip rules (strip.md:7-362) · 1 finding
+- **PARTIAL** — S1 re-declares the shell's 560 collapse rule under new names. Override: "Do NOT
+  define `kStatusStripCollapseDip` or `ShouldShowStatusStrip` and do NOT add the `strip collapse`
+  assertion. `urmsg::demo::kStripMinHeightDip` (Demo/DemoShellState.h:41) and `LayoutFor().strip`
+  already own the 560 CONTENT-dip collapse rule, ApplyBreakpoint already consumes them, and
+  Startup.cpp:359's `stripEdge` term already asserts that exact boundary. Ship only
+  `kStatusStripHeightDip`, `StatusStateWord`, `StatusLockGlyph`, `StatusEpochValue`,
+  `StatusRecordsValue` and the single `strip fields` assertion line."
+
+### S2 — the 26 DIP strip (strip.md:363-1040) · 5 findings
+Geometry already set by the brief and kept: a 26 DIP strip (`kStatusStripHeightDip`), full window
+width, `UrSheetBrush` #151515 on page #101010 with a 1 px **top** hairline only; first mark is an
+8 DIP `kUrGreen` dot centred in a 20 DIP host at a 16 DIP content inset.
+- **PARTIAL** — Step 8 duplicates the host row + `StatusStripHost`. Override: "Skip Step 8
+  entirely. MainWindow.xaml already has the third `<RowDefinition Height="Auto" />` (line 40) and
+  `<Grid x:Name="StatusStripHost" Grid.Row="2" Visibility="Collapsed" />` (line 278). Add
+  neither; mount into the existing host."
+- **CONFIRMED** — Step 11's ApplyBreakpoint rewrite names members that don't exist and drops the
+  rail term. Override: "Do NOT rewrite ApplyBreakpoint. It already computes `layout_ =
+  urmsg::demo::LayoutFor(width, height)` on CONTENT dips (MainWindow.xaml.cpp:680), already
+  carries `next.rail == layout_.rail` in its early-out, and already writes
+  `StatusStripHost().Visibility(options_.enabled && layout_.strip ? ... )` at line 715. Change
+  nothing in that function — there is no `demo_`, `wide_`, `stripVisible_` or
+  `breakpointApplied_`; the members are `options_`, `layout_` and `layoutApplied_`."
+- **CONFIRMED (G4)** — padlock named `Server key verified`. → §2.4 (S2 override).
+- **CONFIRMED** — Steps 14/15 gate on window dips; ApplyBreakpoint logs content dips. Override:
+  "Steps 14 and 15: do NOT add a `window: status strip -> ...` log line and do not expect one.
+  ApplyBreakpoint already logs `window: layout wide=.. rail=.. strip=.. (content WxH dip)` in
+  CONTENT dips, about 14 fewer than the window dips verify-render prints. Assert `strip=false` on
+  that existing line for the no-switch launch, `strip=true` at 1560x900 (which logs `content
+  1546x892`), and `strip=false` after the 1200x500 resize — never a window-dip figure."
+- **PARTIAL** — the W6 mount collision. → §1.1 (resolution α: S2 keeps its mount; member stays
+  `statusStrip_`; demo gate reads `options_.enabled`, not the nonexistent `demo_`).
+
+### S3 — the preview drawer (strip.md:1041-1485) · 5 findings
+Geometry kept: 320 DIP wide × 137 DIP tall (1 top hairline + 28 header + 3×36 rows), raised above
+the strip from `StatusDrawerHost` (Grid.Row 1, bottom-left), drawer margin 16,0,0,0. Entrance at
+kBaseMs 250, dismiss at kFastMs 150 (exits one step faster), both under `ShouldAnimate()`.
+- **CONFIRMED** — `ToggleStatusDrawer` collision. → §1.1 (α: S3 owns it; W6 deletes its copy).
+- **CONFIRMED (G4)** — unframed `RELAY PATH` header. → §2.4 (S3 override: `DEMO MODEL: RELAY
+  PATH` in the same letterspaced chrome voice; no new colour or key).
+- **PARTIAL** — Step 12's log gate reads across launches (append-mode log, 57 launches).
+  Override: "Step 12: add `Remove-Item .localstate-verify\logs\urmessage-app.log
+  -ErrorAction SilentlyContinue` as the first command of Step 10, before the verify-render
+  launch. Log.cpp opens the file OPEN_ALWAYS and appends across launches (the current file holds
+  57), so without the delete 'exactly one line for this run' can read green off a line an earlier
+  attempt wrote." (This is plan G2's banned gate shape; the delete is the sanctioned repair.)
+- **PARTIAL** — the shipped comment points at the wrong host. Override: "Step 2: in the same
+  edit, replace MainWindow.xaml line 277's 'and its preview drawer opens ABOVE it inside this
+  same host' with 'its preview drawer is hosted by StatusDrawerHost in Grid.Row 1, so raising it
+  cannot grow this Auto row'. `git grep StatusDrawerHost` confirms the host itself is genuinely
+  new, but the existing comment must not be left pointing at the wrong one."
+- **PARTIAL** — "flush with the connect dot" is off by 6 DIP (dot ink sits at 22, slot at 16).
+  Override: "Step 11: strike 'flush with the connect dot below it'. S2's MakeConnectDot centres
+  an 8 DIP dot in a 20 DIP host at inset 16, so the dot's left edge is at 22 and the 16 DIP
+  drawer margin puts the drawer 6 DIP to its LEFT. Expect instead: 'left edge 16 DIP from the
+  window edge, aligned with the strip's content inset, i.e. with the left edge of the dot's 20
+  DIP host'."
+
+### S4 — Advanced fields on the strip (strip.md:1486-end) · 1 finding
+- **PARTIAL** — the decision grep routes to a nonexistent lambda. → §1.2 (S4 override, quoted
+  there). Six marks with five hairlines in the same 26 DIP row under `--demo-advanced`; four
+  marks without; the appended fields come after the padlock.
+
+### A2 — Developer session switches (advanced.md:7-339) · 2 findings
+- **CONFIRMED** — the reduce-motion render has never executed on this machine; A2 is the only
+  task that can look at it. Override: "Add a step 10b before the commit. Temporarily insert
+  `urnw::motion::SetMotionOverride(false);` as the first line of the MainWindow constructor,
+  rebuild, run `verify-render.ps1 -AppArgs "--demo=thread"`, and READ
+  `.verify/urmessage-window-screen.png`: every conversation row and every message bubble must be
+  at full opacity with no element stuck faded or offset, and the window must be fully revealed.
+  Save it as `.verify/motion-off.png` and cite that filename in the deliverable. Then remove the
+  temporary line and rebuild. This is the render ThreadView.cpp:83-88 says has never executed on
+  this machine; A2 is the task that must look at it once."
+- **CONFIRMED** — phantom `AdvancedModeDiagnostics()` / "A1". Override: "There is no
+  `AdvancedModeDiagnostics()` in the tree — the Advanced Mode content in `CollectDiagnostics()`
+  is an inline report line, not an assertion loop. Insert `for (auto& line :
+  urmsg::demo::DeveloperSwitchDiagnostics()) lines.push_back(std::move(line));` immediately after
+  the existing `for (auto& line : DemoWorldAssertions()) ...` loop in Startup.cpp, and A6's
+  `WorldDumpDiagnostics()` loop immediately after that one. Strike every reference to 'A1' from
+  A2's Interfaces block […]." Correction to the last sentence: Demo/AdvancedMode.h shipped from
+  **F6**, not "wiring.md's W2" (plan:227-229 — W2 was dropped at assembly).
+
+### A3 — Settings (advanced.md:340-976) · 4 findings
+- **CONFIRMED** — `SettingsPage` paints zero pixels. Override: "Do NOT insert the Step-6 XAML.
+  `SettingsHost` already exists at MainWindow.xaml:267 with Style=UrPaneStyle […]. In
+  BuildSettings, mount into `SettingsHost()` and guard the append with `if (settings_.root)`.
+  Delete step 9 entirely: ShowDestination has been rewritten by the shell task — there is no
+  `const bool chats` local, no `StubPage()` visibility line and no `const auto label = (tag ==
+  L"contacts") ? ...` tail to edit […]." **Plus the §0 drift line:** re-point the settings arm
+  (:748-749) from `StubPage()` to `SettingsHost()`.
+- **CONFIRMED (G4)** — green bare `Verified` for the server key. → §2.4 (A3 override; N2 lands
+  first, A3 calls `urmsg::views::FormatKeyState`).
+- **CONFIRMED** — duplicate options member, second parse, second init, second deep-link writer.
+  Override: "Delete steps 7 and 8's `demoOptions_` member, the `demoOptions_ =
+  ParseDemoOptions()` line, the `urmsg::InitAdvancedMode(...)` line and the whole
+  `SelectDemoScreen` function and its declaration. Read `options_` (MainWindow.xaml.h) where you
+  need the demo options; Advanced Mode is already seeded by `EnterDemoMode()` at
+  MainWindow.xaml.cpp:468 via `DeepLinkFor(options_.screen).forceAdvanced` […]; and the deep link
+  is already delivered by `DrainDeepLink()` -> `SelectNavTag(pendingLink_.navTag)` from the first
+  SizeChanged, which is where it has to run."
+- **CONFIRMED** — private `StyleByKey` copy. Override: "In BOTH Views/SettingsView.cpp and
+  Views/DeveloperView.cpp, delete the private `StyleByKey` and its comment.
+  `urnw::kit::StyleByKey` is exported at UrComponents.h:122 — the file already includes
+  UrComponents.h, so call `kit::StyleByKey(L"...")` (as InspectRailView.cpp does) or add `using
+  urnw::kit::StyleByKey;` (as ThreadView.cpp:41 does). A6's `FontFamilyByKey` is genuinely new
+  and stays."
+
+### A4 — the Advanced Mode gate (advanced.md:977-1173) · 2 findings
+- **PARTIAL** — the positive control is unsatisfiable (there is no task A1). Override: "Replace
+  step 6's positive control: there is no `AdvancedModeDiagnostics()` and no `advanced.notify`
+  line in the tree — do not look for one. Prove the query and the path instead by writing the
+  preference through the only writer there is: run `URMESSAGE_APP_ROOT=<scratch> URmessage.exe
+  --diagnose` once to confirm NO app_prefs.json appears, then add a throwaway
+  `urmsg::SetAdvancedModeEnabled(true)` call at the top of CollectDiagnostics, rebuild, re-run,
+  and confirm `Select-String` finds `"advanced_mode":true` at `<scratch>\app_prefs.json`. Revert
+  that line before step 7. Publish both outputs beside step 7's result; without them step 7 is
+  not a gate."
+- **CONFIRMED** — the second subscription. → §1.2 (A4 override, quoted there). A4 shrinks to the
+  prefs gate; no MainWindow subscription code at all.
+
+### A5 — Developer (advanced.md:1174-1723) · 4 findings
+- **CONFIRMED** — `DeveloperPage` paints zero pixels. Override: "Do NOT insert the Step-6 `<Grid
+  x:Name="DeveloperPage">`. `DeveloperHost` already exists at MainWindow.xaml:269 […]. In
+  BuildDeveloper, mount into `DeveloperHost()` with `if (developer_.root)` guarding the append
+  […] and drop step 8(e)'s ShowDestination edits […]." **Plus the §0 drift line:** re-point the
+  developer arm (:745-747) from `StubPage()` to `DeveloperHost()`.
+- **CONFIRMED** — duplicate `DeveloperNavItem`. Override: "Do NOT add a DeveloperNavItem. One
+  already exists at MainWindow.xaml:134 (Tag="developer", Visibility="Collapsed", glyph E943 =
+  Code) and its label is already written by `EnterDemoMode()` at MainWindow.xaml.cpp:487 as
+  `kDemoNavDeveloper`. Delete step 6's FooterMenuItems replacement and step 8(b)'s
+  `DeveloperNavItem().Content(...)` line entirely; keep the glyph the shell chose."
+- **CONFIRMED** — the unpaired `Visibility` write (nav corruption). → §1.2 (A5-class-9 override,
+  quoted there; the flip + PaneDisplayMode cycle lands inside **W7's** `ApplyAdvanced`, not in
+  A5). A5's launch-time captures still work: DrainDeepLink:566 sets the launch visibility until
+  W7 lands.
+- **PARTIAL** — Step 10's 30-60 band fails against the seeded 66. Override: "In step 10, expect
+  `Message rows` = **66**, not 'between 30 and 60'. `--diagnose` prints `demo world : 8
+  conversations, 66 rows, 22 members, 3 devices`; that is the sum of `Conversation::rows.size()`
+  and it is the same figure A6 step 5's `dump.world` line must show on both sides of its second
+  pair. Do not touch DemoWorld to make a number match."
+
+### A6 — the DemoWorld dump (advanced.md:1724-end) · 2 findings
+- **CONFIRMED (G4)** — the cipher dump. → §2.4 (A6 cipher override).
+- **PARTIAL (G4)** — unframed `key=verified` / `att=1` + clipboard. → §2.4 (A6 framing
+  override). Also: A6's own step-5 expected `41 row lines` is wrong against the tree (66) — the
+  completeness gate would fail its own documented output on first run; fix the expectation with
+  the same 66 A5 uses.
+
+### W5 — click graph, part 1 (wiring.md:7-320) · 5 findings
+The highest-risk task in the set: it **deletes** live builders.
+- **CONFIRMED** — the ListHost mount. → §2.1 (override quoted there).
+- **PARTIAL** — BuildDemoViews is overwritten by three later builders. Override: "Add a Step 0 to
+  W5: in app/src/App/MainWindow.xaml.cpp DELETE MainWindow::BuildThread(),
+  MainWindow::BuildInspectRail() and MainWindow::OnConversationSelected() outright, delete their
+  three declarations from MainWindow.xaml.h, delete the `BuildInspectRail(); BuildThread();`
+  calls at MainWindow.xaml.cpp:150,152, and delete the whole `if
+  (urmsg::demo::ParseDemoOptions().enabled) { ... }` demo branch of BuildConversationList
+  (MainWindow.xaml.cpp:243-274) so that function keeps only its placeholder path. BuildDemoViews
+  is the sole builder of list_, thread_ and rail_ from this task on. Re-run mount_check.py on
+  MainWindow.xaml.cpp afterwards and confirm the two pre-existing ThreadBody writes are gone with
+  it." **Append the R4 carry-over sentence from §3/R4** (the SetInspectRailAdvanced seeding line
+  moves into BuildDemoViews). Built-in verification: mount_check's permanent exit-1 on
+  MainWindow.xaml.cpp comes from those two ThreadBody writes — after Step 0 it should read clean.
+- **CONFIRMED** (upgraded from UNVERIFIED by the audit's closing verifier) — three writers of the
+  inspect selection. → §2.2 (override quoted there).
+- **PARTIAL** — the c0-r23 pick. → §2.2 (override quoted there).
+- **CONFIRMED** — Step 1 re-declares three members. Override: "In Step 1 add ONLY `#include
+  <vector>`, `#include "Demo/DemoWorld.h"` and the six method declarations. Do NOT re-add list_,
+  thread_ or rail_ -- MainWindow.xaml.h already declares them at lines 120, 67 and 80 -- and do
+  NOT re-add Views/ConversationListView.h, Views/InspectRailView.h or Views/ThreadView.h, which
+  are already included at lines 25-27. Add only the two genuinely new members, `std::wstring
+  openConversationId_;` and `std::wstring selectedMessageId_;`."
+
+### W6 — click graph, part 2 (wiring.md:321-523) · 3 findings → superseded
+- **PARTIAL** — the drawer mount. Moot under §1.1 (S3 owns the drawer); the conditional override
+  is on file in §1.1.
+- **PARTIAL** — `ToggleStatusDrawer` / `strip_` / `drawerOpen_`. → §1.1 (W6 deletes them).
+- **PARTIAL** — `network_` / `settings_` / `developer_`. → §1.1 (deleted; residual null-guard
+  audit folds into W7's pre-flight; attribution fix: settings owner is **A3**).
+
+### W7 — one subscriber, five surfaces (wiring.md:524-696) · 2 findings
+- **PARTIAL** — Step 7's counted gate can't see a crossfade. Override: "Replace Step 7's second
+  counted claim with one that a crossfade would actually move. Either (a) grep the source instead
+  of the log: `git grep -c 'SetInspectRailMessage' -- app/src/App/MainWindow.xaml.cpp` must
+  return 1, and that one call must sit inside MainWindow::SelectMessage -- ApplyAdvanced must
+  contain zero SetInspectRailMessage and zero SetInspectRailConversation calls; or (b) have R2
+  log one line inside RunCrossfade and count that. […]" Verifier correction to the override's
+  closing rationale: `SetInspectRailMessage` **does** log (`rail: message mode ->`,
+  InspectRailView.cpp:654) — so counting *that* string is a viable option (c); the defect is that
+  the gate counts the wrong string, not that the mutation is invisible.
+- **CONFIRMED** — Step 3's delete anchor names the wrong function. Override: "The line to delete
+  is at MainWindow.xaml.cpp:566, inside DrainDeepLink, not EnterDemoMode. Delete it there and
+  leave the NetworkNavItem().Visibility line and the LeftCompact/Auto PaneDisplayMode cycle below
+  it untouched -- that cycle is the documented workaround for the WinAppSDK 2.2.0 nav corruption
+  and it must still run after the last Visibility flip. After the edit, run `--demo=developer`
+  and confirm the nav pane still shows TEXT LABELS beside Chats/Contacts/Network/Developer/
+  Settings at 1560x900; if it renders icon-only, move ApplyAdvanced's DeveloperNavItem().
+  Visibility write back behind the cycle instead of reverting the step."
+- Plus §1.2: the probe guard pasted in; the fan-out names `statusStrip_`; the live-toggle limit
+  stated in the report.
+
+### W8 — the ambient module (wiring.md:697-1171) · 1 finding
+- **CONFIRMED** — `ClockLabel()` reads the machine's wall clock (non-deterministic, wrong
+  format). Override: "Do not call ::GetLocalTime. Delete ClockLabel and derive the ambient row's
+  time from the conversation it is appended to: take the last RowKind::Message's timeLabel, parse
+  its HH:MM, add (round + 1) * 3 minutes, and format that; then set `inspect.sentAtLabel` and
+  `inspect.receivedAtLabel` with the same day prefix DemoWorld uses at DemoWorld.cpp:175
+  (`L"Today " + row.timeLabel`), not the bare timeLabel. Add the determinism to the Step 5 gate:
+  `IncomingForRound(conv, 0).timeLabel == IncomingForRound(conv, 0).timeLabel` is a tautology, so
+  assert instead that round 0's label is strictly later than the conversation's last seeded
+  message time and strictly earlier than round 1's."
+
+### W9 — ambient wiring + the scroll pin (wiring.md:1172-end) · 3 findings
+- **CONFIRMED** — §9.2 do-not-yank has no owner. → §2.3 (full override: widened Files list,
+  `ShouldPinToBottom` pure extraction into ThreadView.h/.cpp, four-case --diagnose gate in
+  Startup.cpp, delete the "NOT implemented" paragraph at ThreadView.cpp:1305-1311).
+- **CONFIRMED** — Step 9's baseline is wrong by construction. Override: "Step 9's baseline is
+  wrong: `--demo-autoplay` also triggers T6's two-row ambient SEED in DrainDeepLink
+  (MainWindow.xaml.cpp:618-661), which appends c0-ambient-1 and c0-ambient-2 before any autoplay
+  round. Do NOT compare against baseline-autoplay-off.png and do NOT delete the T6 seed. Instead
+  assert what actually holds at ~1.2s: no typing indicator anywhere in the thread,
+  `(Select-String -SimpleMatch 'demo: ambient message').Count` is 0, and `thread: ambient seed
+  appended 2 rows` appears exactly once. Add the count of bubbles as baseline + 2, and state in
+  the step that the +2 is T6's seed, not the loop."
+- **CONFIRMED** (upgraded from UNVERIFIED) — the first RefreshOpenThread erases the T6 seed rows.
+  Override: "Add to Step 4: when StartAmbientActivity is reached and `options_.autoplay` is set,
+  the T6 seed rows (c0-ambient-1, c0-ambient-2) exist in the ThreadView only, so the loop's first
+  RefreshOpenThread erases them. Fix it at the seed, not in W9's callbacks: change DrainDeepLink's
+  T6 block to push `out` and `in` into
+  `urmsg::demo::MutableWorld().conversations.front().rows` before calling AppendThreadRow, and
+  update the comment at MainWindow.xaml.cpp:614-615 that says the world is not mutated. Then Step
+  11's claim -- that the ambient rows survive a rebuild because they live in the world -- becomes
+  true of every ambient row rather than only W8's." Constraint check: the fixture *file* stays
+  byte-frozen (I10 fingerprints the seeded world at --diagnose time, before any window exists);
+  this is a runtime append through the world's existing mutation seam — the same path W8's own
+  rows take (wiring.md:1005, "Into the WORLD first").
+
+## 4. Recommended landing order
+
+Everything funnels through MainWindow.xaml.cpp (and Startup.cpp), so **serialize implementation**
+(handoff §8). Within that, land in this order — the plan's dependency ordering, refined by the
+audit edges:
+
+1. **N2** — pure formatters, no MainWindow mount, +2 files. Unblocks the honesty chain: N4's row
+   and A3's row both call its corrected `FormatKeyState`.
+2. **S1** — pure strip rules; no MainWindow.
+3. **A2** — session switches + the motion-off render (step 10b). Low collision
+   (Demo/DeveloperSwitches + Startup.cpp). Optionally pull forward: it is the only task that ever
+   renders the reduce-motion path.
+4. **R4** — completes the rail; its seeding line must exist inside BuildInspectRail **before** W5
+   deletes that function (carry-over note §3/R4). Lands the InitialRailMode probe.
+5. **N1** (verify-only) → **N3** → **N4** → **N5** → **N6** — the Network page. N3 re-points the
+   stub arm (§0). N6 seeds only (§1.2).
+6. **S2** → **S3** → **S4** — the status strip and drawer (§1.1: S group owns mount and toggle).
+7. **A3** → **A4** → **A5** → **A6** — Settings/Developer. A3 needs N2's formatter. A4 is now
+   just the prefs gate. A5 needs A2's switches. A6's diagnostics loop goes after A2's.
+8. **W5** — the big deletion; BuildDemoViews becomes sole builder; mount_check flips clean.
+9. **W6** — superseded (§1.1); residual checks run as W7's pre-flight.
+10. **W7** — the one subscriber (§1.2); every fan-out callee now exists (L6's list, S4's strip,
+    N6's network, R4's rail, A5's Developer gate).
+11. **W8** → **W9** — ambient module, then window wiring + the scroll pin (ThreadView editable
+    for the first time since T6).
+
+## 5. Payoff vs risk — for sequencing judgment
+
+| Lands | Payoff (what the owner sees) | Risk |
+|---|---|---|
+| N2, S1, A2 | No pixels, but every later gate is real; A2 closes the never-rendered reduce-motion hole | Near zero — pure code, no mounts |
+| R4 | The rail (on screen in every demo) finishes: device lists, density switch, the mode decision finally probed | Low-medium — one MainWindow line, but it must precede W5 |
+| N3–N6 | The Network page — the URnetwork identity surface, first pixels on a blank canvas | Medium — mount discipline + the §0 stub re-point; mount_check enforced |
+| S2–S4 | The connect indicator + drawer — the second identity surface, window-level | Medium — geometry/log gates were all re-derived above; honesty strings gate-asserted |
+| A3–A6 | Settings/Developer leave the blank-pane class for good; A6 keeps the dump honest | Low (A4/A5 gutted of subscription work); A6 is honesty-critical, not risky |
+| **W5** | The click graph actually works end-to-end | **Highest** — deletes three live builders; the R4 carry-over is the trap; verify by mount_check flipping clean and the `pendingLink_.selectMessage` count returning 1 |
+| **W7** | One toggle drives five surfaces | **High** — consolidates four tasks' claims into one function next to the nav-corruption workaround; the live toggle is unverifiable headlessly (state the limit) |
+| **W9** | Ambient activity that never yanks the reader and never deletes messages | Medium — ThreadView.cpp's append path changes under autoplay; four pure gate cases carry the proof |
+| W6 | None (superseded) | None — that is the point |
+
+**Honesty-critical, independent of order:** A6 (both overrides), N2/N4/A3 (one string, one
+owner), S2 (padlock name), S3 (drawer header). A "correct" implementation of the raw briefs ships
+a lie in each of these; the overrides and their gate updates land in the same commits, or the
+tasks do not land at all.

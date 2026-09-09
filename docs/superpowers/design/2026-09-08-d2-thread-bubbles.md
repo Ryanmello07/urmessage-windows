@@ -135,3 +135,220 @@ kMicroMs/kFastMs spent).
 
 Today the bar is one tonal step (card on page) and the controls float in it. Restructure
 into the palette's own layering — page → sheet → card, exactly as UrColors.h:18-23 prescribes:
+
+```
+Border composerBar                 // Background UrSheetBrush #151515 (was UrCardBrush)
+                                   // BorderThickness 0,1,0,0, UrBorderBrush (unchanged)
+                                   // Padding 12,8,12,10 (unchanged)
+  StackPanel Spacing=6
+    Grid                           // the WELL: one element, one child overlay
+      Border inputWell             // Background UrCardBrush #1C1C1C, CornerRadius 12,
+                                   // BorderBrush UrBorderBrush, BorderThickness 1,
+                                   // Padding 6,2,6,2
+        Grid (5 cols, unchanged)   // attach, emoji, 24h chip, TextBox, send
+      Border focusEdge             // CornerRadius 12, BorderThickness 1,
+                                   // BorderBrush #38FFFFFF, Opacity 0   <- overlay pattern
+                                   // borrowed from UrBubbleButtonStyle's EdgeLayer
+    TextBlock note                 // "Demo - nothing is sent..." - UNCHANGED (honesty line)
+```
+
+- **Focus behaviour:** retarget the existing `FadeFocusRule` from the bottom rule to
+  `focusEdge` — same function, same durations (kFastMs standard in / kMicroMs exit out),
+  same ShouldAnimate gate, zero new motion code. Delete the 1px `focusRule` element.
+  The TextBox keeps its local `BorderThickness(0)` (ThreadView.cpp:789) so WinUI's
+  blue `TextControlBorderBrushFocused` never draws — verify this stays true inside the well.
+- **Send pill shape:** `send.CornerRadius(FromUniformRadius(16))` — a real pill against the
+  12px well and chips. Keeps `AccentButtonStyle`, `IsEnabled(false)`, and the automation
+  name. Accent stays inside its reservation (the send button).
+- **24h chip:** keep disabled; optionally fill `UrCardHoverBrush` #242424 so it reads as a
+  control seated on the well. Cosmetic, optional.
+- **Enable motion (needs design §9.1 sign-off):** on `TextBox.TextChanged`, when text is
+  empty render the pill glyph-only (no accent wash); when non-empty crossfade to today's
+  disabled wash #33EFF7BB at kFastMs. It remains `IsEnabled(false)` in both states — never
+  focusable, never clickable, always platform-drawn-disabled. Net effect vs today is *less*
+  affordance when empty, identical when text present, so it cannot create "an
+  enabled-looking button that eats a click"; it teaches the text→send relationship, which is
+  the one honest thing the composer can express. If the coordinator rules §9.1 forbids it,
+  drop this bullet only.
+- The bar becoming #151515 also future-proofs the thread header: when wiring gives
+  `ThreadHost` a header, `UrPaneHeaderStyle` is the same sheet fill — header and composer
+  become matching bookends.
+
+**Constraints touched:** G4 honesty — the note line and all disabled states/automation names
+unchanged; accent reservation (send only); tonal ramp used as documented; motion tokens only.
+
+## 4. Day separator and system rows
+
+**Day separator — refine, don't reinvent.** The pill was a recorded decision ("a centred pill,
+not a rule with text on it", ThreadView.cpp:485-489). Keep the pill; remove its 1px border (a
+bordered pill competes with bubble edges; the fill alone lifts it off #101010), radius 10→8,
+padding `(10,2,10,3)`→`(12,3,12,4)`, margin `(0,14,0,6)`→`(0,16,0,8)`. Text stays
+`UrGroupHeaderTextStyle` (11px letterspaced muted) — the chrome voice the CONVERSATIONS/RECENT
+strips already speak. *Alternative if the coordinator wants quieter:* bare centred label
+flanked by two 40 dip `UrBorderBrush` hairlines at 8 dip gaps — but that reopens a settled
+decision; only take it deliberately.
+
+**System rows — restraint is the design.** Keep centred, 12px, `MutedBrush`, max-width 420
+(ThreadView.cpp:512-531). Do NOT shrink to 11px/faint: "Disappearing messages set to 7 days"
+is real state, and #5A5A5A at 11px on #101010 is ~3.3:1 contrast — fails legibility for
+content text. Only change: margins `(0,10,0,10)`→`(0,8,0,8)` so the §1 row-margin rhythm
+owns the gaps. No glyph: the fixture carries no icon field and matching on `systemText` words
+is the banned pattern (Views/ThreadLayout.cpp:27-30). Honest low payoff — say so.
+
+**Constraints touched:** none beyond rhythm — no colour, face, copy or honesty change.
+
+## 5. Typing indicator
+
+Wrap the dots in an incoming-shaped shell so the indicator reads as *a message
+materializing*, and align it with the column it belongs to:
+
+```
+StackPanel row  Margin = (group ? 52 : 16), 0, 0, 6   // 52 = 16 scroller pad + 36 gutter;
+                                                      // set in SetThreadConversation, which
+                                                      // is where `group` is first known
+  Border dotShell   // UrCardBrush, CornerRadius (12,12,12,4) — the incoming run-end shape
+                    // from §1, Padding 10,7 (~28 dip tall)
+    StackPanel dots // 3 x Ellipse 6px — UNCHANGED wave (kPulseMs/2, 140ms offsets,
+                    // autoReverse, Forever; TypingTimelines untouched, T6 gate untouched)
+  TextBlock "Typing…" 11px muted — UNCHANGED and kept OUTSIDE the shell: it is the
+                    // reduce-motion channel and the screen-reader channel
+```
+
+The dots' storyboard logic does not change at all — only their container. The shell must not
+get an identicon: the fixture has no typing-sender field and is immutable, so the indicator
+stays anonymous by honesty, not by omission. Today's margin-left 20 (ThreadView.cpp:639)
+aligns with nothing; in `thread.png` the dots float left of the incoming column.
+
+**Constraints touched:** motion gate (inherited unchanged); honesty ("Typing" is the one
+claim the demo can make about a fabricated participant — ThreadView.cpp:631-633); no new
+colours; fixture read-only.
+
+## 6. Delivery cluster: legibility without enlarging chrome
+
+Keep 13px glyphs / 11px word — `BadgeFor` (Views/ThreadLayout.cpp:90-108) is gate-asserted
+(`T5 delivery badges`, Startup.cpp:1119-1128) and E930/EC61 is documented as the font's only
+distinguishable outline/filled pair at 13px. Legibility comes from rhythm, alignment and
+motion instead:
+
+1. **Bind the cluster to its bubble:** margin `(0,2,2,6)` → `(0,1,2,4)`; inter-run space moves
+   to §1's row margins. In `thread.png` the cluster currently floats near-equidistant between
+   its bubble and the next run — 1px above / larger below makes ownership unambiguous.
+2. **Fade-in on appear (the design §7 "delivery morph", honest subset).** In `SetRowCluster`'s
+   add branch, start the new cluster at Opacity 0 and run the existing spline helper to 1.0 at
+   kFastMs/standard, gated by ShouldAnimate. Removal stays instant: the only removal event is
+   a newer outgoing row arriving below, whose own bubble entrance is where the eye already is;
+   an async fade-out + delayed `RemoveAt` would make a gate-treated-synchronous function
+   stateful for no visible gain. A true Sent→Delivered morph never occurs in this build
+   (ambient activity only appends; nothing mutates a rendered row's state) — say that in the
+   ledger rather than building a cross-dissolve no fixture state can trigger.
+3. **Failed cluster:** keep the reason line (11px danger, wrap, right, max 320) and the
+   disabled "Try again" exactly as-is; only the margin change above applies. The mid-run
+   Failed row (DemoWorld.cpp:277) is this surface's most important honesty artifact — no
+   restyle risk taken there.
+
+**Constraints touched:** three-channel delivery — all three channels preserved by not
+touching the badge table; motion tokens; exits-faster rule (instant < kMicroMs).
+
+## 7. Key-change record: keep the gravity, add structure
+
+Non-negotiables preserved verbatim: 2px `UrDangerBrush` leading rule (a shape channel), the
+`\uE192` key glyph in danger, the world's own copy at 12px off-white, disabled Review,
+non-dismissible **by construction** (ThreadView.cpp:533-623 — no close control exists or may
+be added). One addition: a header line above the copy — `PERMANENT RECORD` in
+`UrGroupHeaderTextStyle` (11px, letterspacing 90), `DangerBrush`. It mirrors the automation
+name ("Permanent record, cannot be dismissed. ", ThreadView.cpp:620-622), adds inscription
+weight through the chrome voice, and makes no claim about crypto — it labels persistence,
+which is the record's actual property. Optional flourish: seat the key glyph in a 24x24,
+radius-6 chip of `WithAlpha(kDanger, 0x1A)` (helper exists at UrColors.h:82 — no new resource
+key). Skip a full danger border: one red rule is a record; a red box is an alert banner.
+
+## 8. Entrance-motion polish (existing tokens only)
+
+1. **Direction-aware origin.** `RunBubbleEntrance` hard-codes `RenderTransformOrigin(0.5,1.0)`
+   (ThreadView.cpp:104). Pass direction (AppendThreadRow knows `row.outgoing`; the stagger
+   policy needs the signature anyway): origin `(0.0,1.0)` incoming / `(1.0,1.0)` outgoing —
+   the 0.96→1.0 scale blooms from the speaker's side. Free: no new token, no gate change
+   (the origin is not in the pure table — note that as a gate gap: the gate asserts the four
+   timelines' endpoints but cannot see the origin; acceptable, comment it).
+2. **Staggered entrance on conversation open.** Today `RunBubbleEntrance` runs only on
+   append; a freshly built thread pops in whole, while the conversation list beside it
+   staggers. Add pure `OpenStaggerBeginMs(bubbleRowCount)` → all rows 0 except the last
+   `min(kMaxStaggerSteps 6, count)`, which get `kStaggerMs 40` x position (oldest→newest of
+   the visible foot, so the newest settles last). Only the last 6 animate — rows above the
+   fold animating invisibly would be waste, and 6 is the cap the list already uses.
+   RenderTransform/Opacity don't affect layout, so the bottom-pin `stack.SizeChanged` handler
+   is not re-triggered — no interaction with the W9 do-not-yank scroll work.
+   **Gate impact, stated plainly:** `T6 bubble entrance` asserts `beginMs == 0` per timeline
+   (Startup.cpp:1219). Change `EntranceTimelines(bool animate)` → `(bool animate, int64_t staggerMs = 0)`,
+   keep the gate on the `staggerMs=0` shape, and add a second assertion on the staggered
+   values. Demonstrate the new clause failing (set the step to 50) before shipping, per
+   handoff §7.
+3. **Reduce-motion caveat (inherits the project's known blind spot):** `ShouldAnimate()` is
+   always true on this machine (`SPI_GETCLIENTAREAANIMATION = 1`), so the empty-plan branch of
+   every new path here is unverified by execution — same status as the existing entrance,
+   flagged at ThreadView.cpp:82-88. Coordinate with A2's motion override to eyeball it.
+
+## 9. Explicitly NOT proposed
+
+- **Bubble shadows / ThemeShadow:** the brand's depth system is the four-step tonal ramp, not
+  elevation shadows; shadows on #101010 muddy it.
+- **Display face anywhere in the thread** (day separators, sender headers): ABC Gravity is
+  titles/wordmark only.
+- **Delivery state inside bubbles** (Signal-style time+checks in the fill): violates the
+  recorded sibling rule — the cluster is not part of the bubble's fill or click target
+  (ThreadView.cpp:159-165).
+- **Moving the timestamp inline after the last word:** WinUI flow layout can't right-align an
+  inline; the stacked 11px faint time stays, tightened by §1's rhythm.
+- **Tails / notches:** evaluated in §1 and rejected — a second painter of the direction fill
+  breaks press-dim, the selection outline, and the one-writer edge invariant.
+- **Any new App.xaml resource key, any new colour, any new motion token.** Every brush,
+  duration, curve and helper above already exists (`WithAlpha` covers the one derived alpha).
+
+## 10. Constraint ledger
+
+| Proposal | G4 honesty | G3 brand | Three-channel delivery | Motion tokens | Fixture |
+|---|---|---|---|---|---|
+| §1 run geometry | no copy change | radii reuse 12/8/4 vocabulary; fills unchanged | untouched (cluster stays a sibling) | none | read-only |
+| §2 hover/press/selection | none | accent stays selection-outline-only | none | kMicroMs/kFastMs only | n/a |
+| §3 composer well | note line + all disabled states/automation names unchanged | accent stays send-only; sheet→card ramp as documented | none | kFastMs/kMicroMs via existing FadeFocusRule | n/a |
+| §4 separator/system rows | none | no new keys; chrome voice kept | none | none | read-only |
+| §5 typing shell | "Typing" claim unchanged; anonymous (no sender field exists) | UrCardBrush only | none | existing TypingTimelines untouched | immutability is WHY it stays anonymous |
+| §6 cluster rhythm + fade | Failed row's reason/retry untouched | none | badge table `BadgeFor` untouched — all three channels preserved | kFastMs add-fade; instant remove | read-only |
+| §7 record header | labels persistence, never crypto; no dismiss control added | DangerBrush + existing chrome style | rule/glyph/word channels kept | none | copy stays the world's |
+| §8 entrance polish | none | none | none | tokens only; gate change stated | read-only |
+
+## 11. File-level change inventory
+
+| File | Change |
+|---|---|
+| `app/src/App/Views/ThreadLayout.h/.cpp` | `BubbleRunPos`, `RunPosFor`, `BubbleCornerDip`, `GapAboveDip`, `OpenStaggerBeginMs`; `ThreadRowPlan.runPos`; `EntranceTimelines` stagger param. Pure — diagnosable. |
+| `app/src/App/Views/ThreadView.cpp` | per-row CornerRadius + margins; name-out-of-bubble; composer well restructure (MakeComposer, FadeFocusRule retarget); typing shell + group-aware margin; cluster margin + add-fade; record header line; entrance origin/stagger. |
+| `app/src/App/App.xaml` | UrBubbleButtonStyle: explicit press/hover transition durations only. No new keys. |
+| `app/src/App/Startup.cpp` | new pure gates: run-geometry table, stagger begins; keep T5 badge gate untouched; update T6 entrance gate for the new signature (demonstrate failing). |
+| `app/src/App/UrMotion.h/.cpp` | ONLY if §2.3 selection crossfade is taken (`MakeSplineColor`). |
+| `Demo/DemoWorld.cpp` | **untouched** (immutable). |
+
+## 12. Payoff vs risk — suggested landing order
+
+1. **§1 run geometry + §4 margins** — the biggest visual transformation (runs become visible
+   objects); medium risk: planner + one new gate, template-safe. Screenshot `--demo=thread`.
+2. **§3 composer well** — high payoff, self-contained, low risk; deletes nothing but the
+   focusRule element. Screenshot the focus state via `--demo=inspect` (the box is clickable).
+3. **§6 cluster rhythm + add-fade** — the thread's information-dense corner, made findable;
+   low risk, gates untouched.
+4. **§5 typing shell + alignment** — medium payoff, low risk; verify with
+   `--demo=thread --demo-autoplay`.
+5. **§2.1/2.2 press timing + selection metrics** — tiny diffs, immediate feel; XAML/one-liner.
+6. **§7 record header** — small gravity win; review the wording once (must mirror the
+   automation name).
+7. **§8 entrance origin + open stagger** — delightful but touches a live gate and the
+   unverifiable-here reduce-motion path; land after A2's motion override exists.
+8. **§3 enable-motion bullet** — only with explicit design §9.1 sign-off; otherwise omit.
+9. **§2.3 selection crossfade** — optional polish; skip unless everything above is quiet.
+
+---
+
+*Verified two facts the coordinator may want to propagate: `ThreadRowPlan::endsOutgoingRun`
+is consumed by no renderer (only gates read it), and the thread pane currently has no header
+host — `ThreadHost` is a bare UrPaneStyle Grid (MainWindow.xaml.cpp:337-347), so any
+thread-pane chrome proposal must coordinate with the wiring group that owns the header.*
