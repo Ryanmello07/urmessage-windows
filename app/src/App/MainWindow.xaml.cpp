@@ -737,13 +737,16 @@ void MainWindow::ShowDestination(std::wstring_view tag) {
     incoming = StubPage();
     header = Loc("nav_contacts");
   } else if (tag == L"network" && options_.enabled) {
-    incoming = NetworkHost();
+    // The N/S/A groups have not landed: NetworkHost/SettingsHost/DeveloperHost
+    // are empty Grids that paint a blank pane. Route to the stub (which carries
+    // the "not built" line) until the real surface mounts into its host.
+    incoming = StubPage();
     header = hstring{kDemoNavNetwork};
   } else if (tag == L"developer" && options_.enabled) {
-    incoming = DeveloperHost();
+    incoming = StubPage();
     header = hstring{kDemoNavDeveloper};
   } else if (tag == L"settings" && options_.enabled) {
-    incoming = SettingsHost();
+    incoming = StubPage();
     header = Loc("nav_settings");
   }
 
