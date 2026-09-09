@@ -28,6 +28,9 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include <string>
+#include <vector>
+
 #include <winrt/Microsoft.UI.Xaml.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
 
@@ -40,6 +43,16 @@ struct InspectRailView {
   winrt::Microsoft::UI::Xaml::FrameworkElement root{nullptr};
   winrt::Microsoft::UI::Xaml::Controls::ScrollViewer conversationScroll{nullptr};
   winrt::Microsoft::UI::Xaml::Controls::ScrollViewer messageScroll{nullptr};
+  // The pane header's right-aligned density word ("ADVANCED"), parked so
+  // SetInspectRailAdvanced can flip it instantly - chrome appearing in step
+  // with a populate-only re-render, no storyboard (design d4 §13).
+  winrt::Microsoft::UI::Xaml::Controls::TextBlock headerMeta{nullptr};
+  // The members whose device sub-rows are open (design d4 §7.2). IDS, not
+  // pointers - the same rule the subject tags follow. Cleared by
+  // SetInspectRailConversation (a new subject gets fresh state), preserved
+  // across a SetInspectRailAdvanced re-population (density must not silently
+  // collapse what a person opened).
+  std::vector<std::wstring> expandedMemberIds{};
 };
 
 // Both bodies start COLLAPSED, so whichever Set* runs first presents its mode
@@ -65,23 +78,27 @@ void SetInspectRailMessage(InspectRailView& v, demo::Conversation const& c,
                            demo::MessageRow const& m);
 
 // DENSITY ONLY. Re-populates whichever mode is showing, IN PLACE, with NO
-// crossfade: the rail is already on screen, and blanking it to fade it back in
-// reads as a mode swap that did not happen. Design 7 assigns kBaseMs to the rail
-// MODE swap, not to a density change.
+// crossfade, no settle and no cascade: the rail is already on screen, and
+// blanking it to fade it back in reads as a mode swap that did not happen
+// (design d4 §12.3 - R4's populate-only contract is deliberately kept). The
+// only visible moves are the appended ADVANCED caption+card and the header
+// meta's instant visibility flip. Called once at startup by BuildInspectRail
+// to seed the density; the LIVE subscription that re-calls it on every toggle
+// belongs to the wiring task (wiring.md:578), not here.
 void SetInspectRailAdvanced(InspectRailView& v, bool advanced);
 
-// One person row and one device row. Public because the Network page's "Your
-// devices" list (design 6.4) is the same device row and must not become a second
-// species of it. Both are urnw::kit::MakePaneListRow(36), so the rail's three
-// lists share one height, one left edge and one rhythm.
+// The device row, public because the Network page's "Your devices" list
+// (design 6.4) is the same device row and must not become a second species of
+// it. `showOwner` keeps the ` · owner` suffix (message mode's delivered-by /
+// read-by lists, where the devices belong to DIFFERENT people and the suffix
+// is the load-bearing content); a member's own expanded sub-rows pass false,
+// where the suffix would repeat the row above.
 //
-// Both carry a 20px identicon of the identity the row is about (design d1 §7):
-// the presence dot is re-parented onto the chip as its corner badge, INSIDE the
-// same kit grid, so the one-row-species claim above survives — same builder,
-// same height, same columns. What this deliberately is NOT is a new
-// MakePaneListRow variant in UrComponents.h: the variant would be the second
-// species.
-urnw::kit::PaneListRow MakeMemberRow(demo::MemberRef const& member);
-urnw::kit::PaneListRow MakeDeviceRow(demo::DeviceRef const& device);
+// The row carries a 20px mini-identicon of the identity it is about (design
+// d1 §7) with the presence dot badged on its corner. The MEMBER row this used
+// to sit beside is gone: members are now kit::MakePanePresenceRow buttons
+// with expandable device sub-rows (design d4 §7) - the kit variant the old
+// comment said would be the right move if member identicons were wanted.
+urnw::kit::PaneListRow MakeDeviceRow(demo::DeviceRef const& device, bool showOwner = true);
 
 }  // namespace urmsg::views

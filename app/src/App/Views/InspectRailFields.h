@@ -37,8 +37,10 @@
 
 #include <cstddef>
 #include <string>
+#include <string_view>
 #include <vector>
 
+#include "Demo/DemoSwitches.h"  // DemoScreen, for InitialRailMode - pure, no winrt
 #include "Demo/DemoWorld.h"
 
 namespace urmsg::views {
@@ -127,6 +129,51 @@ std::vector<InspectField> BuildMessageFields(demo::Conversation const& conv,
 std::vector<InspectField> BuildConversationFields(demo::Conversation const& conv,
                                                   bool advanced);
 
+// ---- the section grouping the view draws around those fields (design d4 §9) --
+//
+// The field order is probe-pinned (kExpectedKeys in the .cpp) and normal must be
+// a positional prefix of advanced, so grouping must be CONTIGUOUS and
+// ORDER-PRESERVING: the view inserts captions and card frames BETWEEN rows at
+// fixed positions and never permutes them. The mapping lives here - the pure TU
+// the probes live in - so InspectRailFieldsProbe asserts the partition against
+// the pinned key table instead of trusting a screenshot to read it.
+//
+// Retention is in the enum for the CONVERSATION mapping only (0-1 Retention,
+// 2+ Advanced); MessageFieldGroup never returns it. The caption names are
+// honest labels of the fields the rail already shows - the same register as the
+// existing MEMBERS/RETENTION headers. PROTOCOL names the CATEGORY of two
+// fields that already ship; it asserts nothing about what this binary did. No
+// caption, row or tooltip may ever name a cipher (the file header's standing
+// ruling on MessageInspect::cipher).
+enum class InspectGroup { Delivery, Protocol, Message, Advanced, Retention };
+
+// 0-2 Delivery (who and when), 3-4 Protocol (the model's metadata), 5-7 Message
+// (this message's policy and shape), 8+ Advanced (the density-only additions).
+InspectGroup MessageFieldGroup(size_t fieldIndex);
+// 0-1 Retention, 2+ Advanced (conversation mode's retention block, then the
+// density-only conversation id / group id).
+InspectGroup ConversationFieldGroup(size_t fieldIndex);
+
+// The caption strings live here too, so the rail's copy passes through the same
+// review funnel as its field copy.
+std::wstring_view InspectGroupCaption(InspectGroup group);
+
+// ---- which MODE the rail opens in (design d4 §0, d7 R4) ----------------------
+//
+// This decision used to be an inline `if` in MainWindow::BuildInspectRail - a
+// winrt translation unit --diagnose cannot reach, so the rail's fields and
+// devices were probed but its MODE never was. Extracted pure so
+// InspectRailDeviceProbe can assert what the mode SHOULD be. It still cannot
+// assert which write lands last; that half is the wiring task's single-writer
+// rule, and BuildInspectRail's comment block says so.
+enum class RailMode { Conversation, Message };
+
+// Message exactly when --demo=inspect was asked for AND the conversation has a
+// message row to inspect; Conversation otherwise (the no-pick arm is the
+// LogWarn at MainWindow.xaml.cpp's BuildInspectRail, NOT InspectRailView.cpp,
+// which contains no LogWarn).
+RailMode InitialRailMode(demo::DemoScreen screen, demo::Conversation const& conv);
+
 // The message --demo=inspect opens on: the last OUTGOING row whose state is
 // Read, else the last message row, else nullptr.
 //
@@ -159,6 +206,26 @@ bool ReadByIsSubsetOfDeliveredTo(demo::MessageInspect const& inspect);
 // (UrComponents.cpp:246-248), and the only way the row obeys "colour is never
 // the only carrier of state".
 size_t OnlineDeviceCount(demo::MemberRef const& member);
+
+// ---- the delivered-by / read-by lists' empty decision (R4) -------------------
+//
+// The honest line rendered IN PLACE OF the card when a list has no devices -
+// a bordered empty box would frame nothing. G4-safe copy: it reports an
+// absence (no device has said anything), it never claims a check ran.
+inline constexpr wchar_t kDeliveredEmptyNote[] = L"No device has acknowledged this message";
+inline constexpr wchar_t kReadEmptyNote[] = L"No device has read this message";
+
+// What one device list draws: one row per device, or - when there are none -
+// exactly ONE empty line carrying the note above. The view's AppendDeviceList
+// is built FROM this plan, so the --diagnose clause covering the empty branch
+// (unreachable from what --demo=inspect can open: the pick is c0-r12 with
+// seven in each list, and the fixture is immutable) asserts the same decision
+// the view renders from rather than a private copy of it.
+struct DeviceListPlan {
+  size_t rowCount;              // devices.size(), or 1 when empty (the note line)
+  std::wstring_view emptyNote;  // EMPTY when there are devices
+};
+DeviceListPlan PlanDeviceList(std::vector<demo::DeviceRef> const& devices, bool deliveredList);
 
 // The two --diagnose lines, already in CollectDiagnostics()'s column format
 // (two-space indent, 17-character label, " : "). They live here so Startup.cpp's

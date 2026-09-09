@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <!-- URmessage app resources. Copied VERBATIM from the URnetwork Windows VPN
      client (app/src/App/App.xaml, branch beta/algorithm-dpi @ eacf4de) apart
      from x:Class below and this comment, so the two products render the same
@@ -1082,6 +1082,64 @@
                                         <VisualState x:Name="PointerOver">
                                             <VisualState.Setters>
                                                 <Setter Target="Root.Background" Value="{StaticResource UrCardBrush}" />
+                                            </VisualState.Setters>
+                                        </VisualState>
+                                        <VisualState x:Name="Pressed">
+                                            <VisualState.Setters>
+                                                <Setter Target="Root.Background" Value="{StaticResource UrCardPressedBrush}" />
+                                            </VisualState.Setters>
+                                        </VisualState>
+                                        <VisualState x:Name="Disabled">
+                                            <VisualState.Setters>
+                                                <Setter Target="Root.Opacity" Value="0.38" />
+                                            </VisualState.Setters>
+                                        </VisualState>
+                                    </VisualStateGroup>
+                                </VisualStateManager.VisualStateGroups>
+                            </Grid>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <!-- the SAME pane row button for a row that sits ON a card (the
+                 inspector rail's member rows, design d4 section 7). The base
+                 style cannot serve there: its PointerOver fill IS the card
+                 token (#1C1C1C), so on a card the hover would paint nothing.
+                 This is the ONE added key of the wave and it exists because no
+                 existing key combines a chromeless pane row with an on-card
+                 hover - kCardHover (#242424, the outgoing-bubble token) is the
+                 established one-step-above-card, pressed stays kCardPressed.
+                 The template is the base style's with exactly those two visual
+                 states changed; BasedOn carries every other setter. -->
+            <Style x:Key="UrPaneRowButtonOnCardStyle" TargetType="Button" BasedOn="{StaticResource UrPaneRowButtonStyle}">
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Grid x:Name="Root"
+                                  Background="{TemplateBinding Background}"
+                                  BorderBrush="{TemplateBinding BorderBrush}"
+                                  BorderThickness="{TemplateBinding BorderThickness}">
+                                <ContentPresenter x:Name="Presenter"
+                                                  Content="{TemplateBinding Content}"
+                                                  ContentTemplate="{TemplateBinding ContentTemplate}"
+                                                  Padding="{TemplateBinding Padding}"
+                                                  Foreground="{TemplateBinding Foreground}"
+                                                  FontFamily="{TemplateBinding FontFamily}"
+                                                  FontSize="{TemplateBinding FontSize}"
+                                                  FontWeight="{TemplateBinding FontWeight}"
+                                                  HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                  VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}" />
+                                <VisualStateManager.VisualStateGroups>
+                                    <!-- Motion P0: see the matching note on UrButtonBaseStyle. -->
+                                    <VisualStateGroup x:Name="CommonStates">
+                                        <VisualStateGroup.Transitions>
+                                            <VisualTransition GeneratedDuration="0:0:0.15" />
+                                        </VisualStateGroup.Transitions>
+                                        <VisualState x:Name="Normal" />
+                                        <VisualState x:Name="PointerOver">
+                                            <VisualState.Setters>
+                                                <Setter Target="Root.Background" Value="{StaticResource UrCardHoverBrush}" />
                                             </VisualState.Setters>
                                         </VisualState>
                                         <VisualState x:Name="Pressed">

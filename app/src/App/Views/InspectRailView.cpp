@@ -3,7 +3,9 @@
 
 #include "Views/InspectRailView.h"
 
+#include <algorithm>
 #include <format>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -253,22 +255,60 @@ std::wstring TagId(FrameworkElement const& element) {
 // CORRECTED BY R3: R2 wrote "message mode is the one that needs it". Message
 // mode exists now and does NOT - SetInspectRailMessage is handed both the
 // Conversation and the MessageRow, and stores their IDS precisely so it never
-// has to hold those references. The reader these are waiting for is
-// SetInspectRailAdvanced (R4), which re-populates whichever mode is already
-// showing and is handed no subject at all: it has only these two tags and
-// FindConversation / FindMessageRow. Still written and not yet read.
-[[maybe_unused]] std::wstring RailConversationId(InspectRailView const& v) {
+// has to hold those references. The reader these were waiting for is
+// SetInspectRailAdvanced (R4, now landed), which re-populates whichever mode
+// is already showing and is handed no subject at all: it has only these two
+// tags and FindConversation / FindMessageRow.
+std::wstring RailConversationId(InspectRailView const& v) {
   return TagId(v.conversationScroll);
 }
-[[maybe_unused]] std::wstring RailMessageId(InspectRailView const& v) {
+std::wstring RailMessageId(InspectRailView const& v) {
   return TagId(v.messageScroll);
 }
 
-// The StackPanel inside a body scroller. The fixed contract gives InspectRailView
-// three fields and no body fields, so the panel is fetched rather than cached -
-// which is also one fewer thing that can go stale.
+// The StackPanel inside a body scroller. The fixed contract gives the view
+// struct its fields and no body fields, so the panel is fetched rather than
+// cached - which is also one fewer thing that can go stale.
 StackPanel BodyOf(ScrollViewer const& scroller) {
   return scroller ? scroller.Content().try_as<StackPanel>() : nullptr;
+}
+
+// The section cascade (design d4 §12.2): on a REAL mode swap, the incoming
+// body's top-level children (the subject row, the captions, the cards) fade
+// 0->1 at kBaseMs, BeginTime i * kStaggerMs capped at kMaxStaggerSteps - the
+// conversation list already staggers on entrance, so this is a second use of
+// an established rhythm, not a new one. It COMPOSES with the scroller-level
+// fade rather than replacing it: the swap owns the visibility/collapse
+// bookkeeping.
+//
+// Density re-population never reaches here (it does not call PresentMode at
+// all): re-rendering an on-screen surface must stay silent.
+//
+// UNVERIFIED BRANCH, STATED: ShouldAnimate() has never returned false on this
+// machine (SPI_GETCLIENTAREAANIMATION = 1), so the early return is
+// code-inspection only; with motion off the children are simply left at
+// Opacity 1.
+void CascadeSections(ScrollViewer const& scroller) {
+  if (!urnw::motion::ShouldAnimate()) return;
+  auto panel = BodyOf(scroller);
+  if (!panel) return;
+  auto children = panel.Children();
+  const uint32_t count = children.Size();
+  namespace anim = winrt::Microsoft::UI::Xaml::Media::Animation;
+  anim::Storyboard sb;
+  for (uint32_t i = 0; i < count; ++i) {
+    auto element = children.GetAt(i).try_as<FrameworkElement>();
+    if (!element) continue;
+    const int64_t step = std::min<int64_t>(i, urnw::motion::kMaxStaggerSteps);
+    auto fade = urnw::motion::MakeSplineDouble(0.0, 1.0, urnw::motion::kBaseMs,
+                                               step * urnw::motion::kStaggerMs,
+                                               urnw::motion::kStandardP1,
+                                               urnw::motion::kStandardP2);
+    anim::Storyboard::SetTarget(fade, element);
+    anim::Storyboard::SetTargetProperty(fade, L"Opacity");
+    sb.Children().Append(fade);
+  }
+  sb.Begin();
 }
 
 // A crossfade ONLY when the mode actually changes.
@@ -284,14 +324,22 @@ StackPanel BodyOf(ScrollViewer const& scroller) {
 //
 // A crossfade, never a slide: the column's width is fixed, and a slide inside a
 // fixed-width column implies a navigation that has not happened (design 6.3).
-// CrossfadePageSwap is already gated on motion::ShouldAnimate(), so "animations
+// The swap is already gated on motion::ShouldAnimate(), so "animations
 // off" makes this an instant, correct swap rather than a slow one.
+//
+// The settle and the cascade ride only a REAL swap (design d4 §12): the first
+// present has no outgoing and the WindowReveal already covers that entrance -
+// a rail that also faded itself in would be a second animation over the same
+// tree.
 void PresentMode(InspectRailView const& v, bool messageMode) {
   auto incoming = messageMode ? v.messageScroll : v.conversationScroll;
   auto outgoing = messageMode ? v.conversationScroll : v.messageScroll;
   if (!incoming) return;
   const bool swapping = outgoing && outgoing.Visibility() == Visibility::Visible;
   urnw::motion::CrossfadePageSwap(swapping ? outgoing : incoming, incoming);
+  if (!swapping) return;
+  urnw::motion::SettleIn(incoming);
+  CascadeSections(incoming);
 }
 
 ScrollViewer MakeBodyScroller() {
@@ -305,10 +353,12 @@ ScrollViewer MakeBodyScroller() {
 }
 
 // Conversation mode's subject: the identicon, the name, and one muted line under
-// it. 56 tall so a 40x40 identicon sits in it on the pane's own rhythm.
-// MakeIdenticon applies its OWN CornerRadius(8) - nothing here sets one.
+// it. Design d4 §2 grows it into the pane's identity header: 64 tall with a 48px
+// identicon and the name in UrBodyStrongTextStyle (14 SemiBold) - the subject IS
+// this pane's title. MakeIdenticon applies its OWN CornerRadius - nothing here
+// sets one.
 FrameworkElement MakeSubjectRow(demo::Conversation const& conv) {
-  auto root = kit::MakePaneRow(56);
+  auto root = kit::MakePaneRow(64);
 
   Grid grid;
   grid.ColumnSpacing(10);
@@ -318,7 +368,7 @@ FrameworkElement MakeSubjectRow(demo::Conversation const& conv) {
   grid.ColumnDefinitions().Append(iconColumn);
   grid.ColumnDefinitions().Append(textColumn);
 
-  auto identicon = urmsg::MakeIdenticon(conv.identityKey, 40);
+  auto identicon = urmsg::MakeIdenticon(conv.identityKey, 48);
   identicon.VerticalAlignment(VerticalAlignment::Center);
   automation::AutomationProperties::SetAccessibilityView(
       identicon, automation::Peers::AccessibilityView::Raw);
@@ -327,7 +377,7 @@ FrameworkElement MakeSubjectRow(demo::Conversation const& conv) {
   StackPanel text;
   text.VerticalAlignment(VerticalAlignment::Center);
   TextBlock name;
-  if (auto style = kit::StyleByKey(L"UrRowTitleStyle")) name.Style(style);
+  if (auto style = kit::StyleByKey(L"UrBodyStrongTextStyle")) name.Style(style);
   name.Text(H(conv.name));
   text.Children().Append(name);
 
@@ -380,8 +430,22 @@ FrameworkElement MakeSubjectRow(demo::Conversation const& conv) {
 // strings and nothing else - no other row, count or check in the rail reads
 // them. The padlock and the green stay either way: the picture is fine, it was
 // the words that made the claim.
+//
+// THE HEADER IS A CARD NOW (design d4 §6), and the reason is the reviewer's
+// note in the handoff: the green padlock was the only UNFRAMED positive claim
+// on the row, and the half a cropped screenshot keeps. So the header is built
+// as the top card of message mode, visibly containing its own framing - the
+// crop now keeps both lines because they are vertically adjacent inside a
+// bounded box. Framing is ADDED with layout and typography, which cannot be
+// misquoted; nothing is removed and both strings stay byte-exact.
 FrameworkElement MakeLockHeader() {
-  auto root = kit::MakePaneRow(56);
+  auto card = kit::MakePaneCard();
+  // The mode's hero, so it leaves the (12,0,12,10) section-card margin: it
+  // opens the body, and the note below needs every DIP the column has.
+  card.root.Margin(ThicknessHelper::FromLengths(12, 12, 12, 10));
+
+  Border pad;
+  pad.Padding(ThicknessHelper::FromUniformLength(12));
 
   Grid grid;
   grid.ColumnSpacing(10);
@@ -391,17 +455,35 @@ FrameworkElement MakeLockHeader() {
   grid.ColumnDefinitions().Append(iconColumn);
   grid.ColumnDefinitions().Append(textColumn);
 
+  // The chip: a 36x36 rounded square in kCardHover with a 1px border edge -
+  // a NEUTRAL tonal container that frames the glyph the way a mount frames a
+  // photo. It adds no colour claim and spends no reserved token; the padlock
+  // stays the only green pixel-group in the card (no green rule, no tint).
+  Border chip;
+  chip.Width(36);
+  chip.Height(36);
+  chip.Background(urnw::colors::MakeBrush(urnw::colors::kCardHover));
+  chip.BorderBrush(urnw::colors::BorderBrush());
+  chip.BorderThickness(ThicknessHelper::FromUniformLength(1));
+  chip.CornerRadius(CornerRadiusHelper::FromUniformRadius(8));
+
   FontIcon lock;
-  // UrRowIconStyle carries the family (Segoe Fluent Icons, named explicitly so
-  // FontIcon does not fall back to the older Segoe MDL2), the size (16) and
-  // AccessibilityView Raw. The size is NOT overridden: styles-by-key is what
-  // stops a screen acquiring a second icon weight, and the rail's one icon has
-  // no claim to be the exception. Only the colour is set, and the words beside
-  // it say the same thing, so the colour is a restatement.
+  // UrRowIconStyle still carries the family (Segoe Fluent Icons, named
+  // explicitly so FontIcon does not fall back to the older Segoe MDL2) and
+  // AccessibilityView Raw. The SIZE is overridden 16 -> 18 here, deliberately
+  // and only here: the glyph has to centre optically inside a 36px chip, and
+  // the style's 16 was tuned for a bare list row (design d4 §6). Same glyph,
+  // same kUrGreen - the reservation is "presence, padlock", and this is still
+  // the padlock. The words beside it say the same thing, so the colour is a
+  // restatement.
   if (auto style = kit::StyleByKey(L"UrRowIconStyle")) lock.Style(style);
+  lock.FontSize(18);
   lock.Glyph(L"\uE72E");  // Segoe Fluent E72E, Lock
   lock.Foreground(urnw::colors::MakeBrush(urnw::colors::kUrGreen));
-  grid.Children().Append(lock);
+  lock.HorizontalAlignment(HorizontalAlignment::Center);
+  lock.VerticalAlignment(VerticalAlignment::Center);
+  chip.Child(lock);
+  grid.Children().Append(chip);
 
   StackPanel text;
   text.VerticalAlignment(VerticalAlignment::Center);
@@ -411,9 +493,20 @@ FrameworkElement MakeLockHeader() {
   text.Children().Append(title);
   TextBlock note;
   if (auto style = kit::StyleByKey(L"UrRowNoteStyle")) note.Style(style);
+  // The note WRAPS instead of trimming - the one behavioural change here, and
+  // it has teeth. The card's text column is 360 - 24 (margins) - 24 (padding)
+  // - 36 (chip) - 10 (gap) = 266 DIP and the 47-char note needs ~285, so the
+  // old NoWrap row would trim away "in this build" - i.e. crop the framing,
+  // which is the exact failure prefix-first framing exists to prevent. A hero
+  // card is not a fixed-height list row, so wrapping costs nothing
+  // structurally. Acceptance: the full note must be measurable on screen in
+  // every capture.
+  note.TextWrapping(TextWrapping::Wrap);
+  note.TextTrimming(TextTrimming::None);
   // The MODEL, not an algorithm. This is the line that would have named the
-  // cipher; it answers "what am I looking at" instead, and it is what keeps the
-  // 56 DIP row on conversation mode's two-line rhythm.
+  // cipher; it answers "what am I looking at" instead. This header
+  // deliberately leaves the 34-44 DIP list rhythm: it is the mode's hero, not
+  // a list row.
   //
   // "Demo model:" a THIRD time, and deliberately. This note is the only one of
   // the three G4 strings that says WHY, so it changes register - but it used to
@@ -425,8 +518,9 @@ FrameworkElement MakeLockHeader() {
   Grid::SetColumn(text, 1);
   grid.Children().Append(text);
 
-  root.Child(grid);
-  return root;
+  pad.Child(grid);
+  card.body.Children().Append(pad);
+  return card.root;
 }
 
 // The reason AND the affordance, because design 9.1 asks for both - and the
@@ -441,11 +535,34 @@ FrameworkElement MakeLockHeader() {
 // This one is 40 tall, radius 4, outlined, with its own 12 DIP inset.
 void AppendFailureBlock(UIElementCollection const& body, std::wstring const& reason) {
   auto row = kit::MakePaneRow(40);
+  Grid grid;
+  grid.ColumnSpacing(10);
+  ColumnDefinition ruleColumn, textColumn;
+  ruleColumn.Width(GridLengthHelper::Auto());
+  textColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
+  grid.ColumnDefinitions().Append(ruleColumn);
+  grid.ColumnDefinitions().Append(textColumn);
+
+  // The 2px danger bar (design d4 §11): the thread's key-change record idiom -
+  // red rule + content - so the danger signal is a SHAPE reinforcement of the
+  // red text and never colour-alone. kDanger is the reserved token for exactly
+  // this. The reason string and the automation shape are untouched.
+  Border rule;
+  rule.Width(2);
+  rule.Background(urnw::colors::DangerBrush());
+  rule.VerticalAlignment(VerticalAlignment::Stretch);
+  automation::AutomationProperties::SetAccessibilityView(
+      rule, automation::Peers::AccessibilityView::Raw);
+  grid.Children().Append(rule);
+
   TextBlock line;
   if (auto style = kit::StyleByKey(L"UrRowTitleStyle")) line.Style(style);
   line.Foreground(urnw::colors::DangerBrush());
   line.Text(H(reason));
-  row.Child(line);
+  Grid::SetColumn(line, 1);
+  grid.Children().Append(line);
+
+  row.Child(grid);
   body.Append(row);
 
   Button retry;
@@ -457,6 +574,24 @@ void AppendFailureBlock(UIElementCollection const& body, std::wstring const& rea
   // controls that reach a screen reader as "button" and nothing else.
   automation::AutomationProperties::SetName(retry, L"Try again, not available in the demo");
   body.Append(retry);
+}
+
+// A floating caption (design d4 §4): the group header's letterspaced chrome
+// voice with the ruled sheet strip removed - transparent, borderless, 32 tall -
+// so a section name floats above its card instead of ruling the column. The
+// first caption in a body sits 4 from its predecessor, later ones 12. Returned
+// so a caller can drop a glyph in the trailing slot (the RETENTION caption's
+// disappearing timer).
+kit::PaneGroupHeader AppendCaption(StackPanel const& panel, std::wstring_view title,
+                                   std::wstring const& meta, bool first) {
+  auto header = kit::MakePaneGroupHeader(winrt::hstring{title},
+                                         meta.empty() ? winrt::hstring{} : H(meta));
+  header.root.Background(urnw::colors::MakeBrush({0, 0, 0, 0}));
+  header.root.BorderThickness(ThicknessHelper::FromLengths(0, 0, 0, 0));
+  header.root.Height(32);
+  header.root.Margin(ThicknessHelper::FromLengths(0, first ? 4 : 12, 0, 0));
+  panel.Children().Append(header.root);
+  return header;
 }
 
 // THE FUNNEL. This is the one function permitted to call the kit's key/value
@@ -477,20 +612,301 @@ void AppendFailureBlock(UIElementCollection const& body, std::wstring const& rea
 // The DRAWN blank and the SPOKEN blank are different strings and go in through
 // different parameters, so one row cannot acquire two writers of its name.
 #undef MakePaneKeyValueRow
-void AppendFieldRows(StackPanel const& panel, std::vector<InspectField> const& fields) {
-  auto body = panel.Children();
-  for (auto const& field : fields)
-    body.Append(kit::MakePaneKeyValueRow(H(field.key),
-                                         winrt::hstring{RailValueOr(field.value)}, 34,
-                                         winrt::hstring{RailSpokenValueOr(field.value)})
-                    .root);
+void AppendFieldRows(StackPanel const& panel, demo::Conversation const& conv,
+                     std::vector<InspectField> const& fields, bool messageMode,
+                     bool captionsAlreadyOpened = false) {
+  // The group walk (design d4 §9): the fields arrive positionally pinned, and
+  // the walk opens a floating caption + card whenever the PURE group function
+  // (InspectRailFields, probe-asserted) says the section changes. Grouping can
+  // therefore never permute a row - the probe pins the order AND the
+  // partition.
+  std::optional<InspectGroup> open;
+  kit::PaneCard card{nullptr, nullptr};
+  bool firstCaption = !captionsAlreadyOpened;
+  for (size_t i = 0; i < fields.size(); ++i) {
+    auto const& field = fields[i];
+    const InspectGroup group =
+        messageMode ? MessageFieldGroup(i) : ConversationFieldGroup(i);
+    if (!open || group != *open) {
+      if (card.root) kit::FinalizePaneCard(card);
+      auto caption =
+          AppendCaption(panel, InspectGroupCaption(group), L"", firstCaption);
+      firstCaption = false;
+      // The disappearing timer rides the RETENTION caption's trailing slot
+      // (design d4 §2) - the same Stopwatch glyph, at the same 12px faint ink,
+      // the conversation list row draws for a disappearing conversation.
+      if (!messageMode && group == InspectGroup::Retention && conv.disappearing) {
+        FontIcon timer;
+        if (auto style = kit::StyleByKey(L"UrRowIconStyle")) timer.Style(style);
+        timer.FontSize(12);
+        timer.Foreground(urnw::colors::FaintBrush());
+        timer.Glyph(L"\uE916");  // Segoe Fluent E916, Stopwatch
+        caption.trailing.Children().Append(timer);
+      }
+      card = kit::MakePaneCard();
+      panel.Children().Append(card.root);
+      open = group;
+    }
+    auto row = kit::MakePaneKeyValueRow(H(field.key),
+                                        winrt::hstring{RailValueOr(field.value)}, 34,
+                                        winrt::hstring{RailSpokenValueOr(field.value)});
+    // The rail-local hierarchy (design d4 §5): keys quiet to 12sp through
+    // UrCaptionTextStyle - an EXISTING key; the kit styles are shared with
+    // future pane surfaces and are deliberately NOT edited. Values keep 13 in
+    // UrValueTextStyle, so the value column's geometry - and with it the
+    // 28-character budget - is unchanged.
+    if (auto style = kit::StyleByKey(L"UrCaptionTextStyle")) row.key.Style(style);
+    // ...and a blank's em dash goes FAINT: "nothing here" must not borrow the
+    // weight of a real value. The drawn substitution (the dash) and the spoken
+    // one ("not set") stay exactly as the static_asserts pin them; only the
+    // ink quiets. THE LIMIT, restated from the kBlankValue block: no openable
+    // surface reaches a blank today, so this branch is code-inspection only
+    // until one does.
+    if (field.value.empty()) row.value.Foreground(urnw::colors::FaintBrush());
+    card.body.Children().Append(row.root);
+  }
+  if (card.root) kit::FinalizePaneCard(card);
 }
 // <-- THE WINDOW ENDS HERE. New functions go BELOW this line, not above it.
 #define MakePaneKeyValueRow MakePaneKeyValueRow_bypasses_RailValueOr_use_AppendFieldRows
 
+// ---- member presence rows and their expandable devices (design d4 §7) -------
+
+bool IsExpanded(InspectRailView const& v, std::wstring const& memberId) {
+  return std::find(v.expandedMemberIds.begin(), v.expandedMemberIds.end(), memberId) !=
+         v.expandedMemberIds.end();
+}
+
+// The row's whole announcement (a Button with panel content gets no automatic
+// name - the kit rule): identity, the admin note, the presence WORDS, and the
+// disclosure state, rewritten on every toggle so the state is spoken, not only
+// drawn.
+std::wstring MemberPresenceName(demo::MemberRef const& member, bool expanded) {
+  std::wstring name = member.displayName;
+  if (member.admin) name += L", Admin";
+  name += std::format(L", {}/{} online", OnlineDeviceCount(member), member.devices.size());
+  name += expanded ? L", expandable device list, expanded"
+                   : L", expandable device list, collapsed";
+  return name;
+}
+
+// A sub-row's Tag names the member it belongs to, so a collapse finds exactly
+// that member's rows with no position bookkeeping.
+constexpr wchar_t kDeviceSubRowTag[] = L"devsub:";
+
+std::vector<Border> BuildDeviceSubRows(demo::MemberRef const& member) {
+  std::vector<Border> rows;
+  for (auto const& device : member.devices) {
+    // showOwner=false: under the member's own row the owner suffix would
+    // repeat the row above. The default keeps the Network page's usage.
+    auto row = MakeDeviceRow(device, /*showOwner=*/false);
+    // Indent 26 (design d4 §7.2): the member title column starts at 12
+    // (padding) + 28 (avatar) + 10 (gap) = 50; this row's leading column
+    // starts at 12 + 2 (marker) + 10 (spacing) + 26 (margin) = 50 - the
+    // device rows form one vertical line directly under the member names,
+    // which is what reads as "belonging" without a tree glyph.
+    row.root.Margin(ThicknessHelper::FromLengths(26, 0, 0, 0));
+    row.root.Tag(winrt::box_value(winrt::hstring{std::wstring{kDeviceSubRowTag} + member.id}));
+    rows.push_back(row.root);
+  }
+  return rows;
+}
+
+void InsertDeviceSubRows(StackPanel const& cardBody, UIElement const& afterRow,
+                         demo::MemberRef const& member, bool animate) {
+  auto children = cardBody.Children();
+  uint32_t index = 0;
+  if (!children.IndexOf(afterRow, index)) return;
+  auto rows = BuildDeviceSubRows(member);
+  uint32_t at = index + 1;
+  for (auto const& row : rows) children.InsertAt(at++, row);
+
+  // On expand the sub-rows fade 0->1 at kFastMs with the Soft ease - "a
+  // gentle disclosure" (UrMotion.h) - staggered kStaggerMs, at most 2 steps
+  // so the 6-step cap is never near. Collapse is instant removal: exits run
+  // one step faster than entrances. The chevron swaps instantly in both
+  // cases.
+  //
+  // UNVERIFIED BRANCH, STATED TWICE OVER: ShouldAnimate() has never returned
+  // false on this machine, and `animate` is only ever true from a CLICK,
+  // which an agent may not synthesise - so this whole block is
+  // code-inspection only in this environment.
+  if (!animate || !urnw::motion::ShouldAnimate()) return;
+  namespace anim = winrt::Microsoft::UI::Xaml::Media::Animation;
+  anim::Storyboard sb;
+  for (size_t i = 0; i < rows.size(); ++i) {
+    auto fade = urnw::motion::MakeSplineDouble(
+        0.0, 1.0, urnw::motion::kFastMs,
+        static_cast<int64_t>(std::min<size_t>(i, 2)) * urnw::motion::kStaggerMs,
+        urnw::motion::kSoftP1, urnw::motion::kSoftP2);
+    anim::Storyboard::SetTarget(fade, rows[i]);
+    anim::Storyboard::SetTargetProperty(fade, L"Opacity");
+    sb.Children().Append(fade);
+  }
+  sb.Begin();
+}
+
+void RemoveDeviceSubRows(StackPanel const& cardBody, std::wstring const& memberId) {
+  auto children = cardBody.Children();
+  const std::wstring tag = std::wstring{kDeviceSubRowTag} + memberId;
+  // Highest index first, so the indexes below stay valid as they shift.
+  for (uint32_t i = children.Size(); i-- > 0;) {
+    auto element = children.GetAt(i).try_as<FrameworkElement>();
+    if (!element) continue;
+    auto value = element.Tag().try_as<winrt::hstring>();
+    if (value && std::wstring{*value} == tag) children.RemoveAt(i);
+  }
+}
+
+void ToggleMemberExpansion(InspectRailView& v, kit::PanePresenceRow const& row,
+                           demo::MemberRef const& member) {
+  auto& ids = v.expandedMemberIds;
+  auto it = std::find(ids.begin(), ids.end(), member.id);
+  const bool expanding = it == ids.end();
+  if (expanding) {
+    ids.push_back(member.id);
+  } else {
+    ids.erase(it);
+  }
+  kit::SetPanePresenceExpanded(row, expanding);
+  automation::AutomationProperties::SetName(row.root, H(MemberPresenceName(member, expanding)));
+
+  // The surgical path, not a re-populate: the sub-rows fade in under the
+  // clicked member (or vanish instantly) and the rest of the card never
+  // moves. The card body is the row's own Parent - one population generation
+  // holds both, so nothing here goes stale within it.
+  auto cardBody = row.root.Parent().try_as<StackPanel>();
+  if (!cardBody) return;
+  if (expanding) {
+    InsertDeviceSubRows(cardBody, row.root, member, /*animate=*/true);
+  } else {
+    RemoveDeviceSubRows(cardBody, member.id);
+  }
+  // The card's last row may have changed hands; the edge rule is idempotent,
+  // so re-running it on the body keeps the card honest.
+  kit::FinalizePaneCard(kit::PaneCard{nullptr, cardBody});
+}
+
+kit::PanePresenceRow MakeMemberPresenceRow(InspectRailView& v, demo::MemberRef const& member) {
+  auto row = kit::MakePanePresenceRow();
+  // The member's own mark, 28px, under the badge the kit already seated - the
+  // key whose change would change the picture, which is exactly what an
+  // identicon is FOR.
+  row.avatarHost.Children().InsertAt(0, urmsg::MakeIdenticon(member.identityKey, 28));
+  kit::SetPanePresenceOnline(row, 0 < OnlineDeviceCount(member));
+
+  std::wstring title = member.displayName;
+  if (member.admin) title += L" \u00B7 Admin";  // U+00B7 MIDDLE DOT
+  row.title.Text(H(title));
+
+  // The meta states the presence in WORDS. That is the primary channel and
+  // what entitles the corner badge to remain a Raw restatement - "colour is
+  // never the only carrier of state".
+  const std::wstring presence =
+      std::format(L"{}/{} online", OnlineDeviceCount(member), member.devices.size());
+  row.meta.Text(H(presence));
+
+  const bool expanded = IsExpanded(v, member.id);
+  kit::SetPanePresenceExpanded(row, expanded);
+  automation::AutomationProperties::SetName(row.root, H(MemberPresenceName(member, expanded)));
+
+  // Captures, deliberately: the view struct BY REFERENCE (it is a MainWindow
+  // member and outlives every population generation of its own rows - a click
+  // can only fire while the row exists), the member BY VALUE (ambient
+  // activity can append to the world vector it came from), the row BY VALUE
+  // (a struct of winrt handles). No `this`, no raw pointer into the world.
+  row.root.Click([&v, member, row](auto const&, auto const&) {
+    ToggleMemberExpansion(v, row, member);
+  });
+  return row;
+}
+
+// Message mode's subject (design d4 §10): WHICH message this inspector is
+// about, in the same shape as conversation mode's identity block - sender,
+// time, one excerpt line - so the two modes read as the same shape of page
+// (subject, then sections). Honest by construction: every string here is
+// already on screen in the thread; the row adds no claim.
+FrameworkElement MakeMessageSubjectRow(demo::MessageRow const& row) {
+  auto root = kit::MakePaneRow(44);  // UrPaneRowTallHeight
+
+  Grid grid;
+  grid.ColumnSpacing(10);
+  ColumnDefinition iconColumn, textColumn;
+  iconColumn.Width(GridLengthHelper::Auto());
+  textColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
+  grid.ColumnDefinitions().Append(iconColumn);
+  grid.ColumnDefinitions().Append(textColumn);
+
+  // The sender's face, 20px: outgoing rows carry the deterministic "me" seed
+  // (DemoWorld.cpp), so "You" has a stable picture.
+  auto identicon = urmsg::MakeIdenticon(row.senderKey, 20);
+  identicon.VerticalAlignment(VerticalAlignment::Center);
+  automation::AutomationProperties::SetAccessibilityView(
+      identicon, automation::Peers::AccessibilityView::Raw);
+  grid.Children().Append(identicon);
+
+  StackPanel text;
+  text.VerticalAlignment(VerticalAlignment::Center);
+
+  Grid line1;
+  ColumnDefinition senderColumn, timeColumn;
+  senderColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
+  timeColumn.Width(GridLengthHelper::Auto());
+  line1.ColumnDefinitions().Append(senderColumn);
+  line1.ColumnDefinitions().Append(timeColumn);
+  TextBlock sender;
+  if (auto style = kit::StyleByKey(L"UrRowTitleStyle")) sender.Style(style);
+  sender.Text(H(SenderLabel(row)));
+  line1.Children().Append(sender);
+  TextBlock time;
+  if (auto style = kit::StyleByKey(L"UrPaneMetaStyle")) time.Style(style);
+  time.Text(H(row.timeLabel));
+  Grid::SetColumn(time, 1);
+  line1.Children().Append(time);
+  text.Children().Append(line1);
+
+  TextBlock excerpt;
+  if (auto style = kit::StyleByKey(L"UrRowNoteStyle")) excerpt.Style(style);
+  // One line, trimmed (the style already trims): the rail is an inspector,
+  // not a second bubble.
+  excerpt.Text(H(row.body));
+  text.Children().Append(excerpt);
+  Grid::SetColumn(text, 1);
+  grid.Children().Append(text);
+
+  root.Child(grid);
+  return root;
+}
+
+// R4's delivered-by / read-by lists, carded in their final form (design d4 §8,
+// so they were built once): a caption with the count meta, then a card of
+// device rows - the owner suffix KEPT here, because in message mode the
+// devices belong to DIFFERENT people and "Pixel 9 · Bo Nakamura" is the
+// load-bearing "statement by a device" content. The empty case is the pure
+// PlanDeviceList's: one honest line in place of the card, never an empty
+// bordered box. The `This computer` substitution and the online/last-seen
+// words stay exactly as MakeDeviceRow writes them.
+void AppendDeviceList(StackPanel const& panel, std::vector<demo::DeviceRef> const& devices,
+                      bool deliveredList) {
+  const DeviceListPlan plan = PlanDeviceList(devices, deliveredList);
+  AppendCaption(panel,
+                deliveredList ? std::wstring_view{L"DELIVERED TO"}
+                              : std::wstring_view{L"READ BY"},
+                std::format(L"{}", devices.size()), /*first=*/false);
+  if (!plan.emptyNote.empty()) {
+    panel.Children().Append(kit::MakePaneEmptyLine(winrt::hstring{plan.emptyNote}));
+    return;
+  }
+  auto card = kit::MakePaneCard();
+  for (auto const& device : devices)
+    card.body.Children().Append(MakeDeviceRow(device).root);
+  kit::FinalizePaneCard(card);
+  panel.Children().Append(card.root);
+}
+
 // POPULATE ONLY. No storyboard, so the density switch can call this on a rail
 // that is already on screen without the rail flashing.
-void PopulateConversation(InspectRailView const& v, demo::Conversation const& conv,
+void PopulateConversation(InspectRailView& v, demo::Conversation const& conv,
                           bool advanced) {
   auto panel = BodyOf(v.conversationScroll);
   if (!panel) return;
@@ -498,16 +914,37 @@ void PopulateConversation(InspectRailView const& v, demo::Conversation const& co
   body.Clear();
   body.Append(MakeSubjectRow(conv));
 
-  body.Append(kit::MakePaneGroupHeader(L"MEMBERS", H(std::format(L"{}", conv.members.size())))
-                  .root);
+  // The caption meta is WORDS, not a bare count (design d4 §2), summed with
+  // the same OnlineDeviceCount the rows report - so the caption and the rows
+  // cannot disagree in a screenshot.
+  size_t online = 0;
+  size_t total = 0;
+  for (auto const& member : conv.members) {
+    online += OnlineDeviceCount(member);
+    total += member.devices.size();
+  }
+  AppendCaption(panel, L"MEMBERS",
+                std::format(L"{} members \u00B7 {}/{} online",  // U+00B7 MIDDLE DOT
+                            conv.members.size(), online, total),
+                /*first=*/true);
   if (conv.members.empty()) {
     body.Append(kit::MakePaneEmptyLine(L"No members"));
   } else {
-    for (auto const& member : conv.members) body.Append(MakeMemberRow(member).root);
+    auto card = kit::MakePaneCard();
+    for (auto const& member : conv.members) {
+      card.body.Children().Append(MakeMemberPresenceRow(v, member).root);
+      // An expanded member's sub-rows are rebuilt inline and SILENTLY: a
+      // populate never animates - the fade belongs to the click, and a
+      // density toggle must not announce itself.
+      if (IsExpanded(v, member.id))
+        for (auto const& sub : BuildDeviceSubRows(member)) card.body.Children().Append(sub);
+    }
+    kit::FinalizePaneCard(card);
+    body.Append(card.root);
   }
 
-  body.Append(kit::MakePaneGroupHeader(L"RETENTION").root);
-  AppendFieldRows(panel, BuildConversationFields(conv, advanced));
+  AppendFieldRows(panel, conv, BuildConversationFields(conv, advanced),
+                  /*messageMode=*/false, /*captionsAlreadyOpened=*/true);
 }
 
 // POPULATE ONLY, for the same reason as the conversation half above.
@@ -525,20 +962,30 @@ void PopulateMessage(InspectRailView const& v, demo::Conversation const& conv,
   // the measured defect SetTextOrCollapse exists for.
   if (!row.failureReason.empty()) AppendFailureBlock(body, row.failureReason);
 
-  body.Append(kit::MakePaneGroupHeader(L"MESSAGE").root);
+  // Which message this is, directly under the lock card (and under the failure
+  // block when present): message mode opens warm now, not cold on a table.
+  body.Append(MakeMessageSubjectRow(row));
+
   // AppendFieldRows, NOT the kit builder - the brief's line here was
   // `kit::MakePaneKeyValueRow(H(field.key), H(field.value), 34)`, which is the
   // one call in the module that would skip RailValueOr, on the one mode that
   // holds every blank value in the world. It no longer compiles; see the block
   // under this file's includes.
-  AppendFieldRows(panel, BuildMessageFields(conv, row, advanced));
+  AppendFieldRows(panel, conv, BuildMessageFields(conv, row, advanced),
+                  /*messageMode=*/true);
+
+  // The device lists are always LAST (R4's step-8 invariant: Advanced Mode
+  // adds rows; it does not reorder the surface).
+  AppendDeviceList(panel, row.inspect.deliveredTo, /*deliveredList=*/true);
+  AppendDeviceList(panel, row.inspect.readBy, /*deliveredList=*/false);
 }
 
-// The 20px mini-identicon (design d1 §7): what turns MEMBERS and the device
-// list into the Session-style connected-clients view the owner named, using
-// the one vivid element the app already has. The presence dot STAYS - it
-// badges the chip's corner; removing it would strip the row's second presence
-// channel (the meta words are the first).
+// The 20px mini-identicon (design d1 §7) on the DEVICE row - the row the
+// delivered-by / read-by lists and the Network page share. The presence dot
+// STAYS: it badges the chip's corner, and removing it would strip the row's
+// second presence channel (the meta words are the first). The MEMBER row
+// outgrew this helper in wave 4: members are kit::MakePanePresenceRow buttons
+// now (design d4 §7), whose badge the kit seats itself.
 //
 // The kit grid is not rebuilt for this: the dot is re-parented into a
 // chip-sized host that takes the dot's old column, so "one row species per
@@ -592,13 +1039,30 @@ InspectRailView MakeInspectRail() {
 
   // The 40 DIP strip every pane in this window opens with, by the same two keys
   // MainWindow.xaml uses in markup (lines 180-188), so a pane built in code and
-  // a pane declared in XAML are the same pane.
+  // a pane declared in XAML are the same pane. The header is a two-column grid
+  // now: the title, and the density word at the right edge (design d4 §13).
   Border header;
   if (auto style = kit::StyleByKey(L"UrPaneHeaderStyle")) header.Style(style);
+  Grid headerGrid;
+  ColumnDefinition titleColumn, metaColumn;
+  titleColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
+  metaColumn.Width(GridLengthHelper::Auto());
+  headerGrid.ColumnDefinitions().Append(titleColumn);
+  headerGrid.ColumnDefinitions().Append(metaColumn);
   TextBlock title;
   if (auto style = kit::StyleByKey(L"UrPaneTitleStyle")) title.Style(style);
   title.Text(L"Details");
-  header.Child(title);
+  headerGrid.Children().Append(title);
+  // The ADVANCED meta answers "why are there more rows than a minute ago"
+  // without a toast or a colour. Collapsed at normal density; flipped
+  // INSTANTLY by SetInspectRailAdvanced, never with a storyboard.
+  v.headerMeta = TextBlock();
+  if (auto style = kit::StyleByKey(L"UrPaneMetaStyle")) v.headerMeta.Style(style);
+  v.headerMeta.Text(L"ADVANCED");
+  v.headerMeta.Visibility(Visibility::Collapsed);
+  Grid::SetColumn(v.headerMeta, 1);
+  headerGrid.Children().Append(v.headerMeta);
+  header.Child(headerGrid);
   root.Children().Append(header);
 
   // Both bodies live in the same Grid cell, both collapsed. See the header.
@@ -616,42 +1080,7 @@ InspectRailView MakeInspectRail() {
   return v;
 }
 
-kit::PaneListRow MakeMemberRow(demo::MemberRef const& member) {
-  auto row = kit::MakePaneListRow(36);
-  const size_t online = OnlineDeviceCount(member);
-  row.dot.Fill(0 < online ? urnw::colors::MakeBrush(urnw::colors::kUrGreen)
-                          : urnw::colors::FaintBrush());
-
-  // The member's own mark, from the key whose change would change the picture
-  // - identity is exactly what an identicon is FOR (Identicon.h).
-  SeatIdenticonBadge(row, urmsg::MakeIdenticon(member.identityKey, 20));
-
-  std::wstring title = member.displayName;
-  if (member.admin) title += L" \u00B7 Admin";  // U+00B7 MIDDLE DOT
-  row.title.Text(H(title));
-
-  // The meta states the presence in WORDS. That is what entitles the dot beside
-  // it to remain a restatement - BuildPaneListRowParts marks that dot Raw on
-  // exactly that assumption (UrComponents.cpp:246-248) - and it is how this row
-  // obeys "colour is never the only carrier of state".
-  const std::wstring presence = std::format(L"{}/{} online", online, member.devices.size());
-  row.meta.Text(H(presence));
-
-  // MakePaneListRow does NOT mark title and meta Raw; only MakePaneListRowButton
-  // does (UrComponents.cpp:295-298). Without these two lines the row's own name
-  // is announced and then both children are announced again after it - the exact
-  // triple announcement the row name exists to prevent. A THIRD caller needing
-  // this is the signal to move the two calls down into BuildPaneListRowParts so
-  // both row forms carry it; MakeDeviceRow below is the second.
-  automation::AutomationProperties::SetAccessibilityView(
-      row.title, automation::Peers::AccessibilityView::Raw);
-  automation::AutomationProperties::SetAccessibilityView(
-      row.meta, automation::Peers::AccessibilityView::Raw);
-  automation::AutomationProperties::SetName(row.root, H(title + L", " + presence));
-  return row;
-}
-
-kit::PaneListRow MakeDeviceRow(demo::DeviceRef const& device) {
+kit::PaneListRow MakeDeviceRow(demo::DeviceRef const& device, bool showOwner) {
   auto row = kit::MakePaneListRow(36);
   row.dot.Fill(device.online ? urnw::colors::MakeBrush(urnw::colors::kUrGreen)
                              : urnw::colors::FaintBrush());
@@ -661,14 +1090,19 @@ kit::PaneListRow MakeDeviceRow(demo::DeviceRef const& device) {
   SeatIdenticonBadge(row, urmsg::MakeIdenticon(device.ownerKey, 20));
 
   std::wstring title = device.name;
-  const std::wstring owner =
-      device.isThisComputer ? std::wstring{L"This computer"} : device.ownerName;
-  if (!owner.empty()) title += L" \u00B7 " + owner;  // U+00B7 MIDDLE DOT
+  // The owner suffix is the "statement by a device" content when the list
+  // mixes owners (message mode's delivered-by / read-by); under a member's
+  // own expanded row it would repeat the row above, so the caller drops it.
+  if (showOwner) {
+    const std::wstring owner =
+        device.isThisComputer ? std::wstring{L"This computer"} : device.ownerName;
+    if (!owner.empty()) title += L" \u00B7 " + owner;  // U+00B7 MIDDLE DOT
+  }
   row.title.Text(H(title));
 
-  // Same rule as MakeMemberRow: the WORD carries the state and the dot restates
-  // it. An online device reads "online"; an offline one reads when it was last
-  // seen. Nothing here is legible only by hue.
+  // Same rule as the member rows: the WORD carries the state and the dot
+  // restates it. An online device reads "online"; an offline one reads when it
+  // was last seen. Nothing here is legible only by hue.
   const std::wstring meta = device.online ? std::wstring{L"online"} : device.lastSeenLabel;
   row.meta.Text(H(meta));
 
@@ -684,6 +1118,10 @@ kit::PaneListRow MakeDeviceRow(demo::DeviceRef const& device) {
 
 void SetInspectRailConversation(InspectRailView& v, demo::Conversation const& c) {
   if (!v.root) return;
+  // A new subject gets fresh expansion state (design d4 §7.2): parked ids are
+  // per-subject. SetInspectRailAdvanced is the path that PRESERVES them across
+  // a density re-population.
+  v.expandedMemberIds.clear();
   PopulateConversation(v, c, RailAdvanced(v));
   SetRailSubject(v, c.id, L"");
   PresentMode(v, /*messageMode=*/false);
@@ -702,6 +1140,35 @@ void SetInspectRailMessage(InspectRailView& v, demo::Conversation const& c,
   urnw::LogInfo("rail: message mode -> {} in {} (state {}, failure \"{}\")",
                 winrt::to_string(m.id), winrt::to_string(c.id),
                 winrt::to_string(DeliveryLabel(m.state)), winrt::to_string(m.failureReason));
+}
+
+void SetInspectRailAdvanced(InspectRailView& v, bool advanced) {
+  if (!v.root) return;
+  SetRailAdvanced(v, advanced);
+  // The header meta flips INSTANTLY (design d4 §13) - and nothing here starts
+  // a storyboard. This function deliberately makes no call into the mode-swap
+  // machinery (the regex gate on this file requires zero such references in
+  // this body): animating a density change reads as a phantom mode swap.
+  if (v.headerMeta)
+    v.headerMeta.Visibility(advanced ? Visibility::Visible : Visibility::Collapsed);
+
+  // Re-populate whichever mode is SHOWING, in place, from the parked subject
+  // ids (ids, never pointers - the world vector can be appended to). At
+  // startup neither body is visible yet - BuildInspectRail's seeding line
+  // runs before the first present - so there is nothing to re-render and the
+  // first populate simply reads the density tag.
+  auto const& world = demo::GetWorld();
+  if (v.conversationScroll && v.conversationScroll.Visibility() == Visibility::Visible) {
+    if (auto const* conv = FindConversation(world, RailConversationId(v)))
+      PopulateConversation(v, *conv, advanced);
+    return;
+  }
+  if (v.messageScroll && v.messageScroll.Visibility() == Visibility::Visible) {
+    auto const* conv = FindConversation(world, RailConversationId(v));
+    if (!conv) return;
+    if (auto const* row = FindMessageRow(*conv, RailMessageId(v)))
+      PopulateMessage(v, *conv, *row, advanced);
+  }
 }
 
 }  // namespace urmsg::views

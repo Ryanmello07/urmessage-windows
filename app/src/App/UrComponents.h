@@ -1,4 +1,4 @@
-﻿// The parts of the component kit a XAML style cannot express.
+// The parts of the component kit a XAML style cannot express.
 //
 // Most of the kit IS markup — UrButton, UrCard, UrLabel, UrTextField, the
 // switch and the snackbar surface are styles in App.xaml, over native WinUI
@@ -394,6 +394,60 @@ PaneListRowButton MakePaneListRowButton(double height = 36);
 // which is a SHAPE change and not colour-alone, and the row's automation Name
 // gains its selected state so a screen reader is told rather than shown.
 void SetPaneListRowSelected(PaneListRowButton const& row, bool selected);
+
+// ---- the section card and the presence row (design d4, inspector rail) -------
+//
+// The pane layout's third module species: groups of rows sit on a CARD
+// (kCard, radius 8, 1px border, 12px side margins) under a floating caption,
+// instead of running edge to edge as ruled lines. Radius 8 follows the
+// boxed-tile/identicon radius (UrStatTileStyle, MakeIdenticon) rather than
+// the 12 of page-level hero cards (UrCardStyle) - pane modules are
+// subordinate objects. G3: spends `card` and `border`, adds no resource key.
+struct PaneCard {
+  winrt::Microsoft::UI::Xaml::Controls::Border root{nullptr};
+  winrt::Microsoft::UI::Xaml::Controls::StackPanel body{nullptr};
+};
+PaneCard MakePaneCard();
+
+// Every row in a card carries its bottom hairline from MakePaneRow (or the
+// button style), and the LAST one's line sits flush against the card's own
+// edge - a double rule. This clears the last child's hairline and restores
+// the rest, so it is also the call a surgical insert/remove re-runs to keep
+// the edge honest. Idempotent on purpose.
+void FinalizePaneCard(PaneCard const& card);
+
+// A person row that opens their devices - Session's connected-clients idiom
+// (design d4 §7): a 44 DIP Button (UrPaneRowButtonOnCardStyle, the on-card
+// hover) carrying an avatar slot with a corner presence badge, a title, a
+// meta, and a chevron. The caller appends MakeIdenticon(seed, 28) to
+// avatarHost; the badge seats itself over the avatar's bottom-right corner.
+//
+// The badge is two elements: a 10px disc in the CARD token (so it reads
+// punched out of the avatar against the card the row sits on) holding an 8px
+// state element - online a kUrGreen disc, offline a 1px faint RING. Ring vs
+// disc is a SHAPE channel, the same ring/disc language the delivery glyphs
+// use; the state itself is carried by the meta WORDS, so the badge stays an
+// AccessibilityView Raw restatement. kUrGreen appears here only in its
+// reserved presence role.
+struct PanePresenceRow {
+  winrt::Microsoft::UI::Xaml::Controls::Button root{nullptr};
+  // caller appends MakeIdenticon(seed, 28) here
+  winrt::Microsoft::UI::Xaml::Controls::Grid avatarHost{nullptr};
+  winrt::Microsoft::UI::Xaml::Shapes::Ellipse badge{nullptr};      // the 10px punch-out
+  winrt::Microsoft::UI::Xaml::Shapes::Ellipse badgeCore{nullptr};  // the 8px state element
+  winrt::Microsoft::UI::Xaml::Controls::TextBlock title{nullptr};
+  winrt::Microsoft::UI::Xaml::Controls::TextBlock meta{nullptr};
+  winrt::Microsoft::UI::Xaml::Controls::FontIcon chevron{nullptr};
+};
+PanePresenceRow MakePanePresenceRow();
+
+// badgeCore: green disc vs faint ring. The words in `meta` stay the primary
+// carrier; this only restates them.
+void SetPanePresenceOnline(PanePresenceRow const& row, bool online);
+
+// The chevron alone, swapped instantly in both directions (design d4 §7.2):
+// ChevronDownMed when the row opens downward, ChevronUpMed when it closes.
+void SetPanePresenceExpanded(PanePresenceRow const& row, bool expanded);
 // ---- the pane shell's dynamic GROUPS and rows (R4) -------------------------
 //
 // R3 built Home, whose groups and headers are all declared in MainWindow.xaml.

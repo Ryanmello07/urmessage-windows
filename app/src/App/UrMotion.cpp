@@ -4,6 +4,7 @@
 #include "UrMotion.h"
 
 #include <winrt/Microsoft.UI.Xaml.Hosting.h>
+#include <winrt/Microsoft.UI.Xaml.Media.h>
 #include <winrt/Windows.UI.ViewManagement.h>
 
 // Two animation families live in this app, on purpose, not by accident:
@@ -136,6 +137,27 @@ void CrossfadePageSwap(winrt::Microsoft::UI::Xaml::FrameworkElement const& outgo
     return;
   }
   RunCrossfade(outgoing, incoming);
+}
+
+void SettleIn(winrt::Microsoft::UI::Xaml::FrameworkElement const& element) {
+  namespace xaml = winrt::Microsoft::UI::Xaml;
+  if (!element || !ShouldAnimate()) return;
+  auto transform = element.RenderTransform().try_as<xaml::Media::CompositeTransform>();
+  if (!transform) {
+    transform = xaml::Media::CompositeTransform();
+    element.RenderTransform(transform);
+  }
+  // The start pose is written directly and the animation only carries it home:
+  // if the storyboard were dropped, the element still lands at TranslateY 0 on
+  // its first frame rather than staying offset.
+  transform.TranslateY(kDist4);
+  auto rise = MakeSplineDouble(kDist4, 0.0, kBaseMs, 0, kStandardP1, kStandardP2);
+  anim::Storyboard sb;
+  anim::Storyboard::SetTarget(rise, element);
+  anim::Storyboard::SetTargetProperty(
+      rise, L"(UIElement.RenderTransform).(CompositeTransform.TranslateY)");
+  sb.Children().Append(rise);
+  sb.Begin();
 }
 
 }  // namespace urnw::motion

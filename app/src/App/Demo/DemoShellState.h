@@ -84,7 +84,10 @@ inline Layout LayoutFor(double contentWidthDip, double contentHeightDip) {
 struct DeepLink {
   std::wstring_view navTag;  // "chats" | "network" | "settings" | "developer"
   bool selectConversation;   // open conversation 0
-  bool selectMessage;        // and pre-select its newest Message row
+  // ...and pre-select kInspectTargetRowId (c0-r12), the row PickInspectMessage
+  // returns - NOT "the newest Message row": that is c0-r23 (Pending), which
+  // has no received-at and no device lists (the d7 distillation's ruling).
+  bool selectMessage;
   bool forceAdvanced;        // Developer exists only under Advanced Mode
 };
 

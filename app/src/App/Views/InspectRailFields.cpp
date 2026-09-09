@@ -195,6 +195,46 @@ std::vector<InspectField> BuildConversationFields(demo::Conversation const& conv
   return out;
 }
 
+InspectGroup MessageFieldGroup(size_t fieldIndex) {
+  // The partition the header states, keyed by POSITION - the same positions
+  // kExpectedKeys pins in the probe below, so a boundary moved here and not
+  // there fails that clause by name.
+  if (fieldIndex <= 2) return InspectGroup::Delivery;
+  if (fieldIndex <= 4) return InspectGroup::Protocol;
+  if (fieldIndex <= 7) return InspectGroup::Message;
+  return InspectGroup::Advanced;
+}
+
+InspectGroup ConversationFieldGroup(size_t fieldIndex) {
+  return fieldIndex <= 1 ? InspectGroup::Retention : InspectGroup::Advanced;
+}
+
+std::wstring_view InspectGroupCaption(InspectGroup group) {
+  switch (group) {
+    case InspectGroup::Delivery:  return L"DELIVERY";
+    case InspectGroup::Protocol:  return L"PROTOCOL";
+    case InspectGroup::Message:   return L"MESSAGE";
+    case InspectGroup::Retention: return L"RETENTION";
+    case InspectGroup::Advanced:  return L"ADVANCED";
+  }
+  return L"";
+}
+
+RailMode InitialRailMode(demo::DemoScreen screen, demo::Conversation const& conv) {
+  // Message exactly when the deep link asked for it AND there is a message row
+  // to be about - the second half is the no-pick arm BuildInspectRail logs.
+  if (screen == demo::DemoScreen::Inspect && PickInspectMessage(conv) != nullptr)
+    return RailMode::Message;
+  return RailMode::Conversation;
+}
+
+DeviceListPlan PlanDeviceList(std::vector<demo::DeviceRef> const& devices, bool deliveredList) {
+  if (devices.empty())
+    return DeviceListPlan{1, deliveredList ? std::wstring_view{kDeliveredEmptyNote}
+                                           : std::wstring_view{kReadEmptyNote}};
+  return DeviceListPlan{devices.size(), {}};
+}
+
 demo::MessageRow const* PickInspectMessage(demo::Conversation const& conv) {
   demo::MessageRow const* lastMessage = nullptr;
   demo::MessageRow const* lastRead = nullptr;
@@ -278,6 +318,36 @@ std::wstring InspectRailFieldsProbe() {
     if (advanced.size() <= i || advanced[i].key != normal[i].key ||
         advanced[i].value != normal[i].value)
       ++prefixWrong;
+
+  // THE GROUP PARTITION (design d4 §9). The view walks the field vector and
+  // opens a caption+card each time MessageFieldGroup(i) changes, so the
+  // grouping is contiguous and order-preserving by construction - and this
+  // pins the construction: the twelve pinned keys map 0-2 Delivery, 3-4
+  // Protocol, 5-7 Message, 8-11 Advanced. A shifted boundary moves a field
+  // into the wrong card on screen while every count above stays green, which
+  // is exactly the defect shape a census cannot see.
+  static constexpr InspectGroup kExpectedMessageGroups[kKeyCount] = {
+      InspectGroup::Delivery, InspectGroup::Delivery, InspectGroup::Delivery,
+      InspectGroup::Protocol, InspectGroup::Protocol,
+      InspectGroup::Message,  InspectGroup::Message,  InspectGroup::Message,
+      InspectGroup::Advanced, InspectGroup::Advanced, InspectGroup::Advanced,
+      InspectGroup::Advanced};
+  size_t groupsWrong = 0;
+  for (size_t i = 0; i < kKeyCount; ++i)
+    if (MessageFieldGroup(i) != kExpectedMessageGroups[i]) ++groupsWrong;
+  // Conversation mode is "0-1 Retention, everything from 2 on Advanced" - a
+  // rule, not a magic stop at 4, so it is probed past the fixture's own count.
+  size_t convGroupsWrong = 0;
+  if (ConversationFieldGroup(0) != InspectGroup::Retention) ++convGroupsWrong;
+  if (ConversationFieldGroup(1) != InspectGroup::Retention) ++convGroupsWrong;
+  for (size_t i = 2; i <= 5; ++i)
+    if (ConversationFieldGroup(i) != InspectGroup::Advanced) ++convGroupsWrong;
+  // And every group has a caption to draw: an empty one would open a card
+  // under a blank strip.
+  size_t captionsBlank = 0;
+  for (InspectGroup g : {InspectGroup::Delivery, InspectGroup::Protocol, InspectGroup::Message,
+                         InspectGroup::Advanced, InspectGroup::Retention})
+    if (InspectGroupCaption(g).empty()) ++captionsBlank;
 
   // Conversation mode is a RULE over all the conversations, not one magic
   // number: 2 rows at normal density, +1 for the conversation id, +1 more for a
@@ -521,7 +591,8 @@ std::wstring InspectRailFieldsProbe() {
 
   const bool ok = normal.size() == 8 && advanced.size() == 12 &&
                   normal[0].key == L"Sender" && advanced[8].key == L"Group id" &&
-                  keysWrong == 0 && prefixWrong == 0 && picked.blanks == 0 &&
+                  keysWrong == 0 && prefixWrong == 0 && groupsWrong == 0 &&
+                  convGroupsWrong == 0 && captionsBlank == 0 && picked.blanks == 0 &&
                   picked.widest <= kInspectValueMaxChars && budgetGateLive && shortHexOk &&
                   convOk == world.conversations.size() && convRowsWrong == 0 &&
                   0 < sweepRows && sweepUnexpected == 0 && retentionWrong == 0 &&
@@ -533,7 +604,8 @@ std::wstring InspectRailFieldsProbe() {
       L"  inspect rail     : {} - message fields {}/8 normal {}/12 advanced, "
       L"conversation fields correct in {}/{}, blank values {}, widest value {} "
       L"(\"{}\") of {} allowed, sender \"{}\"; keys out of order {}, normal not a "
-      L"prefix of advanced in {} row(s), conversation rows wrong {}; world sweep "
+      L"prefix of advanced in {} row(s), field groups {} message + {} conversation "
+      L"wrong, {} blank captions, conversation rows wrong {}; world sweep "
       L"{} values over {} message rows, {} blank = {} \"Group id\" on a direct "
       L"conversation + {} \"Received\" on an outgoing row not yet delivered + {} "
       L"unexpected (first \"{}\" on {}); the width scan trips at {} on a locally "
@@ -545,6 +617,7 @@ std::wstring InspectRailFieldsProbe() {
       world.conversations.size(), picked.blanks, picked.widest, picked.widestKey,
       kInspectValueMaxChars,
       normal.empty() ? std::wstring{L"(none)"} : normal[0].value, keysWrong, prefixWrong,
+      groupsWrong, convGroupsWrong, captionsBlank,
       convRowsWrong, sweepValues, sweepRows, sweepBlanks, blankGroupIdOnDirect,
       blankReceivedNotYet, sweepUnexpected, unexpectedKey, unexpectedRow, over.widest,
       over.widestKey, budgetBad.empty() ? std::wstring{L"yes"} : L"no (" + budgetBad + L")",
@@ -666,6 +739,61 @@ std::wstring InspectRailDeviceProbe() {
   const bool lookupsOk = convFound == world.conversations.size() &&
                          rowFound == conv.rows.size() && missesAreNull;
 
+  // THE RAIL'S INITIAL MODE, asserted here because it finally CAN be: the
+  // decision used to be an inline `if` in MainWindow::BuildInspectRail, a winrt
+  // TU this probe cannot reach, so the rail had probes for its fields and its
+  // devices and none for its mode. Three clauses - the deep link, the default,
+  // and the LogWarn arm (Inspect asked, but the conversation has NO
+  // RowKind::Message; the arm lives at MainWindow.xaml.cpp's BuildInspectRail,
+  // NOT InspectRailView.cpp, which contains no LogWarn). systemOnly is the
+  // locally built conversation that arm needs: DemoWorld is byte-fingerprinted
+  // (I10) and every one of its conversations carries a message row.
+  //
+  // THE LIMIT, STATED: this asserts what the mode SHOULD be, not which write
+  // lands last. It becomes a real gate only alongside the wiring task's
+  // single-writer rule, which BuildInspectRail's comment block carries.
+  const bool modeOk =
+      InitialRailMode(demo::DemoScreen::Inspect, conv) == RailMode::Message &&
+      InitialRailMode(demo::DemoScreen::Chats, conv) == RailMode::Conversation &&
+      InitialRailMode(demo::DemoScreen::Inspect, systemOnly) == RailMode::Conversation;
+
+  // THE DEVICE-LIST PLAN. The view's AppendDeviceList renders from
+  // PlanDeviceList, so the empty branch - which --demo=inspect can never open,
+  // because the pick is c0-r12 with seven devices in each list - is covered
+  // here over LOCALLY built inputs (the audit's R4 override; DemoWorld stays
+  // untouched). The world sweep then pins the agreement on every row the
+  // fixture DOES have, including its empty lists (c0-r23 carries none).
+  size_t planWrong = 0;
+  size_t emptyLists = 0;
+  for (auto const& c : world.conversations)
+    for (auto const& r : c.rows) {
+      if (r.kind != demo::RowKind::Message) continue;
+      for (bool delivered : {true, false}) {
+        auto const& devices = delivered ? r.inspect.deliveredTo : r.inspect.readBy;
+        const DeviceListPlan plan = PlanDeviceList(devices, delivered);
+        const bool agreement =
+            devices.empty() ? (plan.rowCount == 1 && !plan.emptyNote.empty())
+                            : (plan.rowCount == devices.size() && plan.emptyNote.empty());
+        if (!agreement) ++planWrong;
+        if (devices.empty()) ++emptyLists;
+      }
+    }
+  // The counter-examples, because the sweep's agreement is satisfied whole by a
+  // plan that always reports empty or never does: locally, an empty list must
+  // produce exactly one child carrying the RIGHT note (delivered vs read are
+  // different sentences), and a non-empty list must produce its rows and no
+  // note.
+  const DeviceListPlan emptyDelivered = PlanDeviceList({}, /*deliveredList=*/true);
+  const DeviceListPlan emptyRead = PlanDeviceList({}, /*deliveredList=*/false);
+  demo::MessageInspect threeLocal{};
+  for (size_t i = 0; i < 3; ++i) threeLocal.deliveredTo.push_back(demo::DeviceRef{});
+  const DeviceListPlan threePlan = PlanDeviceList(threeLocal.deliveredTo, true);
+  const bool emptyPlansOk =
+      emptyDelivered.rowCount == 1 && emptyDelivered.emptyNote == kDeliveredEmptyNote &&
+      emptyRead.rowCount == 1 && emptyRead.emptyNote == kReadEmptyNote &&
+      emptyDelivered.emptyNote != emptyRead.emptyNote &&
+      threePlan.rowCount == 3 && threePlan.emptyNote.empty();
+
   // OnlineDeviceCount against DemoWorld's own structure rather than against
   // itself: every member gets a phone that is online, an admin gets a second
   // device that is not (DemoWorld.cpp:78-86). So the online total must equal the
@@ -706,7 +834,8 @@ std::wstring InspectRailDeviceProbe() {
   // The pick's own receipt counts are printed as FACTS, not gated on: the
   // fallback pick is legitimately allowed to be an incoming row with none.
   const bool ok = pick != nullptr && 0 < withReaders && consistent == withReaders &&
-                  acceptsThePick && rejected == 2 && pickOk && lookupsOk && devicesOk;
+                  acceptsThePick && rejected == 2 && pickOk && lookupsOk && devicesOk &&
+                  modeOk && planWrong == 0 && emptyPlansOk;
 
   return std::format(
       L"  inspect devices  : {} - pick \"{}\" state {} delivered-by {} read-by {}; "
@@ -717,13 +846,16 @@ std::wstring InspectRailDeviceProbe() {
       L"with no read row and to null with none, ok {}; lookups resolve {}/{} "
       L"conversations and {}/{} rows of conversation 0 by id, misses null {}; "
       L"devices {} online of {} across {} members ({} admin), {} short of full, "
-      L"{} wrong",
+      L"{} wrong; initial mode inspect->message, chats->conversation, "
+      L"inspect-with-no-message->conversation, ok {}; device-list plans {} wrong "
+      L"over the world ({} empty lists swept), empty-list notes ok {}",
       ok ? L"PASS" : L"FAIL", pick ? pick->id : std::wstring{L"(none)"},
       pick ? DeliveryLabel(pick->state) : std::wstring{L"-"}, delivered, read, consistent,
       withReaders, messages, acceptsThePick ? L"yes" : L"no", rejected,
       demo::kInspectTargetRowId, lastMessageId, pickOk ? L"yes" : L"no", convFound,
       world.conversations.size(), rowFound, conv.rows.size(), missesAreNull ? L"yes" : L"no",
-      onlineDevices, memberDevices, members, admins, shortOfFull, onlineWrong);
+      onlineDevices, memberDevices, members, admins, shortOfFull, onlineWrong,
+      modeOk ? L"yes" : L"no", planWrong, emptyLists, emptyPlansOk ? L"yes" : L"no");
 }
 
 }  // namespace urmsg::views

@@ -120,4 +120,16 @@ winrt::Microsoft::UI::Composition::CompositionEasingFunction MakeCompositionEasi
 void CrossfadePageSwap(winrt::Microsoft::UI::Xaml::FrameworkElement const& outgoing,
                        winrt::Microsoft::UI::Xaml::FrameworkElement const& incoming);
 
+// A 4 DIP rise -> 0 over kBaseMs on the Standard ease (design d4 §12.1): a
+// VERTICAL settle, which reads as material settling rather than the lateral
+// navigation a slide would imply inside a fixed-width column. Composes with
+// CrossfadePageSwap (it owns opacity and visibility; this owns only
+// TranslateY). Attaches a CompositeTransform when the element lacks one, so
+// callers do not each grow a transform-attachment block.
+//
+// No-ops when ShouldAnimate() is false. UNVERIFIED BRANCH, STATED: that gate
+// has never fired on any machine this ran on (SPI_GETCLIENTAREAANIMATION = 1),
+// so the no-motion path is code-inspection only.
+void SettleIn(winrt::Microsoft::UI::Xaml::FrameworkElement const& element);
+
 }  // namespace urnw::motion

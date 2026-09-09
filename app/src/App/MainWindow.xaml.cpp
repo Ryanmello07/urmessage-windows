@@ -140,18 +140,15 @@ MainWindow::MainWindow() {
   //
   // WHY NOTHING WOULD CATCH IT. The rail has --diagnose probes for its FIELDS
   // and its DEVICES, both computed from pure functions in InspectRailFields.
-  // Nothing probes which MODE the rail is in, because that decision is this
-  // inline `if` in a winrt translation unit. So a regression here leaves
-  // --diagnose green and the build clean, and the only thing that can notice is
-  // a person looking at a screenshot.
-  //
-  // R4 is assigned the extraction that closes half of this: InitialRailMode(
-  // screen, conv) into InspectRailFields.h, asserting Inspect->Message,
-  // Chats->Conversation, and Inspect-with-no-message->Conversation - that last
-  // clause being the LogWarn arm below, which R4 must cover. It asserts what the
-  // mode SHOULD be, not which write lands last, so it becomes a real gate only
-  // alongside the single-writer rule stated above, which is the wiring task's
-  // half.
+  // The MODE decision used to be unreachable the same way - an inline `if` in
+  // this winrt translation unit - which is why R4 extracted it:
+  // InitialRailMode(screen, conv) is pure now, and InspectRailDeviceProbe
+  // asserts Inspect->Message, Chats->Conversation, and
+  // Inspect-with-no-message->Conversation (that last clause being the LogWarn
+  // arm below, at BuildInspectRail - NOT InspectRailView.cpp, which contains
+  // no LogWarn). The probe asserts what the mode SHOULD be, not which write
+  // lands last, so it becomes a real gate only alongside the single-writer
+  // rule stated above, which is the wiring task's half.
   //
   // And do NOT solve any of this by moving BuildInspectRail() after
   // BuildConversationList(): that reintroduces the unreachable-rail failure this
@@ -469,6 +466,22 @@ void MainWindow::BuildInspectRail() {
   RailHost().Children().Clear();
   RailHost().Children().Append(rail_.root);
 
+  // The density seed (R4): ONE reader of the Advanced Mode truth, matching
+  // the conversation list's established call above (contract 5 allows one
+  // reader, not two). NOT demo_.advanced (does not exist) and NOT
+  // options_.advanced (the wrong source - the switch is session-only and
+  // InitAdvancedMode has already folded it in). This runs before the initial
+  // populate below, so the first render reads the right density from the
+  // tag; SetInspectRailAdvanced itself re-populates nothing yet because
+  // neither body is visible. The LIVE toggle subscription is the wiring
+  // task's (wiring.md:578), not this task's.
+  //
+  // W5 CARRY-OVER (the d7 distillation's sequencing note): when the wiring
+  // task deletes BuildInspectRail, this seeding line must move into
+  // BuildDemoViews beside the rail mount, or the rail opens at normal
+  // density under --demo-advanced.
+  urmsg::views::SetInspectRailAdvanced(rail_, urmsg::AdvancedModeEnabled());
+
   auto const& world = urmsg::demo::GetWorld();
   if (world.conversations.empty()) {
     // DemoWorld's --diagnose invariant 1 requires 8 conversations, so this is a
@@ -502,19 +515,29 @@ void MainWindow::BuildInspectRail() {
   // assertion is the only thing keeping the rail and the outline on the same
   // bubble. If it ever fails, this deep link and the thread have parted.
   //
+  // THE DECISION ITSELF IS PURE NOW (R4): InitialRailMode lives in
+  // InspectRailFields, so InspectRailDeviceProbe asserts what the mode SHOULD
+  // be - the deep link, the default, and the no-message arm below. What the
+  // probe cannot assert is which write lands LAST; that half stays the wiring
+  // task's single-writer rule.
+  //
   // *** THE WIRING TASK MUST DELETE THIS BRANCH, NOT KEEP IT. *** That task
   // installs its own --demo=inspect deep link in DrainDeepLink. Two writers of
   // one state is one too many: whichever runs last wins, which makes the rail's
   // subject an ordering accident, and if the two do not designate the same row
   // it can put the rail on a different bubble from the one the thread outlines.
-  // The constructor comment above BuildInspectRail() states the hazard and why
-  // no --diagnose line would catch it: the rail's probes cover its fields and
-  // its devices, not its mode.
+  // The constructor comment above BuildInspectRail() states the hazard.
+  if (urmsg::views::InitialRailMode(options_.screen, conv) ==
+      urmsg::views::RailMode::Message) {
+    // InitialRailMode returns Message only when the pick is non-null, so the
+    // second pick here cannot miss; it is the same pure, deterministic call
+    // the function itself made.
+    urmsg::views::SetInspectRailMessage(rail_, conv, *urmsg::views::PickInspectMessage(conv));
+    return;
+  }
   if (options_.screen == urmsg::demo::DemoScreen::Inspect) {
-    if (auto const* picked = urmsg::views::PickInspectMessage(conv)) {
-      urmsg::views::SetInspectRailMessage(rail_, conv, *picked);
-      return;
-    }
+    // The arm InitialRailMode's third probe clause covers: Inspect asked, but
+    // this conversation has no message row to be about.
     urnw::LogWarn("rail: --demo=inspect but conversation 0 has no message row");
   }
   urmsg::views::SetInspectRailConversation(rail_, conv);
