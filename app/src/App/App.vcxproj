@@ -215,6 +215,11 @@
          not pull in the pch and its winrt/ headers. -->
     <ClCompile Include="Views\InspectRailFields.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="Views\InspectRailView.cpp" />
+    <!-- Uses the pch (it builds XAML): only its Format*/CollectNetworkDiagnostics
+         half is pure, and main.cpp calls that half only from the `if (diagnose)`
+         block AFTER winrt::init_apartment (main.cpp:191 vs :202), so the
+         before-init purity rule that NotUsing serves never reaches this TU. -->
+    <ClCompile Include="Views\NetworkPageView.cpp" />
     <ClCompile Include="Views\ThreadLayout.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="Views\ThreadView.cpp" />
     <ClCompile Include="WindowReveal.cpp" />
@@ -241,6 +246,7 @@
     <ClInclude Include="Views\ConversationRowModel.h" />
     <ClInclude Include="Views\InspectRailFields.h" />
     <ClInclude Include="Views\InspectRailView.h" />
+    <ClInclude Include="Views\NetworkPageView.h" />
     <ClInclude Include="WindowReveal.h" />
     <ClInclude Include="WindowShell.h" />
     <ClInclude Include="resource.h" />

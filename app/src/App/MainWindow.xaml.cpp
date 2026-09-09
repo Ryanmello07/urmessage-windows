@@ -24,6 +24,7 @@
 #include "UrMotion.h"
 #include "Views/InspectRailFields.h"
 #include "Views/InspectRailView.h"
+#include "Views/NetworkPageView.h"
 #include "Views/ThreadView.h"
 
 using namespace winrt;
@@ -156,6 +157,7 @@ MainWindow::MainWindow() {
   BuildInspectRail();
   BuildConversationList();
   BuildThread();
+  BuildNetworkPage();
 
   // The window reveal: bind now that the content tree exists, then arm BEFORE
   // Activate() so the first composed frame is already the start pose rather
@@ -443,6 +445,38 @@ void MainWindow::BuildThread() {
   urmsg::views::SetThreadConversation(thread_, open);
   urnw::LogInfo("thread: mounted {} rows, {} bubbles", open.rows.size(),
                 thread_.bubbles.size());
+}
+
+void MainWindow::BuildNetworkPage() {
+  // options_, NOT a second ParseDemoOptions() call - the same rule BuildThread
+  // states: ShowDestination's network arm reads options_ to decide whether the
+  // host is routable at all, so a second read here would give the mount and
+  // the route two sources of truth for one flag. It also keeps GetWorld() off
+  // a normal launch (design §8: the app behaves exactly as it does today).
+  if (!options_.enabled) return;
+
+  network_ = urmsg::views::MakeNetworkPage(urmsg::demo::GetWorld());
+  // NetworkHost, NOT a host of the network task's own: MainWindow.xaml:282
+  // already declares it and ShowDestination's network arm routes to it, and a
+  // second Grid would be "mounted into the collapsed twin", the failure this
+  // window has already shipped four times (the d7 audit's N3 override - there
+  // is no NetworkBody).
+  NetworkHost().Children().Clear();
+  if (network_.root) {
+    NetworkHost().Children().Append(network_.root);
+  } else {
+    urnw::LogWarn("window: MakeNetworkPage returned no root; the Network "
+                  "destination is empty");
+  }
+
+  // N6 SEEDS ONLY (the d7 distillation's §1.2 tightening): the live
+  // subscription is the wiring task's ONE OnAdvancedModeChanged subscriber
+  // (W7), which no task in this wave registers — its probe greps this file
+  // for OnAdvancedModeChanged and expects zero call sites. This is the
+  // launch-time read of the same truth, matching the conversation list's
+  // established call at :365 and the rail's at :518.
+  urmsg::views::SetNetworkPageAdvanced(network_, urmsg::AdvancedModeEnabled());
+  urnw::LogInfo("window: network page built");
 }
 
 void MainWindow::BuildInspectRail() {
@@ -948,10 +982,7 @@ void MainWindow::ShowDestination(std::wstring_view tag) {
     incoming = StubPage();
     header = Loc("nav_contacts");
   } else if (tag == L"network" && options_.enabled) {
-    // The N/S/A groups have not landed: NetworkHost/SettingsHost/DeveloperHost
-    // are empty Grids that paint a blank pane. Route to the stub (which carries
-    // the "not built" line) until the real surface mounts into its host.
-    incoming = StubPage();
+    incoming = NetworkHost();
     header = hstring{kDemoNavNetwork};
   } else if (tag == L"developer" && options_.enabled) {
     incoming = StubPage();
@@ -967,6 +998,15 @@ void MainWindow::ShowDestination(std::wstring_view tag) {
   currentTag_ = std::wstring{tag};
   urnw::motion::CrossfadePageSwap(currentPage_, incoming);
   currentPage_ = incoming;
+
+  // The network page's first-show entrance (d5 §3.7). AFTER the swap, inside
+  // this same synchronous handler, so the start pose is written before the
+  // first frame the page is visible in — and composed so the two never
+  // animate one property on one element: the crossfade owns the page root's
+  // opacity, the stagger owns the sections' rise and fade. Run-once inside
+  // the view, so later visits are simple swaps.
+  if (incoming == NetworkHost())
+    urmsg::views::AnimateNetworkPageEntrance(network_);
 }
 
 void MainWindow::OnNavSelectionChanged(NavigationView const&,

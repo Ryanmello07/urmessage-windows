@@ -31,9 +31,16 @@ namespace anim = winrt::Microsoft::UI::Xaml::Media::Animation;
 using winrt::Microsoft::UI::Xaml::Duration;
 using winrt::Microsoft::UI::Xaml::DurationType;
 using winrt::Windows::Foundation::TimeSpan;
+
+// The SetMotionOverride test hook's state. UI-thread only, so a plain
+// optional with no synchronization — the same single-thread assumption the
+// rest of this file already makes.
+std::optional<bool> g_motionOverride;
 }  // namespace
 
 bool ShouldAnimate() {
+  // The test hook wins when engaged — see its declaration for why it exists.
+  if (g_motionOverride.has_value()) return *g_motionOverride;
   // "Show animations in Windows" off means the user wants motion GONE, not
   // reduced — same reading ConnectCanvas::AnimationsEnabled already used, now
   // the one place every OTHER animation in the app asks too.
@@ -43,6 +50,8 @@ bool ShouldAnimate() {
     return true;
   }
 }
+
+void SetMotionOverride(std::optional<bool> engaged) { g_motionOverride = engaged; }
 
 TimeSpan Ms(int64_t ms) {
   return std::chrono::duration_cast<TimeSpan>(std::chrono::milliseconds(ms));

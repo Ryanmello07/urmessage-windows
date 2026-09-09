@@ -18,6 +18,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 
 #include <winrt/Microsoft.UI.Composition.h>
 #include <winrt/Microsoft.UI.Xaml.h>
@@ -82,6 +83,16 @@ inline constexpr double kPressScale = 0.97;
 // file, UISettings was read only inside ConnectCanvas — LoginCarousel and the
 // page-transition code had no gate at all.
 bool ShouldAnimate();
+
+// A TRI-STATE test hook read by ShouldAnimate(): engaged (true/false) it wins,
+// disengaged (nullopt, the default) the OS setting rules. It exists because
+// the reduce-motion branch had never executed on any machine this ran on
+// (SPI_GETCLIENTAREAANIMATION = 1), so a task landing motion needs a way to
+// RENDER that branch without flipping a Windows accessibility setting
+// (d5 §3.8). UI THREAD ONLY, like everything in this file; nothing persists
+// it and no shipped code path engages it — call sites are temporary,
+// inserted to capture the motion-off render and removed in the same session.
+void SetMotionOverride(std::optional<bool> engaged);
 
 // ---- TimeSpan / Duration helpers --------------------------------------------
 winrt::Windows::Foundation::TimeSpan Ms(int64_t ms);

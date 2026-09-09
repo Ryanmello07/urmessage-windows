@@ -37,6 +37,7 @@
 #include "Log.h"
 #include "Startup.h"
 #include "Strings.h"
+#include "Views/NetworkPageView.h"
 
 using namespace winrt::Microsoft::Windows::AppLifecycle;
 
@@ -205,6 +206,13 @@ int __stdcall wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     // a probe that failed early would make the whole UI render key ids.
     diagnostics.push_back(urnw::ResourceProbe());
     diagnostics.push_back(InstanceProbe());
+    // The Network surface's own invariants. HERE and not in CollectDiagnostics()
+    // (:176), which runs on EVERY launch — building the demo world on a normal
+    // startup contradicts design §8 and puts demo code on the shipping path.
+    // After ResourceProbe() on purpose: Localized() caches its loader on the
+    // first call, and ResourceProbe is deliberately that caller.
+    for (auto& line : urmsg::views::CollectNetworkDiagnostics())
+      diagnostics.push_back(std::move(line));
     return urnw::WriteDiagnosticsToConsole(diagnostics);
   }
 

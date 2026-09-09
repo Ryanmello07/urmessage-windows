@@ -24,6 +24,7 @@
 #include "UrComponents.h"
 #include "Views/ConversationListView.h"
 #include "Views/InspectRailView.h"
+#include "Views/NetworkPageView.h"
 #include "Views/ThreadView.h"
 #include "WindowReveal.h"
 
@@ -78,6 +79,15 @@ struct MainWindow : MainWindowT<MainWindow> {
   void BuildInspectRail();
 
   urmsg::views::InspectRailView rail_{};
+
+  // The Network destination's whole content, built in code into NetworkHost
+  // (MainWindow.xaml:282 — the d7 audit's N3 override; there is no
+  // NetworkBody). Demo-gated for the same reason BuildThread is: a normal
+  // launch must behave exactly as it does today (design D7/D8), and building
+  // the page would build the demo world on the shipping path.
+  void BuildNetworkPage();
+
+  urmsg::views::NetworkPageView network_{};
 
   // A row was clicked. Takes the row INDEX: ConversationListView::rows[i] is
   // world.conversations[i], and nothing reorders either.
