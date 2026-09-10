@@ -47,14 +47,25 @@
                             <SolidColorBrush x:Key="AccentButtonBorderBrush" Color="Transparent" />
                             <SolidColorBrush x:Key="AccentButtonBorderBrushPointerOver" Color="Transparent" />
                             <SolidColorBrush x:Key="AccentButtonBorderBrushPressed" Color="Transparent" />
-                            <!-- brand blue switch on-state -->
-                            <SolidColorBrush x:Key="ToggleSwitchFillOn" Color="#638BFC" />
-                            <SolidColorBrush x:Key="ToggleSwitchFillOnPointerOver" Color="#7FA0FC" />
-                            <SolidColorBrush x:Key="ToggleSwitchFillOnPressed" Color="#5378E0" />
-                            <SolidColorBrush x:Key="ToggleSwitchFillOnDisabled" Color="#33638BFC" />
-                            <SolidColorBrush x:Key="ToggleSwitchStrokeOn" Color="#638BFC" />
-                            <SolidColorBrush x:Key="ToggleSwitchStrokeOnPointerOver" Color="#7FA0FC" />
-                            <SolidColorBrush x:Key="ToggleSwitchStrokeOnPressed" Color="#5378E0" />
+                            <!-- switch ON state, re-themed OFF the stock WinUI blue: #638BFC
+                                 was the only off-palette hue in the product. The track is now an
+                                 off-white in the text-primary family and the knob is page-dark
+                                 (#101010), so the ON state reads as chrome, not a call to action
+                                 - deliberately NOT accent and NOT urGreen (both reserved, G3).
+                                 Hover/pressed keep the palette's brighten/dim step; disabled keeps
+                                 the 0x33 alpha the old blue used. The OFF state is untouched: the
+                                 platform's ToggleSwitchFillOff* / ToggleSwitchKnobFillOff* keys
+                                 are not overridden anywhere. -->
+                            <SolidColorBrush x:Key="ToggleSwitchFillOn" Color="#E8E8E8" />
+                            <SolidColorBrush x:Key="ToggleSwitchFillOnPointerOver" Color="#F4F4F4" />
+                            <SolidColorBrush x:Key="ToggleSwitchFillOnPressed" Color="#D8D8D8" />
+                            <SolidColorBrush x:Key="ToggleSwitchFillOnDisabled" Color="#33E8E8E8" />
+                            <SolidColorBrush x:Key="ToggleSwitchStrokeOn" Color="#E8E8E8" />
+                            <SolidColorBrush x:Key="ToggleSwitchStrokeOnPointerOver" Color="#F4F4F4" />
+                            <SolidColorBrush x:Key="ToggleSwitchStrokeOnPressed" Color="#D8D8D8" />
+                            <SolidColorBrush x:Key="ToggleSwitchKnobFillOn" Color="#101010" />
+                            <SolidColorBrush x:Key="ToggleSwitchKnobFillOnPointerOver" Color="#101010" />
+                            <SolidColorBrush x:Key="ToggleSwitchKnobFillOnPressed" Color="#101010" />
                             <!-- android's onBackground is OFF-white (#F8F8F8), not pure
                                  white: this is the default foreground every unstyled
                                  TextBlock and control text in the app picks up -->
@@ -898,8 +909,10 @@
                  iOS hand-draws a 40x22 track. Windows does NOT: the platform
                  ToggleSwitch already has the right metrics, the right pointer and
                  focus states and a real automation peer, and its on-state fill is
-                 already the brand blue through the ToggleSwitchFillOn* theme keys
-                 above. All this style does is drop the On/Off word labels (the
+                 the brand's off-white / page-dark pair through the ToggleSwitchFillOn*
+                 and ToggleSwitchKnobFillOn* theme keys above (re-themed off the
+                 stock WinUI blue, the one off-palette hue the product had). All
+                 this style does is drop the On/Off word labels (the
                  row's own TextBlock is the label) and stop the control reserving
                  WinUI's default 154px minimum width for them.
 

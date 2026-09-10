@@ -626,6 +626,15 @@ struct ThreadParts {
   anim::Storyboard typingStory{nullptr};
   anim::Storyboard typingRowStory{nullptr};
 
+  // The thread pane's 40dip L1 header (design d1 §1.4): the conversation name
+  // in the pane-title voice plus a right-aligned muted meta, both re-pointed
+  // by SetThreadConversation (the one writer).
+  TextBlock headerTitle{nullptr};
+  TextBlock headerMeta{nullptr};
+  // The no-selection empty state (one centred muted line under the identicon
+  // lattice), built Visible and collapsed by the first SetThreadConversation.
+  FrameworkElement emptyState{nullptr};
+
   // False until the first bottom pin has actually landed. The stack.SizeChanged
   // pin below asks ShouldPinToBottom, which pins unconditionally while unarmed
   // (the first real extent is indistinguishable from "scrolled to the top")
@@ -859,7 +868,6 @@ FrameworkElement MakeKeyChangeRecord(winrt::hstring const& text) {
 FrameworkElement MakeTypingIndicator(std::shared_ptr<ThreadParts> const& parts) {
   StackPanel row;
   row.Orientation(Orientation::Horizontal);
-  row.Spacing(6);
   row.VerticalAlignment(VerticalAlignment::Center);
   // The left edge is the incoming bubble column: the thread pad, plus the
   // identicon gutter in a group (design d2 §5). This is only the value before
@@ -867,6 +875,25 @@ FrameworkElement MakeTypingIndicator(std::shared_ptr<ThreadParts> const& parts) 
   // because `group` is first known there.
   row.Margin(ThicknessHelper::FromLengths(kThreadPadDip, 0, 0, 6));
   row.Visibility(Visibility::Collapsed);
+
+  // design d2 §5: the indicator reads as a message MATERIALIZING, so the dots
+  // and the word sit in an incoming-shaped shell — the card fill and the
+  // incoming run-start corner (12,12,12,4). The corner comes from the same
+  // BubbleCornerDip table the bubbles draw with (never a hand-copied
+  // {12,12,12,4}), so the shell and a real incoming bubble cannot drift apart.
+  // The shell gets NO identicon: the fixture has no typing-sender field and is
+  // immutable, so the indicator stays anonymous by honesty, not by omission.
+  Border shell;
+  shell.Background(BrushByKey(L"UrCardBrush", urnw::colors::kCard));
+  double corners[4];
+  BubbleCornerDip(BubbleRunPos::First, /*outgoing=*/false, corners);
+  shell.CornerRadius(CornerRadiusFromCorners(corners));
+  shell.Padding(ThicknessHelper::FromLengths(10, 7, 10, 7));
+
+  StackPanel content;
+  content.Orientation(Orientation::Horizontal);
+  content.Spacing(6);
+  content.VerticalAlignment(VerticalAlignment::Center);
 
   StackPanel dots;
   dots.Orientation(Orientation::Horizontal);
@@ -883,7 +910,7 @@ FrameworkElement MakeTypingIndicator(std::shared_ptr<ThreadParts> const& parts) 
     parts->typingDots.push_back(dot);
     dots.Children().Append(dot);
   }
-  row.Children().Append(dots);
+  content.Children().Append(dots);
 
   TextBlock says;
   says.Text(L"Typing…");  // U+2026 HORIZONTAL ELLIPSIS
@@ -892,13 +919,83 @@ FrameworkElement MakeTypingIndicator(std::shared_ptr<ThreadParts> const& parts) 
   says.Foreground(urnw::colors::MutedBrush());
   says.VerticalAlignment(VerticalAlignment::Center);
   MarkRaw(says);
-  row.Children().Append(says);
+  content.Children().Append(says);
+
+  shell.Child(content);
+  row.Children().Append(shell);
 
   // The row carries the announcement; the dots and the word inside it are Raw,
   // so a screen reader says this ONCE rather than four times.
   Automation::AutomationProperties::SetName(row, L"Typing");
   parts->typingRow = row;
   return row;
+}
+
+// design d1 §1.4: the thread was the one pane with no 40dip L1 header strip, so
+// its top edge was a bare cut. This is the same strip every other pane opens
+// with (UrPaneHeaderStyle: sheet fill, the bottom hairline, 12dip side
+// padding); SetThreadConversation re-points the two TextBlocks it hands back.
+FrameworkElement MakeThreadHeader(std::shared_ptr<ThreadParts> const& parts) {
+  Border bar;
+  if (auto st = StyleByKey(L"UrPaneHeaderStyle")) bar.Style(st);
+
+  Grid grid;
+  ColumnDefinition title, meta;
+  title.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
+  meta.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Auto));
+  grid.ColumnDefinitions().Append(title);
+  grid.ColumnDefinitions().Append(meta);
+
+  TextBlock name;
+  if (auto st = StyleByKey(L"UrPaneTitleStyle")) name.Style(st);
+  Grid::SetColumn(name, 0);
+  grid.Children().Append(name);
+
+  TextBlock metaText;
+  if (auto st = StyleByKey(L"UrPaneMetaStyle")) metaText.Style(st);
+  metaText.HorizontalAlignment(HorizontalAlignment::Right);
+  Grid::SetColumn(metaText, 1);
+  grid.Children().Append(metaText);
+
+  bar.Child(grid);
+  parts->headerTitle = name;
+  parts->headerMeta = metaText;
+  return bar;
+}
+
+// The no-selection empty state (the --demo=chats void): ONE centred muted line
+// under the identicon lattice at low alpha, echoing the search empty state
+// (MainWindow.xaml.cpp). Built Visible; SetThreadConversation is the one writer
+// that collapses it, so it shows exactly when no conversation is open and never
+// alongside one. The lattice is decorative (Raw), achromatic by construction —
+// no seed, no hue — the honest inverse of an avatar, never a stand-in person.
+FrameworkElement MakeThreadEmptyState(std::shared_ptr<ThreadParts> const& parts) {
+  StackPanel column;
+  column.Spacing(10);
+  column.HorizontalAlignment(HorizontalAlignment::Center);
+  column.VerticalAlignment(VerticalAlignment::Center);
+
+  auto lattice = urmsg::MakeIdenticonLattice(64);
+  lattice.HorizontalAlignment(HorizontalAlignment::Center);
+  lattice.Opacity(0.6);
+  MarkRaw(lattice);
+  column.Children().Append(lattice);
+
+  // Mirrors thread_none_selected (Resources.resw). A code literal, like this
+  // file's other demo strings (the search empty state precedent), rather than
+  // a Loc dependency in the view.
+  TextBlock line;
+  line.Text(L"Select a conversation to read it.");
+  if (auto st = StyleByKey(L"UrCaptionTextStyle")) line.Style(st);
+  line.FontSize(12);
+  line.Foreground(urnw::colors::MutedBrush());
+  line.TextAlignment(TextAlignment::Center);
+  line.TextWrapping(TextWrapping::Wrap);
+  line.MaxWidth(320);
+  column.Children().Append(line);
+
+  parts->emptyState = column;
+  return column;
 }
 
 // ---- the composer (T6, design §9.1) --------------------------------------
@@ -974,8 +1071,12 @@ FrameworkElement MakeComposer() {
   Border inputWell;
   inputWell.Background(BrushByKey(L"UrCardBrush", urnw::colors::kCard));
   inputWell.CornerRadius(CornerRadiusHelper::FromUniformRadius(12));
-  inputWell.BorderBrush(BrushByKey(L"UrBorderBrush", urnw::colors::kBorder));
-  inputWell.BorderThickness(ThicknessHelper::FromUniformLength(1));
+  // NO border (design d1 §1's one-seam rule): the card-over-sheet tonal step
+  // carries the well's edge, and the composer's ONE horizontal seam is the
+  // tray's own top hairline below — the well's old 1px border drew a second
+  // edge ~10px under it. focusEdge (further down) is a SEPARATE overlay, not
+  // this border, so the focus ring is untouched by removing it.
+  inputWell.BorderThickness(ThicknessHelper::FromUniformLength(0));
   inputWell.Padding(ThicknessHelper::FromLengths(6, 2, 6, 2));
 
   Grid row;
@@ -1066,13 +1167,11 @@ FrameworkElement MakeComposer() {
   // DISABLED it resolves to AccentButtonBackgroundDisabled #33EFF7BB, so the
   // pill reads as faint rather than as a live call to action.
   Button send;
-  {
-    FontIcon plane;
-    plane.FontFamily(IconFont());
-    plane.Glyph(L"\uE724");  // Segoe Fluent "Send" - outline paper plane
-    plane.FontSize(16);
-    send.Content(plane);
-  }
+  FontIcon plane;
+  plane.FontFamily(IconFont());
+  plane.Glyph(L"\uE724");  // Segoe Fluent "Send" - outline paper plane
+  plane.FontSize(16);
+  send.Content(plane);
   if (auto st = StyleByKey(L"AccentButtonStyle")) {
     send.Style(st);
   } else {
@@ -1081,15 +1180,44 @@ FrameworkElement MakeComposer() {
   }
   send.MinWidth(40);
   send.Padding(ThicknessHelper::FromLengths(10, 6, 10, 6));
-  // design d2 §3: a real pill (16) against the 12 dip well and chips. The
-  // enable-motion bullet of d2 §3 is NOT taken — it needs design §9.1
-  // sign-off it does not have — so the pill stays platform-disabled at 0.38
-  // opacity in every state, glyph and wash unchanged.
+  // design d2 §3: a real pill (16) against the 12 dip well and chips.
   send.CornerRadius(CornerRadiusHelper::FromUniformRadius(16));
-  send.IsEnabled(false);  // design §9.1 — the disabled accent reads as inert
+  send.IsEnabled(false);  // design §9.1 — inert in BOTH text states below
   Automation::AutomationProperties::SetName(send, L"Send (not available in the demo)");
   Grid::SetColumn(send, 4);
   row.Children().Append(send);
+
+  // design d2 §3's enable-motion bullet, taken (the honesty note at the bottom
+  // of MakeComposer covers why this is safe): the pill now tells the text->send
+  // relationship without EVER becoming clickable. EMPTY box: glyph-only in
+  // MutedBrush, NO wash — the bare #33EFF7BB disc read as muddy olive on an
+  // empty composer, an affordance pointing at nothing. NON-EMPTY: today's
+  // disabled wash, unchanged. IsEnabled(false) in both, so the platform never
+  // gives it focus or a click.
+  //
+  // Only BRUSHES change, so the pill's geometry never moves (no layout
+  // animation). The wash is ONE SolidColorBrush whose Color is mutated, never a
+  // resource swap: it is inserted as the per-button
+  // AccentButtonBackgroundDisabled the (always-applied) Disabled visual state
+  // resolves, so re-colouring that one object repaints the pill with no
+  // VisualStateManager re-evaluation to rely on. It starts transparent — every
+  // capture opens on an empty box.
+  auto sendWash = urnw::colors::MakeBrush(winrt::Windows::UI::Color{0x00, 0x00, 0x00, 0x00});
+  send.Resources().Insert(winrt::box_value(winrt::hstring{L"AccentButtonBackgroundDisabled"}),
+                          sendWash);
+  plane.Foreground(urnw::colors::MutedBrush());  // the empty-box glyph
+  box.TextChanged([sendWash, plane](winrt::Windows::Foundation::IInspectable const& sender,
+                                    TextChangedEventArgs const&) {
+    const bool empty = sender.as<Controls::TextBox>().Text().empty();
+    // transparent <-> today's disabled wash #33EFF7BB; muted glyph <-> the
+    // inherited (dark) disabled glyph. Both states keep IsEnabled(false).
+    sendWash.Color(empty ? winrt::Windows::UI::Color{0x00, 0x00, 0x00, 0x00}
+                         : winrt::Windows::UI::Color{0x33, 0xEF, 0xF7, 0xBB});
+    if (empty)
+      plane.Foreground(urnw::colors::MutedBrush());
+    else
+      plane.ClearValue(Controls::IconElement::ForegroundProperty());  // inherit the disabled glyph
+  });
   inputWell.Child(row);
   well.Children().Append(inputWell);
 
@@ -1177,17 +1305,22 @@ ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
 
   Grid root;
   root.Background(BrushByKey(L"UrBackgroundBrush", urnw::colors::kBackground));
-  // THREE rows: the scrolling backlog, the typing indicator, the composer.
-  // Star / Auto / Auto — the two bottom rows keep their measured height and the
-  // backlog takes what is left, so the composer cannot be scrolled off and a
-  // typing indicator appearing SHORTENS the backlog rather than covering its
-  // last bubble.
-  for (int i = 0; i < 3; ++i) {
+  // FOUR rows: the 40dip pane header, the scrolling backlog, the typing
+  // indicator, the composer. Auto / Star / Auto / Auto — the header, typing row
+  // and composer keep their measured height and the backlog takes what is left,
+  // so the composer cannot be scrolled off and a typing indicator appearing
+  // SHORTENS the backlog rather than covering its last bubble.
+  for (int i = 0; i < 4; ++i) {
     RowDefinition rd;
-    rd.Height(i == 0 ? GridLengthHelper::FromValueAndType(1, GridUnitType::Star)
+    rd.Height(i == 1 ? GridLengthHelper::FromValueAndType(1, GridUnitType::Star)
                      : GridLengthHelper::FromValueAndType(1, GridUnitType::Auto));
     root.RowDefinitions().Append(rd);
   }
+
+  // d1 §1.4's missing thread header. Re-pointed by SetThreadConversation.
+  auto header = MakeThreadHeader(parts);
+  Grid::SetRow(header, 0);
+  root.Children().Append(header);
 
   ScrollViewer scroller;
   scroller.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
@@ -1201,15 +1334,22 @@ ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
   // blocks. A uniform inter-row gap here would flatten exactly that.
   stack.Spacing(0);
   scroller.Content(stack);
-  Grid::SetRow(scroller, 0);
+  Grid::SetRow(scroller, 1);
   root.Children().Append(scroller);
 
+  // The no-selection empty state, in the SAME backlog row ON TOP of the
+  // (transparent, empty) scroller, declared after it so it paints above.
+  // Visible until the first SetThreadConversation collapses it.
+  auto emptyState = MakeThreadEmptyState(parts);
+  Grid::SetRow(emptyState, 1);
+  root.Children().Append(emptyState);
+
   auto typingRow = MakeTypingIndicator(parts);
-  Grid::SetRow(typingRow, 1);
+  Grid::SetRow(typingRow, 2);
   root.Children().Append(typingRow);
 
   auto composer = MakeComposer();
-  Grid::SetRow(composer, 2);
+  Grid::SetRow(composer, 3);
   root.Children().Append(composer);
 
   parts->scroller = scroller;
@@ -1322,6 +1462,24 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
   // Remembered because AppendThreadRow has no Conversation to ask later, and a
   // continuation bubble in a GROUP still reserves the identicon gutter.
   parts->group = group;
+
+  // d1 §1.4: re-point the pane header at this conversation. Title in the
+  // pane-title voice; the right-aligned muted meta follows the rail's subject
+  // row (InspectRailView.cpp's MakeSubjectRow) — "Group · N members" (middle
+  // dot) for a group, "Direct message" for a DM, so the two panes never
+  // disagree. Fixture metadata only (G4): kind, name and members.size() are the
+  // world's own, and members.size() is what the MEMBERS list draws.
+  if (parts->headerTitle) parts->headerTitle.Text(winrt::hstring{c.name});
+  if (parts->headerMeta)
+    parts->headerMeta.Text(winrt::hstring{
+        group ? (L"Group \u00B7 " + std::to_wstring(c.members.size()) +
+                 L" members")                             // U+00B7 MIDDLE DOT
+              : std::wstring{L"Direct message"}});
+
+  // A conversation is open: the no-selection empty state collapses. It is built
+  // Visible in MakeThread and this is its one writer, so it shows exactly when
+  // no conversation is open and never alongside one.
+  if (parts->emptyState) parts->emptyState.Visibility(Visibility::Collapsed);
 
   // The typing row aligns with the incoming bubble column (design d2 §5):
   // thread pad + the 36dip identicon gutter in a group, the pad alone
