@@ -540,10 +540,12 @@ std::wstring FormatKeyState(bool keyVerified) {
 
 std::wstring FormatDeviceMeta(urmsg::demo::DeviceRef const& device) {
   // U+00B7 MIDDLE DOT, the separator the pane rows already use between two
-  // facts on one line.
+  // facts on one line - written as an escape, never the pasted character (the
+  // house non-ASCII rule: an editing pass that silently re-encodes a pasted
+  // glyph leaves no build error behind, only a wrong byte).
   const std::wstring state =
       device.online ? std::wstring(L"Online") : (L"Last seen " + device.lastSeenLabel);
-  return device.isThisComputer ? (L"This computer · " + state) : state;
+  return device.isThisComputer ? (L"This computer \u00B7 " + state) : state;
 }
 
 std::wstring FormatRoundTrip(urmsg::demo::ServerInfo const& server) {

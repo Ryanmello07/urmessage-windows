@@ -96,7 +96,15 @@
              adds its OWN settings gear IN ADDITION to the explicit Settings
              item below, and that gear's Tag matches no destination, so
              selecting it shows an empty window with no way back. -->
+        <!-- The -1 bottom margin (polish B2): at 125% scale the nav pane's
+             sheet stopped one PHYSICAL pixel short of the status strip's top
+             rule and a page-tone row showed under the nav column (measured at
+             y=1082 of the 1950x1125 captures). Extending the pane 1px into
+             the strip's row runs the sheet flush to the rule; the strip is
+             opaque and declared later, so it paints over the overlap, and the
+             destination pages beside the pane gain the same invisible 1px. -->
         <muxc:NavigationView x:Name="HomeNav" Grid.Row="1"
+                             Margin="0,0,0,-1"
                              AlwaysShowHeader="False"
                              FontFamily="{StaticResource UrBodyFontFamily}"
                              IsBackButtonVisible="Collapsed" PaneDisplayMode="Auto"

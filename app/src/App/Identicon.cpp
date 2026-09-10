@@ -276,10 +276,15 @@ Border MakeIdenticonLattice(double size) {
     c.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
     grid.ColumnDefinitions().Append(c);
   }
-  // One brush for all 25 cells: kTextFaint at 0x33, achromatic, so no hue
+  // One brush for all 25 cells: kTextFaint at 0x4D, achromatic, so no hue
   // enters the app and the palette's separation proof has nothing new to
-  // clear. The margin keeps adjacent outlines from merging into a mesh.
-  auto line = urnw::colors::MakeBrush(urnw::colors::WithAlpha(urnw::colors::kTextFaint, 0x33));
+  // clear. 0x4D, not the 0x33 it shipped with: at 10dip (the DEMO chip) the
+  // 0x33 lattice was sub-visible at 100% (polish B2). 0x4D is the plate-lift
+  // step the conversation rows already spend on hover
+  // (ConversationListView.cpp), so the lattice and the avatars move in one
+  // established increment rather than a new one. The margin keeps adjacent
+  // outlines from merging into a mesh.
+  auto line = urnw::colors::MakeBrush(urnw::colors::WithAlpha(urnw::colors::kTextFaint, 0x4D));
   for (int row = 0; row < 5; ++row) {
     for (int col = 0; col < 5; ++col) {
       Border cell;

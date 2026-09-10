@@ -207,6 +207,21 @@ bool ReadByIsSubsetOfDeliveredTo(demo::MessageInspect const& inspect);
 // the only carrier of state".
 size_t OnlineDeviceCount(demo::MemberRef const& member);
 
+// The identicon seed for a DEVICE row (polish B2): the OWNING MEMBER's
+// identityKey when the device resolves to a member of the conversation, else
+// the row's own ownerKey. A member's avatar and the same person's device rows
+// were seeded from two DIFFERENT inputs - identityKey from the member id,
+// ownerKey from the display name (DemoWorld.cpp:63/:76) - so one person drew
+// two faces. Resolution is by DeviceRef::id, which DemoWorld.h documents as
+// stable: the delivered-by / read-by lists are COPIES of the members' own
+// devices (DemoWorld.cpp's AllMemberDevices), so an id match is exact. A name
+// match is never consulted - it would hand a second device of an existing
+// owner the member's face, the same name-twin ReadByIsSubsetOfDeliveredTo
+// rejects. The world's myDevices resolve to NOBODY ("You" is not a MemberRef
+// anywhere), so those rows keep ownerKey - a documented fallback, asserted in
+// InspectRailDeviceProbe, not a silent assumption.
+demo::Seed DeviceIdenticonSeed(demo::Conversation const& conv, demo::DeviceRef const& device);
+
 // ---- the delivered-by / read-by lists' empty decision (R4) -------------------
 //
 // The honest line rendered IN PLACE OF the card when a list has no devices -

@@ -87,18 +87,21 @@ void SetInspectRailMessage(InspectRailView& v, demo::Conversation const& c,
 // belongs to the wiring task (wiring.md:578), not here.
 void SetInspectRailAdvanced(InspectRailView& v, bool advanced);
 
-// The device row, public because the Network page's "Your devices" list
-// (design 6.4) is the same device row and must not become a second species of
-// it. `showOwner` keeps the ` · owner` suffix (message mode's delivered-by /
-// read-by lists, where the devices belong to DIFFERENT people and the suffix
-// is the load-bearing content); a member's own expanded sub-rows pass false,
-// where the suffix would repeat the row above.
+// The device row. `showOwner` keeps the ` · owner` suffix (message mode's
+// delivered-by / read-by lists, where the devices belong to DIFFERENT people
+// and the suffix is the load-bearing content); a member's own expanded
+// sub-rows pass false, where the suffix would repeat the row above.
 //
 // The row carries a 20px mini-identicon of the identity it is about (design
-// d1 §7) with the presence dot badged on its corner. The MEMBER row this used
-// to sit beside is gone: members are now kit::MakePanePresenceRow buttons
-// with expandable device sub-rows (design d4 §7) - the kit variant the old
-// comment said would be the right move if member identicons were wanted.
-urnw::kit::PaneListRow MakeDeviceRow(demo::DeviceRef const& device, bool showOwner = true);
+// d1 §7) with the presence dot badged on its corner. `identiconSeed` is the
+// seed to draw, RESOLVED BY THE CALLER: the owning member's identityKey when
+// the device belongs to a member (DeviceIdenticonSeed - polish B2, so the
+// device row and the member's avatar are one face), else DeviceRef::ownerKey.
+// The MEMBER row this used to sit beside is gone: members are now
+// kit::MakePanePresenceRow buttons with expandable device sub-rows (design
+// d4 §7) - the kit variant the old comment said would be the right move if
+// member identicons were wanted.
+urnw::kit::PaneListRow MakeDeviceRow(demo::DeviceRef const& device, bool showOwner,
+                                     demo::Seed const& identiconSeed);
 
 }  // namespace urmsg::views

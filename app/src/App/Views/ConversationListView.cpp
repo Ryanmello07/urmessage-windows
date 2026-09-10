@@ -328,10 +328,12 @@ urnw::kit::PaneTwoLineRowButton MakeConversationRow(urmsg::demo::Conversation co
   muted.Visibility(model.showMuted ? Visibility::Visible : Visibility::Collapsed);
   cluster.Children().Append(muted);
 
-  auto timer = MakeRowGlyph(L"\uE916");  // Stopwatch
-  timer.Visibility(model.showTimer ? Visibility::Visible : Visibility::Collapsed);
-  cluster.Children().Append(timer);
-
+  // NO timer glyph here (polish B2): when model.showTimer is set the row's
+  // second line IS the timer glyph plus "Disappearing messages" (above), so
+  // the cluster's copy drew the same mark twice on one row. The cluster keeps
+  // the mute glyph and the unread pill. demo.list.timer still passes: it
+  // gates the MODEL (showTimer == c.disappearing and the preview refused),
+  // which this does not touch - it never read the cluster.
   auto pill = MakeUnreadPill(model.unread);
   pill.Visibility(model.unread.empty() ? Visibility::Collapsed : Visibility::Visible);
   cluster.Children().Append(pill);
@@ -455,6 +457,11 @@ ConversationListView MakeConversationList(urmsg::demo::World const& world,
   // update would be a readout that had stopped being true. group_recent already
   // exists in the generated resw with the value "RECENT", so no key is added.
   auto group = urnw::kit::MakePaneGroupHeader(winrt::hstring{urnw::Localized("group_recent")});
+  // UrGroupHeaderStyle's sheet fill swept the band into the header+search
+  // chrome slab above it (d3 2.5 fuses exactly THOSE two); the band titles
+  // the ROWS, so it drops to the page tone they sit on and rejoins them
+  // (polish B2). The style's hairlines stay - only the fill goes.
+  group.root.Background(urnw::colors::MakeBrush({0, 0, 0, 0}));
   stack.Children().Append(group.root);
   view.header = group.root;
 

@@ -449,10 +449,15 @@ void SetPanePresenceOnline(PanePresenceRow const& row, bool online) {
   } else {
     // The offline RING: shape, not a dimmer green - "colour is never the only
     // carrier" applies to absence too, and a faint green disc would still be
-    // a hue-only distinction from the online one.
+    // a hue-only distinction from the online one. 1.5px, not 1: at 100% the
+    // 1px ring anti-aliased into a ragged speck against the 10px punch-out
+    // (polish B2; the punch-out itself is unchanged). UNREACHABLE FROM THE
+    // FIXTURE, STATED: every member has at least one online device
+    // (InspectRailDeviceProbe asserts onlineDevices == members), so this
+    // branch draws in no shipped capture and is verified by inspection only.
     row.badgeCore.Fill(urnw::colors::MakeBrush({0, 0, 0, 0}));
     row.badgeCore.Stroke(urnw::colors::FaintBrush());
-    row.badgeCore.StrokeThickness(1);
+    row.badgeCore.StrokeThickness(1.5);
   }
 }
 

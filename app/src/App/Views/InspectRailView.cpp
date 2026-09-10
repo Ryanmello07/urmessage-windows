@@ -346,6 +346,19 @@ ScrollViewer MakeBodyScroller() {
   ScrollViewer scroller;
   scroller.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
   scroller.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
+  // Bottom clearance (polish B2): ScrollViewer bottom padding is a VIEWPORT
+  // inset on this platform (measured: 40 moved the rest-state cut up 50px,
+  // leaving a dead band), so it does two jobs here. At rest it lands the
+  // 900dip window's cut mid-row on the DELIVERED TO card - a half-shown
+  // device row is the "there is more" affordance the flush cut did not have.
+  // Scrolled to the end, the last READ BY row clears the status strip by the
+  // same 12 (the B1 Developer/Settings precedent at a smaller value: 12 is
+  // the pane's own gutter, so the rest-state band reads as the card's bottom
+  // margin, not as dead space). THE LIMIT, MEASURED: a partial SIXTH row at
+  // rest is geometrically unreachable without cramping the lock card and
+  // captions - the cut can only move UP from here - so the partial row it
+  // lands on is the fifth.
+  scroller.Padding(ThicknessHelper::FromLengths(0, 0, 0, 12));
   scroller.Visibility(Visibility::Collapsed);
   StackPanel body;
   scroller.Content(body);
@@ -359,6 +372,11 @@ ScrollViewer MakeBodyScroller() {
 // sets one.
 FrameworkElement MakeSubjectRow(demo::Conversation const& conv) {
   auto root = kit::MakePaneRow(64);
+  // MakePaneRow's bottom hairline is a LIST rule, and this row heads no list:
+  // full-bleed under the subject it doubled the edge of the MEMBERS card
+  // below it (polish B2). The Details header divider stays the rail's single
+  // full-bleed rule.
+  root.BorderThickness(ThicknessHelper::FromLengths(0, 0, 0, 0));
 
   Grid grid;
   grid.ColumnSpacing(10);
@@ -590,6 +608,16 @@ kit::PaneGroupHeader AppendCaption(StackPanel const& panel, std::wstring_view ti
   header.root.BorderThickness(ThicknessHelper::FromLengths(0, 0, 0, 0));
   header.root.Height(32);
   header.root.Margin(ThicknessHelper::FromLengths(0, first ? 4 : 12, 0, 0));
+  // The kit grid's 8dip ColumnSpacing costs the trailing META its flush edge:
+  // the header's third (action) column is empty here, and Grid spends the
+  // spacing on it anyway, so the meta stopped 8dip short of the card's right
+  // border while the caption's padding already mirrors the card's 12dip
+  // gutters (measured on the polish-A captures; polish B2). Zeroing the
+  // spacing right-aligns the meta flush. The title column is Star and every
+  // caption title is a short fixed constant, so the lost title-to-meta gap
+  // cannot be reached; the one caption with a real trailing child (RETENTION's
+  // timer) has no meta for the glyph to crowd.
+  if (auto grid = header.root.Child().try_as<Grid>()) grid.ColumnSpacing(0);
   panel.Children().Append(header.root);
   return header;
 }
@@ -698,8 +726,11 @@ std::vector<Border> BuildDeviceSubRows(demo::MemberRef const& member) {
   std::vector<Border> rows;
   for (auto const& device : member.devices) {
     // showOwner=false: under the member's own row the owner suffix would
-    // repeat the row above. The default keeps the Network page's usage.
-    auto row = MakeDeviceRow(device, /*showOwner=*/false);
+    // repeat the row above. The default keeps the message-mode usage. The
+    // seed is the member's own identityKey - the member's devices resolve to
+    // the member by construction, so the sub-row and the avatar above it are
+    // one face (polish B2).
+    auto row = MakeDeviceRow(device, /*showOwner=*/false, member.identityKey);
     // Indent 26 (design d4 §7.2): the member title column starts at 12
     // (padding) + 28 (avatar) + 10 (gap) = 50; this row's leading column
     // starts at 12 + 2 (marker) + 10 (spacing) + 26 (margin) = 50 - the
@@ -828,6 +859,10 @@ kit::PanePresenceRow MakeMemberPresenceRow(InspectRailView& v, demo::MemberRef c
 // already on screen in the thread; the row adds no claim.
 FrameworkElement MakeMessageSubjectRow(demo::MessageRow const& row) {
   auto root = kit::MakePaneRow(44);  // UrPaneRowTallHeight
+  // Same ruling as conversation mode's subject (MakeSubjectRow): the list
+  // hairline MakePaneRow carries doubled the edge of the first caption card
+  // below it (polish B2).
+  root.BorderThickness(ThicknessHelper::FromLengths(0, 0, 0, 0));
 
   Grid grid;
   grid.ColumnSpacing(10);
@@ -886,8 +921,8 @@ FrameworkElement MakeMessageSubjectRow(demo::MessageRow const& row) {
 // PlanDeviceList's: one honest line in place of the card, never an empty
 // bordered box. The `This computer` substitution and the online/last-seen
 // words stay exactly as MakeDeviceRow writes them.
-void AppendDeviceList(StackPanel const& panel, std::vector<demo::DeviceRef> const& devices,
-                      bool deliveredList) {
+void AppendDeviceList(StackPanel const& panel, demo::Conversation const& conv,
+                      std::vector<demo::DeviceRef> const& devices, bool deliveredList) {
   const DeviceListPlan plan = PlanDeviceList(devices, deliveredList);
   AppendCaption(panel,
                 deliveredList ? std::wstring_view{L"DELIVERED TO"}
@@ -898,8 +933,13 @@ void AppendDeviceList(StackPanel const& panel, std::vector<demo::DeviceRef> cons
     return;
   }
   auto card = kit::MakePaneCard();
+  // The identicon seed resolves against THIS conversation: a member's devices
+  // draw the member's face (polish B2); the fixture's myDevices name no
+  // member and keep their own ownerKey (DeviceIdenticonSeed's documented
+  // fallback).
   for (auto const& device : devices)
-    card.body.Children().Append(MakeDeviceRow(device).root);
+    card.body.Children().Append(
+        MakeDeviceRow(device, /*showOwner=*/true, DeviceIdenticonSeed(conv, device)).root);
   kit::FinalizePaneCard(card);
   panel.Children().Append(card.root);
 }
@@ -976,16 +1016,17 @@ void PopulateMessage(InspectRailView const& v, demo::Conversation const& conv,
 
   // The device lists are always LAST (R4's step-8 invariant: Advanced Mode
   // adds rows; it does not reorder the surface).
-  AppendDeviceList(panel, row.inspect.deliveredTo, /*deliveredList=*/true);
-  AppendDeviceList(panel, row.inspect.readBy, /*deliveredList=*/false);
+  AppendDeviceList(panel, conv, row.inspect.deliveredTo, /*deliveredList=*/true);
+  AppendDeviceList(panel, conv, row.inspect.readBy, /*deliveredList=*/false);
 }
 
 // The 20px mini-identicon (design d1 §7) on the DEVICE row - the row the
-// delivered-by / read-by lists and the Network page share. The presence dot
-// STAYS: it badges the chip's corner, and removing it would strip the row's
-// second presence channel (the meta words are the first). The MEMBER row
-// outgrew this helper in wave 4: members are kit::MakePanePresenceRow buttons
-// now (design d4 §7), whose badge the kit seats itself.
+// delivered-by / read-by lists and a member's expanded sub-rows share. The
+// presence dot STAYS: it badges the chip's corner, and removing it would
+// strip the row's second presence channel (the meta words are the first).
+// The MEMBER row outgrew this helper in wave 4: members are
+// kit::MakePanePresenceRow buttons now (design d4 §7), whose badge the kit
+// seats itself.
 //
 // The kit grid is not rebuilt for this: the dot is re-parented into a
 // chip-sized host that takes the dot's old column, so "one row species per
@@ -1051,7 +1092,12 @@ InspectRailView MakeInspectRail() {
   headerGrid.ColumnDefinitions().Append(metaColumn);
   TextBlock title;
   if (auto style = kit::StyleByKey(L"UrPaneTitleStyle")) title.Style(style);
-  title.Text(L"Details");
+  // UrPaneTitleStyle IS the chrome voice (12sp SemiBold, letterspaced) but it
+  // does not uppercase: every other pane title is WRITTEN uppercase
+  // ("CONVERSATIONS"), and this one read as body copy beside them (polish B2).
+  // No gate and no automation name reads the old casing (grep: "Details"
+  // existed only here); a TextBlock is announced as its text either way.
+  title.Text(L"DETAILS");
   headerGrid.Children().Append(title);
   // The ADVANCED meta answers "why are there more rows than a minute ago"
   // without a toast or a colour. Collapsed at normal density; flipped
@@ -1080,14 +1126,19 @@ InspectRailView MakeInspectRail() {
   return v;
 }
 
-kit::PaneListRow MakeDeviceRow(demo::DeviceRef const& device, bool showOwner) {
+kit::PaneListRow MakeDeviceRow(demo::DeviceRef const& device, bool showOwner,
+                               demo::Seed const& identiconSeed) {
   auto row = kit::MakePaneListRow(36);
   row.dot.Fill(device.online ? urnw::colors::MakeBrush(urnw::colors::kUrGreen)
                              : urnw::colors::FaintBrush());
 
   // The OWNER's mark, not the device's: the device list has no per-device key,
-  // and ownerKey is the identity this row is actually about (DemoWorld.h).
-  SeatIdenticonBadge(row, urmsg::MakeIdenticon(device.ownerKey, 20));
+  // and the owner is the identity this row is actually about (DemoWorld.h).
+  // The seed ARRIVES resolved: the owning member's identityKey when the device
+  // belongs to a member of the conversation (DeviceIdenticonSeed), so a person
+  // and their device rows draw ONE face - before polish B2 the row seeded from
+  // ownerKey, a second input (DemoWorld.cpp:63), and one person drew two.
+  SeatIdenticonBadge(row, urmsg::MakeIdenticon(identiconSeed, 20));
 
   std::wstring title = device.name;
   // The owner suffix is the "statement by a device" content when the list

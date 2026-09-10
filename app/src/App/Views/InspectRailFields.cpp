@@ -145,6 +145,13 @@ size_t OnlineDeviceCount(demo::MemberRef const& member) {
   return online;
 }
 
+demo::Seed DeviceIdenticonSeed(demo::Conversation const& conv, demo::DeviceRef const& device) {
+  for (auto const& member : conv.members)
+    for (auto const& owned : member.devices)
+      if (owned.id == device.id) return member.identityKey;
+  return device.ownerKey;
+}
+
 std::vector<InspectField> BuildMessageFields(demo::Conversation const& conv,
                                              demo::MessageRow const& row, bool advanced) {
   std::vector<InspectField> out;
@@ -831,11 +838,58 @@ std::wstring InspectRailDeviceProbe() {
                          onlineDevices == members && memberDevices == members + admins &&
                          shortOfFull == admins && shortAndAdmin == admins;
 
+  // THE DEVICE-ROW IDENTICON SEED (polish B2). A device row must draw the
+  // OWNING MEMBER's face, so two devices of one person share it and differ
+  // only by the device word. Swept over every member device of every
+  // conversation, the resolved seed must BE the member's identityKey:
+  // `return device.ownerKey` fails here, because the fixture derives the two
+  // seeds from different inputs (identityKey from the member id, ownerKey
+  // from the display name - DemoWorld.cpp:63/:76) and seedDistinct ==
+  // seedResolved proves that difference is real on EVERY row, so the sweep
+  // cannot pass vacuously on a coincidental match.
+  size_t seedResolved = 0;
+  size_t seedWrong = 0;
+  size_t seedDistinct = 0;
+  for (auto const& c : world.conversations)
+    for (auto const& m : c.members)
+      for (auto const& d : m.devices) {
+        ++seedResolved;
+        if (DeviceIdenticonSeed(c, d) != m.identityKey) ++seedWrong;
+        if (d.ownerKey != m.identityKey) ++seedDistinct;
+      }
+  // THE FALLBACK, on locally built devices so the world stays immutable: an
+  // unknown id must come back as ownerKey, and so must a NAME-TWIN - a second
+  // device of an existing owner under a fresh id. A resolver that matched on
+  // ownerName would hand the twin the member's identityKey and fail the
+  // second clause: resolving by name is the specific wrong answer resolving
+  // by id exists to prevent. The world's own myDevices are asserted into the
+  // same fallback beside them (they name no member: "You" is not one).
+  size_t seedFallbackOk = 0;
+  size_t seedFallbackTotal = 0;
+  {
+    demo::DeviceRef ghost = conv.members.front().devices.front();
+    ghost.id = L"dev-seed-ghost";
+    ++seedFallbackTotal;
+    if (DeviceIdenticonSeed(conv, ghost) == ghost.ownerKey) ++seedFallbackOk;
+
+    demo::DeviceRef twin = conv.members.front().devices.front();  // only the id differs
+    twin.id = L"dev-seed-name-twin";
+    ++seedFallbackTotal;
+    if (DeviceIdenticonSeed(conv, twin) == twin.ownerKey) ++seedFallbackOk;
+
+    for (auto const& d : world.myDevices) {
+      ++seedFallbackTotal;
+      if (DeviceIdenticonSeed(conv, d) == d.ownerKey) ++seedFallbackOk;
+    }
+  }
+  const bool seedOk = 0 < seedResolved && seedWrong == 0 &&
+                      seedDistinct == seedResolved && seedFallbackOk == seedFallbackTotal;
+
   // The pick's own receipt counts are printed as FACTS, not gated on: the
   // fallback pick is legitimately allowed to be an incoming row with none.
   const bool ok = pick != nullptr && 0 < withReaders && consistent == withReaders &&
                   acceptsThePick && rejected == 2 && pickOk && lookupsOk && devicesOk &&
-                  modeOk && planWrong == 0 && emptyPlansOk;
+                  modeOk && planWrong == 0 && emptyPlansOk && seedOk;
 
   return std::format(
       L"  inspect devices  : {} - pick \"{}\" state {} delivered-by {} read-by {}; "
@@ -848,14 +902,18 @@ std::wstring InspectRailDeviceProbe() {
       L"devices {} online of {} across {} members ({} admin), {} short of full, "
       L"{} wrong; initial mode inspect->message, chats->conversation, "
       L"inspect-with-no-message->conversation, ok {}; device-list plans {} wrong "
-      L"over the world ({} empty lists swept), empty-list notes ok {}",
+      L"over the world ({} empty lists swept), empty-list notes ok {}; identicon "
+      L"seeds resolve to the owning member in {}/{} (ownerKey distinct on {}), "
+      L"fallback to ownerKey on {}/{} local + world myDevices",
       ok ? L"PASS" : L"FAIL", pick ? pick->id : std::wstring{L"(none)"},
       pick ? DeliveryLabel(pick->state) : std::wstring{L"-"}, delivered, read, consistent,
       withReaders, messages, acceptsThePick ? L"yes" : L"no", rejected,
       demo::kInspectTargetRowId, lastMessageId, pickOk ? L"yes" : L"no", convFound,
       world.conversations.size(), rowFound, conv.rows.size(), missesAreNull ? L"yes" : L"no",
       onlineDevices, memberDevices, members, admins, shortOfFull, onlineWrong,
-      modeOk ? L"yes" : L"no", planWrong, emptyLists, emptyPlansOk ? L"yes" : L"no");
+      modeOk ? L"yes" : L"no", planWrong, emptyLists, emptyPlansOk ? L"yes" : L"no",
+      seedResolved - seedWrong, seedResolved, seedDistinct, seedFallbackOk,
+      seedFallbackTotal);
 }
 
 }  // namespace urmsg::views
