@@ -76,10 +76,12 @@ kit::PaneTwoLineRow MakeValueRow(winrt::hstring const& title, winrt::hstring con
   return row;
 }
 
-// A group that is present but has nothing in it: the caption says so on its
-// right, and the one row under it is faint and inert — a Border, per §9.1.
+// A group that is present but has nothing in it: ONE disclosure, the faint
+// in-card row — the caption carries no "not in this demo" meta (polish B1:
+// the same disclosure twice, once per caption and once per card, read as an
+// apology; the row alone says it). The row is a Border, per §9.1.
 void AppendInertGroup(StackPanel const& column, winrt::hstring const& title) {
-  AppendCaption(column, title, L"not in this demo", /*first=*/false);
+  AppendCaption(column, title, {}, /*first=*/false);
   auto card = kit::MakePaneCard();
   auto row = kit::MakePaneTwoLineRow(L"Not part of this demo.", {}, kRowHeight);
   row.title.Foreground(urnw::colors::FaintBrush());
@@ -124,10 +126,18 @@ SettingsView MakeSettings(std::function<void(bool)> onAdvancedChanged, bool adva
 
   StackPanel column;
   column.Orientation(Orientation::Vertical);
+  // The card groups read as one 840 DIP column, left-anchored (polish B1):
+  // full-bleed at 1560 spread a one-word value across half a metre of glass.
+  column.MaxWidth(840);
+  column.HorizontalAlignment(HorizontalAlignment::Left);
   ScrollViewer scroller;
   scroller.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
   scroller.HorizontalScrollMode(ScrollMode::Disabled);
   scroller.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
+  // Bottom clearance (polish B1): without it the last row can scroll only
+  // until its own edge meets the viewport's, which guillotines it mid-row
+  // against the status strip; 40 DIP lets it scroll fully clear.
+  scroller.Padding(ThicknessHelper::FromLengths(0, 0, 0, 40));
   scroller.Content(column);
   Grid::SetRow(scroller, 1);
   pane.Children().Append(scroller);

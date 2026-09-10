@@ -21,7 +21,8 @@
 #include "UrColors.h"
 #include "UrComponents.h"
 #include "UrMotion.h"
-#include "Views/StatusStripView.h"  // kStatusDrawerName, for the framing gate
+#include "Views/StatusStripRules.h"  // StatusStateWord, the pane header meta's one owner
+#include "Views/StatusStripView.h"   // kStatusDrawerName, for the framing gate
 
 using namespace winrt::Microsoft::UI::Xaml;
 using namespace winrt::Microsoft::UI::Xaml::Controls;
@@ -129,11 +130,28 @@ void MarkRaw(UIElement const& e) {
       e, Automation::Peers::AccessibilityView::Raw);
 }
 
+// The rail's floating caption (design d4 §4): the letterspaced chrome voice
+// stays, but the sheet background, the hairline and the 28px strip go, so a
+// section name floats above its card instead of ruling the column. The first
+// caption in the body sits 4 from the header, later ones 12. Same three
+// overrides InspectRailView.cpp's AppendCaption applies to the same builder.
+urnw::kit::PaneGroupHeader AppendCaption(StackPanel const& column,
+                                         winrt::hstring const& title,
+                                         winrt::hstring const& meta, bool first) {
+  auto header = urnw::kit::MakePaneGroupHeader(title, meta);
+  header.root.Background(urnw::colors::MakeBrush({0, 0, 0, 0}));
+  header.root.BorderThickness(ThicknessHelper::FromLengths(0, 0, 0, 0));
+  header.root.Height(32);
+  header.root.Margin(ThicknessHelper::FromLengths(0, first ? 4 : 12, 0, 0));
+  column.Children().Append(header.root);
+  return header;
+}
+
 // Named, for the reason UrComponents.cpp:25-29 states: FontIcon defaults to the
 // older Segoe MDL2 Assets, whose metrics differ.
 Media::FontFamily IconFont() { return Media::FontFamily(L"Segoe Fluent Icons"); }
 
-// One node of the relay path: a 20epx glyph over a title and one muted
+// One node of the relay path: a 28epx glyph over a title and one muted
 // sub-line, every string from the RelayNode — nothing on this diagram is a
 // literal invented in this file (N3's own rule, kept).
 //
@@ -151,8 +169,12 @@ FrameworkElement MakeNode(urmsg::demo::RelayNode const& node) {
   card.Background(urnw::colors::CardBrush());
   card.BorderBrush(urnw::colors::BorderBrush());
   card.BorderThickness(ThicknessHelper::FromLengths(1, 1, 1, 1));
-  card.Padding(ThicknessHelper::FromLengths(16, 12, 16, 12));
-  card.MinWidth(168);
+  // Polish B1: the row was a hero's bones at a legend's size — 168-wide cards
+  // and a 20px glyph left ~325 DIP of dead space either side at 1560. The
+  // scale moves up one step (208 min, 20,16 padding, 28px glyph); the measure
+  // stays FIXED — no fluid layout invented.
+  card.Padding(ThicknessHelper::FromLengths(20, 16, 20, 16));
+  card.MinWidth(208);
   card.VerticalAlignment(VerticalAlignment::Center);
 
   StackPanel column;
@@ -165,7 +187,7 @@ FrameworkElement MakeNode(urmsg::demo::RelayNode const& node) {
   // From the world. The contract fixes these as E977 (Devices), E774 (Globe)
   // and E968 (Server) and --diagnose asserts none of them is empty (I7).
   icon.Glyph(winrt::hstring{node.glyph});
-  icon.FontSize(20);
+  icon.FontSize(28);
   // Colour is not the only carrier of health: an unhealthy node also says so
   // in its automation name below.
   icon.Foreground(node.healthy ? urnw::colors::MutedBrush()
@@ -199,7 +221,7 @@ struct WireParts {
   shapes::Ellipse packet{nullptr};
 };
 
-// One leg of the path, as one 88 DIP cell holding four things: the wire, its
+// One leg of the path, as one 112 DIP cell holding four things: the wire, its
 // direction cue, the Advanced hop label above the midpoint, and the packet
 // that rides it. `hopTarget` is the node this wire delivers INTO:
 // RelayNode::hopMs is the timing of the hop TERMINATING at that node, which
@@ -207,14 +229,14 @@ struct WireParts {
 WireParts MakeWireCell(urmsg::demo::RelayNode const& hopTarget) {
   WireParts out;
   Grid cell;
-  // 72 DIP of wire plus 8 of clear space each side — a FIXED span, not a star
-  // column, so the diagram has ONE measurable width (3x168 + 2x88 = 680 DIP)
+  // 96 DIP of wire plus 8 of clear space each side — a FIXED span, not a star
+  // column, so the diagram has ONE measurable width (3x208 + 2x112 = 848 DIP)
   // at every window size and cannot be squeezed to nothing by a long label.
-  cell.Width(88);
+  cell.Width(112);
   cell.VerticalAlignment(VerticalAlignment::Center);
 
   shapes::Rectangle wire;
-  wire.Width(72);
+  wire.Width(96);
   wire.Height(2);
   wire.RadiusX(1);
   wire.RadiusY(1);
@@ -231,12 +253,15 @@ WireParts MakeWireCell(urmsg::demo::RelayNode const& hopTarget) {
   // whole story the fixture tells (this device -> URnetwork -> server). A
   // chevron describes the path's shape, and the path's shape is fixture data
   // (the vector order is the path order) — it asserts no delivery and no
-  // crypto, so it is G4 clean. Static in both modes.
+  // crypto, so it is G4 clean. Static in both modes. 10px in textMuted, not
+  // d5's 8px textFaint (polish B1): at 8px the cue read as a nick in the wire
+  // rather than a mark ON it, and the brush describes shape, not state, so no
+  // colour semantics move with it.
   FontIcon cue;
   cue.FontFamily(IconFont());
   cue.Glyph(L"\uE76C");  // ChevronRight, Segoe Fluent Icons
-  cue.FontSize(8);
-  cue.Foreground(urnw::colors::FaintBrush());
+  cue.FontSize(10);
+  cue.Foreground(urnw::colors::MutedBrush());
   cue.HorizontalAlignment(HorizontalAlignment::Right);
   cue.VerticalAlignment(VerticalAlignment::Center);
   cue.Margin(ThicknessHelper::FromLengths(0, 0, 1, 0));
@@ -255,7 +280,9 @@ WireParts MakeWireCell(urmsg::demo::RelayNode const& hopTarget) {
     label.Foreground(urnw::colors::FaintBrush());
     label.HorizontalAlignment(HorizontalAlignment::Center);
     label.VerticalAlignment(VerticalAlignment::Center);
-    label.Margin(ThicknessHelper::FromLengths(0, 0, 0, 18));
+    // 10 DIP of lift, not 18 (polish B1): the label names the wire below it,
+    // so it hugs the wire rather than floating into the node cards' row.
+    label.Margin(ThicknessHelper::FromLengths(0, 0, 0, 10));
     label.Visibility(Visibility::Collapsed);
     out.label = label;
     cell.Children().Append(label);
@@ -333,12 +360,26 @@ anim::DoubleAnimationUsingKeyFrames MakePacketOpacity(shapes::Ellipse const& pac
 FrameworkElement MakeRelayPath(urmsg::demo::World const& world,
                                std::shared_ptr<PageParts> const& parts) {
   Grid grid;
-  grid.HorizontalAlignment(HorizontalAlignment::Center);
+  // Left-anchored inside the page's capped content column (polish B1): the
+  // diagram is a legend row, not a hero, so it hangs off the column's left
+  // edge with the cards below instead of floating mid-pane.
+  grid.HorizontalAlignment(HorizontalAlignment::Left);
   for (int i = 0; i < 5; ++i) {
     ColumnDefinition column;
     column.Width(GridLengthHelper::Auto());
     grid.ColumnDefinitions().Append(column);
   }
+  // Two rows: the path itself, and the Advanced round trip under it. The
+  // round trip is a GRID row, not a sibling under the scroller, for one
+  // reason: "centred under the whole diagram" is only exact if the line's
+  // layout slot IS the diagram's 848 DIP — a sibling under the panel centres
+  // on the panel instead, and with the diagram left-anchored the two
+  // midpoints no longer agree.
+  RowDefinition pathRow, rttRow;
+  pathRow.Height(GridLengthHelper::Auto());
+  rttRow.Height(GridLengthHelper::Auto());
+  grid.RowDefinitions().Append(pathRow);
+  grid.RowDefinitions().Append(rttRow);
 
   // The contract fixes relayPath at exactly three and --diagnose asserts it
   // (I7, and `net relay hops`). Guarded anyway: a short world must not index
@@ -363,6 +404,22 @@ FrameworkElement MakeRelayPath(urmsg::demo::World const& world,
     (i == 0 ? parts->packetA : parts->packetB) = cell.packet;
   }
 
+  // ADVANCED ONLY. ServerInfo carries ONE end-to-end latency and no per-hop
+  // split, so this says "round trip" and is centred under the whole diagram
+  // (a full-span row of the diagram's own grid, per the block above); the
+  // per-hop figures ride the wires and are the only thing on this page
+  // entitled to name a hop. Built Collapsed; SetNetworkPageAdvanced flips
+  // Visibility — density, never a rebuild.
+  parts->roundTrip = TextBlock();
+  if (auto style = StyleByKey(L"UrRowNoteStyle")) parts->roundTrip.Style(style);
+  parts->roundTrip.Text(winrt::hstring{FormatRoundTrip(world.server)});
+  parts->roundTrip.HorizontalAlignment(HorizontalAlignment::Center);
+  parts->roundTrip.Margin(ThicknessHelper::FromLengths(0, 16, 0, 0));
+  parts->roundTrip.Visibility(Visibility::Collapsed);
+  Grid::SetRow(parts->roundTrip, 1);
+  Grid::SetColumnSpan(parts->roundTrip, 5);
+  grid.Children().Append(parts->roundTrip);
+
   // The travelling packet (d5 §3.3), REPLACING the brief's wire-opacity pulse:
   // a whole wire breathing reads as blinking chrome and two wires out of
   // phase read as a fault; the same motion budget spent as a travelling
@@ -379,8 +436,12 @@ FrameworkElement MakeRelayPath(urmsg::demo::World const& world,
   for (auto const& packet : {parts->packetA, parts->packetB}) {
     if (!packet) continue;
     const int64_t begin = wireIndex * urnw::motion::kSlowMs;
-    auto travel = urnw::motion::MakeSplineDouble(0.0, 84.0, urnw::motion::kEpicMs, begin,
-                                                 urnw::motion::kStandardP1,
+    // 108 = the 112 DIP cell minus the 4 DIP packet — the marker rides its
+    // own wire edge to edge and no further. Cell-relative, so the page's
+    // column cap and left anchor move the whole diagram without touching
+    // this travel.
+    auto travel = urnw::motion::MakeSplineDouble(0.0, 108.0, urnw::motion::kEpicMs,
+                                                 begin, urnw::motion::kStandardP1,
                                                  urnw::motion::kStandardP2);
     anim::Storyboard::SetTarget(travel, packet);
     anim::Storyboard::SetTargetProperty(
@@ -590,15 +651,24 @@ NetworkPageView MakeNetworkPage(urmsg::demo::World const& world) {
 
   Border header;
   if (auto style = StyleByKey(L"UrPaneHeaderStyle")) header.Style(style);
+  Grid headerGrid;
   TextBlock title;
   if (auto style = StyleByKey(L"UrPaneTitleStyle")) title.Style(style);
   title.Text(L"NETWORK");
-  header.Child(title);
+  headerGrid.Children().Append(title);
+  // The connect state word, right-aligned in the muted meta voice (d5 §3.1):
+  // the page and the status strip then agree about state without the page
+  // re-explaining it. StatusStateWord (StatusStripRules.h) is the ONE owner
+  // of the string — the strip renders the same call, so this page is a second
+  // READER, never a second writer. A state word, not a claim (S1's ruling).
+  TextBlock stateMeta;
+  if (auto style = StyleByKey(L"UrPaneMetaStyle")) stateMeta.Style(style);
+  stateMeta.HorizontalAlignment(HorizontalAlignment::Right);
+  stateMeta.Text(winrt::hstring{StatusStateWord(world.connectState)});
+  headerGrid.Children().Append(stateMeta);
+  header.Child(headerGrid);
   Grid::SetRow(header, 0);
   root.Children().Append(header);
-  // No right-aligned meta this wave: d5 §3.1 puts the connect state word
-  // here, but its one owner is S1's StatusStateWord and the strip group has
-  // not landed — a local copy would be a second owner of one string.
 
   ScrollViewer scroller;
   scroller.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
@@ -608,6 +678,13 @@ NetworkPageView MakeNetworkPage(urmsg::demo::World const& world) {
 
   StackPanel column;
   column.Orientation(Orientation::Vertical);
+  // The content column is capped and left-anchored (polish B1): at 1560 DIP a
+  // full-bleed column spreads one fact per row across half a metre of glass.
+  // 960 fits the 848 DIP diagram plus the panel's insets; the measure stays
+  // fixed and the window's extra width simply stays page — no fluid layout
+  // invented.
+  column.MaxWidth(960);
+  column.HorizontalAlignment(HorizontalAlignment::Left);
   scroller.Content(column);
   root.Children().Append(scroller);
 
@@ -615,29 +692,29 @@ NetworkPageView MakeNetworkPage(urmsg::demo::World const& world) {
   StackPanel pathSection;
   pathSection.Orientation(Orientation::Vertical);
 
-  // The framing header (G4, d5 §3.4): prefix-first honesty in the chrome
-  // voice, always visible in both modes — it cannot be cropped away from the
-  // diagram it frames because it sits directly on top of it.
-  auto relayGroup = urnw::kit::MakePaneGroupHeader(
-      winrt::hstring{kRelayPathGroupTitle},
-      winrt::to_hstring(static_cast<int>(world.relayPath.size())) + L" nodes");
-  pathSection.Children().Append(relayGroup.root);
+  // The framing header (G4, d5 §3.4): prefix-first honesty, always visible in
+  // both modes — it cannot be cropped away from the diagram it frames because
+  // it sits directly on top of it. It FLOATS now, the same caption the two
+  // groups below use: a ruled sheet strip across the capped column would
+  // re-bleed exactly what this wave capped. The STRING is untouched —
+  // kRelayPathGroupTitle is still what the `net framing` gate reads.
+  AppendCaption(pathSection, winrt::hstring{kRelayPathGroupTitle},
+                winrt::to_hstring(static_cast<int>(world.relayPath.size())) + L" nodes",
+                /*first=*/true);
 
   // The diagram sits on the SHEET step (#151515) with a hairline along its
-  // bottom edge — the same "this is chrome above the page" reading the pane
-  // and group headers use. No radius and no margin: pane vocabulary, not
-  // cards.
+  // bottom edge — the "this is chrome above the page" reading. Square corners
+  // (pane vocabulary, not cards), but the same 12 DIP side margin the cards
+  // below carry, so every left and right edge in the column lands on one
+  // inset. Padding 24,48 gives the legend row its height.
   Border pathPanel;
   pathPanel.Background(urnw::colors::SheetBrush());
   pathPanel.BorderBrush(urnw::colors::BorderBrush());
   pathPanel.BorderThickness(ThicknessHelper::FromLengths(0, 0, 0, 1));
-  pathPanel.Padding(ThicknessHelper::FromLengths(24, 28, 24, 28));
+  pathPanel.Padding(ThicknessHelper::FromLengths(24, 48, 24, 48));
+  pathPanel.Margin(ThicknessHelper::FromLengths(12, 0, 12, 10));
 
-  StackPanel pathColumn;
-  pathColumn.Orientation(Orientation::Vertical);
-  pathColumn.Spacing(16);
-
-  // The diagram is 680 DIP wide and a person can drag the demo window
+  // The diagram is 848 DIP wide and a person can drag the demo window
   // narrower than that (design §6.5a). It gets its OWN horizontal scroller so
   // the PANE's scroller can stay horizontally Disabled — a narrowed demo
   // window is a smaller demo, never a clipped one.
@@ -647,42 +724,34 @@ NetworkPageView MakeNetworkPage(urmsg::demo::World const& world) {
   pathScroll.VerticalScrollBarVisibility(ScrollBarVisibility::Disabled);
   pathScroll.VerticalScrollMode(ScrollMode::Disabled);
   pathScroll.Content(MakeRelayPath(world, parts));
-  pathColumn.Children().Append(pathScroll);
 
-  // ADVANCED ONLY. ServerInfo carries ONE end-to-end latency and no per-hop
-  // split, so this says "round trip" and is centred under the whole diagram;
-  // the per-hop figures ride the wires and are the only thing on this page
-  // entitled to name a hop.
-  parts->roundTrip = TextBlock();
-  if (auto style = StyleByKey(L"UrRowNoteStyle")) parts->roundTrip.Style(style);
-  parts->roundTrip.Text(winrt::hstring{FormatRoundTrip(world.server)});
-  parts->roundTrip.HorizontalAlignment(HorizontalAlignment::Center);
-  parts->roundTrip.Visibility(Visibility::Collapsed);
-  pathColumn.Children().Append(parts->roundTrip);
-
-  pathPanel.Child(pathColumn);
+  pathPanel.Child(pathScroll);
   pathSection.Children().Append(pathPanel);
   column.Children().Append(pathSection);
   parts->sections.push_back(pathSection);
 
   // ---- section: the message server (design §6.4) ---------------------------
+  // The carded idiom (polish B1): a floating caption over one card that
+  // encloses the rows — internal hairlines only, the last row's suppressed by
+  // FinalizePaneCard — replacing the full-bleed ruled strip and page-wide
+  // hairline rows. Same builders the rail and the Settings page use.
   StackPanel serverSection;
   serverSection.Orientation(Orientation::Vertical);
-  auto serverGroup = urnw::kit::MakePaneGroupHeader(L"MESSAGE SERVER",
-                                                    winrt::hstring{world.server.host});
-  serverSection.Children().Append(serverGroup.root);
+  AppendCaption(serverSection, L"MESSAGE SERVER", winrt::hstring{world.server.host},
+                /*first=*/false);
+  auto serverCard = urnw::kit::MakePaneCard();
 
   // MakePaneKeyValueRow is a FIXED 34 DIP row with a bottom hairline and the
   // pane's 12 DIP inset. Four calls, so the four rows cannot drift from one
   // another.
-  serverSection.Children().Append(
+  serverCard.body.Children().Append(
       urnw::kit::MakePaneKeyValueRow(L"Host", winrt::hstring{world.server.host}).root);
-  serverSection.Children().Append(
+  serverCard.body.Children().Append(
       urnw::kit::MakePaneKeyValueRow(L"Jurisdiction",
                                      winrt::hstring{world.server.jurisdiction}).root);
   // The VALUE comes from FormatLatency, the same function `net fmt latency`
   // asserts, so what the page shows and what the gate checks cannot diverge.
-  serverSection.Children().Append(
+  serverCard.body.Children().Append(
       urnw::kit::MakePaneKeyValueRow(
           L"Latency", winrt::hstring{FormatLatency(world.server.latencyMs)}).root);
   // The key row is the only one whose VALUE is a state rather than a fact, so
@@ -696,7 +765,9 @@ NetworkPageView MakeNetworkPage(urmsg::demo::World const& world) {
   keyRow.value.Foreground(world.server.keyVerified
                               ? urnw::colors::MakeBrush(urnw::colors::kUrGreen)
                               : urnw::colors::DangerBrush());
-  serverSection.Children().Append(keyRow.root);
+  serverCard.body.Children().Append(keyRow.root);
+  urnw::kit::FinalizePaneCard(serverCard);
+  serverSection.Children().Append(serverCard.root);
   column.Children().Append(serverSection);
   parts->sections.push_back(serverSection);
 
@@ -707,24 +778,28 @@ NetworkPageView MakeNetworkPage(urmsg::demo::World const& world) {
   StackPanel devicesSection;
   devicesSection.Orientation(Orientation::Vertical);
   parts->deviceRemaining = static_cast<int>(world.myDevices.size());
-  auto devicesGroup = urnw::kit::MakePaneGroupHeader(
-      L"YOUR DEVICES", winrt::to_hstring(parts->deviceRemaining));
+  auto devicesGroup = AppendCaption(devicesSection, L"YOUR DEVICES",
+                                    winrt::to_hstring(parts->deviceRemaining),
+                                    /*first=*/false);
   parts->deviceCount = devicesGroup.meta;
-  devicesSection.Children().Append(devicesGroup.root);
 
-  parts->deviceList = StackPanel();
-  parts->deviceList.Orientation(Orientation::Vertical);
-  devicesSection.Children().Append(parts->deviceList);
+  auto deviceCard = urnw::kit::MakePaneCard();
+  // The rows go DIRECTLY into the card body — parts->deviceList IS that body,
+  // not an inner panel — so FinalizePaneCard reaches every row: its last-row
+  // hairline clear only sees the card's own children, and the remove handler
+  // re-runs it as rows leave.
+  parts->deviceList = deviceCard.body;
 
-  // A SIBLING of the list, not its first child. MakePaneEmptyLine centres
-  // itself in whatever cell it is given; put inside the list it would render
-  // as a line ABOVE the rows rather than in their place, and every count
-  // would then have to know it was there.
+  // The empty line is the FIRST child, never the last: FinalizePaneCard reads
+  // child ORDER, and the last child must always be a real row — a collapsed
+  // TextBlock sitting last would keep the last row's hairline alive flush
+  // against the card's own edge. A TextBlock is neither Border nor Control,
+  // so FinalizePaneCard leaves it alone wherever it sits.
   parts->deviceEmpty = urnw::kit::MakePaneEmptyLine(
       L"No devices are linked to this account.");
   parts->deviceEmpty.Visibility(world.myDevices.empty() ? Visibility::Visible
                                                         : Visibility::Collapsed);
-  devicesSection.Children().Append(parts->deviceEmpty);
+  deviceCard.body.Children().Append(parts->deviceEmpty);
 
   for (auto const& device : world.myDevices) {
     // The two-line row species: name on top, one TRIMMED line of state under
@@ -801,7 +876,7 @@ NetworkPageView MakeNetworkPage(urmsg::demo::World const& world) {
     // Registry() already holds every page for the life of the process (one
     // page per window, and the demo has one window).
     auto rowRoot = row.root;
-    remove.Click([parts, rowRoot](auto const&, auto const&) {
+    remove.Click([parts, deviceCard, rowRoot](auto const&, auto const&) {
       uint32_t index = 0;
       if (!parts->deviceList.Children().IndexOf(rowRoot, index)) return;
       parts->deviceList.Children().RemoveAt(index);
@@ -811,12 +886,21 @@ NetworkPageView MakeNetworkPage(urmsg::demo::World const& world) {
       // works, and .Text() alone would leave a collapsed "0" invisible.
       urnw::kit::SetTextOrCollapse(parts->deviceCount,
                                    winrt::to_hstring(parts->deviceRemaining));
-      const bool empty = (parts->deviceRemaining <= 0);
-      parts->deviceList.Visibility(empty ? Visibility::Collapsed : Visibility::Visible);
-      parts->deviceEmpty.Visibility(empty ? Visibility::Visible : Visibility::Collapsed);
+      // No list Visibility toggle: the rows are REMOVED, so at zero the card
+      // holds only the empty line. Toggling deviceList (the card body itself)
+      // would hide that line with the rows.
+      parts->deviceEmpty.Visibility(parts->deviceRemaining <= 0
+                                        ? Visibility::Visible
+                                        : Visibility::Collapsed);
+      // The removed row may have taken the cleared hairline with it, leaving
+      // the NEW last row's line flush against the card's edge — re-run the
+      // edge rule (FinalizePaneCard is idempotent by design).
+      urnw::kit::FinalizePaneCard(deviceCard);
       urnw::LogInfo("network: device removed, {} left", parts->deviceRemaining);
     });
   }
+  urnw::kit::FinalizePaneCard(deviceCard);
+  devicesSection.Children().Append(deviceCard.root);
   column.Children().Append(devicesSection);
   parts->sections.push_back(devicesSection);
 

@@ -8,6 +8,7 @@
 #include <string>
 
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
+#include <winrt/Microsoft.UI.Xaml.Documents.h>
 #include <winrt/Microsoft.UI.Xaml.Media.h>
 #include <winrt/Windows.Foundation.h>
 
@@ -24,6 +25,7 @@ using namespace winrt::Microsoft::UI::Xaml;
 using namespace winrt::Microsoft::UI::Xaml::Controls;
 namespace kit = urnw::kit;
 namespace automation = winrt::Microsoft::UI::Xaml::Automation;
+namespace documents = winrt::Microsoft::UI::Xaml::Documents;
 
 // The promoted one lookup of an App.xaml style (UrComponents.h:106-122): a
 // fourth file-local copy is explicitly forbidden by that block, and a
@@ -61,10 +63,29 @@ Media::FontFamily FontFamilyByKey(wchar_t const* key) {
 // UrComponents.cpp sets Name(value) = "key, value" — so a row built with one
 // value and rewritten later would keep announcing the FIRST value forever.
 // Every deferred write the two switches make goes through here.
+//
+// A figure like "off (no --demo-autoplay)" is one fact with an aside: the
+// parenthetical half renders in the muted brush via a second Run, so the
+// value keeps the row's ink and the qualifier steps back (polish B1). The
+// accessible name still takes the WHOLE string — Runs must never change what
+// is announced.
 void SetFigure(kit::PaneKeyValueRow const& row, wchar_t const* key,
                winrt::hstring const& value) {
   if (!row.value) return;
-  row.value.Text(value);
+  const std::wstring text{value};
+  const size_t paren = text.find(L'(');
+  if (paren == std::wstring::npos) {
+    row.value.Text(value);
+  } else {
+    row.value.Inlines().Clear();
+    documents::Run head;
+    head.Text(winrt::hstring{text.substr(0, paren)});
+    documents::Run aside;
+    aside.Text(winrt::hstring{text.substr(paren)});
+    aside.Foreground(urnw::colors::MutedBrush());
+    row.value.Inlines().Append(head);
+    row.value.Inlines().Append(aside);
+  }
   automation::AutomationProperties::SetName(
       row.value, winrt::hstring{std::wstring{key} + L", " + std::wstring{value}});
 }
@@ -150,10 +171,20 @@ DeveloperView MakeDeveloper(urmsg::demo::World const& world) {
 
   StackPanel column;
   column.Orientation(Orientation::Vertical);
+  // Two caps, left-anchored (polish B1): the column itself caps at 1100 —
+  // the DEMOWORLD DUMP card rides it, because a mono table wants width —
+  // while the DEMO STATE and SWITCHES groups cap tighter at 840, the same
+  // column the Settings page reads as.
+  column.MaxWidth(1100);
+  column.HorizontalAlignment(HorizontalAlignment::Left);
   ScrollViewer scroller;
   scroller.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
   scroller.HorizontalScrollMode(ScrollMode::Disabled);
   scroller.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
+  // Bottom clearance (polish B1): without it the last dump line can scroll
+  // only until its own edge meets the viewport's, guillotined against the
+  // status strip; 40 DIP lets it scroll fully clear.
+  scroller.Padding(ThicknessHelper::FromLengths(0, 0, 0, 40));
   scroller.Content(column);
   Grid::SetRow(scroller, 1);
   pane.Children().Append(scroller);
@@ -164,7 +195,23 @@ DeveloperView MakeDeveloper(urmsg::demo::World const& world) {
   const auto options = demo::ParseDemoOptions();
 
   // ---- DEMO STATE: the figures list (key left, value hard right, at 34) ----
-  AppendCaption(column, S(L"DEMO STATE"), /*first=*/true);
+  // The 840 cap for the two figure groups is a GRID COLUMN's MaxWidth, never
+  // a MaxWidth on the groups themselves: in a StackPanel a stretch child
+  // capped by MaxWidth CENTRES in the slot, and a left-aligned one shrinks to
+  // its content (both measured on polish-B1 captures). The star column caps
+  // at 840 and shrinks with the window below it — capped, left-anchored, and
+  // no fixed width to overflow a narrow pane.
+  Grid cap840;
+  ColumnDefinition capColumn;
+  capColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
+  capColumn.MaxWidth(840);
+  cap840.ColumnDefinitions().Append(capColumn);
+  StackPanel narrow;
+  narrow.Orientation(Orientation::Vertical);
+  cap840.Children().Append(narrow);
+  column.Children().Append(cap840);
+
+  AppendCaption(narrow, S(L"DEMO STATE"), /*first=*/true);
   {
     auto card = kit::MakePaneCard();
     card.body.Children().Append(
@@ -184,13 +231,16 @@ DeveloperView MakeDeveloper(urmsg::demo::World const& world) {
             urmsg::AdvancedModeEnabled() ? S(L"on") : S(L"off"), kFigureHeight)
             .root);
 
-    // The two live figures. Built WITH their value so the accessible name is
-    // right from the start; the switches below rewrite both through SetFigure.
-    auto ambientRow = kit::MakePaneKeyValueRow(S(L"Ambient activity"),
-                                               AmbientLabel(options.autoplay),
+    // The two live figures. SetFigure runs at BUILD time too, not only from
+    // the switches below: it is what renders a parenthetical qualifier in the
+    // muted brush, and the first paint deserves the same two voices as a
+    // rewrite.
+    auto ambientRow = kit::MakePaneKeyValueRow(S(L"Ambient activity"), {},
                                                kFigureHeight);
+    SetFigure(ambientRow, L"Ambient activity", AmbientLabel(options.autoplay));
     card.body.Children().Append(ambientRow.root);
-    auto motionRow = kit::MakePaneKeyValueRow(S(L"Motion"), MotionLabel(), kFigureHeight);
+    auto motionRow = kit::MakePaneKeyValueRow(S(L"Motion"), {}, kFigureHeight);
+    SetFigure(motionRow, L"Motion", MotionLabel());
     card.body.Children().Append(motionRow.root);
 
     size_t messageRows = 0;
@@ -215,10 +265,10 @@ DeveloperView MakeDeveloper(urmsg::demo::World const& world) {
             S(L"Current epoch"),
             winrt::to_hstring(world.currentEpoch), kFigureHeight).root);
     kit::FinalizePaneCard(card);
-    column.Children().Append(card.root);
+    narrow.Children().Append(card.root);
 
     // ---- SWITCHES (session only; nothing here writes a preference) ---------
-    AppendCaption(column, S(L"SWITCHES"), /*first=*/false);
+    AppendCaption(narrow, S(L"SWITCHES"), /*first=*/false);
     auto switchCard = kit::MakePaneCard();
     {
       auto row = kit::MakePaneTwoLineRow(
@@ -268,7 +318,7 @@ DeveloperView MakeDeveloper(urmsg::demo::World const& world) {
       switchCard.body.Children().Append(row.root);
     }
     kit::FinalizePaneCard(switchCard);
-    column.Children().Append(switchCard.root);
+    narrow.Children().Append(switchCard.root);
   }
 
   // ---- DEMOWORLD DUMP ------------------------------------------------------
@@ -298,8 +348,13 @@ DeveloperView MakeDeveloper(urmsg::demo::World const& world) {
 
     TextBlock dump;
     if (auto family = FontFamilyByKey(L"UrMonoFontFamily")) dump.FontFamily(family);
-    dump.FontSize(11);
-    dump.Foreground(urnw::colors::MutedBrush());
+    // 12px in the body text brush, not 11 muted (polish B1): a dump too dim
+    // to read at arm's length is decoration. The punch named
+    // "UrTextSecondaryBrush" — no such key exists in App.xaml and G3 forbids
+    // inventing colour tokens, so the one step up the ladder that EXISTS
+    // (UrTextBrush, #F8F8F8) carries it.
+    dump.FontSize(12);
+    dump.Foreground(urnw::colors::TextBrush());
     dump.IsTextSelectionEnabled(true);
     dump.TextWrapping(TextWrapping::NoWrap);
     dump.Text(winrt::hstring{DumpDemoWorld()});
