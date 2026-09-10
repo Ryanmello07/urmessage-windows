@@ -3,6 +3,7 @@
 
 #include "Views/ThreadView.h"
 
+#include <chrono>
 #include <map>
 #include <memory>
 
@@ -13,6 +14,7 @@
 #include "Demo/DemoSwitches.h"
 #include "Demo/ThreadLayout.h"
 #include "Identicon.h"
+#include "Log.h"
 #include "UrColors.h"
 #include "UrComponents.h"  // urnw::kit::StyleByKey
 #include "UrMotion.h"
@@ -1507,6 +1509,14 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
   auto parts = Find(v.root);
   if (!parts) return;
 
+  // The two timings the stress harness (--demo-stress=N) exists to read:
+  // what the pure PLAN costs and what parenting the whole backlog costs, per
+  // row count. Log-only, on every open/switch/refresh, and deliberately kept
+  // after the measurement is no longer news: the windowing wave that follows
+  // reads the same lines to prove its own improvement. Two steady_clock reads
+  // per build are noise against the build itself.
+  const auto buildStart = std::chrono::steady_clock::now();
+
   parts->stack.Children().Clear();
   parts->bubbles.clear();
   parts->rows.clear();
@@ -1581,8 +1591,16 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
   std::size_t bubbleCount = 0;
   for (auto const& r : c.rows)
     if (r.kind == demo::RowKind::Message) ++bubbleCount;
+  // Hoisted out of the range-for so the plan's own cost is measurable apart
+  // from the element build that consumes it (the stress-harness log lines at
+  // the foot of this function).
+  const auto planStart = std::chrono::steady_clock::now();
+  const std::vector<ThreadRowPlan> rowPlan = PlanThreadRows(c);
+  const double planMs =
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - planStart)
+          .count();
   std::size_t bubbleIndex = 0;
-  for (auto const& p : PlanThreadRows(c)) {
+  for (auto const& p : rowPlan) {
     demo::MessageRow const& row = c.rows[p.rowIndex];
     demo::MessageRow const* next =
         (p.rowIndex + 1 < c.rows.size()) ? &c.rows[p.rowIndex + 1] : nullptr;
@@ -1652,6 +1670,12 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
     // "message rows only" list gets wrong.
     parts->rows.push_back(ThreadParts::RenderedRow{row, clusterHost});
   }
+
+  urnw::LogInfo(
+      "thread: plan {} rows in {:.2f} ms; backlog parented ({} bubbles) in {:.2f} ms",
+      c.rows.size(), planMs, bubbleIndex,
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - buildStart)
+          .count());
 
   ApplyColumnWidth(parts);
   // THIS PAIR IS INERT ON THE CONSTRUCTOR PATH, and it is not what opens a

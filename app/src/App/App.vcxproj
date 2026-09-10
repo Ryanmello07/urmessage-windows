@@ -201,6 +201,11 @@
          (<windows.h>, <shellapi.h>) for CommandLineToArgvW. -->
     <ClCompile Include="Demo\DemoSwitches.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <!-- NotUsing for the same reason as Demo\DemoWorld.cpp above: Startup.cpp's
+         `demo stress` line calls this generator from CollectDiagnostics()
+         before winrt::init_apartment, so the TU must not pull in the pch and
+         its winrt/ headers. -->
+    <ClCompile Include="Demo\DemoStress.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <!-- NotUsing for the same reason as Demo\DemoWorld.cpp above: Startup.cpp's
          `demo autoplay` line asserts this unit's ladder, cadence and derived
          clock from CollectDiagnostics() before winrt::init_apartment, so the
          pure half must not pull in the pch and its winrt/ headers. The timer
@@ -276,6 +281,7 @@
     <ClInclude Include="Views\ThreadLayout.h" />
     <ClInclude Include="Views\ThreadView.h" />
     <ClInclude Include="Demo\DemoSwitches.h" />
+    <ClInclude Include="Demo\DemoStress.h" />
     <ClInclude Include="Demo\DemoAutoplay.h" />
     <ClInclude Include="Demo\DemoAutoplayLoop.h" />
     <ClInclude Include="Demo\AdvancedMode.h" />

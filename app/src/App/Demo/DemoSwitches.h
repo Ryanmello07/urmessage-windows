@@ -19,6 +19,7 @@ struct DemoOptions {
   bool autoplay;       // --demo-autoplay
   bool advanced;       // --demo-advanced, session-only, never written to prefs
   bool watermark;      // false only when --demo-watermark=off
+  int stressRows;      // --demo-stress=N: synthetic history rows for conversation 0; 0 = off
 };
 
 // Inspect is a STATE, not a screen: it opens Chats, selects conversation 0,

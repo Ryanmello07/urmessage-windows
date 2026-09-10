@@ -36,6 +36,7 @@
 #include "Views/ThreadLayout.h"
 #include "Views/ThreadView.h"  // ShouldPinToBottom, for the scroll-pin line below
 #include "Demo/DemoSwitches.h"
+#include "Demo/DemoStress.h"
 
 // The Windows App SDK version this binary was BUILT against, injected from the
 // single MSBuild property that also drives the PackageReference (App.vcxproj),
@@ -1947,6 +1948,170 @@ std::vector<std::wstring> CollectDiagnostics() {
   if (WantsDiagnose()) {
     lines.push_back(urmsg::views::InspectRailFieldsProbe());
     lines.push_back(urmsg::views::InspectRailDeviceProbe());
+  }
+
+  // ---- demo stress: the --demo-stress=N generator ---------------------------
+  //
+  //  THE EXTENSION POINT, and the placement is the load-bearing part. Every
+  //  world gate above — I10's fingerprint first among them — runs on the
+  //  UN-stressed world, because the synthetic history is prepended HERE, at
+  //  the end of CollectDiagnostics, never before. I10 therefore stays green
+  //  with AND without the switch, and the fixture file keeps its bytes. The
+  //  mutation itself is the wave-9 pattern: rows pushed into
+  //  MutableWorld().conversations.front().rows at runtime. CollectDiagnostics
+  //  runs on EVERY launch (the guard comment above), so extending here — once,
+  //  before any window exists — is what makes --demo=thread/--demo=inspect
+  //  open the stressed thread without touching MainWindow at all. Without the
+  //  switch nothing is touched: the default --demo path and the shipping path
+  //  never reach PrependStressHistory.
+  {
+    namespace dd = urmsg::demo;
+    const dd::DemoOptions o = dd::ParseDemoOptions();
+    if (o.stressRows <= 0) {
+      // Switch ABSENT: the generator is proven over a locally built 500-row
+      // sample instead — the T4/T5 synthetic-fixture pattern, because the
+      // world this process is about to show must stay byte-identical.
+      dd::World a = dd::GetWorld();
+      dd::World b = dd::GetWorld();
+      const std::size_t base = a.conversations.front().rows.size();
+      const int addedA = dd::PrependStressHistory(a, 500);
+      const int addedB = dd::PrependStressHistory(b, 500);
+
+      // Determinism: two independent builds must agree field for field on
+      // every synthetic row. A broad per-row comparison, not a census — the
+      // lesson of T4's shape gate.
+      std::size_t compared = 0, mismatched = 0;
+      if (addedA == 500 && addedB == 500) {
+        auto const& ra = a.conversations.front().rows;
+        auto const& rb = b.conversations.front().rows;
+        for (std::size_t i = 0; i < 500 && i < ra.size() && i < rb.size(); ++i) {
+          ++compared;
+          auto const& x = ra[i];
+          auto const& y = rb[i];
+          if (!(x.kind == y.kind && x.id == y.id && x.senderName == y.senderName &&
+                x.senderKey == y.senderKey && x.body == y.body &&
+                x.timeLabel == y.timeLabel && x.outgoing == y.outgoing &&
+                x.state == y.state && x.systemText == y.systemText &&
+                x.permanentRecord == y.permanentRecord &&
+                x.inspect.epoch == y.inspect.epoch &&
+                x.inspect.senderLeafIndex == y.inspect.senderLeafIndex &&
+                x.inspect.sentAtLabel == y.inspect.sentAtLabel &&
+                x.inspect.deliveredTo.size() == y.inspect.deliveredTo.size() &&
+                x.inspect.readBy.size() == y.inspect.readBy.size()))
+            ++mismatched;
+        }
+      }
+
+      // Row-shape validity over the stressed conversation: the planner
+      // against expectations recomputed HERE (shapes from kinds, runPos and
+      // sender headers from the rules in Demo/ThreadLayout.h), plus the T1
+      // separator audit — the same shape of proof T4/T7 run on the fixture.
+      std::size_t planned = 0, wrongShape = 0, headerDisagree = 0, runWrong = 0;
+      std::size_t incoming = 0, outgoing = 0, badTime = 0;
+      std::size_t maxRun = 0, singletonRuns = 0;
+      if (addedA == 500) {
+        auto const& c = a.conversations.front();
+        const bool group = (c.kind == dd::ConversationKind::Group);
+        std::size_t at = 0;
+        for (auto const& p : urmsg::views::PlanThreadRows(c)) {
+          if (p.rowIndex != at++ || c.rows.size() <= p.rowIndex) continue;
+          ++planned;
+          auto const& r = c.rows[p.rowIndex];
+          urmsg::demo::MessageRow const* prev =
+              (p.rowIndex > 0) ? &c.rows[p.rowIndex - 1] : nullptr;
+          urmsg::demo::MessageRow const* next =
+              (p.rowIndex + 1 < c.rows.size()) ? &c.rows[p.rowIndex + 1] : nullptr;
+          const auto wantShape =
+              r.kind == dd::RowKind::DaySeparator
+                  ? urmsg::views::ThreadRowShape::DaySeparator
+              : r.kind == dd::RowKind::System
+                  ? (r.permanentRecord
+                         ? urmsg::views::ThreadRowShape::SystemPermanentRecord
+                         : urmsg::views::ThreadRowShape::SystemLine)
+              : (r.outgoing ? urmsg::views::ThreadRowShape::OutgoingBubble
+                            : urmsg::views::ThreadRowShape::IncomingBubble);
+          if (p.shape != wantShape) ++wrongShape;
+          if (r.kind == dd::RowKind::Message) {
+            if (urmsg::views::ShowsSenderHeader(prev, r, group) != p.showSenderHeader)
+              ++headerDisagree;
+            if (urmsg::views::RunPosFor(prev, r, next) != p.runPos) ++runWrong;
+            if (r.outgoing) ++outgoing; else ++incoming;
+            // "14:22" shape on every synthetic message row.
+            if (p.rowIndex < 500 &&
+                (r.timeLabel.size() != 5 || r.timeLabel[2] != L':'))
+              ++badTime;
+          }
+        }
+        // Run lengths in the SYNTHETIC region: 2..4 by construction, with a
+        // singleton possible only where a day boundary truncated a streak —
+        // so at most one per separator.
+        std::size_t run = 0;
+        for (std::size_t i = 0; i < 500 && i < c.rows.size(); ++i) {
+          auto const& r = c.rows[i];
+          if (r.kind != dd::RowKind::Message) continue;
+          ++run;
+          const bool ends =
+              i + 1 >= c.rows.size() || i + 1 >= 500 ||
+              c.rows[i + 1].kind != dd::RowKind::Message ||
+              c.rows[i + 1].outgoing != r.outgoing ||
+              (!r.outgoing && c.rows[i + 1].senderKey != r.senderKey);
+          if (ends) {
+            if (run > maxRun) maxRun = run;
+            if (run == 1) ++singletonRuns;
+            run = 0;
+          }
+        }
+      }
+      urmsg::views::DaySeparatorAudit audit;
+      if (addedA == 500)
+        audit = urmsg::views::AuditDaySeparators(a.conversations.front().rows);
+      // The seam: the last synthetic row is a MESSAGE (never a separator —
+      // the fixture's own "Yesterday" label follows it), and the row after
+      // the block is the fixture's old first row. Both pin the insertion
+      // POINT: front, not back.
+      const bool seamOk =
+          addedA == 500 &&
+          a.conversations.front().rows[499].kind == dd::RowKind::Message &&
+          a.conversations.front().rows[500].id == L"c0-r0";
+      const bool ok =
+          addedA == 500 && addedB == 500 && compared == 500 && mismatched == 0 &&
+          planned == base + 500 && wrongShape == 0 && headerDisagree == 0 &&
+          runWrong == 0 && badTime == 0 && incoming > 0 && outgoing > 0 &&
+          audit.separators >= 3 && audit.unlabelled == 0 && audit.adjacent == 0 &&
+          audit.trailing == 0 && maxRun <= 4 && singletonRuns <= audit.separators &&
+          seamOk;
+      lines.push_back(std::format(
+          L"  demo stress      : {} — switch absent; local 500-row sample: "
+          L"determinism {}/{} rows identical, plan {}/{} rows ({} wrong shapes, "
+          L"{} header and {} run-pos disagreements), {} in/{} out, {} separators "
+          L"({} unlabelled {} adjacent {} trailing), longest run {}, seam {}",
+          ok ? L"PASS" : L"FAIL", compared - mismatched, compared, planned,
+          base + 500, wrongShape, headerDisagree, runWrong, incoming, outgoing,
+          audit.separators, audit.unlabelled, audit.adjacent, audit.trailing,
+          maxRun, seamOk ? L"clean" : L"BROKEN"));
+    } else {
+      // Switch PRESENT: extend the real world now — once, here, after every
+      // gate above has seen the fixture as shipped. The position clauses
+      // matter as much as the count: appended at the BACK the rows would be
+      // NEWER than the fixture's foot, and "grew" alone would still read
+      // true — so the synthetic prefix at rows[0] and the fixture's old
+      // first row sitting exactly N deep are both asserted.
+      const std::size_t before = dd::GetWorld().conversations.front().rows.size();
+      const int added = dd::PrependStressHistory(dd::MutableWorld(), o.stressRows);
+      auto const& rows = dd::GetWorld().conversations.front().rows;
+      const bool position =
+          static_cast<std::size_t>(added) < rows.size() &&
+          rows.front().id.starts_with(L"c0-s") &&
+          rows[static_cast<std::size_t>(added)].id == L"c0-r0";
+      const bool ok = added == o.stressRows &&
+                      rows.size() == before + static_cast<std::size_t>(added) && position;
+      lines.push_back(std::format(
+          L"  demo stress      : {} — --demo-stress={} grew conversation 0: "
+          L"{} + {} = {} rows, synthetic at front {} (I10 above fingerprinted "
+          L"the un-stressed world)",
+          ok ? L"PASS" : L"FAIL", o.stressRows, before, added, rows.size(),
+          position ? L"yes" : L"NO"));
+    }
   }
 
   return lines;

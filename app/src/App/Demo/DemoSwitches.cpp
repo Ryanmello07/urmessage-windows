@@ -17,7 +17,27 @@
 namespace urmsg::demo {
 namespace {
 
-constexpr DemoOptions kDefaults{false, DemoScreen::None, false, false, true};
+constexpr DemoOptions kDefaults{false, DemoScreen::None, false, false, true, 0};
+
+// The ceiling for --demo-stress=N. The switch exists to find the thread's
+// knee, and 20000 rows (~200x the fixture's longest conversation) is far
+// past any knee the owner will ship near; an unclamped typo would otherwise
+// get to decide whether the machine swaps.
+constexpr int kMaxStressRows = 20000;
+
+// The count half of --demo-stress=N: digits only, -1 for anything else. A
+// non-numeric value is an UNRECOGNISED argument, not a stressed demo — the
+// same carve-out as --demo=nope: a typo must never light up the demo.
+constexpr int ParseStressCount(std::wstring_view s) {
+  if (s.empty()) return -1;
+  int v = 0;
+  for (wchar_t c : s) {
+    if (c < L'0' || c > L'9') return -1;
+    v = v * 10 + (c - L'0');
+    if (v > kMaxStressRows) v = kMaxStressRows;  // clamp, don't reject: the digits WERE a count
+  }
+  return v;
+}
 
 // The switch BODY with its prefix removed, or the argument unchanged when it
 // carries no prefix (the bare form). Same four spellings WantsDiagnose takes.
@@ -54,6 +74,13 @@ constexpr void ApplyArg(DemoOptions& o, std::wstring_view arg) {
   }
   if (body == L"demo-autoplay") { o.enabled = true; o.autoplay = true; return; }
   if (body == L"demo-advanced") { o.enabled = true; o.advanced = true; return; }
+  if (body.starts_with(L"demo-stress=")) {
+    const int n = ParseStressCount(body.substr(12));
+    if (n < 0) return;  // not a demo switch: see ParseStressCount
+    o.enabled = true;
+    o.stressRows = n;
+    return;
+  }
   // Only "=off" turns the watermark off. Any other value leaves it ON: an
   // unrecognised argument must never be the thing that strips the mark from a
   // screenshot.
@@ -123,6 +150,25 @@ static_assert(ParseArgs({L"--demo-watermark=off"}).screen == DemoScreen::None);
 static_assert(!ParseArgs({L"--demo-watermark=off"}).autoplay);
 static_assert(!ParseArgs({L"--demo-watermark=off"}).advanced);
 
+static_assert(ParseArgs({L"--demo-stress=500"}).stressRows == 500);
+static_assert(ParseArgs({L"--demo-stress=500"}).enabled);
+static_assert(ParseArgs({L"-demo-stress=12"}).stressRows == 12);
+static_assert(ParseArgs({L"/demo-stress=7"}).stressRows == 7);
+static_assert(ParseArgs({L"demo-stress=3"}).stressRows == 3);
+static_assert(ParseArgs({L"--demo-stress=0"}).enabled);   // explicit zero is still demo
+static_assert(ParseArgs({L"--demo-stress=0"}).stressRows == 0);
+static_assert(ParseArgs({L"--demo-stress=999999"}).stressRows == 20000);  // clamped
+static_assert(!ParseArgs({L"--demo-stress=lots"}).enabled);  // not a count, not a demo
+static_assert(ParseArgs({L"--demo-stress=lots"}).stressRows == 0);
+static_assert(!ParseArgs({L"--demo-stress="}).enabled);
+static_assert(ParseArgs({L"--demo"}).stressRows == 0);
+// Cross-field non-contamination: --demo-stress=N touches ONLY stressRows
+// (+ enabled).
+static_assert(ParseArgs({L"--demo-stress=500"}).screen == DemoScreen::None);
+static_assert(ParseArgs({L"--demo-stress=500"}).watermark);
+static_assert(!ParseArgs({L"--demo-stress=500"}).autoplay);
+static_assert(!ParseArgs({L"--demo-stress=500"}).advanced);
+
 static_assert(!ParseArgs({L"--diagnose"}).enabled);
 
 // Combinations. The single-switch rows above each prove what one switch does
@@ -142,6 +188,12 @@ static_assert(ParseArgs({L"--demo-advanced", L"--demo-autoplay"}).screen ==
 // behaviour, not prescribing it.
 static_assert(ParseArgs({L"--demo=chats", L"--demo=network"}).screen ==
               DemoScreen::Network);
+
+// A screen and a stress count compose the way the measurement harness
+// invokes them.
+static_assert(ParseArgs({L"--demo=thread", L"--demo-stress=500"}).screen ==
+              DemoScreen::Thread);
+static_assert(ParseArgs({L"--demo=thread", L"--demo-stress=500"}).stressRows == 500);
 
 // An unrecognised demo-* spelling is not a demo switch, same carve-out as
 // --demo=nope above: a typo must never light up the demo.
