@@ -76,6 +76,25 @@ Media::FontFamily IconFont() { return Media::FontFamily(L"Segoe Fluent Icons"); 
 
 namespace anim = winrt::Microsoft::UI::Xaml::Media::Animation;
 
+// Whether a storyboard begun on `node` right now would PLAY. XAML drops a
+// board whose target sits under a Collapsed ancestor: it never ticks and never
+// raises Completed (measured on this surface: rows faded in under a still-
+// Collapsed scroller never left Opacity 0). Under the from-pose-local rule
+// below, writing the from-pose and then beginning a board that cannot play
+// would strand the element INVISIBLE, so callers gate both on this. The one
+// reachable case in this app: a conversation selected (or autoplay-refreshed,
+// or appended to) while the window is below kWideBreakpointDip, where
+// ApplyBreakpoint has ThreadHost Collapsed and the list IS the window.
+bool ChainVisible(DependencyObject const& node) {
+  for (auto cur = node; cur;) {
+    auto fe = cur.try_as<FrameworkElement>();
+    if (!fe) break;
+    if (fe.Visibility() == Visibility::Collapsed) return false;
+    cur = fe.Parent();
+  }
+  return true;
+}
+
 // design §7: fade + 10 DIP rise + 0.96 -> 1.0 scale, kBaseMs, standard curve.
 // The rationale for putting them in ONE Storyboard is at the Storyboard itself,
 // below; it is not repeated here.
@@ -116,23 +135,40 @@ void RunBubbleEntrance(FrameworkElement const& el, bool outgoing, int64_t stagge
     return;
   }
 
-  // The LOCAL pose is the FINAL one — identity transform, full opacity — and
-  // the storyboard alone carries the from-pose. This used to be the other way
-  // round (local from-pose, storyboard to final), which is only safe when the
-  // storyboard certainly plays. The d2 §8.2 open stagger is begun from
-  // SetThreadConversation's first build, which runs in the window constructor
-  // before ThreadHost is realized; a storyboard dropped unplayed there would
-  // have stranded those bubbles at Opacity 0, permanently invisible. With the
-  // final pose local, an unplayed storyboard costs the motion and never the
-  // pixels — the same shape AnimateConversationListEntrance already uses
-  // (ConversationListView.cpp), which is also how we know the from-pose
-  // applies before the first rendered frame rather than flashing.
+  // THE RULE, and it is the opposite of what wave 2 shipped here: the
+  // FROM-pose is the LOCAL value, written synchronously in the same turn the
+  // row is appended (so no frame can render first), and the storyboard carries
+  // from -> to. A timeline does not apply its from-value until it STARTS, so
+  // during its BeginTime — the d2 §8.2 open stagger is exactly that — and
+  // during the frame a begun storyboard takes to attach, the property renders
+  // at its LOCAL value. With the final pose local that window renders the
+  // bubble fully-formed and then SNAPS it to the from-pose: the
+  // render-first-then-animate bump. EntranceStartPose (ConversationListView.cpp:137)
+  // is the same rule, as are UrMotion.cpp's RunCrossfade and SettleIn.
+  //
+  // The stranded-at-0 hazard wave 2's inversion was defending against is
+  // retired by WHERE the Begin now happens rather than by inverting the pose:
+  // the initial open no longer runs from the window constructor (it moved to
+  // DrainDeepLink, MainWindow.xaml.cpp, which fires from the content root's
+  // first SizeChanged — post-layout, on a realized tree), and the append path
+  // is a live tree by definition. "Realized" is not quite "can play", though:
+  // below kWideBreakpointDip ThreadHost is Collapsed, and a board begun there
+  // never ticks (see ChainVisible) — that one case lands at the final pose
+  // with no board, the same landing Completed writes.
+  if (!ChainVisible(el)) {
+    el.Opacity(1.0);
+    el.RenderTransform(nullptr);
+    return;
+  }
   Media::CompositeTransform t;
+  t.TranslateY(kBubbleRiseDip);
+  t.ScaleX(kBubbleFromScale);
+  t.ScaleY(kBubbleFromScale);
   el.RenderTransform(t);
   // The bubble grows from where it will end up, and from its speaker's side.
   el.RenderTransformOrigin(
       winrt::Windows::Foundation::Point{outgoing ? 1.0f : 0.0f, 1.0f});
-  el.Opacity(1.0);
+  el.Opacity(0.0);
 
   // ONE Storyboard for all four so they finish on the same frame — two
   // independent storyboards can land a frame apart, which reads as a hitch
@@ -149,6 +185,15 @@ void RunBubbleEntrance(FrameworkElement const& el, bool outgoing, int64_t stagge
     anim::Storyboard::SetTargetProperty(a, spec.path);
     sb.Children().Append(a);
   }
+  sb.Completed([el, weakSb = winrt::make_weak(sb)](auto const&, auto const&) {
+    // The landing: FINAL pose as local values, then Stop, so a completed
+    // board's HoldEnd keeps owning none of the four properties — the bubble
+    // rests exactly where the reduce-motion branch puts it. The board is
+    // captured WEAK: a strong capture would cycle board -> delegate -> board.
+    el.Opacity(1.0);
+    el.RenderTransform(nullptr);
+    if (auto board = weakSb.get()) board.Stop();
+  });
   sb.Begin();
 }
 
@@ -419,10 +464,11 @@ int DeliveryClusterIndex(Controls::Panel const& rowRoot) {
 // Removal stays instant: the only removal event is a newer outgoing row
 // arriving below, whose own bubble entrance is where the eye already is, and
 // an async fade-out would make this gate-treated-synchronous function
-// stateful for no visible gain. The local opacity is left at 1.0 and the
-// storyboard alone carries the 0 — an unplayed storyboard then costs the
-// fade, never the reading (the same final-pose-local shape RunBubbleEntrance
-// uses).
+// stateful for no visible gain. The FROM-pose is the local value (Opacity 0,
+// written before Begin) and the Completed handler lands 1.0 — the same
+// from-pose-local rule RunBubbleEntrance follows, so the frame between the
+// append and the timeline's start shows the cluster invisible, never
+// fully-drawn-then-vanishing.
 void SetRowCluster(FrameworkElement const& rowRoot, demo::MessageRow const& row,
                    bool carries) {
   if (!rowRoot) return;
@@ -433,7 +479,11 @@ void SetRowCluster(FrameworkElement const& rowRoot, demo::MessageRow const& row,
   if (carries) {
     auto cluster = MakeTaggedDeliveryCluster(row);
     panel.Children().Append(cluster);
-    if (urnw::motion::ShouldAnimate() && cluster) {
+    if (urnw::motion::ShouldAnimate() && cluster && ChainVisible(cluster)) {
+      // ChainVisible: a board begun under a Collapsed ancestor (a narrow
+      // window's ThreadHost) never plays, so that case keeps the cluster at
+      // its built opacity 1 — final pose, no board, same as the landing.
+      cluster.Opacity(0.0);
       anim::Storyboard sb;
       auto a = urnw::motion::MakeSplineDouble(0.0, 1.0, urnw::motion::kFastMs, 0,
                                               urnw::motion::kStandardP1,
@@ -441,6 +491,10 @@ void SetRowCluster(FrameworkElement const& rowRoot, demo::MessageRow const& row,
       anim::Storyboard::SetTarget(a, cluster);
       anim::Storyboard::SetTargetProperty(a, L"Opacity");
       sb.Children().Append(a);
+      sb.Completed([cluster, weakSb = winrt::make_weak(sb)](auto const&, auto const&) {
+        cluster.Opacity(1.0);
+        if (auto board = weakSb.get()) board.Stop();
+      });
       sb.Begin();
     }
   } else {
@@ -1575,11 +1629,14 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
         // last; rows above the fold return -1 and are not animated at all.
         // RenderTransform/Opacity do not affect layout, so the bottom-pin
         // stack.SizeChanged handler is not re-triggered (no interaction with
-        // the W9 do-not-yank scroll work). Begun here rather than on a Loaded
-        // hook: RunBubbleEntrance leaves the FINAL pose as the local value, so
-        // a storyboard that cannot play yet (this first build runs from the
-        // window constructor, before ThreadHost is realized) costs the motion
-        // and never the pixels.
+        // the W9 do-not-yank scroll work). Begun synchronously HERE, not on a
+        // Loaded hook: every path that reaches this build is already
+        // post-layout on a realized tree — the initial open comes through
+        // DrainDeepLink (the content root's first SizeChanged), switches
+        // through a row click, refreshes through the autoplay callback — so
+        // the board always plays, and RunBubbleEntrance's Completed landing
+        // writes the final pose back. With the from-pose local, a foot row's
+        // stagger BeginTime shows it mid-rise rather than fully-rendered.
         const int64_t stagger = OpenStaggerBeginMs(bubbleIndex, bubbleCount);
         if (0 <= stagger) RunBubbleEntrance(built.root, row.outgoing, stagger);
         ++bubbleIndex;

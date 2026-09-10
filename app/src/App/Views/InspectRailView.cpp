@@ -281,6 +281,14 @@ StackPanel BodyOf(ScrollViewer const& scroller) {
 // fade rather than replacing it: the swap owns the visibility/collapse
 // bookkeeping.
 //
+// The FROM-pose (Opacity 0) is written as each child's LOCAL value before
+// Begin: a timeline only applies its from-value when it STARTS, so during
+// each child's stagger BeginTime — and the frame a begun board takes to
+// attach — the property renders at its local value. Leaving the children at
+// Opacity 1 showed every section fully-rendered, then snapped it to 0 as its
+// turn arrived. The Completed handler lands 1.0 as the local value and Stops
+// the board, so no finished board's HoldEnd owns the children afterwards.
+//
 // Density re-population never reaches here (it does not call PresentMode at
 // all): re-rendering an on-screen surface must stay silent.
 //
@@ -296,9 +304,12 @@ void CascadeSections(ScrollViewer const& scroller) {
   const uint32_t count = children.Size();
   namespace anim = winrt::Microsoft::UI::Xaml::Media::Animation;
   anim::Storyboard sb;
+  std::vector<FrameworkElement> landed;
   for (uint32_t i = 0; i < count; ++i) {
     auto element = children.GetAt(i).try_as<FrameworkElement>();
     if (!element) continue;
+    element.Opacity(0.0);
+    landed.push_back(element);
     const int64_t step = std::min<int64_t>(i, urnw::motion::kMaxStaggerSteps);
     auto fade = urnw::motion::MakeSplineDouble(0.0, 1.0, urnw::motion::kBaseMs,
                                                step * urnw::motion::kStaggerMs,
@@ -308,6 +319,10 @@ void CascadeSections(ScrollViewer const& scroller) {
     anim::Storyboard::SetTargetProperty(fade, L"Opacity");
     sb.Children().Append(fade);
   }
+  sb.Completed([landed, weakSb = winrt::make_weak(sb)](auto const&, auto const&) {
+    for (auto const& element : landed) element.Opacity(1.0);
+    if (auto board = weakSb.get()) board.Stop();
+  });
   sb.Begin();
 }
 
@@ -758,6 +773,13 @@ void InsertDeviceSubRows(StackPanel const& cardBody, UIElement const& afterRow,
   // one step faster than entrances. The chevron swaps instantly in both
   // cases.
   //
+  // The FROM-pose (Opacity 0) is each row's LOCAL value before Begin: a
+  // timeline applies its from-value only when it STARTS, so during a row's
+  // stagger BeginTime — and the frame a begun board takes to attach — the
+  // property renders at its local value. Rows left at Opacity 1 presented
+  // fully-rendered and then flashed to 0 as the fade reached them. The
+  // Completed handler lands 1.0 locally and Stops the board, ending HoldEnd.
+  //
   // UNVERIFIED BRANCH, STATED TWICE OVER: ShouldAnimate() has never returned
   // false on this machine, and `animate` is only ever true from a CLICK,
   // which an agent may not synthesise - so this whole block is
@@ -766,6 +788,7 @@ void InsertDeviceSubRows(StackPanel const& cardBody, UIElement const& afterRow,
   namespace anim = winrt::Microsoft::UI::Xaml::Media::Animation;
   anim::Storyboard sb;
   for (size_t i = 0; i < rows.size(); ++i) {
+    rows[i].Opacity(0.0);
     auto fade = urnw::motion::MakeSplineDouble(
         0.0, 1.0, urnw::motion::kFastMs,
         static_cast<int64_t>(std::min<size_t>(i, 2)) * urnw::motion::kStaggerMs,
@@ -774,6 +797,10 @@ void InsertDeviceSubRows(StackPanel const& cardBody, UIElement const& afterRow,
     anim::Storyboard::SetTargetProperty(fade, L"Opacity");
     sb.Children().Append(fade);
   }
+  sb.Completed([rows, weakSb = winrt::make_weak(sb)](auto const&, auto const&) {
+    for (auto const& row : rows) row.Opacity(1.0);
+    if (auto board = weakSb.get()) board.Stop();
+  });
   sb.Begin();
 }
 

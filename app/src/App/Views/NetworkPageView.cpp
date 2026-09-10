@@ -945,8 +945,12 @@ void AnimateNetworkPageEntrance(NetworkPageView& v) {
     // Three sections, kStaggerMs apart — 3 steps is within kMaxStaggerSteps.
     const int64_t begin = step * urnw::motion::kStaggerMs;
     // The start pose is written directly and the animation only carries it
-    // home: if the storyboard were dropped, the section still lands at
-    // TranslateY 0 / opacity 1 rather than staying offset (UrMotion.cpp's
+    // home: the first frame the page is visible in already shows the section
+    // at TranslateY 8 / opacity 0 rather than settled-then-snapped. The other
+    // side of that coin, stated honestly: a storyboard dropped unplayed would
+    // REST the section at TranslateY 8 / opacity 0 — invisible — which is why
+    // this runs from ShowDestination, synchronously after the swap that made
+    // NetworkHost visible, on an already-realized tree (UrMotion.cpp's
     // SettleIn states the same rule).
     Media::CompositeTransform transform;
     transform.TranslateY(urnw::motion::kDist8);

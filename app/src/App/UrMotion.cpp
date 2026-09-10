@@ -159,8 +159,12 @@ void SettleIn(winrt::Microsoft::UI::Xaml::FrameworkElement const& element) {
     element.RenderTransform(transform);
   }
   // The start pose is written directly and the animation only carries it home:
-  // if the storyboard were dropped, the element still lands at TranslateY 0 on
-  // its first frame rather than staying offset.
+  // the first rendered frame already shows TranslateY 4 rather than the settled
+  // pose snapped away a frame later. The other side of that coin, stated
+  // honestly: a storyboard dropped unplayed would REST the element at
+  // TranslateY 4, not 0 — which is why Begin() here is synchronous on an
+  // already-realized element (the callers run inside a live mode swap), so the
+  // board always plays.
   transform.TranslateY(kDist4);
   auto rise = MakeSplineDouble(kDist4, 0.0, kBaseMs, 0, kStandardP1, kStandardP2);
   anim::Storyboard sb;

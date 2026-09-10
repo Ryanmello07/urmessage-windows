@@ -764,8 +764,13 @@ void MainWindow::SetSearchEmptyVisible(bool show) {
   if (show) {
     if (drawn && searchEmpty_.Opacity() == 1.0) return;  // already settled
     // Entrance: kBaseMs on the standard curve (d3 2.5). A re-show mid-exit
-    // resumes from the current opacity instead of popping back to 0.
+    // resumes from the current opacity instead of popping back to 0. The
+    // from-pose is the LOCAL value, written BEFORE the Visibility flip: a
+    // timeline applies its from-value only when it starts, so the frame the
+    // begun board takes to attach would otherwise render the already-visible
+    // element at its old local opacity and then snap it to `from`.
     const double from = drawn ? searchEmpty_.Opacity() : 0.0;
+    searchEmpty_.Opacity(from);
     searchEmpty_.Visibility(Visibility::Visible);
     auto fade = urnw::motion::MakeSplineDouble(from, 1.0, urnw::motion::kBaseMs, 0,
                                                urnw::motion::kStandardP1,

@@ -273,10 +273,12 @@ Border MakeMiniPath(std::vector<demo::RelayNode> const& path,
       // UrBorderStrongBrush (#38FFFFFF, App.xaml:271): the app's "hairline you
       // are meant to see", the same brush the hero's wires spend.
       rule.Fill(BrushByKey(L"UrBorderStrongBrush", {0x38, 0xFF, 0xFF, 0xFF}));
-      // ScaleX 1 at REST, with the origin at the rule's left edge: the open
-      // animation carries the 0 -> 1 draw-in as keyframe values only, so a
-      // dropped storyboard can never strand a rule half-drawn (the
-      // final-pose-is-local rule wave 2's bubble entrance settled).
+      // ScaleX 1 at REST, with the origin at the rule's left edge. The open
+      // animation follows the from-pose-local rule RunBubbleEntrance settled:
+      // SetStatusStripDrawerOpen writes ScaleX 0 as the local value in the
+      // same turn it Begins the 0 -> 1 draw-in, and the board's Completed
+      // lands 1.0 back — so the rule never renders fully-drawn and then snaps
+      // to 0, and no finished board's HoldEnd owns the property.
       Media::ScaleTransform scale;
       scale.CenterX(0);
       scale.CenterY(0);
@@ -608,10 +610,13 @@ void SetStatusStripDrawerOpen(StatusStripView& v, bool open) {
     anim::Storyboard sb;
     // d1's no-shadow alternative: the drawer opens ABOVE chrome, so it rises
     // kDist8 off the strip over kBaseMs on the standard bezier instead of
-    // casting a shadow. The rest pose (TranslateY 0) stays the LOCAL value
-    // and the animation carries the 8 -> 0 as keyframes — a dropped
-    // storyboard lands the drawer settled, never mid-rise (wave 2's rule).
+    // casting a shadow. FROM-pose local, the rule RunBubbleEntrance settled:
+    // a timeline applies its from-value only when it STARTS, so with the rest
+    // pose local the frame a begun board takes to attach renders the drawer
+    // already settled and then SNAPS it 8 DIP down. The Completed handler
+    // lands TranslateY 0 as the local value and Stops the board.
     if (transform) {
+      transform.TranslateY(urnw::motion::kDist8);
       auto rise = urnw::motion::MakeSplineDouble(
           urnw::motion::kDist8, 0.0, urnw::motion::kBaseMs, 0,
           urnw::motion::kStandardP1, urnw::motion::kStandardP2);
@@ -621,11 +626,15 @@ void SetStatusStripDrawerOpen(StatusStripView& v, bool open) {
       sb.Children().Append(rise);
     }
     // ...and the mini-path ASSEMBLES as the drawer appears: each rule draws
-    // in left -> right at kFastMs, kStaggerMs apart (d5 §4.4).
+    // in left -> right at kFastMs, kStaggerMs apart (d5 §4.4). Same
+    // from-pose-local rule: ScaleX 0 written locally before Begin, 1.0 landed
+    // by Completed — a rule left at its ScaleX 1 rest would render fully
+    // drawn and then flash to 0 as the draw-in reached it.
     int64_t beginMs = 0;
     for (auto const& rule : {parts ? parts->ruleA : shapes::Rectangle{nullptr},
                              parts ? parts->ruleB : shapes::Rectangle{nullptr}}) {
       if (!rule) continue;
+      rule.RenderTransform().as<Media::ScaleTransform>().ScaleX(0.0);
       auto draw = urnw::motion::MakeSplineDouble(0.0, 1.0, urnw::motion::kFastMs,
                                                  beginMs, urnw::motion::kStandardP1,
                                                  urnw::motion::kStandardP2);
@@ -635,6 +644,29 @@ void SetStatusStripDrawerOpen(StatusStripView& v, bool open) {
       sb.Children().Append(draw);
       beginMs = urnw::motion::kStaggerMs;
     }
+    sb.Completed([drawer = v.drawer, transform, parts,
+                  weakSb = winrt::make_weak(sb)](auto const&, auto const&) {
+      // The landing: the open state's WHOLE final pose becomes local values
+      // and the board Stops, so the resting drawer is owned by its locals —
+      // not by a finished board's HoldEnd — and the toggle (which reads
+      // Visibility) and the dismiss fade never meet a held animation value.
+      // A board dropped BEFORE completing would still strand the pose; that
+      // is why Begin stays inside the click handler, on a chain that is
+      // always visible. Runs after any concurrent dismiss began only into
+      // properties that are either held by that fade or moot on a Collapsed
+      // drawer, and the next open rewrites the from-pose anyway. The board
+      // is captured WEAK: a strong capture would cycle
+      // board -> delegate -> board.
+      drawer.Opacity(1.0);
+      if (transform) transform.TranslateY(0.0);
+      if (parts) {
+        if (parts->ruleA)
+          parts->ruleA.RenderTransform().as<Media::ScaleTransform>().ScaleX(1.0);
+        if (parts->ruleB)
+          parts->ruleB.RenderTransform().as<Media::ScaleTransform>().ScaleX(1.0);
+      }
+      if (auto board = weakSb.get()) board.Stop();
+    });
     sb.Begin();
     return;
   }
