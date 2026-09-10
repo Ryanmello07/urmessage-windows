@@ -246,4 +246,90 @@ AppendClusterPlan PlanAppendCluster(demo::MessageRow const* prev,
   return p;
 }
 
+// ---- T8: the sliding window ------------------------------------------------
+
+std::size_t WindowRowCount(ThreadWindow w) { return w.end - w.start; }
+bool WindowActive(std::size_t totalRows) { return kThreadWindowMaxRows < totalRows; }
+bool WindowCovers(ThreadWindow w, std::size_t rowIndex) {
+  return w.start <= rowIndex && rowIndex < w.end;
+}
+
+ThreadWindow InitialWindow(std::size_t totalRows) {
+  ThreadWindow w;
+  w.end = totalRows;
+  w.start = WindowActive(totalRows) ? totalRows - kThreadWindowMaxRows : 0;
+  return w;
+}
+
+ThreadWindow SlideWindowUp(ThreadWindow w) {
+  // The clamp is min(chunk, start): the last slide to the top can be a PARTIAL
+  // chunk (start 24 -> 0), and partial is still a slide, not a stall.
+  const std::size_t added = (std::min)(kThreadWindowChunkRows, w.start);
+  w.start -= added;
+  // The cap trims the FOOT, never the head just loaded: the reader asked for
+  // older rows, and dropping them in the same turn would defeat the slide.
+  if (WindowRowCount(w) > kThreadWindowMaxRows) w.end = w.start + kThreadWindowMaxRows;
+  return w;
+}
+
+ThreadWindow SlideWindowDown(ThreadWindow w, std::size_t totalRows) {
+  const std::size_t room = totalRows - w.end;  // 0 once the window is home
+  const std::size_t added = (std::min)(kThreadWindowChunkRows, room);
+  w.end += added;
+  // Mirror rule of the up-slide: the cap trims the HEAD, never the rows the
+  // reader just scrolled down to.
+  if (WindowRowCount(w) > kThreadWindowMaxRows) w.start = w.end - kThreadWindowMaxRows;
+  return w;
+}
+
+bool NearTopOfLoaded(double offsetDip, double viewportDip) {
+  // <=, not <: the exact boundary counts as near — a trigger that excludes its
+  // own boundary is a fencepost the gate cannot tell from a working one.
+  return offsetDip <= kWindowEdgeViewports * viewportDip;
+}
+bool NearFootOfLoaded(double offsetDip, double scrollableDip, double viewportDip) {
+  return scrollableDip - offsetDip <= kWindowEdgeViewports * viewportDip;
+}
+
+double OffsetAfterSlide(double oldOffsetDip, double anchorBeforeDip, double anchorAfterDip) {
+  return oldOffsetDip + (anchorAfterDip - anchorBeforeDip);
+}
+double ClampScrollOffset(double offsetDip, double scrollableDip) {
+  if (offsetDip < 0.0) return 0.0;
+  return (std::min)(offsetDip, scrollableDip);
+}
+
+AmbientAppendPlan PlanAmbientAppend(ThreadWindow w, std::size_t newRowIndex) {
+  AmbientAppendPlan p;
+  // The arrival renders exactly when the window covers the world's foot: the
+  // new row's index is then the first index BEYOND the window. A window deep
+  // in history (end < newRowIndex) takes no tree change at all.
+  p.render = (w.end == newRowIndex);
+  p.after = w;
+  if (!p.render) return p;
+  p.after.end = newRowIndex + 1;
+  if (WindowRowCount(p.after) > kThreadWindowMaxRows)
+    p.after.start = p.after.end - kThreadWindowMaxRows;  // one row leaves at the head
+  return p;
+}
+
+RefreshWindowPlan PlanRefreshWindow(ThreadWindow w, std::size_t totalAfter,
+                                    bool readerAtFoot) {
+  RefreshWindowPlan p;
+  if (readerAtFoot || !WindowActive(totalAfter)) {
+    // At the foot (or a conversation under the cap): re-base at the newest
+    // rows and pin — exactly what SetThreadConversation did before this wave.
+    p.window = InitialWindow(totalAfter);
+    p.pinToFoot = true;
+    return p;
+  }
+  // Deep in history: keep the reader where they are. start names the same row
+  // it named before the refresh (the world grows at the foot only), so the
+  // window is re-clamped around it rather than re-based at the foot.
+  p.window.start = (std::min)(w.start, totalAfter - kThreadWindowMaxRows);
+  p.window.end = (std::min)(p.window.start + kThreadWindowMaxRows, totalAfter);
+  p.pinToFoot = false;
+  return p;
+}
+
 }  // namespace urmsg::views

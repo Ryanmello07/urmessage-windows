@@ -1938,6 +1938,382 @@ std::vector<std::wstring> CollectDiagnostics() {
         lasts, anchorsOk, synthOk, synthChecked));
   }
 
+  // ---- T8: the sliding window over the backlog ------------------------------
+  //
+  //  A conversation renders at most the 500 most-relevant rows; older history
+  //  materializes in 100-row chunks as the scroller nears an edge of the
+  //  loaded range, and the window slides back down the same way. Every
+  //  decision about it is pure arithmetic in Views/ThreadLayout, which is the
+  //  only reason any of it is assertable here (CollectDiagnostics runs before
+  //  winrt::init_apartment()).
+  //
+  //  WHAT THESE LINES CANNOT SEE, said plainly: the ScrollViewer events that
+  //  feed NearTopOfLoaded/NearFootOfLoaded, the loading shimmer, and the
+  //  one-unit chunk fade all live in ThreadView.cpp behind winrt. What is
+  //  asserted here is the arithmetic they spend — bounds, chunk tiling, seam
+  //  order against the real planner, thresholds, offset deltas, ambient
+  //  bookkeeping, refresh placement. The render half is capture-verified.
+  {
+    namespace dv = urmsg::views;
+    using dv::ThreadWindow;
+
+    // 1. BOUNDS. The window never exceeds 500 rendered, always covers the
+    //    newest row at open, and is DISABLED at or under the cap — [0, total),
+    //    the whole conversation, so a <=500-row render is exactly what it was
+    //    before this wave. Compared against literals/min recomputed HERE, not
+    //    the constants, so a wrong constant fails rather than agreeing with
+    //    itself (the DemoLayoutCheck rule).
+    //
+    //    MUTATION CAUGHT: InitialWindow capping at 400, or WindowActive going
+    //    >= instead of > — the 500 case is the boundary and it is probed on
+    //    BOTH sides (499/500/501), not sampled.
+    const std::size_t kSizes[] = {0, 1, 100, 499, 500, 501, 2024, 4024};
+    bool boundsOk = true;
+    for (std::size_t total : kSizes) {
+      const ThreadWindow w = dv::InitialWindow(total);
+      const std::size_t wantStart = total > 500 ? total - 500 : 0;
+      if (w.end != total || w.start != wantStart) boundsOk = false;
+      if (dv::WindowRowCount(w) != (total > 500 ? 500 : total)) boundsOk = false;
+      if (dv::WindowActive(total) != (total > 500)) boundsOk = false;
+      if (total > 0 && !dv::WindowCovers(w, total - 1)) boundsOk = false;
+      // The oldest row is covered exactly when the window is disabled.
+      if (dv::WindowCovers(w, 0) != (total <= 500 && total > 0)) boundsOk = false;
+    }
+    lines.push_back(std::format(
+        L"  T8 window bounds     : {} — sizes 0/1/100/499/500/501/2024/4024: never "
+        L">500 rendered, newest row covered at open, disabled (covers ALL rows) at "
+        L"or under 500",
+        boundsOk ? L"PASS" : L"FAIL"));
+
+    // 2. SLIDE ARITHMETIC, walked as a whole session over a 2024-row world:
+    //    open at [1524, 2024), slide up until start == 0 (16 slides — 15 full
+    //    chunks and a partial 24), slide back down until end == 2024.
+    //
+    //    THE TILING IS THE ASSERTION, not the counts: every index ENTERS the
+    //    window exactly once going up (no gaps, no dupes against the full
+    //    range [0, 1524)) and the down-slides re-enter exactly the ranges the
+    //    up-slides trimmed, landing back on [1524, 2024) — the window a fresh
+    //    open would draw. A census would not feel two chunks swapped (the
+    //    lesson T4's shape gate paid for), so indices are tracked one by one.
+    //
+    //    MUTATIONS CAUGHT: the up-slide trimming the HEAD instead of the foot
+    //    (the entering index set stops tiling), a 99-row chunk (per-slide
+    //    arithmetic fails), and the endpoints not being idempotent.
+    {
+      constexpr std::size_t kTotal = 2024;
+      std::vector<bool> seenUp(kTotal, false), seenDown(kTotal, false);
+      std::size_t enteredUp = 0, enteredDown = 0, slidesUp = 0, slidesDown = 0;
+      bool arithmeticOk = true, sizeOk = true, monotoneOk = true;
+
+      ThreadWindow w = dv::InitialWindow(kTotal);
+      if (w.start != 1524 || w.end != 2024) arithmeticOk = false;
+      while (w.start > 0) {
+        const ThreadWindow before = w;
+        w = dv::SlideWindowUp(w);
+        ++slidesUp;
+        // The head grows by min(chunk, old start); the foot trims back to the
+        // cap. Both halves are checked against recomputation, per slide.
+        const std::size_t wantAdd = (std::min)(std::size_t{100}, before.start);
+        if (before.start - w.start != wantAdd) arithmeticOk = false;
+        if (w.end != (w.start + 500 < before.end ? w.start + 500 : before.end))
+          arithmeticOk = false;
+        for (std::size_t i = w.start; i < before.start; ++i) {
+          if (seenUp[i]) arithmeticOk = false;  // a dupe entering
+          seenUp[i] = true;
+          ++enteredUp;
+        }
+        if (dv::WindowRowCount(w) != 500) sizeOk = false;
+        if (!(w.start < before.start && w.end <= before.end)) monotoneOk = false;
+        if (256 < slidesUp) break;  // loop guard: a stuck slide must not hang the gate
+      }
+      // The top: start == 0, and sliding again changes NOTHING (idempotent).
+      if (w.start != 0 || dv::SlideWindowUp(w).start != 0 || dv::SlideWindowUp(w).end != w.end)
+        arithmeticOk = false;
+      // Every index below the open window entered exactly once: [0, 1524).
+      std::size_t tiled = 0;
+      for (std::size_t i = 0; i < 1524; ++i)
+        if (seenUp[i]) ++tiled;
+      for (std::size_t i = 1524; i < kTotal; ++i)
+        if (seenUp[i]) arithmeticOk = false;  // rows that never left must not "enter"
+
+      while (w.end < kTotal) {
+        const ThreadWindow before = w;
+        w = dv::SlideWindowDown(w, kTotal);
+        ++slidesDown;
+        const std::size_t wantAdd = (std::min)(std::size_t{100}, kTotal - before.end);
+        if (w.end - before.end != wantAdd) arithmeticOk = false;
+        if (w.start != (before.end + wantAdd > 500 ? before.end + wantAdd - 500 : 0))
+          arithmeticOk = false;
+        for (std::size_t i = before.end; i < w.end; ++i) {
+          if (seenDown[i]) arithmeticOk = false;
+          seenDown[i] = true;
+          ++enteredDown;
+        }
+        if (dv::WindowRowCount(w) != 500) sizeOk = false;
+        if (!(w.end > before.end && w.start >= before.start)) monotoneOk = false;
+        if (256 < slidesDown) break;
+      }
+      // Home: end == total, idempotent, and EXACTLY the window a fresh open
+      // draws — the slide is reversible, which is what makes "the window
+      // re-covers them as it slides home" true rather than aspirational.
+      const ThreadWindow fresh = dv::InitialWindow(kTotal);
+      const bool home = w.start == fresh.start && w.end == fresh.end &&
+                        dv::SlideWindowDown(w, kTotal).end == kTotal;
+      // The down-slides re-entered exactly what the up-slides had trimmed:
+      // seenDown must be the complement of what stayed rendered throughout.
+      std::size_t retiled = 0;
+      for (std::size_t i = 500; i < kTotal; ++i)
+        if (seenDown[i]) ++retiled;
+      const bool ok = arithmeticOk && sizeOk && monotoneOk && slidesUp == 16 &&
+                      slidesDown == 16 && enteredUp == 1524 && tiled == 1524 &&
+                      enteredDown == 1524 && retiled == 1524 && home;
+      lines.push_back(std::format(
+          L"  T8 window slide      : {} — 2024 rows: {} slides up ({} rows entered, "
+          L"{} tiled [0,1524) exactly once), {} slides down ({} re-entered, {} "
+          L"retiled), size 500 throughout {}, monotone {}, home == fresh open {}",
+          ok ? L"PASS" : L"FAIL", slidesUp, enteredUp, tiled, slidesDown, enteredDown,
+          retiled, sizeOk, monotoneOk, home));
+    }
+
+    // 3. THE SEAM, against the REAL planner over a stressed world. The chunk
+    //    entering at each slide must be exactly the next slice of
+    //    Conversation::rows, in order, no gaps, no dupes — and every row's
+    //    planned shape must match the expectation recomputed HERE from the row
+    //    kind, so a slide that built from the wrong indices (off by one at the
+    //    seam) FAILS on shape or order, not on a count. Built LOCALLY through
+    //    the stress generator — never by editing Demo/DemoWorld.cpp, whose
+    //    bytes I10 fingerprints — the same pattern the `demo stress` gate uses.
+    {
+      namespace dd = urmsg::demo;
+      dd::World a = dd::GetWorld();
+      const int added = dd::PrependStressHistory(a, 500);
+      dd::Conversation const& c = a.conversations.front();
+      const std::size_t total = c.rows.size();  // 24 fixture + 500 synthetic
+      const auto plan = dv::PlanThreadRows(c);
+      auto expectedShape = [](dd::MessageRow const& r) {
+        switch (r.kind) {
+          case dd::RowKind::DaySeparator: return dv::ThreadRowShape::DaySeparator;
+          case dd::RowKind::System:
+            return r.permanentRecord ? dv::ThreadRowShape::SystemPermanentRecord
+                                     : dv::ThreadRowShape::SystemLine;
+          case dd::RowKind::Message:
+            return r.outgoing ? dv::ThreadRowShape::OutgoingBubble
+                              : dv::ThreadRowShape::IncomingBubble;
+        }
+        return dv::ThreadRowShape::SystemLine;
+      };
+
+      bool seamOk = (added == 500 && total == 524 && plan.size() == total);
+      std::size_t slices = 0, rowsChecked = 0;
+      // Walk the slides; at each step the window must slice the plan
+      // EXACTLY: plan[window.start + k].rowIndex == window.start + k, in
+      // order, shapes right — the render loop reads the same slice.
+      ThreadWindow w = dv::InitialWindow(total);
+      while (true) {
+        ++slices;
+        for (std::size_t i = w.start; i < w.end && seamOk; ++i) {
+          const auto& p = plan[i];
+          if (p.rowIndex != i) { seamOk = false; break; }
+          if (p.shape != expectedShape(c.rows[i])) { seamOk = false; break; }
+          // Sender header and run position agree with the rules over the FULL
+          // history: the seam row must render with the header/corners a full
+          // rebuild gives it, which is exactly why the plan walks the whole
+          // conversation and the window only slices it.
+          dd::MessageRow const* prev = (i > 0) ? &c.rows[i - 1] : nullptr;
+          dd::MessageRow const* next = (i + 1 < total) ? &c.rows[i + 1] : nullptr;
+          if (c.rows[i].kind == dd::RowKind::Message) {
+            if (p.showSenderHeader != dv::ShowsSenderHeader(prev, c.rows[i], true))
+              seamOk = false;
+            if (p.runPos != dv::RunPosFor(prev, c.rows[i], next)) seamOk = false;
+          }
+          ++rowsChecked;
+        }
+        if (w.start == 0) break;       // the top: this slice started at row 0
+        w = dv::SlideWindowUp(w);
+        if (16 < slices) break;        // loop guard, as above
+      }
+      // And the entering chunk of the ONE slide is the contiguous head slice:
+      // initial [24, 524), one slide up -> [0, 500): entering [0, 24).
+      const ThreadWindow w0 = dv::InitialWindow(total);
+      const ThreadWindow w1 = dv::SlideWindowUp(w0);
+      bool chunkOk = w0.start == 24 && w1.start == 0 && w1.end == 500;
+      for (std::size_t i = w1.start; i < w0.start && chunkOk; ++i)
+        if (!dv::WindowCovers(w1, i) || dv::WindowCovers(w0, i)) chunkOk = false;
+      // The initial window [24,524) renders 500 rows; one slide up renders
+      // [0,500) — 500 more. 1000 rows checked across 2 slices.
+      const bool ok = seamOk && slices == 2 && rowsChecked == 1000 && chunkOk;
+      lines.push_back(std::format(
+          L"  T8 window seam       : {} — stressed 524-row world: {} slices walked, "
+          L"{} rows match the full plan in order and shape (seam header/run-pos "
+          L"from full-history rules); one slide enters contiguous [0,24) {}",
+          ok ? L"PASS" : L"FAIL", slices, rowsChecked, chunkOk ? L"clean" : L"BROKEN"));
+    }
+
+    // 4. THRESHOLDS. The near-edge rule is 1.5 viewports of remaining
+    //    distance, INCLUSIVE — probed at the boundary on both sides rather
+    //    than sampled, the same shape as DemoLayoutCheck's f(t) && !f(t-eps).
+    //
+    //    MUTATION CAUGHT: `<` for `<=` fails the exact-boundary probe; a 2.0
+    //    or 1.0 multiplier fails the mid probes. Zero viewport is probed too:
+    //    it must behave as "only the exact edge", not divide-by-anything.
+    {
+      const double vp = 700.0;
+      const bool topAt = dv::NearTopOfLoaded(1050.0, vp);       // exactly 1.5x
+      const bool topBeyond = !dv::NearTopOfLoaded(1050.1, vp);
+      const bool topInside = dv::NearTopOfLoaded(0.0, vp);
+      const bool footAt = dv::NearFootOfLoaded(18950.0, 20000.0, vp);  // 1050 left
+      const bool footBeyond = !dv::NearFootOfLoaded(18949.9, 20000.0, vp);
+      const bool footInside = dv::NearFootOfLoaded(20000.0, 20000.0, vp);
+      const bool zeroVp = dv::NearTopOfLoaded(0.0, 0.0) && !dv::NearTopOfLoaded(0.1, 0.0) &&
+                          dv::NearFootOfLoaded(5.0, 5.0, 0.0) &&
+                          !dv::NearFootOfLoaded(4.9, 5.0, 0.0);
+      const bool ok = topAt && topBeyond && topInside && footAt && footBeyond &&
+                      footInside && zeroVp && dv::kWindowEdgeViewports == 1.5;
+      lines.push_back(std::format(
+          L"  T8 window threshold  : {} — 1.5 viewports, inclusive: top "
+          L"1050.0/700 {} beyond {} | foot 1050 remaining {} beyond {} | zero "
+          L"viewport {}",
+          ok ? L"PASS" : L"FAIL", topAt, topBeyond, footAt, footBeyond, zeroVp));
+    }
+
+    // 5. OFFSET DELTAS over synthetic extents. The property, stated so a sign
+    //    flip fails it: after the slide, the anchor row sits at the SAME
+    //    viewport position as before — anchorAfter - newOffset ==
+    //    anchorBefore - oldOffset — for BOTH directions of travel (a prepend
+    //    pushes anchors down; a head trim pulls them up). The clamp is walked
+    //    at both ends.
+    //
+    //    MUTATION CAUGHT: subtracting the delta instead of adding it flips the
+    //    invariant on every probe; dropping the clamp fails the negative probe
+    //    (a head trim near the top would ask ScrollViewer for a negative
+    //    offset, which clamps silently — the gate says so out loud instead).
+    {
+      bool offsetOk = true;
+      const double kCases[][3] = {
+          // oldOffset, anchorBefore, anchorAfter
+          {100.0, 120.0, 2120.0},    // prepend ~2000dip above the viewport
+          {2100.0, 2120.0, 120.0},   // the head trim undoing it
+          {0.0, 30.0, 30.0},         // a slide that moved nothing
+          {48.5, 60.25, 3200.75},    // fractional dips, no rounding anywhere
+      };
+      for (auto const& c : kCases) {
+        const double nu = dv::OffsetAfterSlide(c[0], c[1], c[2]);
+        if (std::fabs((c[2] - nu) - (c[1] - c[0])) > 1e-9) offsetOk = false;
+      }
+      const bool clampOk = dv::ClampScrollOffset(-1900.0, 20000.0) == 0.0 &&
+                           dv::ClampScrollOffset(25000.0, 20000.0) == 20000.0 &&
+                           dv::ClampScrollOffset(48.5, 20000.0) == 48.5;
+      // The extent-delta identity for a PURE top insert (nothing trimmed):
+      // the anchor's travel IS the extent's growth, so the two ways of
+      // measuring a prepend agree. The view feeds exactly that: each mutation
+      // (insert, trim) is measured as an EXTENT delta across its own layout
+      // pass — per-row height sums lose UseLayoutRounding's pixel snapping.
+      const bool identity = dv::OffsetAfterSlide(100.0, 120.0, 120.0 + 1985.0) ==
+                            100.0 + (22000.0 - 20015.0);
+      const bool ok = offsetOk && clampOk && identity;
+      lines.push_back(std::format(
+          L"  T8 window offset     : {} — anchor viewport position invariant over "
+          L"{} cases (both directions, fractional), clamp [-, +, inside] {}, "
+          L"extent-delta identity {}",
+          ok ? L"PASS" : L"FAIL", std::size(kCases), clampOk, identity));
+    }
+
+    // 6. AMBIENT ARRIVALS, as bookkeeping. A row arriving at the world's foot
+    //    renders exactly when the window covers the foot; deep in history it
+    //    must NOT materialize (no tree change) and must still be re-covered as
+    //    the window slides home. Walked as a scenario, not probed pointwise:
+    //    three arrivals while deep, then the slide chain home.
+    //
+    //    MUTATION CAUGHT: rendering when deep (after != window, render=true on
+    //    the very first probe), or trimming MORE than the growth at the foot
+    //    (the window shrinks below 500).
+    {
+      bool ambientOk = true;
+      // Deep: window [300,500) of 2024. Arrival at 2024 must change NOTHING.
+      ThreadWindow deep{300, 500};
+      const auto p0 = dv::PlanAmbientAppend(deep, 2024);
+      if (p0.render || p0.after.start != 300 || p0.after.end != 500) ambientOk = false;
+      if (dv::WindowCovers(p0.after, 2024)) ambientOk = false;
+      // At the foot: window [1524,2024). The arrival renders, the window
+      // grows to cover it, and the head trims back to the cap.
+      const auto p1 = dv::PlanAmbientAppend(ThreadWindow{1524, 2024}, 2024);
+      if (!p1.render || p1.after.start != 1525 || p1.after.end != 2025) ambientOk = false;
+      if (!dv::WindowCovers(p1.after, 2024) || dv::WindowCovers(p1.after, 1524))
+        ambientOk = false;
+      if (dv::WindowRowCount(p1.after) != 500) ambientOk = false;
+      // Under the cap there is no window: an arrival renders and nothing
+      // trims — today's small-conversation behaviour, stated as arithmetic.
+      const auto p2 = dv::PlanAmbientAppend(ThreadWindow{0, 24}, 24);
+      if (!p2.render || p2.after.start != 0 || p2.after.end != 25) ambientOk = false;
+      // The scenario: three arrivals while deep, then slide home over the
+      // grown world (2027 rows) — the final window must cover all three.
+      std::size_t total = 2024;
+      ThreadWindow w = deep;
+      for (int k = 0; k < 3; ++k) {
+        const auto p = dv::PlanAmbientAppend(w, total);
+        if (p.render || p.after.start != w.start || p.after.end != w.end) ambientOk = false;
+        w = p.after;
+        ++total;  // the world grew; the window did not
+      }
+      std::size_t slides = 0;
+      while (w.end < total) {
+        w = dv::SlideWindowDown(w, total);
+        if (256 < ++slides) break;
+      }
+      if (!(dv::WindowCovers(w, 2024) && dv::WindowCovers(w, 2025) &&
+            dv::WindowCovers(w, 2026)))
+        ambientOk = false;
+      lines.push_back(std::format(
+          L"  T8 window ambient    : {} — arrival renders exactly when the window "
+          L"covers the foot (deep: no tree change; at foot: grow + head trim to "
+          L"500; under cap: always renders); 3 arrivals while deep re-covered "
+          L"after {} slides home",
+          ambientOk ? L"PASS" : L"FAIL", slides));
+    }
+
+    // 7. REFRESH PLACEMENT. Re-setting the SAME conversation (autoplay's
+    //    delivery-advance path) must not yank a deep reader: the window is
+    //    re-clamped AROUND its start (the world grows at the foot only, so
+    //    start still names the same row), never re-based at the foot, and the
+    //    pin stays off. A reader at the foot gets the pre-window behaviour:
+    //    re-based at the newest rows, pin lands. Under the cap the refresh is
+    //    indistinguishable from before this wave.
+    //
+    //    MUTATION CAUGHT: re-basing a deep refresh at the foot (the first
+    //    probe fails on BOTH fields), or pinToFoot leaking onto the deep path.
+    //    The probe windows are all exactly 500 rows — the only size an ACTIVE
+    //    window can be, since every slide trims back to the cap.
+    {
+      bool refreshOk = true;
+      // Deep, world grew by 2: start 300 still names the same row.
+      const auto r0 = dv::PlanRefreshWindow(ThreadWindow{300, 800}, 2026, false);
+      if (r0.pinToFoot || r0.window.start != 300 || r0.window.end != 800)
+        refreshOk = false;
+      // Deep, window nearly home: clamps around start, caps at 500.
+      const auto r1 = dv::PlanRefreshWindow(ThreadWindow{1424, 1924}, 2026, false);
+      if (r1.pinToFoot || r1.window.start != 1424 || r1.window.end != 1924)
+        refreshOk = false;
+      // At the foot: re-based at the newest rows, pin on.
+      const auto r2 = dv::PlanRefreshWindow(ThreadWindow{1524, 2024}, 2026, true);
+      if (!r2.pinToFoot || r2.window.start != 1526 || r2.window.end != 2026)
+        refreshOk = false;
+      // Under the cap: the whole conversation, pinned — the pre-window path.
+      const auto r3 = dv::PlanRefreshWindow(ThreadWindow{0, 300}, 301, false);
+      if (!r3.pinToFoot || r3.window.start != 0 || r3.window.end != 301)
+        refreshOk = false;
+      // The boundary itself: exactly 500 after the refresh is still under it.
+      const auto r4 = dv::PlanRefreshWindow(ThreadWindow{0, 499}, 500, false);
+      if (!r4.pinToFoot || r4.window.start != 0 || r4.window.end != 500)
+        refreshOk = false;
+      lines.push_back(std::format(
+          L"  T8 window refresh    : {} — same-conversation refresh: deep keeps "
+          L"start and pin off (world +2 rows), near-home clamps at the cap, at "
+          L"foot re-bases + pins, under-cap and exactly-500 are the pre-window "
+          L"path",
+          refreshOk ? L"PASS" : L"FAIL"));
+    }
+  }
+
   // GUARDED, and the guard is not a nicety. CollectDiagnostics() is NOT the
   // --diagnose path: it runs on EVERY launch, before winrt::init_apartment and
   // before WantsDiagnose(), inside the try/catch in wWinMain whose failure path

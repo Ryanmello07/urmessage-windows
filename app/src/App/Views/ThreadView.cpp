@@ -4,17 +4,20 @@
 #include "Views/ThreadView.h"
 
 #include <chrono>
+#include <iterator>  // make_move_iterator, for the slide's born-row splice
 #include <map>
 #include <memory>
 
 #include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
 #include <winrt/Microsoft.UI.Xaml.Media.h>
+#include <winrt/Microsoft.UI.Dispatching.h>  // DispatcherQueueTimer, the T8 load beat
 
 #include "Demo/DemoSwitches.h"
 #include "Demo/ThreadLayout.h"
 #include "Identicon.h"
 #include "Log.h"
+#include "Strings.h"  // Narrow, for the window instrumentation lines
 #include "UrColors.h"
 #include "UrComponents.h"  // urnw::kit::StyleByKey
 #include "UrMotion.h"
@@ -652,7 +655,7 @@ struct ThreadParts {
   StackPanel stack{nullptr};
   std::function<void(std::wstring)> onSelect;
   std::function<void()> onDeselect;
-  std::vector<Button> bubbles;   // for the width walk; ThreadView owns the public list
+  std::vector<ThreadBubble> bubbles;  // the canonical list; ThreadView::bubbles mirrors it
   double columnWidth = 0.0;
 
   // ---- T6: what AppendThreadRow needs and ThreadBubble cannot carry -------
@@ -662,13 +665,19 @@ struct ThreadParts {
   // previous row's DATA has to still be here to be re-asked the question, and
   // the element that owns its cluster has to be reachable to answer it.
   //
-  // EVERY row is recorded, not only the message rows — a day separator or a
-  // system row is a legitimate `prev`, and CarriesDeliveryGlyph returns false
-  // for one, which is exactly the answer that KEEPS an outgoing row's cluster
-  // when a system line lands under it. clusterHost is null for those.
+  // EVERY RENDERED row is recorded, not only the message rows — a day
+  // separator or a system row is a legitimate `prev`, and
+  // CarriesDeliveryGlyph returns false for one, which is exactly the answer
+  // that KEEPS an outgoing row's cluster when a system line lands under it.
+  // clusterHost is null for those. With the T8 window live, "rendered" means
+  // rows[0] is world row window.start — the window's slice, not the whole
+  // conversation.
   struct RenderedRow {
     demo::MessageRow row;
     FrameworkElement clusterHost{nullptr};  // BubbleRow::root; null off a message row
+    // Whether the row occupies a stack child at all — the unlabelled day
+    // separator draws NOTHING, and the T8 trims map rows to children by it.
+    bool drawn = true;
   };
   std::vector<RenderedRow> rows;
   bool group = false;
@@ -703,8 +712,57 @@ struct ThreadParts {
   // when the last decision was made" must not read as "scrolled away" —
   // measuring against the live extent opened the thread ~50dip above the foot
   // at launch, with the newest row half-cut (caught in a capture). Updated
-  // only when a pin lands, so a scrolled-away reader's slack can only grow.
+  // when a pin lands, so a scrolled-away reader's slack can only grow — and by
+  // the T8 window slides, which change WHICH rows the extent covers: after a
+  // slide, "within 48 dip of the foot" must be asked of the loaded extent that
+  // exists NOW, or a reader who travelled home stops being pinned on the next
+  // ambient append (a partial top chunk shrinks the extent ~76 rows below the
+  // stale pinExtent, and scrollable - offset never again fits in 48). A slide
+  // update cannot misread a scrolled-away reader: their offset sits
+  // mid-extent, so scrollable - offset stays far past 48 either way.
   double pinExtent = 0.0;
+
+  // ---- T8: the sliding window over the backlog ------------------------------
+  // The window is a VIEW concern over the full world plan (the pure half lives
+  // in Views/ThreadLayout.h). `conv` re-points at the world's conversation on
+  // every SetThreadConversation: the World is a function-static that outlives
+  // every view, and MutableWorld() only ever appends ROWS, so the conversation
+  // object itself never moves and slides re-read conv->rows FRESH instead of
+  // caching row pointers across appends (a rows.push_back can reallocate).
+  demo::Conversation const* conv = nullptr;
+  std::wstring convId;  // for the same-conversation refresh placement rule
+  ThreadWindow window{};
+  bool windowBusy = false;  // a load beat (marker + chunk fade) is in flight
+
+  // The "loading earlier" marker: a slim overlay pill at the scroller's top
+  // edge (NOT a stack row — it must not touch the extent, or its arrival would
+  // be the very jump the prepend rule forbids). Shown only while a chunk
+  // materializes, kFastMs in/out; never exists with motion off.
+  FrameworkElement earlierMarker{nullptr};
+  anim::Storyboard earlierMarkerStory{nullptr};
+  winrt::Microsoft::UI::Dispatching::DispatcherQueueTimer earlierTimer{nullptr};
+
+  // The one-unit chunk fade. `fadingRows` are mid-fade rows with Opacity 0 as
+  // their LOCAL from-pose: if a rebuild cancels the beat, CancelEarlierLoad
+  // writes their final pose by hand before stopping the board (a Stop leaves
+  // locals alone, which is the stranded-at-0 hazard the from-pose rule exists
+  // to avoid).
+  anim::Storyboard chunkFadeStory{nullptr};
+  std::vector<FrameworkElement> fadingRows;
+
+  // The selection MainWindow last wrote, so a row the window re-covers can be
+  // re-outlined on the way back (SetThreadSelectedMessage is the one writer).
+  std::wstring selectedId;
+
+  // Every public setter takes ThreadView& and re-points this at the CALLER's
+  // instance. The ViewChanged/slide lambdas outlive MakeThread's local v
+  // (returned by value and moved into MainWindow's member), so they cannot
+  // capture it — but they must keep ThreadView::bubbles (fixed contract §4) in
+  // sync with the window for SetThreadSelectedMessage to keep finding rows.
+  // MainWindow assigns thread_ once and never copies it afterwards, so the
+  // pointer is stable from the first SetThreadConversation; nothing
+  // dereferences it before then (no conversation, no scroller events).
+  ThreadView* owner = nullptr;
 };
 
 std::map<void const*, std::shared_ptr<ThreadParts>>& Registry() {
@@ -717,6 +775,11 @@ std::shared_ptr<ThreadParts> Find(FrameworkElement const& root) {
   auto it = Registry().find(winrt::get_abi(root));
   return it == Registry().end() ? nullptr : it->second;
 }
+
+// The T8 trigger (defined with the rest of the window machinery below
+// MakeThread; the scroller's ViewChanged in MakeThread already needs the
+// name).
+void MaybeSlideWindow(std::shared_ptr<ThreadParts> const& parts);
 
 }  // namespace
 
@@ -735,7 +798,18 @@ void ApplyColumnWidth(std::shared_ptr<ThreadParts> const& parts) {
   if (!parts) return;
   const double cap = BubbleMaxWidthDip(parts->columnWidth - kThreadPadDip * 2.0);
   for (auto const& b : parts->bubbles)
-    if (b) b.MaxWidth(cap);
+    if (b.root) b.root.MaxWidth(cap);
+}
+
+// parts->bubbles is the canonical bubble list; ThreadView::bubbles (fixed
+// contract §4) is its mirror, refreshed here after every mutation — the T8
+// slides included, which is the whole reason the canonical list lives in
+// parts: a ViewChanged lambda cannot reach MainWindow's ThreadView. A full
+// assign, not a diff: <= 500 entries of id+Button is noise next to the row
+// build that just ran, and two lists walked in parallel are how a trim drops
+// from one and not the other.
+void SyncPublicBubbles(std::shared_ptr<ThreadParts> const& parts) {
+  if (parts->owner) parts->owner->bubbles = parts->bubbles;
 }
 
 // The day separator: a centred pill, not a rule with text on it. 11px
@@ -1052,6 +1126,38 @@ FrameworkElement MakeThreadEmptyState(std::shared_ptr<ThreadParts> const& parts)
 
   parts->emptyState = column;
   return column;
+}
+
+// The "loading earlier" marker (T8): a slim pill OVERLAY at the scroller's
+// top edge, shown only while a chunk materializes. It is deliberately NOT a
+// stack row — a row would grow the extent, and growing the extent is the very
+// jump the prepend rule forbids. ~31 dip tall (the decision's 24-36 dip row),
+// kFastMs in and out, and it never exists with motion off. The copy is the
+// honest one: earlier history is being materialized, and this build claims
+// nothing more than that (G4).
+FrameworkElement MakeEarlierMarker(std::shared_ptr<ThreadParts> const& parts) {
+  Border pill;
+  pill.Background(BrushByKey(L"UrCardBrush", urnw::colors::kCard));
+  pill.CornerRadius(CornerRadiusHelper::FromUniformRadius(12));
+  pill.Padding(ThicknessHelper::FromLengths(14, 5, 14, 5));
+  pill.HorizontalAlignment(HorizontalAlignment::Center);
+  pill.VerticalAlignment(VerticalAlignment::Top);
+  pill.Margin(ThicknessHelper::FromLengths(0, 6, 0, 0));
+  // A marker must never eat the scroll it announces.
+  pill.IsHitTestVisible(false);
+
+  TextBlock text;
+  text.Text(L"Loading earlier messages");
+  if (auto st = StyleByKey(L"UrCaptionTextStyle")) text.Style(st);
+  text.FontSize(11);
+  text.Foreground(urnw::colors::MutedBrush());
+  pill.Child(text);
+
+  pill.Visibility(Visibility::Collapsed);
+  pill.Opacity(0.0);
+  Automation::AutomationProperties::SetName(pill, L"Loading earlier messages");
+  parts->earlierMarker = pill;
+  return pill;
 }
 
 // ---- the composer (T6, design §9.1) --------------------------------------
@@ -1400,6 +1506,12 @@ ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
   Grid::SetRow(emptyState, 1);
   root.Children().Append(emptyState);
 
+  // The T8 "loading earlier" marker, same row, above the scroller — an
+  // overlay, never a stack row (its own comment carries why).
+  auto earlierMarker = MakeEarlierMarker(parts);
+  Grid::SetRow(earlierMarker, 1);
+  root.Children().Append(earlierMarker);
+
   auto typingRow = MakeTypingIndicator(parts);
   Grid::SetRow(typingRow, 2);
   root.Children().Append(typingRow);
@@ -1463,6 +1575,13 @@ ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
     parts->scroller.ChangeView(nullptr, parts->scroller.ScrollableHeight(), nullptr, true);
   });
 
+  // T8: the window follows the scroller. ViewChanged covers user scrolls AND
+  // the slides' own ChangeViews — the latter are dropped by windowBusy inside
+  // MaybeSlideWindow, so a slide's offset correction cannot retrigger itself.
+  // Under the cap this is a no-op (WindowActive false), so a small
+  // conversation carries one event subscription and nothing else.
+  scroller.ViewChanged([parts](auto const&, auto const&) { MaybeSlideWindow(parts); });
+
   // Design 9.1: a click in empty thread space deselects. A Button handles its
   // own pointer events, so a bubble click does not reach this — and since T6
   // this root also holds the COMPOSER, which is not a Button and is not empty
@@ -1505,22 +1624,499 @@ ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
   return v;
 }
 
+namespace {
+
+// ---- T8: the sliding window, applied to the tree ---------------------------
+// The pure arithmetic lives in Views/ThreadLayout.h (and its --diagnose walk);
+// everything below is the view half: apply ThreadWindow ranges to the stack,
+// diffing minimally — insert the chunk, remove the trimmed, never rebuild the
+// column on a slide.
+
+// One built row of the plan, as data. root is null ONLY for the unlabelled
+// day separator — the SetThreadConversation exception, shared here so a slide
+// cannot draw what an open would not.
+struct BuiltRow {
+  FrameworkElement root{nullptr};
+  FrameworkElement clusterHost{nullptr};
+  ThreadBubble bubble;  // bubble.root null off a message row
+};
+
+// THE ONE BUILDER of a planned row. SetThreadConversation's loop and the
+// window slides both call it: a row the window re-covers is built by the same
+// function a fresh open would use — the incremental==rebuild discipline of T6
+// stated as code structure rather than as a gate comment.
+//
+// The plan walks the FULL history, so a row at the window seam gets the
+// header, the corners and the cluster (CarriesDeliveryGlyph against the row's
+// real world successor) that a full rebuild would give it.
+BuiltRow BuildPlanRow(std::shared_ptr<ThreadParts> const& parts,
+                      demo::Conversation const& c, ThreadRowPlan const& p) {
+  BuiltRow out;
+  demo::MessageRow const& row = c.rows[p.rowIndex];
+  demo::MessageRow const* next =
+      (p.rowIndex + 1 < c.rows.size()) ? &c.rows[p.rowIndex + 1] : nullptr;
+  switch (p.shape) {
+    case ThreadRowShape::DaySeparator: {
+      const std::wstring label = DaySeparatorLabel(row);
+      // An unlabelled separator draws NOTHING rather than an empty pill.
+      if (!label.empty()) out.root = MakeDaySeparator(label);
+      break;
+    }
+    case ThreadRowShape::SystemLine:
+      out.root = MakeSystemLine(winrt::hstring{row.systemText});
+      break;
+    case ThreadRowShape::SystemPermanentRecord:
+      out.root = MakeKeyChangeRecord(winrt::hstring{row.systemText});
+      break;
+    case ThreadRowShape::IncomingBubble:
+    case ThreadRowShape::OutgoingBubble: {
+      // CarriesDeliveryGlyph(row, next), never endsOutgoingRun: the plan field
+      // is direction-only and is FALSE on the shipped world's mid-run Failed
+      // row (Views/ThreadLayout.h carries the case).
+      auto built = MakeBubbleRow(row, parts->group, p.showSenderHeader,
+                                 CarriesDeliveryGlyph(row, next), p.runPos);
+      built.bubble.root.Click([parts, id = row.id](auto const&, auto const&) {
+        if (parts->onSelect) parts->onSelect(id);
+      });
+      out.bubble = built.bubble;
+      out.root = built.root;
+      out.clusterHost = built.root;
+      break;
+    }
+  }
+  return out;
+}
+
+// Remove the FIRST `count` rendered rows from the tree and the bookkeeping.
+// Does NOT measure or touch the scroll offset or parts->window: the caller owns
+// all three (the offset correction is an EXTENT delta, measured across the
+// trim by the caller — UseLayoutRounding makes per-row summation lose the
+// accumulated pixel snapping; MaterializeEarlierChunk carries the measurement).
+// `drawn` maps rows to stack children (an unlabelled separator occupies none).
+void TrimWindowHead(std::shared_ptr<ThreadParts> const& parts, std::size_t count) {
+  if (count == 0 || parts->rows.size() < count) return;
+  std::size_t elems = 0, bubblesGone = 0;
+  for (std::size_t i = 0; i < count; ++i) {
+    if (parts->rows[i].drawn) ++elems;
+    if (parts->rows[i].clusterHost) ++bubblesGone;
+  }
+  auto kids = parts->stack.Children();
+  for (std::size_t i = 0; i < elems; ++i) kids.RemoveAt(0);
+  parts->rows.erase(parts->rows.begin(),
+                    parts->rows.begin() + static_cast<std::ptrdiff_t>(count));
+  parts->bubbles.erase(parts->bubbles.begin(),
+                       parts->bubbles.begin() + static_cast<std::ptrdiff_t>(bubblesGone));
+  SyncPublicBubbles(parts);
+}
+
+// The FOOT mirror: remove the LAST `count` rendered rows. No offset correction
+// is needed here — rows leaving below the viewport do not move content above
+// them — so nothing is returned.
+void TrimWindowFoot(std::shared_ptr<ThreadParts> const& parts, std::size_t count) {
+  if (count == 0 || parts->rows.size() < count) return;
+  const std::size_t base = parts->rows.size() - count;
+  std::size_t elems = 0, bubblesGone = 0;
+  for (std::size_t i = base; i < parts->rows.size(); ++i) {
+    if (parts->rows[i].drawn) ++elems;
+    if (parts->rows[i].clusterHost) ++bubblesGone;
+  }
+  auto kids = parts->stack.Children();
+  for (std::size_t i = 0; i < elems; ++i) kids.RemoveAt(kids.Size() - 1);
+  parts->rows.erase(parts->rows.begin() + static_cast<std::ptrdiff_t>(base),
+                    parts->rows.end());
+  parts->bubbles.erase(parts->bubbles.end() - static_cast<std::ptrdiff_t>(bubblesGone),
+                       parts->bubbles.end());
+  SyncPublicBubbles(parts);
+}
+
+// A row that was selected when it left the tree comes back selected. The id is
+// the one SetThreadSelectedMessage recorded; SetBubbleEdge is the one writer
+// of what that looks like. No match is the common case and costs a walk over
+// at most one chunk.
+void ReapplySelection(std::shared_ptr<ThreadParts> const& parts,
+                      std::vector<ThreadBubble> const& born) {
+  if (parts->selectedId.empty()) return;
+  for (auto const& b : born) {
+    if (b.id != parts->selectedId || !b.root) continue;
+    // Direction from the ALIGNMENT, the same read SetThreadSelectedMessage
+    // makes (ThreadBubble carries no direction field — contract §4).
+    SetBubbleEdge(b.root, b.root.HorizontalAlignment() == HorizontalAlignment::Right,
+                  /*selected=*/true);
+  }
+}
+
+// The chunk's one motion: the WHOLE chunk fades 0 -> 1 at kFastMs as ONE unit
+// — no per-bubble stagger, no rise; history is not arriving, and a bubble
+// entrance would say it was. From-pose local (Opacity 0 written in the same
+// turn the rows were inserted), one storyboard, Completed lands the final pose
+// and Stops — the canonical rule; RunBubbleEntrance carries the why. Completed
+// also ends the load beat (CompleteWindowBeat), so a reader who kept scrolling
+// during the kFastMs gets the next chunk chained without another event.
+void FadeChunkIn(std::shared_ptr<ThreadParts> const& parts,
+                 std::vector<FrameworkElement> const& rows);
+void CompleteWindowBeat(std::shared_ptr<ThreadParts> const& parts);
+void MaybeSlideWindow(std::shared_ptr<ThreadParts> const& parts);
+void StartEarlierLoad(std::shared_ptr<ThreadParts> const& parts);
+
+void FadeChunkIn(std::shared_ptr<ThreadParts> const& parts,
+                 std::vector<FrameworkElement> const& rows) {
+  parts->fadingRows = rows;
+  if (rows.empty() || !urnw::motion::ShouldAnimate() || !ChainVisible(rows.front())) {
+    // Motion GONE, not shortened (or nothing to fade, or a tree that cannot
+    // play a board): the final pose, immediately. The caller ends the beat
+    // itself — there is no Completed coming.
+    for (auto const& el : rows)
+      if (el) el.Opacity(1.0);
+    parts->fadingRows.clear();
+    return;
+  }
+  for (auto const& el : rows) el.Opacity(0.0);
+  anim::Storyboard sb;
+  for (auto const& el : rows) {
+    auto a = urnw::motion::MakeSplineDouble(0.0, 1.0, urnw::motion::kFastMs, 0,
+                                            urnw::motion::kStandardP1,
+                                            urnw::motion::kStandardP2);
+    anim::Storyboard::SetTarget(a, el);
+    anim::Storyboard::SetTargetProperty(a, L"Opacity");
+    sb.Children().Append(a);
+  }
+  sb.Completed([parts, weakSb = winrt::make_weak(sb)](auto const&, auto const&) {
+    for (auto const& el : parts->fadingRows)
+      if (el) el.Opacity(1.0);
+    parts->fadingRows.clear();
+    if (auto board = weakSb.get()) board.Stop();
+    parts->chunkFadeStory = nullptr;
+    CompleteWindowBeat(parts);
+  });
+  parts->chunkFadeStory = sb;
+  sb.Begin();
+}
+
+// The marker's show/hide. kFastMs BOTH ways — the decision fixes one beat for
+// in and out; the marker is not a dismissal, so the exits-run-faster default
+// does not apply to it. Instant both ways with motion off.
+void SetEarlierMarkerVisible(std::shared_ptr<ThreadParts> const& parts, bool on) {
+  if (!parts->earlierMarker) return;
+  if (parts->earlierMarkerStory) {
+    parts->earlierMarkerStory.Stop();
+    parts->earlierMarkerStory = nullptr;
+  }
+  if (!urnw::motion::ShouldAnimate()) {
+    parts->earlierMarker.Opacity(on ? 1.0 : 0.0);
+    parts->earlierMarker.Visibility(on ? Visibility::Visible : Visibility::Collapsed);
+    return;
+  }
+  anim::Storyboard sb;
+  auto a = on ? urnw::motion::MakeSplineDouble(0.0, 1.0, urnw::motion::kFastMs, 0,
+                                               urnw::motion::kStandardP1,
+                                               urnw::motion::kStandardP2)
+              : urnw::motion::MakeSplineDouble(1.0, 0.0, urnw::motion::kFastMs, 0,
+                                               urnw::motion::kStandardP1,
+                                               urnw::motion::kStandardP2);
+  anim::Storyboard::SetTarget(a, parts->earlierMarker);
+  anim::Storyboard::SetTargetProperty(a, L"Opacity");
+  sb.Children().Append(a);
+  sb.Completed([parts, on, weakSb = winrt::make_weak(sb)](auto const&, auto const&) {
+    if (!on) parts->earlierMarker.Visibility(Visibility::Collapsed);
+    parts->earlierMarker.Opacity(on ? 1.0 : 0.0);
+    if (auto board = weakSb.get()) board.Stop();
+    if (parts->earlierMarkerStory) parts->earlierMarkerStory = nullptr;
+  });
+  // From-pose local, written BEFORE the Visibility flip on the way in — the
+  // SetSearchEmptyVisible precedent, so no frame renders the marker fully
+  // opaque first.
+  parts->earlierMarker.Opacity(on ? 0.0 : 1.0);
+  if (on) parts->earlierMarker.Visibility(Visibility::Visible);
+  parts->earlierMarkerStory = sb;
+  sb.Begin();
+}
+
+// A rebuild retires any load beat mid-flight: the timer, the marker, and a
+// chunk fade whose rows are about to leave the tree.
+void CancelEarlierLoad(std::shared_ptr<ThreadParts> const& parts) {
+  if (parts->earlierTimer) {
+    parts->earlierTimer.Stop();
+    parts->earlierTimer = nullptr;
+  }
+  if (parts->earlierMarkerStory) {
+    parts->earlierMarkerStory.Stop();
+    parts->earlierMarkerStory = nullptr;
+  }
+  if (parts->earlierMarker) {
+    parts->earlierMarker.Visibility(Visibility::Collapsed);
+    parts->earlierMarker.Opacity(0.0);
+  }
+  // Mid-fade rows sit at local Opacity 0 (the from-pose): land them by hand
+  // BEFORE stopping the board — a Stop leaves locals alone, which is the
+  // stranded-at-0 hazard the from-pose rule exists to avoid.
+  for (auto const& el : parts->fadingRows)
+    if (el) el.Opacity(1.0);
+  parts->fadingRows.clear();
+  if (parts->chunkFadeStory) {
+    parts->chunkFadeStory.Stop();
+    parts->chunkFadeStory = nullptr;
+  }
+  parts->windowBusy = false;
+}
+
+// The prepend itself: one chunk OLDER inserted above, the foot trimmed back to
+// the cap, the viewport preserved exactly — the reader's content does not move.
+// The correction measures the EXTENT before/after the insert, never per-row
+// heights: UseLayoutRounding snaps each arranged row to the physical pixel
+// grid, so a sum of DesiredSize/ActualHeight loses the accumulated rounding
+// (measured on this surface: 39.2 dip lost over a 100-row chunk at 125% DPI —
+// caught by the A/B capture as a one-row drift). The extent delta includes it.
+void MaterializeEarlierChunk(std::shared_ptr<ThreadParts> const& parts) {
+  parts->earlierTimer = nullptr;  // one-shot; it already fired
+  // A rebuild may have landed during the beat: re-check before touching
+  // anything (the timer was one-shot and the beat is still marked busy).
+  if (!parts->conv || parts->window.start == 0) {
+    SetEarlierMarkerVisible(parts, false);
+    CompleteWindowBeat(parts);
+    return;
+  }
+  const auto buildStart = std::chrono::steady_clock::now();
+  const std::vector<ThreadRowPlan> plan = PlanThreadRows(*parts->conv);
+  const double planMs =
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - buildStart)
+          .count();
+
+  const ThreadWindow before = parts->window;
+  const ThreadWindow after = SlideWindowUp(before);
+  if (after.start == before.start && after.end == before.end) {
+    SetEarlierMarkerVisible(parts, false);
+    CompleteWindowBeat(parts);
+    return;
+  }
+  const std::size_t added = before.start - after.start;
+  const std::size_t trimmed = before.end - after.end;
+  const double offsetBefore = parts->scroller.VerticalOffset();
+  // Clean layout at entry, so this is the true pre-insert extent.
+  const double extentBefore = parts->scroller.ExtentHeight();
+
+  // Insert [after.start, before.start) ABOVE, oldest first. insertPos counts
+  // DRAWN rows only — an unlabelled separator occupies no stack child.
+  std::vector<FrameworkElement> born;
+  born.reserve(added);
+  std::vector<ThreadBubble> bornBubbles;
+  std::vector<ThreadParts::RenderedRow> bornRows;
+  bornRows.reserve(added);
+  uint32_t insertPos = 0;
+  for (std::size_t i = after.start; i < before.start; ++i) {
+    BuiltRow b = BuildPlanRow(parts, *parts->conv, plan[i]);
+    if (b.root) {
+      parts->stack.Children().InsertAt(insertPos, b.root);
+      ++insertPos;
+      born.push_back(b.root);
+    }
+    if (b.bubble.root) bornBubbles.push_back(b.bubble);
+    bornRows.push_back(
+        ThreadParts::RenderedRow{parts->conv->rows[i], b.clusterHost, b.root != nullptr});
+  }
+  parts->rows.insert(parts->rows.begin(),
+                     std::make_move_iterator(bornRows.begin()),
+                     std::make_move_iterator(bornRows.end()));
+  parts->bubbles.insert(parts->bubbles.begin(), bornBubbles.begin(), bornBubbles.end());
+  parts->window = after;
+  SyncPublicBubbles(parts);
+
+  // The 68% cap BEFORE the measure: MakeBubbleRow builds with the unmeasured
+  // 640 DIP fallback, and a long body wraps differently at the real cap than
+  // at 640 — measured at the fallback and capped after, the inserted extent
+  // would come out short by exactly the re-wrap. (Caught in the A/B capture.)
+  ApplyColumnWidth(parts);
+  parts->scroller.UpdateLayout();
+  // A prepend moves every existing row down by exactly the inserted extent, so
+  // OffsetAfterSlide gets the anchor pair 0 -> addedExtent — the same pure
+  // arithmetic the gate walks.
+  const double addedExtent = parts->scroller.ExtentHeight() - extentBefore;
+  if (trimmed) TrimWindowFoot(parts, trimmed);
+  parts->scroller.UpdateLayout();
+  parts->pinExtent = parts->scroller.ScrollableHeight();  // the T8 second-writer rule
+  parts->scroller.ChangeView(
+      nullptr,
+      ClampScrollOffset(OffsetAfterSlide(offsetBefore, 0.0, addedExtent), parts->pinExtent),
+      nullptr, true);
+  ReapplySelection(parts, bornBubbles);
+  FadeChunkIn(parts, born);
+  SetEarlierMarkerVisible(parts, false);
+  urnw::LogInfo(
+      "thread: window slide [{},{}) -> [{},{}) of {}: plan {:.2f} ms, {} rows parented in {:.2f} ms",
+      before.start, before.end, after.start, after.end, parts->conv->rows.size(), planMs,
+      added,
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - buildStart)
+          .count());
+  if (!parts->chunkFadeStory) CompleteWindowBeat(parts);  // the instant path
+}
+
+// The foot mirror: one chunk NEWER appended at the loaded foot, the head
+// trimmed back to the cap, same one-unit fade, and NO marker — nothing is
+// being loaded; the world already held these rows and the window is simply
+// re-covering them on the way home.
+void SlideWindowDownInView(std::shared_ptr<ThreadParts> const& parts) {
+  parts->windowBusy = true;
+  const auto buildStart = std::chrono::steady_clock::now();
+  const std::vector<ThreadRowPlan> plan = PlanThreadRows(*parts->conv);
+  const double planMs =
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - buildStart)
+          .count();
+
+  const ThreadWindow before = parts->window;
+  const ThreadWindow after = SlideWindowDown(before, parts->conv->rows.size());
+  if (after.end == before.end) {  // defensive: the trigger guards this
+    CompleteWindowBeat(parts);
+    return;
+  }
+  const std::size_t added = after.end - before.end;
+  const std::size_t trimmed = after.start - before.start;
+  const double offsetBefore = parts->scroller.VerticalOffset();
+  // The W9 question, asked BEFORE the mutation: at the foot of the loaded
+  // range when the slide began. The stack.SizeChanged pin fires during the
+  // UpdateLayout below and the ChangeView here OVERWRITES it — same turn, both
+  // silent, last writer wins — so the slide asks the pure decision itself
+  // rather than racing the handler.
+  const bool pinToFoot =
+      ShouldPinToBottom(parts->pinArmed, offsetBefore, parts->pinExtent);
+
+  // Head trim FIRST, and measured by EXTENT delta (layout rounding — see
+  // MaterializeEarlierChunk): the trim pulls every surviving row UP by exactly
+  // what the extent shrinks.
+  const double extentBefore = parts->scroller.ExtentHeight();  // clean at entry
+  if (trimmed) TrimWindowHead(parts, trimmed);
+  parts->scroller.UpdateLayout();
+  const double removedExtent = extentBefore - parts->scroller.ExtentHeight();
+
+  std::vector<FrameworkElement> born;
+  born.reserve(added);
+  std::vector<ThreadBubble> bornBubbles;
+  for (std::size_t i = before.end; i < after.end; ++i) {
+    BuiltRow b = BuildPlanRow(parts, *parts->conv, plan[i]);
+    if (b.root) {
+      parts->stack.Children().Append(b.root);
+      born.push_back(b.root);
+    }
+    if (b.bubble.root) bornBubbles.push_back(b.bubble);
+    parts->rows.push_back(
+        ThreadParts::RenderedRow{parts->conv->rows[i], b.clusterHost, b.root != nullptr});
+  }
+  parts->bubbles.insert(parts->bubbles.end(), bornBubbles.begin(), bornBubbles.end());
+  parts->window = after;
+  SyncPublicBubbles(parts);
+  ApplyColumnWidth(parts);
+  parts->scroller.UpdateLayout();
+  parts->pinExtent = parts->scroller.ScrollableHeight();  // the T8 second-writer rule
+  // A reader within 48 dip of the foot is AT the foot — the pin carries them
+  // to the new foot, exactly as an ambient append would. Anyone else keeps
+  // their content: the offset follows the head trim's delta.
+  parts->scroller.ChangeView(
+      nullptr,
+      pinToFoot ? parts->pinExtent
+                : ClampScrollOffset(OffsetAfterSlide(offsetBefore, removedExtent, 0.0),
+                                    parts->pinExtent),
+      nullptr, true);
+  ReapplySelection(parts, bornBubbles);
+  FadeChunkIn(parts, born);
+  urnw::LogInfo(
+      "thread: window slide [{},{}) -> [{},{}) of {}: plan {:.2f} ms, {} rows parented in {:.2f} ms",
+      before.start, before.end, after.start, after.end, parts->conv->rows.size(), planMs,
+      added,
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - buildStart)
+          .count());
+  if (!parts->chunkFadeStory) CompleteWindowBeat(parts);  // the instant path
+}
+
+void CompleteWindowBeat(std::shared_ptr<ThreadParts> const& parts) {
+  parts->windowBusy = false;
+  // Scroll events during the beat were dropped on windowBusy; re-evaluate once
+  // so a reader still parked at an edge gets the next chunk without having to
+  // nudge the scroller again.
+  MaybeSlideWindow(parts);
+}
+
+// The trigger. Fires on the scroller's ViewChanged (user scrolls AND the
+// slides' own ChangeViews — the latter are dropped by windowBusy), and once
+// from each beat's completion. Under the cap WindowActive is false and the
+// whole window is a no-op: small conversations carry one event subscription
+// and nothing else.
+void MaybeSlideWindow(std::shared_ptr<ThreadParts> const& parts) {
+  if (parts->windowBusy || !parts->conv || !parts->scroller) return;
+  const std::size_t total = parts->conv->rows.size();
+  if (!WindowActive(total)) return;
+  const double offset = parts->scroller.VerticalOffset();
+  const double viewport = parts->scroller.ViewportHeight();
+  if (0 < parts->window.start && NearTopOfLoaded(offset, viewport)) {
+    StartEarlierLoad(parts);
+  } else if (parts->window.end < total &&
+             NearFootOfLoaded(offset, parts->scroller.ScrollableHeight(), viewport)) {
+    SlideWindowDownInView(parts);
+  }
+}
+
+// The load beat: the marker fades in (kFastMs), holds one beat so the load is
+// SEEN to have happened — the demo's fetch is same-turn, so without the hold
+// the marker would never render — then the chunk materializes. With motion
+// off there is no marker and no fade: the chunk is simply there, this turn.
+void StartEarlierLoad(std::shared_ptr<ThreadParts> const& parts) {
+  parts->windowBusy = true;
+  if (!urnw::motion::ShouldAnimate()) {
+    MaterializeEarlierChunk(parts);
+    return;
+  }
+  SetEarlierMarkerVisible(parts, true);
+  // 2 x kFastMs: one to finish fading in, one to be read. IsRepeating(false),
+  // the DemoAutoplayLoop rule: a DispatcherQueueTimer REPEATS by default, and
+  // a repeating beat would keep sliding the window up on its own.
+  parts->earlierTimer =
+      winrt::Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread().CreateTimer();
+  parts->earlierTimer.IsRepeating(false);
+  parts->earlierTimer.Interval(urnw::motion::Ms(2 * urnw::motion::kFastMs));
+  parts->earlierTimer.Tick(
+      [parts](auto const&, auto const&) { MaterializeEarlierChunk(parts); });
+  parts->earlierTimer.Start();
+}
+
+}  // namespace
+
 void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
   auto parts = Find(v.root);
   if (!parts) return;
+  parts->owner = &v;
+
+  // A rebuild retires any load beat mid-flight: the timer, the marker, and a
+  // chunk fade whose rows are about to leave the tree.
+  CancelEarlierLoad(parts);
 
   // The two timings the stress harness (--demo-stress=N) exists to read:
-  // what the pure PLAN costs and what parenting the whole backlog costs, per
-  // row count. Log-only, on every open/switch/refresh, and deliberately kept
-  // after the measurement is no longer news: the windowing wave that follows
-  // reads the same lines to prove its own improvement. Two steady_clock reads
-  // per build are noise against the build itself.
+  // what the pure PLAN costs and what parenting the backlog costs, per row
+  // count. Log-only, on every open/switch/refresh. The windowing wave (T8)
+  // reads the same lines: with the window live, "backlog parented" is the
+  // window's size, not the world's.
   const auto buildStart = std::chrono::steady_clock::now();
+
+  // T8: where this set lands the window. A fresh open or a conversation switch
+  // lands at the foot. Re-setting the SAME conversation is autoplay's
+  // delivery-advance path (RefreshOpenThread), and PlanRefreshWindow decides:
+  // a reader at the foot re-bases and pins — the pre-window behaviour, kept —
+  // and a reader deep in history keeps their window, so the refresh cannot
+  // yank them (design 9.2, carried across a rebuild).
+  const std::size_t total = c.rows.size();
+  RefreshWindowPlan placement{InitialWindow(total), true};
+  double keepOffset = -1.0;  // >= 0: preserve the reader's exact position
+  if (parts->convId == c.id && WindowActive(total) && parts->window.end != 0) {
+    placement = PlanRefreshWindow(
+        parts->window, total,
+        ShouldPinToBottom(parts->pinArmed, parts->scroller.VerticalOffset(),
+                          parts->pinExtent));
+    if (!placement.pinToFoot) keepOffset = parts->scroller.VerticalOffset();
+  }
 
   parts->stack.Children().Clear();
   parts->bubbles.clear();
   parts->rows.clear();
   v.bubbles.clear();
+  parts->conv = &c;
+  parts->convId = c.id;
+  parts->window = placement.window;
 
   const bool group = (c.kind == demo::ConversationKind::Group);
   // Remembered because AppendThreadRow has no Conversation to ask later, and a
@@ -1553,45 +2149,26 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
         kThreadPadDip + (group ? kThreadGutterDip : 0.0), 0, 0, 6));
 
   // The builder renders the PLAN and chooses no SHAPE of its own. PlanThreadRows
-  // lives in Views/ThreadLayout.h, which is pure C++, so every branch of this
-  // switch is reachable from --diagnose - a builder that classified rows inline
+  // lives in Views/ThreadLayout.h, which is pure C++, so every branch of the
+  // build is reachable from --diagnose - a builder that classified rows inline
   // could only ever be checked by looking at a screenshot.
   //
-  // NOT literally one element per plan entry, and the exception is deliberate:
-  // a DaySeparator whose label is empty draws NOTHING rather than an empty pill
-  // (see the case below). That is the only place the count of children can be
-  // less than the count of plan entries; no branch here ever draws MORE than
-  // one, and no branch reorders or invents a row.
+  // The loop renders the WINDOW'S SLICE of the full plan, [window.start,
+  // window.end). At or under the cap the window IS the whole conversation and
+  // this builds exactly what it did before T8; beyond it, the slice renders the
+  // newest 500 rows, and the plan still walks the full history so the seam row
+  // gets the sender header, corners and cluster a full rebuild would give it
+  // (`T8 window seam` asserts that agreement). BuildPlanRow is the one builder
+  // — the slides share it, so a row the window re-covers cannot drift from a
+  // fresh open.
   //
-  // The plan carries the SHAPE ONLY. The bubble's own trim still comes from the
-  // per-row rules in Demo/ThreadLayout.h. The two now AGREE about what a run
-  // is, and that agreement is enforced rather than assumed:
-  //
-  //   ShowsSenderHeader   - a run is the same SENDER (it compares senderKey),
-  //                         so Mira then Tobias is two runs and Tobias gets
-  //                         his name. Spec C §5.2: in a group the reader has
-  //                         to know WHO is speaking.
-  //   showSenderHeader    - delegates to exactly that function (fix round 1).
-  //                         It used to be computed by DIRECTION, which named
-  //                         only the first speaker of an incoming stretch and
-  //                         disagreed on 5 of the shipped world's 60 message
-  //                         rows.
-  //
-  // So p.showSenderHeader is now SAFE for T5 to use, and `T4 sender headers`
-  // in --diagnose is the gate that keeps it that way: it compares the plan
-  // against the rule over every message row and FAILS at "rule 20 vs plan 15,
-  // 5 disagree" the moment anyone re-inlines a direction rule.
-  //
-  // endsOutgoingRun is the field that is still direction-only, and it is NOT a
-  // substitute for CarriesDeliveryGlyph - see Views/ThreadLayout.h.
-  //
-  // bubbleCount is known BEFORE the loop because design d2 §8.2's open stagger
-  // is a function of a bubble row's index among bubble rows AND the total —
-  // only the last min(kMaxStaggerSteps, count) animate.
+  // bubbleCount is the count the OPEN STAGGER sees (design d2 §8.2): the
+  // window's bubble rows — only the last min(kMaxStaggerSteps, count) animate,
+  // which is the visible foot either way.
   std::size_t bubbleCount = 0;
-  for (auto const& r : c.rows)
-    if (r.kind == demo::RowKind::Message) ++bubbleCount;
-  // Hoisted out of the range-for so the plan's own cost is measurable apart
+  for (std::size_t i = parts->window.start; i < parts->window.end; ++i)
+    if (c.rows[i].kind == demo::RowKind::Message) ++bubbleCount;
+  // Hoisted out of the loop so the plan's own cost is measurable apart
   // from the element build that consumes it (the stress-harness log lines at
   // the foot of this function).
   const auto planStart = std::chrono::steady_clock::now();
@@ -1600,80 +2177,42 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - planStart)
           .count();
   std::size_t bubbleIndex = 0;
-  for (auto const& p : rowPlan) {
-    demo::MessageRow const& row = c.rows[p.rowIndex];
-    demo::MessageRow const* next =
-        (p.rowIndex + 1 < c.rows.size()) ? &c.rows[p.rowIndex + 1] : nullptr;
-    // The element that would own this row's delivery cluster, for the append
-    // path to re-decide against later. Null on every non-bubble row.
-    FrameworkElement clusterHost{nullptr};
-
-    switch (p.shape) {
-      case ThreadRowShape::DaySeparator: {
-        const std::wstring label = DaySeparatorLabel(row);
-        // An unlabelled separator draws NOTHING rather than an empty pill.
-        if (!label.empty()) parts->stack.Children().Append(MakeDaySeparator(label));
-        break;
-      }
-      case ThreadRowShape::SystemLine:
-        parts->stack.Children().Append(MakeSystemLine(winrt::hstring{row.systemText}));
-        break;
-      case ThreadRowShape::SystemPermanentRecord:
-        parts->stack.Children().Append(MakeKeyChangeRecord(winrt::hstring{row.systemText}));
-        break;
-      case ThreadRowShape::IncomingBubble:
-      case ThreadRowShape::OutgoingBubble: {
-        // p.showSenderHeader, because T4's planner DELEGATES that field to
-        // ShowsSenderHeader() and `T4 sender headers` gates the two staying
-        // equal over every message row.
-        //
-        // CarriesDeliveryGlyph(row, next) for the cluster, because the plan has
-        // no field that means it. endsOutgoingRun is direction-only and is FALSE
-        // on DemoWorld.cpp:277 - the 12:09 "Attaching the rail measurements now."
-        // row, which is Failed and is followed at :279 by another outgoing row.
-        // Gating the cluster on that field deletes the one delivery state this
-        // surface must never swallow.
-        auto built = MakeBubbleRow(row, group, p.showSenderHeader,
-                                   CarriesDeliveryGlyph(row, next), p.runPos);
-        built.bubble.root.Click([parts, id = row.id](auto const&, auto const&) {
-          if (parts->onSelect) parts->onSelect(id);
-        });
-        parts->bubbles.push_back(built.bubble.root);
-        v.bubbles.push_back(built.bubble);
-        parts->stack.Children().Append(built.root);
-        clusterHost = built.root;
-        // design d2 §8.2: on OPEN only the visible foot animates — the last
-        // min(kMaxStaggerSteps, count) bubble rows, kStaggerMs apart, newest
-        // last; rows above the fold return -1 and are not animated at all.
-        // RenderTransform/Opacity do not affect layout, so the bottom-pin
-        // stack.SizeChanged handler is not re-triggered (no interaction with
-        // the W9 do-not-yank scroll work). Begun synchronously HERE, not on a
-        // Loaded hook: every path that reaches this build is already
-        // post-layout on a realized tree — the initial open comes through
-        // DrainDeepLink (the content root's first SizeChanged), switches
-        // through a row click, refreshes through the autoplay callback — so
-        // the board always plays, and RunBubbleEntrance's Completed landing
-        // writes the final pose back. With the from-pose local, a foot row's
-        // stagger BeginTime shows it mid-rise rather than fully-rendered.
+  for (std::size_t i = parts->window.start; i < parts->window.end; ++i) {
+    auto const& p = rowPlan[i];
+    const BuiltRow built = BuildPlanRow(parts, c, p);
+    if (built.root) parts->stack.Children().Append(built.root);
+    if (built.bubble.root) {
+      parts->bubbles.push_back(built.bubble);
+      // design d2 §8.2: on OPEN only the visible foot animates — the last
+      // min(kMaxStaggerSteps, count) bubble rows, kStaggerMs apart, newest
+      // last. Begun synchronously HERE, not on a Loaded hook: every path that
+      // reaches this build is already post-layout on a realized tree, so the
+      // board always plays, and RunBubbleEntrance's Completed landing writes
+      // the final pose back. SKIPPED on a position-preserving refresh
+      // (keepOffset >= 0): the reader is deep in history and an entrance they
+      // cannot see is noise — the refresh's only change is a delivery reading
+      // at the foot.
+      if (keepOffset < 0.0) {
         const int64_t stagger = OpenStaggerBeginMs(bubbleIndex, bubbleCount);
-        if (0 <= stagger) RunBubbleEntrance(built.root, row.outgoing, stagger);
-        ++bubbleIndex;
-        break;
+        if (0 <= stagger)
+          RunBubbleEntrance(built.root, c.rows[p.rowIndex].outgoing, stagger);
       }
+      ++bubbleIndex;
     }
 
-    // EVERY row, including the unlabelled separator that drew nothing: the
-    // append path asks CarriesDeliveryGlyph() about the row IMMEDIATELY above
-    // the one it is adding, and skipping a row here would hand it the wrong
-    // one. That would be invisible except in the one case it matters — an
-    // outgoing bubble under a system line — which is precisely the case a
-    // "message rows only" list gets wrong.
-    parts->rows.push_back(ThreadParts::RenderedRow{row, clusterHost});
+    // EVERY rendered row, including the unlabelled separator that drew
+    // nothing: the append path asks CarriesDeliveryGlyph() about the row
+    // IMMEDIATELY above the one it is adding, and the T8 trims map rows to
+    // stack children by `drawn`. Skipping a row here would hand both the
+    // wrong one.
+    parts->rows.push_back(
+        ThreadParts::RenderedRow{c.rows[i], built.clusterHost, built.root != nullptr});
   }
+  SyncPublicBubbles(parts);
 
   urnw::LogInfo(
-      "thread: plan {} rows in {:.2f} ms; backlog parented ({} bubbles) in {:.2f} ms",
-      c.rows.size(), planMs, bubbleIndex,
+      "thread: plan {} rows in {:.2f} ms; backlog parented ({} bubbles, window [{},{})) in {:.2f} ms",
+      c.rows.size(), planMs, bubbleIndex, parts->window.start, parts->window.end,
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - buildStart)
           .count());
 
@@ -1708,11 +2247,23 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
   // next stack.SizeChanged measures the reader against THIS extent
   // (pinExtent's rule, stated on the member), not against a stale one from
   // before the rebuild - which on a conversation switch would be a different
-  // thread's extent entirely. On the constructor path ScrollableHeight is 0
-  // and both writes are as inert as the ChangeView below them.
+  // thread's extent entirely. The position-preserving refresh (T8) also lands
+  // here: it is not a jump, but it re-based the loaded extent, so pinExtent
+  // follows it for the same reason. On the constructor path ScrollableHeight
+  // is 0 and both writes are as inert as the ChangeView below them.
   parts->pinArmed = true;
   parts->pinExtent = parts->scroller.ScrollableHeight();
-  parts->scroller.ChangeView(nullptr, parts->scroller.ScrollableHeight(), nullptr, true);
+  if (keepOffset < 0.0) {
+    parts->scroller.ChangeView(nullptr, parts->scroller.ScrollableHeight(), nullptr, true);
+  } else {
+    // The position-preserving refresh (T8): the same window slice re-rendered
+    // with the same rows, so the extent is the same and the reader's offset is
+    // still valid — restore it, clamped, instead of jumping to the foot. This
+    // is the difference between autoplay's delivery advance and a yank.
+    parts->scroller.ChangeView(
+        nullptr, ClampScrollOffset(keepOffset, parts->scroller.ScrollableHeight()), nullptr,
+        true);
+  }
 }
 
 // Contract §4. Selection is a PROPERTY WRITE, never a synthesized click: the
@@ -1724,6 +2275,9 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
 // v.bubbles is the contract's own list, so this reads no private state and needs
 // no registry lookup — which is also why it works on a ThreadView copy.
 void SetThreadSelectedMessage(ThreadView& v, std::wstring const& id) {
+  // The one writer of parts->selectedId: the T8 slides re-apply it to a row
+  // the window re-covers, so the outline survives a trim-and-return.
+  if (auto parts = Find(v.root)) parts->selectedId = id;
   std::vector<std::wstring> ids;
   ids.reserve(v.bubbles.size());
   for (auto const& b : v.bubbles) ids.push_back(b.id);
@@ -1874,6 +2428,25 @@ void SetThreadTyping(ThreadView& v, bool typing) {
 void AppendThreadRow(ThreadView& v, demo::MessageRow const& row) {
   auto parts = Find(v.root);
   if (!parts || !parts->stack) return;
+  parts->owner = &v;
+
+  // T8: whether the arrival RENDERS is a window question first. The caller
+  // pushes the row into the world BEFORE calling (MainWindow.xaml.cpp — "any
+  // later rebuild still has it"), so its index is rows.size() - 1, and
+  // PlanAmbientAppend renders it exactly when the window covers the foot.
+  // Deep in history: NO tree change — no yank, nothing materialized below the
+  // fold. The row is a world row; the window re-covers it on the slide home.
+  AmbientAppendPlan ap{true, parts->window};
+  if (parts->conv) {
+    ap = PlanAmbientAppend(parts->window, parts->conv->rows.size() - 1);
+    if (!ap.render) {
+      urnw::LogInfo(
+          "thread: ambient row {} deferred — window [{},{}) of {} does not cover it",
+          urnw::Narrow(row.id), parts->window.start, parts->window.end,
+          parts->conv->rows.size());
+      return;
+    }
+  }
 
   // ---- 1. the row above, re-decided --------------------------------------
   demo::MessageRow const* prev = parts->rows.empty() ? nullptr : &parts->rows.back().row;
@@ -1894,7 +2467,7 @@ void AppendThreadRow(ThreadView& v, demo::MessageRow const& row) {
         (2 <= parts->rows.size()) ? &parts->rows[parts->rows.size() - 2].row : nullptr;
     double corners[4];
     BubbleCornerDip(RunPosFor(prevPrev, *prev, &row), prev->outgoing, corners);
-    parts->bubbles.back().CornerRadius(CornerRadiusFromCorners(corners));
+    parts->bubbles.back().root.CornerRadius(CornerRadiusFromCorners(corners));
   }
 
   // ---- 2. the new row ----------------------------------------------------
@@ -1935,8 +2508,7 @@ void AppendThreadRow(ThreadView& v, demo::MessageRow const& row) {
       built.bubble.root.Click([parts, id = row.id](auto const&, auto const&) {
         if (parts->onSelect) parts->onSelect(id);
       });
-      parts->bubbles.push_back(built.bubble.root);
-      v.bubbles.push_back(built.bubble);
+      parts->bubbles.push_back(built.bubble);
       added = built.root;
       clusterHost = built.root;
       break;
@@ -1944,7 +2516,36 @@ void AppendThreadRow(ThreadView& v, demo::MessageRow const& row) {
   }
 
   // Recorded even when it drew nothing — see SetThreadConversation.
-  parts->rows.push_back(ThreadParts::RenderedRow{row, clusterHost});
+  parts->rows.push_back(ThreadParts::RenderedRow{row, clusterHost, added != nullptr});
+
+  // T8: the cap. The window grew by one at the foot, so a row leaves at the
+  // HEAD — silent and offset-corrected, exactly like a slide's head trim.
+  const std::size_t trim = ap.after.start - parts->window.start;
+  if (0 < trim) {
+    // The pin question is asked BEFORE the trim: the head trim's layout pass
+    // clamps an at-foot reader's offset down by itself, so asking afterwards
+    // would double-count the correction.
+    const bool pinned = ShouldPinToBottom(parts->pinArmed,
+                                          parts->scroller.VerticalOffset(), parts->pinExtent);
+    const double extentBefore = parts->scroller.ExtentHeight();  // clean layout
+    TrimWindowHead(parts, trim);
+    parts->scroller.UpdateLayout();
+    const double removedExtent = extentBefore - parts->scroller.ExtentHeight();
+    if (!pinned) {
+      // Not at the foot: hold the reader's content exactly still across the
+      // trim. At the foot the stack.SizeChanged pin is the right landing and
+      // fires on the natural layout pass after this function — two writers of
+      // one offset, and the pin's is the correct one there.
+      parts->scroller.ChangeView(
+          nullptr,
+          ClampScrollOffset(
+              OffsetAfterSlide(parts->scroller.VerticalOffset(), removedExtent, 0.0),
+              parts->scroller.ScrollableHeight()),
+          nullptr, true);
+    }
+  }
+  parts->window = ap.after;
+  SyncPublicBubbles(parts);
   if (!added) return;
 
   parts->stack.Children().Append(added);

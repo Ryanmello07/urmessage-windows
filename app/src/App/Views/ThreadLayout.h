@@ -272,4 +272,95 @@ struct AppendClusterPlan {
 AppendClusterPlan PlanAppendCluster(demo::MessageRow const* prev,
                                     demo::MessageRow const& appended);
 
+// ---- the sliding window over the backlog (T8) ------------------------------
+// A conversation renders AT MOST the 500 most-relevant rows. Older history
+// materializes in 100-row chunks as the scroller nears the top of the loaded
+// range, and the window slides back down in 100-row chunks at the foot end as
+// the reader scrolls home. Under 500 rows the window covers the whole
+// conversation and the render is exactly what it was before this wave — the
+// window is a VIEW concern over the full world plan, so every decision about
+// it is pure arithmetic here and --diagnose can walk it.
+//
+// All ranges are half-open [start, end) indices into Conversation::rows. After
+// the window exists the world only ever grows at the FOOT (ambient appends),
+// so a window's start index names the same row for the window's whole life.
+inline constexpr std::size_t kThreadWindowMaxRows = 500;
+inline constexpr std::size_t kThreadWindowChunkRows = 100;
+
+// The near-edge trigger, in VIEWPORTS of remaining distance. 1.5 rather than
+// 1.0 so the chunk lands before the reader can outrun it (a fast flick covers
+// a viewport in one gesture), and rather than 2.0 so a reader who only dips
+// toward the edge does not pay for a 100-row build they may never look at.
+inline constexpr double kWindowEdgeViewports = 1.5;
+
+struct ThreadWindow {
+  std::size_t start = 0;  // first world row index rendered
+  std::size_t end = 0;    // one past the last
+};
+
+std::size_t WindowRowCount(ThreadWindow w);
+// True when the window trims anything at all: at or under the cap every row
+// renders and this wave's code paths must be indistinguishable from before it.
+bool WindowActive(std::size_t totalRows);
+bool WindowCovers(ThreadWindow w, std::size_t rowIndex);
+
+// The window at conversation open: the NEWEST min(500, total) rows. A thread
+// opens at its foot, so relevance starts at the newest row and walks back.
+ThreadWindow InitialWindow(std::size_t totalRows);
+
+// One chunk OLDER: start moves up by min(chunk, start); if that leaves more
+// than 500 rendered, the FOOT is trimmed back to 500 (the newest rows leave
+// the tree; sliding back down re-covers them). Idempotent once start == 0.
+ThreadWindow SlideWindowUp(ThreadWindow w);
+
+// One chunk NEWER: end moves down by min(chunk, total - end); if that leaves
+// more than 500 rendered, the HEAD is trimmed back to 500. Idempotent once
+// end == total.
+ThreadWindow SlideWindowDown(ThreadWindow w, std::size_t totalRows);
+
+// The edge proximity tests the scroller feeds. `scrollableDip` is the loaded
+// extent minus the viewport (ScrollableHeight), so "near the foot of the
+// loaded range" is a distance of scrollable - offset, symmetric with the top.
+bool NearTopOfLoaded(double offsetDip, double viewportDip);
+bool NearFootOfLoaded(double offsetDip, double scrollableDip, double viewportDip);
+
+// The offset that keeps ONE surviving row at the same viewport position across
+// a slide: the row's Y in the extent moves by (anchorAfter - anchorBefore), so
+// the offset must move by exactly that. The view feeds it the per-mutation
+// EXTENT delta as the anchor travel (a prepend moves every old row down by the
+// inserted extent; a head trim pulls them up by the trimmed extent) — measured
+// across the mutation's own layout pass, because UseLayoutRounding snaps each
+// arranged row to the physical pixel grid and a per-row height sum loses the
+// accumulated rounding (39.2 dip over a 100-row chunk at 125% DPI, caught by
+// the A/B capture as a one-row drift).
+double OffsetAfterSlide(double oldOffsetDip, double anchorBeforeDip, double anchorAfterDip);
+// ScrollViewer clamps offsets into [0, ScrollableHeight] on its own; the pure
+// math states the clamp so the gate can walk it too.
+double ClampScrollOffset(double offsetDip, double scrollableDip);
+
+// What an ambient arrival means for the window. `newRowIndex` is where the
+// appended row landed in Conversation::rows (rows.size() - 1 at the call
+// site). The row is rendered exactly when the window covers the world's foot
+// (end == newRowIndex); a reader deep in history gets NO tree change — the
+// row is a world row and the window re-covers it as it slides home. When the
+// row renders, `after` grows the window by one at the foot and trims the head
+// back to <= 500, so the cap holds through ambient traffic too.
+struct AmbientAppendPlan {
+  bool render = false;
+  ThreadWindow after;
+};
+AmbientAppendPlan PlanAmbientAppend(ThreadWindow w, std::size_t newRowIndex);
+
+// What re-setting the SAME conversation means for the window (autoplay's
+// delivery-advance refresh). A reader at the foot gets today's behaviour — the
+// window re-bases at the newest rows and the pin lands. A reader deep in
+// history keeps their place: start still names the same row (the world grows
+// at the foot only), so the refreshed window is re-clamped AROUND it rather
+// than re-based at the foot — re-basing would be the yank design 9.2 forbids.
+struct RefreshWindowPlan {
+  ThreadWindow window;
+  bool pinToFoot = false;
+};
+RefreshWindowPlan PlanRefreshWindow(ThreadWindow w, std::size_t totalAfter, bool readerAtFoot);
+
 }  // namespace urmsg::views
