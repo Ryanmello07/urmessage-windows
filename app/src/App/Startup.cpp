@@ -2226,7 +2226,9 @@ std::vector<std::wstring> CollectDiagnostics() {
     //
     //    MUTATION CAUGHT: rendering when deep (after != window, render=true on
     //    the very first probe), or trimming MORE than the growth at the foot
-    //    (the window shrinks below 500).
+    //    (the window shrinks below 500), or a published window that stops
+    //    short of the grown foot (the slide-closure probe — SlideWindowDown
+    //    then still has room to move).
     {
       bool ambientOk = true;
       // Deep: window [300,500) of 2024. Arrival at 2024 must change NOTHING.
@@ -2241,6 +2243,20 @@ std::vector<std::wstring> CollectDiagnostics() {
       if (!dv::WindowCovers(p1.after, 2024) || dv::WindowCovers(p1.after, 1524))
         ambientOk = false;
       if (dv::WindowRowCount(p1.after) != 500) ambientOk = false;
+      // SLIDE-CLOSED, the pure half of the animfix2 defect-A ordering fix.
+      // AppendThreadRow publishes p1.after BEFORE the head trim's layout pass
+      // precisely so that the synchronous ViewChanged that pass fires finds
+      // NO slide owed: MaybeSlideWindow's foot branch tests window.end <
+      // total, and the published window's end IS the grown world's size
+      // (2025), so the branch is dead on arrival and no nested slide can
+      // re-materialize the arriving row. Asserted as arithmetic here: end
+      // lands on the grown foot exactly, and SlideWindowDown — the slide the
+      // trigger would have run — is a no-op on the published window. What the
+      // gate CANNOT reach is the publish's ORDER against the trim's layout
+      // pass; that half is winrt-side and capture-verified (handoff lesson
+      // 5), and the AppendBusyGuard comment in ThreadView.cpp says so.
+      const auto closed = dv::SlideWindowDown(p1.after, 2025);
+      if (closed.start != p1.after.start || closed.end != p1.after.end) ambientOk = false;
       // Under the cap there is no window: an arrival renders and nothing
       // trims — today's small-conversation behaviour, stated as arithmetic.
       const auto p2 = dv::PlanAmbientAppend(ThreadWindow{0, 24}, 24);
@@ -2266,8 +2282,9 @@ std::vector<std::wstring> CollectDiagnostics() {
       lines.push_back(std::format(
           L"  T8 window ambient    : {} — arrival renders exactly when the window "
           L"covers the foot (deep: no tree change; at foot: grow + head trim to "
-          L"500; under cap: always renders); 3 arrivals while deep re-covered "
-          L"after {} slides home",
+          L"500; under cap: always renders); the published window is "
+          L"slide-closed against the grown world; 3 arrivals while deep "
+          L"re-covered after {} slides home",
           ambientOk ? L"PASS" : L"FAIL", slides));
     }
 
@@ -2427,17 +2444,20 @@ std::vector<std::wstring> CollectDiagnostics() {
     }
 
     // 2. BEAT PARTITION. The fill walks from the initial set's top (cursor)
-    //    down to the initial window's start (target) in <=100-row beats. THE
-    //    TILING IS THE ASSERTION: every index in [target, cursor) is covered
-    //    by exactly one beat — no gaps, no dupes, no overrun past the target
-    //    (an overrun would overshoot into history the window never asked for
-    //    and, past the cap, trim the FOOT — the yank the beat clamp exists to
-    //    avoid). Beat count, the exact landing on the target, and idempotence
-    //    below it are asserted against recomputation.
+    //    down to the initial window's start (target) in
+    //    kHydrateFillBeatRows-sized slices (18 — the frame budget; the
+    //    constant's comment in Views/ThreadLayout.h carries the derivation).
+    //    THE TILING IS THE ASSERTION: every index in [target, cursor) is
+    //    covered by exactly one beat — no gaps, no dupes, no overrun past the
+    //    target (an overrun would overshoot into history the window never
+    //    asked for and, past the cap, trim the FOOT — the yank the beat clamp
+    //    exists to avoid). Beat count, the exact landing on the target, and
+    //    idempotence below it are asserted against recomputation.
     //
-    //    MUTATIONS CAUGHT: a 99-row beat (per-beat arithmetic + count fail),
-    //    a beat that starts from cursor+1 (the dupe check fails), and a clamp
-    //    of target-1 (the last beat overruns and the tiling fails below it).
+    //    MUTATIONS CAUGHT: a dropped target clamp (the PARTIAL probe overruns
+    //    8 rows — 468 divides 18 exactly, so the main walk alone would miss
+    //    it), a beat that starts from cursor+1 (the dupe check fails), and a
+    //    clamp of target-1 (the partial probe overruns below it).
     {
       const std::size_t k = dv::InitialViewportRows(800.0, splan, swindow);
       const std::size_t target = swindow.start;         // 24
@@ -2449,7 +2469,7 @@ std::vector<std::wstring> CollectDiagnostics() {
       while (dv::HydrateFillActive(cursor, target)) {
         const auto b = dv::PlanHydrateBeat(cursor, target, 3, 3);
         if (!b.run) { beatsOk = false; break; }
-        const std::size_t wantAdd = (std::min)(std::size_t{100}, cursor - target);
+        const std::size_t wantAdd = (std::min)(dv::kHydrateFillBeatRows, cursor - target);
         if (cursor - b.newStart != wantAdd) beatsOk = false;
         if (b.newStart < target) beatsOk = false;  // overrun past the target
         for (std::size_t i = b.newStart; i < cursor; ++i) {
@@ -2462,11 +2482,19 @@ std::vector<std::wstring> CollectDiagnostics() {
         if (b.reschedule != dv::HydrateFillActive(cursor, target)) beatsOk = false;
         if (256 < beats) break;  // loop guard, as in the T8 slide walk
       }
-      const std::size_t wantBeats = (open - target + 99) / 100;
+      const std::size_t wantBeats =
+          (open - target + dv::kHydrateFillBeatRows - 1) / dv::kHydrateFillBeatRows;
       if (cursor != target || beats != wantBeats || coveredRows != open - target)
         beatsOk = false;
       for (std::size_t i = target; i < open; ++i)
         if (!tiled[i]) beatsOk = false;  // a gap
+      // The PARTIAL last beat, probed directly: 468 = 26*18 exactly, so the
+      // walk above NEVER exercises the target clamp (the 100-row slice did it
+      // incidentally — 468 = 4*100 + 68). A beat 10 rows above the target
+      // must add exactly those 10 and land ON it; a dropped min-clamp
+      // overruns 8 rows into history the window never asked for.
+      const auto partial = dv::PlanHydrateBeat(target + 10, target, 3, 3);
+      if (!partial.run || partial.newStart != target || partial.reschedule) beatsOk = false;
       // Idempotent AT the target and silent BELOW it (a scroll slide that
       // jumped past mid-fill must not owe a negative-size beat).
       const auto atEnd = dv::PlanHydrateBeat(target, target, 3, 3);
@@ -2477,9 +2505,9 @@ std::vector<std::wstring> CollectDiagnostics() {
                           !dv::HydrateFillActive(target - 10, target);
       lines.push_back(std::format(
           L"  T9 hydrate beats     : {} — 524-row window, K={} at 800 dip: fill "
-          L"[{},{}) in {} beats of <=100 ({} rows tiled exactly once, landed on "
-          L"the target exactly), reschedule matches fill-active, idempotent at "
-          L"and below the target {}",
+          L"[{},{}) in {} beats of <=18 ({} rows tiled exactly once, landed on "
+          L"the target exactly), reschedule matches fill-active, partial last "
+          L"beat clamps to the target, idempotent at and below it {}",
           beatsOk && endsOk ? L"PASS" : L"FAIL", k, target, open, beats, coveredRows,
           endsOk ? L"ok" : L"BROKEN"));
     }
@@ -2564,7 +2592,9 @@ std::vector<std::wstring> CollectDiagnostics() {
       const auto live = dv::PlanHydrateBeat(open - 100, target, 8, 8);
       if (stale.run || stale.reschedule || staleBack.run || staleBack.reschedule)
         coalesceOk = false;
-      if (!live.run || !live.reschedule || live.newStart != open - 200) coalesceOk = false;
+      if (!live.run || !live.reschedule ||
+          live.newStart != open - 100 - dv::kHydrateFillBeatRows)
+        coalesceOk = false;
       lines.push_back(std::format(
           L"  T9 hydrate coalesce  : {} — fill + scroll-prepend share one cursor: "
           L"2 beats, a 100-row slide, fill resumes — [{},{}) covered exactly once "
@@ -2611,7 +2641,10 @@ std::vector<std::wstring> CollectDiagnostics() {
           // rows the initial set did not take, landing on the target.
           if (k >= dv::WindowRowCount(win) || !fills) noopOk = false;
           const auto b = dv::PlanHydrateBeat(cursor, win.start, 1, 1);
-          if (!b.run || cursor - b.newStart != 100 || !b.reschedule) noopOk = false;
+          if (!b.run ||
+              cursor - b.newStart != (std::min)(dv::kHydrateFillBeatRows, cursor - win.start) ||
+              !b.reschedule)
+            noopOk = false;
           std::size_t cur = b.newStart;
           std::size_t guard = 0;
           while (dv::HydrateFillActive(cur, win.start)) {
@@ -2624,8 +2657,49 @@ std::vector<std::wstring> CollectDiagnostics() {
       lines.push_back(std::format(
           L"  T9 hydrate noop      : {} — 300/500-row worlds: initial set IS the "
           L"whole window, zero beats (pixel-identical default path); 501 rows: "
-          L"initial 32 + 100-row beats tiling [1,469) to the target",
+          L"initial 32 + 18-row beats tiling [1,469) to the target",
           noopOk ? L"PASS" : L"FAIL"));
+    }
+
+    // 5. OPEN VS REFRESH — who gets the entrance, and what the fill's first
+    //    beat pays for it (the animfix2 wave's defect-B pure halves). The
+    //    decision the view spends is ShouldRunEntrance(openConvId, nextConvId):
+    //    TRUE on a conversation switch and on the first open (openConvId ""),
+    //    FALSE on re-setting the conversation already open — autoplay's
+    //    delivery-advance refresh, which must re-render the foot WITHOUT
+    //    replaying the open stagger over bubbles the reader is watching.
+    //    OpenStaggerTailMs is the first-beat delay on a true open: the last
+    //    staggered bubble begins at (kMaxStaggerSteps - 1) * kStaggerMs and
+    //    runs kBaseMs, so their sum is the entrance's tail. The recompute
+    //    below pins the TOKENS' current values (5*40 + 250 = 450) on purpose:
+    //    a motion-token change moves the fill's delay with it, and this line
+    //    going red is what makes that coupling a decision rather than an
+    //    accident.
+    //
+    //    WHAT THIS GATE CANNOT SEE: that the view actually spends either
+    //    answer (the `runEntrance` gate in SetThreadConversation's render
+    //    loop and the QueueHydrateBeat delay are winrt-side) — capture-
+    //    verified in .verify-animfix2. MUTATIONS CAUGHT: == for != (every
+    //    probe inverts), a first-open answer of false, a tail built from the
+    //    wrong token (kFastMs for kBaseMs breaks the derivation check).
+    {
+      const bool switchRuns = dv::ShouldRunEntrance(L"conv-a", L"conv-b");
+      const bool firstOpenRuns = dv::ShouldRunEntrance(L"", L"conv-a");
+      const bool refreshSkips = !dv::ShouldRunEntrance(L"conv-a", L"conv-a");
+      const bool emptyPairSkips = !dv::ShouldRunEntrance(L"", L"");
+      const int64_t tail = dv::OpenStaggerTailMs();
+      const bool tailOk = tail == 5 * 40 + 250;
+      const bool ok =
+          switchRuns && firstOpenRuns && refreshSkips && emptyPairSkips && tailOk;
+      lines.push_back(std::format(
+          L"  T9 entrance gate     : {} — open stagger on a true open/switch "
+          L"only: switch {}, first open {}, same-conversation refresh skipped "
+          L"{}, empty pair skipped {}; fill's first beat waits out the "
+          L"entrance tail, {} ms = (kMaxStaggerSteps-1)*kStaggerMs + kBaseMs "
+          L"{}",
+          ok ? L"PASS" : L"FAIL", switchRuns ? L"ok" : L"BROKEN",
+          firstOpenRuns ? L"ok" : L"BROKEN", refreshSkips ? L"ok" : L"BROKEN",
+          emptyPairSkips ? L"ok" : L"BROKEN", tail, tailOk ? L"ok" : L"BROKEN"));
     }
   }
 

@@ -8,11 +8,12 @@
 
 // UrMotion.h textually drags in winrt/Microsoft.UI.Composition.h and
 // winrt/Microsoft.UI.Xaml.Media.Animation.h on its own account; this file
-// reads exactly two plain integers off it (kStaggerMs, kMaxStaggerSteps, for
-// OpenStaggerBeginMs) and constructs nothing from either header. The same
-// arrangement ConversationRowModel.cpp already ships, and the same review
-// obligation: no WinRT type may ever be named on this path, because
-// CollectDiagnostics reaches this unit before winrt::init_apartment().
+// reads exactly three plain integers off it (kStaggerMs, kMaxStaggerSteps,
+// kBaseMs — for OpenStaggerBeginMs/OpenStaggerTailMs) and constructs nothing
+// from either header. The same arrangement ConversationRowModel.cpp already
+// ships, and the same review obligation: no WinRT type may ever be named on
+// this path, because CollectDiagnostics reaches this unit before
+// winrt::init_apartment().
 #include "UrMotion.h"
 
 namespace urmsg::views {
@@ -76,6 +77,22 @@ int64_t OpenStaggerBeginMs(std::size_t bubbleIndex, std::size_t bubbleCount) {
   const std::size_t footStart = bubbleCount - steps;
   if (bubbleIndex < footStart) return -1;  // above the fold: does not animate
   return static_cast<int64_t>(bubbleIndex - footStart) * urnw::motion::kStaggerMs;
+}
+
+// The whole open-vs-refresh rule, stated once: an entrance is how a thread
+// announces a DIFFERENT conversation. The id pair is the view's only signal —
+// a delivery-advance refresh re-sets the conversation that is already open.
+bool ShouldRunEntrance(std::wstring const& openConvId, std::wstring const& nextConvId) {
+  return openConvId != nextConvId;
+}
+
+// 5 * 40 + 250 = 450 ms at today's tokens: the worst-case stagger begin (the
+// foot's newest bubble, kMaxStaggerSteps - 1 intervals out) plus one kBaseMs
+// entrance. Read off UrMotion.h textually — the OpenStaggerBeginMs arrangement
+// above, with the same no-winrt obligation.
+int64_t OpenStaggerTailMs() {
+  return static_cast<int64_t>(urnw::motion::kMaxStaggerSteps - 1) * urnw::motion::kStaggerMs +
+         urnw::motion::kBaseMs;
 }
 
 std::vector<ThreadRowPlan> PlanThreadRows(demo::Conversation const& c) {

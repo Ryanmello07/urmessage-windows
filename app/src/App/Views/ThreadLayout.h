@@ -230,6 +230,30 @@ int TypingTimelineCount(bool animate);
 // header stays winrt-free.
 int64_t OpenStaggerBeginMs(std::size_t bubbleIndex, std::size_t bubbleCount);
 
+// ---- open vs refresh: who gets the entrance ---------------------------------
+// The open stagger is how a thread ANNOUNCES a conversation — it belongs to an
+// open/switch and to nothing else. Re-setting the SAME conversation is
+// autoplay's delivery-advance refresh (RefreshOpenThread): the foot re-renders
+// because a glyph changed, and replaying the entrance there re-pops bubbles
+// the reader is already looking at (the animfix2 audit's defect B1 — old
+// messages visibly re-entering on a delivery tick). The view's ONLY signal for
+// open-vs-refresh is the id pair — a refresh IS a re-set of the open
+// conversation, so there is no third parameter to pass: `openConvId` is the
+// conversation the thread currently shows (empty before the first open), and
+// the entrance runs exactly when this call opens a DIFFERENT one. The empty
+// first-open case answers true because a real id never equals "".
+bool ShouldRunEntrance(std::wstring const& openConvId, std::wstring const& nextConvId);
+
+// The open's motion, end to end: the last animating bubble begins at
+// (kMaxStaggerSteps - 1) * kStaggerMs and runs kBaseMs, so their sum is the
+// entrance's TAIL — the moment no open storyboard is still moving (450 ms at
+// today's tokens). The hydration fill's FIRST beat waits this out on a true
+// open (SetThreadConversation): a Low-priority beat still runs on the UI
+// thread between frames, and a multi-row insert burst inside the entrance
+// window starves the storyboard ticks it shares that thread with. Derived
+// from the tokens rather than restated, so a token change moves the delay.
+int64_t OpenStaggerTailMs();
+
 // ---- what an APPEND does to the row above it (T6) -------------------------
 // Appending a row does not only ADD a cluster. It can also TAKE one away, and
 // that half is the one an append-only implementation silently drops.
@@ -370,7 +394,10 @@ RefreshWindowPlan PlanRefreshWindow(ThreadWindow w, std::size_t totalAfter, bool
 // 600-1000 ms on the owner's. Hydration splits the open in two: a
 // synchronous INITIAL SET covering what the viewport shows plus headroom, and
 // BACKGROUND BEATS that materialize the rest of the window above it, one
-// chunk per dispatcher turn, silent (no fade, no marker — off-viewport work).
+// frame-budgeted slice per dispatcher turn, silent (no fade, no marker —
+// off-viewport work). On a true open the FIRST beat also waits out the open
+// stagger's tail (OpenStaggerTailMs), so the fill's UI-thread bursts never
+// share a frame with the entrance's storyboard ticks.
 //
 // The residency truth is the window itself and there is exactly ONE: both the
 // beats and the scroll-triggered slides move window.start, and each computes
@@ -391,10 +418,17 @@ inline constexpr std::size_t kHydrateFloorRows = 32;
 // The viewport is 0 on an unrealized tree (the constructor path); size the
 // initial set against a typical window instead of the floor alone.
 inline constexpr double kHydrateFallbackViewportDip = 800.0;
-// The beat size IS the window's chunk size: one number sizes every "next
-// slice of the backlog" this surface materializes, scroll-triggered or
-// background, and the two already provably tile the same plan (T8).
-inline constexpr std::size_t kHydrateFillBeatRows = kThreadWindowChunkRows;
+// The fill's per-turn slice, frame-budgeted. A beat runs ON the UI thread (Low
+// priority only decides WHEN, not which thread), and the 100-row slice this
+// used to share with the scroll chunk measured 40-56 ms per turn on this
+// machine (the "thread: hydrate beat" stress lines) — a burst that starves any
+// storyboard mid-flight on the same thread. At ~0.4-0.6 ms/row, 18 rows is a
+// ~7-10 ms turn: inside one 60fps frame's budget beside the frame's own work.
+// The fill simply re-queues until the range is covered — the beat COUNT is
+// free, the per-turn TIME is what is budgeted. The scroll-triggered chunk
+// keeps its own 100-row size: that one is a user-waiting backfill with a
+// marker, not background fill.
+inline constexpr std::size_t kHydrateFillBeatRows = 18;
 
 // Estimated rendered height per row SHAPE, in dip — for initial-set SIZING
 // ONLY. An underestimate is corrected by the fill within a beat or two, an

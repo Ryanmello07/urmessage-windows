@@ -764,6 +764,13 @@ struct ThreadParts {
   // guard, so an old conversation's fill can never run under the new one.
   std::uint64_t hydrateGeneration = 0;
   bool hydrateQueued = false;  // one beat queued on the dispatcher, at most
+  // The first beat's entrance-tail delay: a one-shot timer a true open arms
+  // instead of queueing the beat directly, so the fill's insert bursts never
+  // share a UI-thread frame with the open stagger's storyboards. Stopped and
+  // dropped beside the generation bump in SetThreadConversation (the fill's
+  // cancellation); its Tick re-checks the generation for a callback already
+  // posted. Null on every path that is not a delayed first beat.
+  winrt::Microsoft::UI::Dispatching::DispatcherQueueTimer hydrateDelay{nullptr};
   // Instrumentation for the "hydrate complete" line: when the fill started
   // (== the sync phase's end) and how many beats it took.
   std::chrono::steady_clock::time_point hydrateStart{};
@@ -2071,6 +2078,39 @@ void MaybeSlideWindow(std::shared_ptr<ThreadParts> const& parts) {
   }
 }
 
+// RAII hold on windowBusy across AppendThreadRow's mutation (the animfix2
+// defect-A fix's second half). The head trim's UpdateLayout and the offset
+// correction's ChangeView fire the scroller's ViewChanged SYNCHRONOUSLY, and
+// MaybeSlideWindow must not answer one mid-append: with the window still
+// unpublished at that point the trigger saw window.end < total and ran
+// SlideWindowDownInView NESTED inside the append — the slide built its own
+// copy of the arriving row and the append then parented another, the
+// duplicate bubble pair the audit captured on every ambient arrival at the
+// cap. The guard SAVES the prior flag so a load beat already in flight when
+// the row lands keeps its busy mark.
+//
+// Restoring is ALL the destructor does — deliberately no re-evaluation of
+// MaybeSlideWindow here. CompleteWindowBeat re-evaluates because a beat's own
+// ChangeView is what was dropped; the append's corrections instead leave the
+// reader where they were, and the next genuine ViewChanged (their scroll, a
+// beat, the next arrival) re-arms a near-edge trigger on its own. A re-check
+// HERE fires while the foot pin's ChangeView may still be unapplied, and
+// reading the transient pre-pin offset manufactured a near-top trigger no
+// scroll event ever carried — measured on the stressed open: the seed's two
+// appends each ended in a re-check that started a 100-row up-slide at the
+// launch offset of 0.
+struct AppendBusyGuard {
+  std::shared_ptr<ThreadParts> parts;
+  bool wasBusy;
+  explicit AppendBusyGuard(std::shared_ptr<ThreadParts> const& p)
+      : parts(p), wasBusy(p->windowBusy) {
+    p->windowBusy = true;
+  }
+  ~AppendBusyGuard() { parts->windowBusy = wasBusy; }
+  AppendBusyGuard(AppendBusyGuard const&) = delete;
+  AppendBusyGuard& operator=(AppendBusyGuard const&) = delete;
+};
+
 // The load beat: the marker fades in (kFastMs), holds one beat so the load is
 // SEEN to have happened — the demo's fetch is same-turn, so without the hold
 // the marker would never render — then the chunk materializes. With motion
@@ -2098,7 +2138,14 @@ void StartEarlierLoad(std::shared_ptr<ThreadParts> const& parts) {
 // The background half of the open: after SetThreadConversation has rendered
 // the viewport-covering initial set, the rest of the initial window
 // materializes ABOVE it in kHydrateFillBeatRows-sized beats, one per
-// dispatcher turn at LOW priority so input and rendering always go first.
+// dispatcher turn at LOW priority so input and rendering always go first. The
+// slice is frame-budgeted (the constant's comment carries the derivation):
+// Low priority chooses WHEN a beat runs, not which thread, and a beat whose
+// insert burst spans multiple frames starves any storyboard mid-flight — the
+// animfix2 audit's defect B2, 40-56 ms bursts measured on this machine. For
+// the same reason a true open's FIRST beat is timer-delayed until the open
+// stagger's tail has passed (OpenStaggerTailMs): no beat at all runs inside
+// the entrance window.
 //
 // SILENT by rule: no fade, no marker, no entrance. The rows a beat inserts
 // sit above the loaded content — off the viewport by construction (the
@@ -2117,13 +2164,38 @@ void StartEarlierLoad(std::shared_ptr<ThreadParts> const& parts) {
 
 void RunHydrateBeat(std::shared_ptr<ThreadParts> const& parts, std::uint64_t gen);
 
-void QueueHydrateBeat(std::shared_ptr<ThreadParts> const& parts) {
+// delayMs > 0 defers the beat by a one-shot timer rather than queueing it now
+// — used ONLY for the first beat of a true open (SetThreadConversation), so
+// the fill waits out the entrance tail; every other caller passes 0.
+void QueueHydrateBeat(std::shared_ptr<ThreadParts> const& parts, int64_t delayMs = 0) {
   // hydrateQueued makes the queue a CHAIN: each beat queues at most one
   // successor, so two chains can never race each other into the same rows.
   if (parts->hydrateQueued || !parts->stack) return;
   auto queue = parts->stack.DispatcherQueue();
   if (!queue) return;
   const std::uint64_t gen = parts->hydrateGeneration;
+  if (0 < delayMs) {
+    // One-shot — the DemoAutoplayLoop rule: a DispatcherQueueTimer REPEATS by
+    // default. The Tick's generation check is the switch guard for a callback
+    // already posted when SetThreadConversation stops the timer and bumps the
+    // generation; a stale Tick dies without queueing, so a dead
+    // conversation's fill never starts under the new one.
+    auto timer = parts->hydrateDelay;
+    if (!timer) {
+      timer = queue.CreateTimer();
+      parts->hydrateDelay = timer;
+    }
+    timer.Stop();  // re-arming is a fresh delay, not an accumulated one
+    timer.IsRepeating(false);
+    timer.Interval(urnw::motion::Ms(delayMs));
+    timer.Tick([parts, gen](auto const&, auto const&) {
+      parts->hydrateDelay = nullptr;
+      if (gen != parts->hydrateGeneration) return;
+      QueueHydrateBeat(parts);  // the tail has passed — queue immediately
+    });
+    timer.Start();
+    return;
+  }
   // TryEnqueue returns false once the queue is shutting down — the flag is
   // set only on a real enqueue, so a teardown-time failure cannot wedge it.
   parts->hydrateQueued = queue.TryEnqueue(
@@ -2259,6 +2331,17 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
     if (!placement.pinToFoot) keepOffset = parts->scroller.VerticalOffset();
   }
 
+  // Whether this call is a true OPEN — the entrance's one trigger, read
+  // BEFORE convId is re-pointed below. The id pair is the whole decision
+  // (ShouldRunEntrance, Views/ThreadLayout.h): re-setting the conversation
+  // already open is autoplay's delivery-advance refresh, and a refresh must
+  // not replay the open stagger over foot bubbles the reader is already
+  // looking at (the animfix2 audit's defect B1 — every delivery tick re-popped
+  // the newest rows). The deep-reader refresh already skipped entrances on
+  // keepOffset; this extends the same skip to the at-foot refresh, which
+  // keepOffset cannot see (it is < 0 there by definition).
+  const bool runEntrance = ShouldRunEntrance(parts->convId, c.id);
+
   parts->stack.Children().Clear();
   parts->bubbles.clear();
   parts->rows.clear();
@@ -2283,10 +2366,16 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
   // previous conversation queued arrives stale and dies unrescheduled in
   // PlanHydrateBeat. hydrateQueued is reset with it — a queued stale beat
   // must not suppress the NEW conversation's first beat (the flag gates
-  // queueing only; the stale beat still fires and clears it again).
+  // queueing only; the stale beat still fires and clears it again). The
+  // delay timer joins the same cancellation: a true open's pending first
+  // beat must not fire under the conversation that replaced it.
   ++parts->hydrateGeneration;
   parts->hydrateQueued = false;
   parts->hydrateBeats = 0;
+  if (parts->hydrateDelay) {
+    parts->hydrateDelay.Stop();
+    parts->hydrateDelay = nullptr;
+  }
 
   const bool group = (c.kind == demo::ConversationKind::Group);
   // Remembered because AppendThreadRow has no Conversation to ask later, and a
@@ -2375,11 +2464,12 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
       // last. Begun synchronously HERE, not on a Loaded hook: every path that
       // reaches this build is already post-layout on a realized tree, so the
       // board always plays, and RunBubbleEntrance's Completed landing writes
-      // the final pose back. SKIPPED on a position-preserving refresh
-      // (keepOffset >= 0): the reader is deep in history and an entrance they
-      // cannot see is noise — the refresh's only change is a delivery reading
-      // at the foot.
-      if (keepOffset < 0.0) {
+      // the final pose back. runEntrance is the gate (ShouldRunEntrance — the
+      // open-vs-refresh decision made above): a same-conversation refresh
+      // re-renders the foot because a delivery READING changed, and an
+      // entrance replayed there is old bubbles re-popping under the reader's
+      // eye — deep-reader and at-foot refreshes alike play none.
+      if (runEntrance) {
         const int64_t stagger = OpenStaggerBeginMs(bubbleIndex, bubbleCount);
         if (0 <= stagger)
           RunBubbleEntrance(built.root, c.rows[p.rowIndex].outgoing, stagger);
@@ -2462,12 +2552,19 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
           .count();
   if (HydrateFillActive(parts->window.start, parts->hydrateTarget)) {
     parts->hydrateStart = std::chrono::steady_clock::now();
-    QueueHydrateBeat(parts);
+    // The fill's FIRST beat waits out the open stagger's tail
+    // (OpenStaggerTailMs — derived from the tokens where they live), but only
+    // when an entrance is actually in flight: a true open with motion on. A
+    // refresh plays no entrance (the B1 rule above) and a reduce-motion run
+    // has no storyboards to starve, so both start the beats immediately.
+    const int64_t firstBeatDelayMs =
+        (runEntrance && urnw::motion::ShouldAnimate()) ? OpenStaggerTailMs() : 0;
+    QueueHydrateBeat(parts, firstBeatDelayMs);
     urnw::LogInfo(
         "thread: sync phase {:.2f} ms (plan {:.2f}); initial {} of {} window rows at {:.0f} "
-        "dip viewport — fill of {} rows queued (target {})",
+        "dip viewport — fill of {} rows queued (target {}, first beat in {} ms)",
         syncMs, planMs, initialRows, windowRows, viewportDip,
-        parts->window.start - parts->hydrateTarget, parts->hydrateTarget);
+        parts->window.start - parts->hydrateTarget, parts->hydrateTarget, firstBeatDelayMs);
   } else {
     // The default path states itself in the log too: at/under the cap, on a
     // position-preserving refresh, or when the viewport covers the window,
@@ -2733,7 +2830,27 @@ void AppendThreadRow(ThreadView& v, demo::MessageRow const& row) {
 
   // T8: the cap. The window grew by one at the foot, so a row leaves at the
   // HEAD — silent and offset-corrected, exactly like a slide's head trim.
+  // Computed off the OLD window.start, so it must be read before the publish
+  // below overwrites it.
   const std::size_t trim = ap.after.start - parts->window.start;
+
+  // The mutation runs under windowBusy (the guard's why lives on the struct),
+  // and the new window is PUBLISHED BEFORE the trim — the order is the fix.
+  // TrimWindowHead's UpdateLayout below clamps the offset and fires the
+  // scroller's ViewChanged SYNCHRONOUSLY, and MaybeSlideWindow reads
+  // parts->window in that same turn. While the publish sat AFTER the trim,
+  // that re-entrant check saw the STALE window (end naming the world's old
+  // foot) and ran a nested SlideWindowDownInView that materialized the
+  // arriving row a second time. Published first, window.end == the world's
+  // new foot and the foot-slide branch is dead on arrival (the slide-closure
+  // half of this is pure and gated: "T8 window ambient"). TrimWindowHead
+  // never reads parts->window — it maps rows to stack children by `drawn` —
+  // so the early publish cannot skew the trim. The guard lives to the END of
+  // the function, not just to the trim: a slide released between the trim and
+  // the stack Append below could foot-trim the row this function has already
+  // recorded but not yet parented.
+  const AppendBusyGuard busy(parts);
+  parts->window = ap.after;
   if (0 < trim) {
     // The pin question is asked BEFORE the trim: the head trim's layout pass
     // clamps an at-foot reader's offset down by itself, so asking afterwards
@@ -2757,7 +2874,6 @@ void AppendThreadRow(ThreadView& v, demo::MessageRow const& row) {
           nullptr, true);
     }
   }
-  parts->window = ap.after;
   SyncPublicBubbles(parts);
   if (!added) return;
 
