@@ -363,4 +363,72 @@ struct RefreshWindowPlan {
 };
 RefreshWindowPlan PlanRefreshWindow(ThreadWindow w, std::size_t totalAfter, bool readerAtFoot);
 
+// ---- progressive window hydration (T9) --------------------------------------
+// Opening or switching to a conversation over the 500-row window cap used to
+// parent ALL 500 window rows in one synchronous turn — measured at 190-240 ms
+// to the first presented frame on the 2024-row stress world on this machine,
+// 600-1000 ms on the owner's. Hydration splits the open in two: a
+// synchronous INITIAL SET covering what the viewport shows plus headroom, and
+// BACKGROUND BEATS that materialize the rest of the window above it, one
+// chunk per dispatcher turn, silent (no fade, no marker — off-viewport work).
+//
+// The residency truth is the window itself and there is exactly ONE: both the
+// beats and the scroll-triggered slides move window.start, and each computes
+// its insert range from the LIVE window.start in its own dispatcher turn, so
+// a scroll-prepend mid-fill cannot double-materialize a beat's rows or vice
+// versa — the scripted scenarios are walked in --diagnose ("T9 hydrate
+// coalesce").
+
+// The initial set covers the viewport plus ~one viewport of headroom. The
+// thread opens pinned at its FOOT, so all the headroom is upward: the cover
+// target is 2.0 viewport heights of estimated content walking back from the
+// window's newest row.
+inline constexpr double kHydrateViewportCover = 2.0;
+// …with a floor: an estimate is a guess, and a guess must never leave the
+// first frame sparse. 32 rows of mostly-bubbles is ~1.5-2 viewports of real
+// content at typical heights, so the floor binds only on tiny viewports.
+inline constexpr std::size_t kHydrateFloorRows = 32;
+// The viewport is 0 on an unrealized tree (the constructor path); size the
+// initial set against a typical window instead of the floor alone.
+inline constexpr double kHydrateFallbackViewportDip = 800.0;
+// The beat size IS the window's chunk size: one number sizes every "next
+// slice of the backlog" this surface materializes, scroll-triggered or
+// background, and the two already provably tile the same plan (T8).
+inline constexpr std::size_t kHydrateFillBeatRows = kThreadWindowChunkRows;
+
+// Estimated rendered height per row SHAPE, in dip — for initial-set SIZING
+// ONLY. An underestimate is corrected by the fill within a beat or two, an
+// overestimate by the cap; neither is worth simulating wrapped text for.
+// What must NEVER happen is an initial set that leaves the viewport
+// under-filled, and that is the floor's job, not the estimate's.
+double EstimatedRowDip(ThreadRowShape shape);
+
+// How many of the window's NEWEST rows render synchronously at open: walk
+// back from the window's foot accumulating EstimatedRowDip until
+// kHydrateViewportCover * viewportDip is covered, then clamp into
+// [min(kHydrateFloorRows, windowRows), windowRows]. The clamp at the TOP end
+// is the under-cap guarantee: at or under 500 rows the initial set IS the
+// whole window and the open is pixel-identical to the pre-hydration path.
+std::size_t InitialViewportRows(double viewportDip, std::vector<ThreadRowPlan> const& plan,
+                                ThreadWindow window);
+
+// The fill's one decision, per beat. `cursor` is the oldest RESIDENT row
+// (the live window.start), `target` the window.start the fill walks down to
+// (the initial window's start — a row index, so it names the same row for
+// the fill's whole life: the world grows at the foot only).
+struct HydrateBeatPlan {
+  bool run = false;         // insert [newStart, cursor) above, this turn
+  bool reschedule = false;  // queue the next beat after this one
+  std::size_t newStart = 0; // valid when run
+};
+HydrateBeatPlan PlanHydrateBeat(std::size_t cursor, std::size_t target,
+                                std::uint64_t beatGeneration,
+                                std::uint64_t currentGeneration);
+
+// Whether a fill from `cursor` down to `target` has work left. Also the
+// coalescing rule for a scroll slide that jumps PAST the target mid-fill:
+// cursor < target means the slide already covered the remainder (and more),
+// so the fill is DONE rather than owed a negative-size beat.
+bool HydrateFillActive(std::size_t cursor, std::size_t target);
+
 }  // namespace urmsg::views

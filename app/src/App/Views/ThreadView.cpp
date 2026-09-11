@@ -750,6 +750,25 @@ struct ThreadParts {
   anim::Storyboard chunkFadeStory{nullptr};
   std::vector<FrameworkElement> fadingRows;
 
+  // ---- T9: progressive hydration of the open window -------------------------
+  // SetThreadConversation renders only the viewport-covering INITIAL SET
+  // synchronously; the rest of the initial window materializes in background
+  // beats at Low dispatcher priority. hydrateTarget is the window.start the
+  // fill walks down to (the initial window's start — a row INDEX, so it names
+  // the same row for the fill's whole life: the world grows at the foot
+  // only). window.start is the fill's cursor — the ONE residency truth the
+  // beats share with the scroll-triggered slides (Views/ThreadLayout.h).
+  std::size_t hydrateTarget = 0;
+  // Bumped per SetThreadConversation; every queued beat captures it and a
+  // stale capture dies unrescheduled (PlanHydrateBeat) — the switch-away
+  // guard, so an old conversation's fill can never run under the new one.
+  std::uint64_t hydrateGeneration = 0;
+  bool hydrateQueued = false;  // one beat queued on the dispatcher, at most
+  // Instrumentation for the "hydrate complete" line: when the fill started
+  // (== the sync phase's end) and how many beats it took.
+  std::chrono::steady_clock::time_point hydrateStart{};
+  int hydrateBeats = 0;
+
   // The selection MainWindow last wrote, so a row the window re-covers can be
   // re-outlined on the way back (SetThreadSelectedMessage is the one writer).
   std::wstring selectedId;
@@ -2075,6 +2094,136 @@ void StartEarlierLoad(std::shared_ptr<ThreadParts> const& parts) {
   parts->earlierTimer.Start();
 }
 
+// ---- T9: the hydration fill, applied to the tree -----------------------------
+// The background half of the open: after SetThreadConversation has rendered
+// the viewport-covering initial set, the rest of the initial window
+// materializes ABOVE it in kHydrateFillBeatRows-sized beats, one per
+// dispatcher turn at LOW priority so input and rendering always go first.
+//
+// SILENT by rule: no fade, no marker, no entrance. The rows a beat inserts
+// sit above the loaded content — off the viewport by construction (the
+// initial set already covers the viewport plus headroom) — and the
+// extent-delta correction below holds the reader's content exactly still, so
+// there is nothing to animate. With motion off the beats are the same
+// instant inserts (there was never any animation to cut), and the initial
+// set's entrance is the only motion hydration has — RunBubbleEntrance's
+// ShouldAnimate() gate already makes it instant.
+//
+// windowBusy is deliberately NOT set: a reader scrolling toward history
+// mid-fill must get the scroll-triggered load IMMEDIATELY (StartEarlierLoad
+// recomputes its range from the live window.start, so the two never
+// double-materialize — the coalescing rule the "T9 hydrate coalesce" gate
+// walks).
+
+void RunHydrateBeat(std::shared_ptr<ThreadParts> const& parts, std::uint64_t gen);
+
+void QueueHydrateBeat(std::shared_ptr<ThreadParts> const& parts) {
+  // hydrateQueued makes the queue a CHAIN: each beat queues at most one
+  // successor, so two chains can never race each other into the same rows.
+  if (parts->hydrateQueued || !parts->stack) return;
+  auto queue = parts->stack.DispatcherQueue();
+  if (!queue) return;
+  const std::uint64_t gen = parts->hydrateGeneration;
+  // TryEnqueue returns false once the queue is shutting down — the flag is
+  // set only on a real enqueue, so a teardown-time failure cannot wedge it.
+  parts->hydrateQueued = queue.TryEnqueue(
+      winrt::Microsoft::UI::Dispatching::DispatcherQueuePriority::Low,
+      [parts, gen] { RunHydrateBeat(parts, gen); });
+}
+
+void RunHydrateBeat(std::shared_ptr<ThreadParts> const& parts, std::uint64_t gen) {
+  parts->hydrateQueued = false;
+  if (!parts->conv) return;
+  // The beat's whole decision is pure (Views/ThreadLayout.h): the stale
+  // generation dies unrescheduled HERE, and the done/overshot cursor stops
+  // the chain the same way — the view spends only what the gate walked.
+  const HydrateBeatPlan beat =
+      PlanHydrateBeat(parts->window.start, parts->hydrateTarget, gen, parts->hydrateGeneration);
+  if (!beat.run) return;
+
+  const auto buildStart = std::chrono::steady_clock::now();
+  const std::vector<ThreadRowPlan> plan = PlanThreadRows(*parts->conv);
+  const double planMs =
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - buildStart)
+          .count();
+
+  // The insert half of MaterializeEarlierChunk, mirrored — build the range,
+  // insert above in order, splice the bookkeeping, correct the offset by the
+  // measured EXTENT delta. The differences ARE the beat's definition: the
+  // range comes from PlanHydrateBeat rather than SlideWindowUp, there is no
+  // foot trim (hydrateTarget is the initial window's start, so the resident
+  // count reaches 500 exactly — an ambient append racing the fill can push it
+  // TRANSIENTLY past the cap, and PlanAmbientAppend's head trim takes it back
+  // on the next arrival; a foot trim HERE would be the yank the fill exists
+  // to avoid), and there is no marker and no fade. Keep the two in step —
+  // they are two writers of one pattern (TrimWindowHead/TrimWindowFoot carry
+  // the same warning).
+  const std::size_t oldStart = parts->window.start;
+  const std::size_t newStart = beat.newStart;
+  const double offsetBefore = parts->scroller.VerticalOffset();
+  const double extentBefore = parts->scroller.ExtentHeight();  // clean at entry
+
+  std::vector<ThreadBubble> bornBubbles;
+  std::vector<ThreadParts::RenderedRow> bornRows;
+  bornRows.reserve(oldStart - newStart);
+  uint32_t insertPos = 0;
+  for (std::size_t i = newStart; i < oldStart; ++i) {
+    BuiltRow b = BuildPlanRow(parts, *parts->conv, plan[i]);
+    if (b.root) {
+      parts->stack.Children().InsertAt(insertPos, b.root);
+      ++insertPos;
+    }
+    if (b.bubble.root) bornBubbles.push_back(b.bubble);
+    bornRows.push_back(
+        ThreadParts::RenderedRow{parts->conv->rows[i], b.clusterHost, b.root != nullptr});
+  }
+  parts->rows.insert(parts->rows.begin(), std::make_move_iterator(bornRows.begin()),
+                     std::make_move_iterator(bornRows.end()));
+  parts->bubbles.insert(parts->bubbles.begin(), bornBubbles.begin(), bornBubbles.end());
+  parts->window.start = newStart;
+  SyncPublicBubbles(parts);
+
+  // The 68% cap BEFORE the measure, for the same re-wrap reason
+  // MaterializeEarlierChunk carries.
+  ApplyColumnWidth(parts);
+  parts->scroller.UpdateLayout();
+  const double addedExtent = parts->scroller.ExtentHeight() - extentBefore;
+  // The T8 second-writer rule: the pin decision after this beat must be
+  // measured against the extent that exists NOW. For a reader pinned at the
+  // foot the correction below lands exactly on the new foot (offset + added
+  // == new scrollable), so the pin survives the fill without the
+  // stack.SizeChanged handler ever seeing a stale extent.
+  parts->pinExtent = parts->scroller.ScrollableHeight();
+  parts->scroller.ChangeView(
+      nullptr, ClampScrollOffset(OffsetAfterSlide(offsetBefore, 0.0, addedExtent), parts->pinExtent),
+      nullptr, true);
+  ReapplySelection(parts, bornBubbles);
+
+  ++parts->hydrateBeats;
+  if (beat.reschedule) {
+    QueueHydrateBeat(parts);
+    urnw::LogInfo(
+        "thread: hydrate beat [{},{}) — {} rows, plan {:.2f} ms, beat {:.2f} ms",
+        newStart, oldStart, oldStart - newStart, planMs,
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - buildStart)
+            .count());
+  } else {
+    // The window is fully resident. The total is measured from the END of the
+    // synchronous phase (hydrateStart), so "sync + total" is the honest
+    // before/after pair against the pre-hydration single-turn number.
+    urnw::LogInfo(
+        "thread: hydrate complete — window [{},{}) of {} filled in {:.2f} ms over {} beats "
+        "(last beat {:.2f} ms)",
+        parts->window.start, parts->window.end, parts->conv->rows.size(),
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                  parts->hydrateStart)
+            .count(),
+        parts->hydrateBeats,
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - buildStart)
+            .count());
+  }
+}
+
 }  // namespace
 
 void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
@@ -2116,7 +2265,28 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
   v.bubbles.clear();
   parts->conv = &c;
   parts->convId = c.id;
-  parts->window = placement.window;
+
+  // T9: progressive hydration. On an open/switch (keepOffset < 0) of a
+  // conversation OVER the window cap, only the viewport-covering INITIAL SET
+  // renders synchronously; the rest of the initial window fills in background
+  // beats (RunHydrateBeat). parts->window narrows to the initial set — it IS
+  // the residency truth, so the render loop below, the beats and the
+  // scroll-triggered slides all read the same [start, end) — and
+  // hydrateTarget remembers the initial window's start for the fill. The
+  // position-preserving refresh (keepOffset >= 0) renders the whole slice
+  // synchronously as before: the reader's rows must ALL be there, that path
+  // has no first-frame problem (the tree is already warm), and hydrating
+  // around a mid-history anchor is a different rule than anchoring at the
+  // foot.
+  //
+  // The generation bump is also the fill's CANCELLATION: any beat the
+  // previous conversation queued arrives stale and dies unrescheduled in
+  // PlanHydrateBeat. hydrateQueued is reset with it — a queued stale beat
+  // must not suppress the NEW conversation's first beat (the flag gates
+  // queueing only; the stale beat still fires and clears it again).
+  ++parts->hydrateGeneration;
+  parts->hydrateQueued = false;
+  parts->hydrateBeats = 0;
 
   const bool group = (c.kind == demo::ConversationKind::Group);
   // Remembered because AppendThreadRow has no Conversation to ask later, and a
@@ -2153,29 +2323,46 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
   // build is reachable from --diagnose - a builder that classified rows inline
   // could only ever be checked by looking at a screenshot.
   //
-  // The loop renders the WINDOW'S SLICE of the full plan, [window.start,
-  // window.end). At or under the cap the window IS the whole conversation and
-  // this builds exactly what it did before T8; beyond it, the slice renders the
-  // newest 500 rows, and the plan still walks the full history so the seam row
-  // gets the sender header, corners and cluster a full rebuild would give it
-  // (`T8 window seam` asserts that agreement). BuildPlanRow is the one builder
-  // — the slides share it, so a row the window re-covers cannot drift from a
-  // fresh open.
-  //
-  // bubbleCount is the count the OPEN STAGGER sees (design d2 §8.2): the
-  // window's bubble rows — only the last min(kMaxStaggerSteps, count) animate,
-  // which is the visible foot either way.
-  std::size_t bubbleCount = 0;
-  for (std::size_t i = parts->window.start; i < parts->window.end; ++i)
-    if (c.rows[i].kind == demo::RowKind::Message) ++bubbleCount;
-  // Hoisted out of the loop so the plan's own cost is measurable apart
-  // from the element build that consumes it (the stress-harness log lines at
-  // the foot of this function).
+  // Hoisted above the build so the plan's own cost is measurable apart from
+  // the element build that consumes it (the stress-harness log lines at the
+  // foot of this function) — and so the T9 sizing below can walk the plan's
+  // row SHAPES, which is what the initial-set formula is computed from.
   const auto planStart = std::chrono::steady_clock::now();
   const std::vector<ThreadRowPlan> rowPlan = PlanThreadRows(c);
   const double planMs =
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - planStart)
           .count();
+
+  // T9: how much of the window renders SYNCHRONOUSLY. The viewport is real on
+  // every switch/refresh path and 0 only on an unrealized tree, which
+  // InitialViewportRows maps to its fallback — either way the decision is the
+  // pure one the "T9 hydrate sizing" gate walks. Under the cap `hydrate` is
+  // false and initialRows IS the window: the open is pixel-identical to the
+  // pre-hydration path and no beat is ever queued.
+  const double viewportDip = parts->scroller.ViewportHeight();
+  const bool hydrate = keepOffset < 0.0 && WindowActive(total);
+  const std::size_t windowRows = WindowRowCount(placement.window);
+  const std::size_t initialRows =
+      hydrate ? InitialViewportRows(viewportDip, rowPlan, placement.window) : windowRows;
+  parts->window = placement.window;
+  parts->window.start = parts->window.end - initialRows;
+  parts->hydrateTarget = placement.window.start;
+
+  // The loop renders the WINDOW'S SLICE of the full plan, [window.start,
+  // window.end) — with T9, the INITIAL SET slice; the background beats widen
+  // the window upward from there. At or under the cap the window IS the whole
+  // conversation and this builds exactly what it did before T8; beyond it, the
+  // plan still walks the full history so the seam row gets the sender header,
+  // corners and cluster a full rebuild would give it (`T8 window seam` asserts
+  // that agreement). BuildPlanRow is the one builder — the slides AND the fill
+  // beats share it, so a row materialized later cannot drift from a fresh open.
+  //
+  // bubbleCount is the count the OPEN STAGGER sees (design d2 §8.2): the
+  // rendered slice's bubble rows — only the last min(kMaxStaggerSteps, count)
+  // animate, which is the visible foot either way.
+  std::size_t bubbleCount = 0;
+  for (std::size_t i = parts->window.start; i < parts->window.end; ++i)
+    if (c.rows[i].kind == demo::RowKind::Message) ++bubbleCount;
   std::size_t bubbleIndex = 0;
   for (std::size_t i = parts->window.start; i < parts->window.end; ++i) {
     auto const& p = rowPlan[i];
@@ -2263,6 +2450,32 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
     parts->scroller.ChangeView(
         nullptr, ClampScrollOffset(keepOffset, parts->scroller.ScrollableHeight()), nullptr,
         true);
+  }
+
+  // T9: the synchronous phase ends HERE — everything the first presented
+  // frame of this thread needs has been issued (plan, initial-set parent,
+  // measure/arrange, foot pin). That is the number the owner feels on a
+  // switch, and the honest before/after against the pre-hydration single-turn
+  // open: the fill below is background by construction.
+  const double syncMs =
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - buildStart)
+          .count();
+  if (HydrateFillActive(parts->window.start, parts->hydrateTarget)) {
+    parts->hydrateStart = std::chrono::steady_clock::now();
+    QueueHydrateBeat(parts);
+    urnw::LogInfo(
+        "thread: sync phase {:.2f} ms (plan {:.2f}); initial {} of {} window rows at {:.0f} "
+        "dip viewport — fill of {} rows queued (target {})",
+        syncMs, planMs, initialRows, windowRows, viewportDip,
+        parts->window.start - parts->hydrateTarget, parts->hydrateTarget);
+  } else {
+    // The default path states itself in the log too: at/under the cap, on a
+    // position-preserving refresh, or when the viewport covers the window,
+    // the initial set IS the window and no beat is ever queued.
+    urnw::LogInfo(
+        "thread: sync phase {:.2f} ms (plan {:.2f}); initial {} of {} window rows at {:.0f} "
+        "dip viewport — no fill",
+        syncMs, planMs, initialRows, windowRows, viewportDip);
   }
 }
 

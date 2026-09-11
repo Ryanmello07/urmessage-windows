@@ -332,4 +332,76 @@ RefreshWindowPlan PlanRefreshWindow(ThreadWindow w, std::size_t totalAfter,
   return p;
 }
 
+// ---- T9: progressive window hydration ----------------------------------------
+
+// The per-shape estimates the initial set is sized with. These are the
+// typical single-line heights of the stress generator's rows (the case that
+// needs hydration at all): a bubble with its §1 rhythm margin, a separator
+// pill with (0,16,0,8), a centred system line with (0,8,0,8), and the
+// key-change record, which is the tallest thing the thread draws. Wrapping
+// bodies lie higher — fine: the floor covers underestimates and the window
+// cap covers overestimates, and --diagnose walks both ends.
+double EstimatedRowDip(ThreadRowShape shape) {
+  switch (shape) {
+    case ThreadRowShape::IncomingBubble:
+    case ThreadRowShape::OutgoingBubble:
+      return 64.0;
+    case ThreadRowShape::DaySeparator:
+      return 48.0;
+    case ThreadRowShape::SystemLine:
+      return 36.0;
+    case ThreadRowShape::SystemPermanentRecord:
+      return 80.0;
+  }
+  return 64.0;
+}
+
+std::size_t InitialViewportRows(double viewportDip, std::vector<ThreadRowPlan> const& plan,
+                                ThreadWindow window) {
+  const std::size_t windowRows = WindowRowCount(window);
+  if (windowRows == 0) return 0;
+  const double vp = viewportDip > 0.0 ? viewportDip : kHydrateFallbackViewportDip;
+  const double cover = kHydrateViewportCover * vp;
+  // Walk back from the window's FOOT — the open is pinned there, so the
+  // newest rows are the visible ones and the headroom accumulates upward.
+  double covered = 0.0;
+  std::size_t rows = 0;
+  while (rows < windowRows && covered < cover) {
+    covered += EstimatedRowDip(plan[window.end - 1 - rows].shape);
+    ++rows;
+  }
+  // The floor and the cap, in one clamp: never fewer than 32 rows (unless the
+  // window itself is smaller), never more than the window holds. The cap's
+  // half is the under-500 pixel-identity rule: the initial set is then the
+  // whole window and NOTHING is deferred.
+  return (std::min)((std::max)(rows, (std::min)(kHydrateFloorRows, windowRows)), windowRows);
+}
+
+HydrateBeatPlan PlanHydrateBeat(std::size_t cursor, std::size_t target,
+                                std::uint64_t beatGeneration,
+                                std::uint64_t currentGeneration) {
+  HydrateBeatPlan p;
+  // A beat queued by a conversation the user has since switched AWAY from
+  // lands here: dropped, and NOT rescheduled, so the dead conversation's
+  // chain ends this turn instead of hydrating rows nobody is looking at.
+  // (The live conversation's own chain carries its own generation.)
+  if (beatGeneration != currentGeneration) return p;
+  // Done: the cursor reached the target, OR a scroll-triggered slide jumped
+  // PAST it mid-fill — cursor < target means the slide already materialized
+  // the remainder, so the fill must not invent a negative-size beat.
+  if (cursor <= target) return p;
+  p.run = true;
+  // Clamped at the TARGET, never below it: the beat must not overshoot into
+  // history the window has not asked for — SlideWindowUp's own clamp would
+  // overshoot and then trim the FOOT to hold the cap, yanking the newest
+  // rows out of a thread the reader is watching. That is why the fill does
+  // not simply reuse the slide.
+  const std::size_t added = (std::min)(kHydrateFillBeatRows, cursor - target);
+  p.newStart = cursor - added;
+  p.reschedule = p.newStart > target;
+  return p;
+}
+
+bool HydrateFillActive(std::size_t cursor, std::size_t target) { return target < cursor; }
+
 }  // namespace urmsg::views

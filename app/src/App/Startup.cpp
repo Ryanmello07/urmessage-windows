@@ -2314,6 +2314,321 @@ std::vector<std::wstring> CollectDiagnostics() {
     }
   }
 
+  // ---- T9: progressive window hydration --------------------------------------
+  //
+  //  The open/switch path renders only the viewport-covering INITIAL SET
+  //  synchronously and fills the rest of the 500-row window in background
+  //  beats. Every decision in that is pure arithmetic in Views/ThreadLayout —
+  //  sizing from the viewport and the plan's row shapes, the beat partition,
+  //  and the coalescing rules between the fill and a scroll-triggered slide.
+  //
+  //  WHAT THESE LINES CANNOT SEE, said plainly: the DispatcherQueue scheduling
+  //  (Low priority TryEnqueue), the view-side `keepOffset < 0` clause that
+  //  excludes the position-preserving refresh from hydration, and the
+  //  extent-delta offset correction the beats perform — all winrt-side in
+  //  ThreadView.cpp, capture-verified. What is asserted here is the
+  //  arithmetic they spend.
+  {
+    namespace dv = urmsg::views;
+    namespace dd = urmsg::demo;
+    using dv::ThreadWindow;
+
+    // A stressed 524-row world (the T8 seam gate's pattern: built LOCALLY,
+    // DemoWorld.cpp's bytes untouched) whose window is exactly 500 rows.
+    dd::World sw = dd::GetWorld();
+    dd::PrependStressHistory(sw, 500);
+    dd::Conversation const& sc = sw.conversations.front();
+    const auto splan = dv::PlanThreadRows(sc);
+    const ThreadWindow swindow = dv::InitialWindow(sc.rows.size());  // [24,524)
+
+    // 1. INITIAL-SET SIZING. The formula: walk back from the window's foot
+    //    accumulating EstimatedRowDip until 2.0 viewport heights are covered,
+    //    clamped into [min(32, windowRows), windowRows]. Asserted as
+    //    PROPERTIES over probes (the T4 lesson: recomputing the loop here
+    //    would agree with a broken loop):
+    //      BOUNDS     min(32,windowRows) <= K <= windowRows at every probe
+    //      COVERAGE   estExtent(K newest) >= 2*vp, unless K == windowRows
+    //      MONOTONE   K non-decreasing in viewport height
+    //      FALLBACK   vp=0 answers EXACTLY what the 800-dip fallback answers
+    //      DIRECTION  a hand-built plan whose foot rows are TALLER than its
+    //                 head rows: the count from the foot differs from the
+    //                 count a head-walk would give, and K must be the foot's
+    //      FLOOR/CAP  tiny viewport -> exactly 32; a viewport taller than the
+    //                 window's whole estimated extent -> exactly windowRows
+    //      MINIMALITY with floor and cap not binding: estExtent(K-1) < cover
+    //
+    //    MUTATIONS CAUGHT: halving the cover multiplier (1.0) fails DIRECTION
+    //    (the probe then yields 16, floored to 32, not 44); dropping the
+    //    floor fails FLOOR; walking from the head fails DIRECTION; a 600-dip
+    //    fallback value fails nothing here by itself — the fallback's VALUE
+    //    is a judgement call, and what is gated is that 0 is not a
+    //    degenerate answer.
+    {
+      bool sizingOk = true;
+      const double vps[] = {0.0, 1.0, 300.0, 700.0, 1400.0, 5000.0, 100000.0};
+      std::size_t prevK = 0;
+      std::vector<std::size_t> ks;
+      for (double vp : vps) {
+        const std::size_t k = dv::InitialViewportRows(vp, splan, swindow);
+        ks.push_back(k);
+        if (k < 32 || k > 500) sizingOk = false;  // BOUNDS (windowRows == 500)
+        if (k < prevK) sizingOk = false;          // MONOTONE
+        prevK = k;
+        // COVERAGE: the estimated extent of the newest k rows must reach the
+        // cover target unless the whole window was taken.
+        if (k != 500) {
+          const double effVp = vp > 0.0 ? vp : dv::kHydrateFallbackViewportDip;
+          double est = 0.0;
+          for (std::size_t i = swindow.end - k; i < swindow.end; ++i)
+            est += dv::EstimatedRowDip(splan[i].shape);
+          if (est + 1e-9 < dv::kHydrateViewportCover * effVp) sizingOk = false;
+        }
+      }
+      // FALLBACK: 0 is the unrealized-tree case and must be the fallback, not
+      // a degenerate answer.
+      const bool fallbackOk =
+          ks[0] == dv::InitialViewportRows(dv::kHydrateFallbackViewportDip, splan, swindow);
+      // DIRECTION / FLOOR / CAP / MINIMALITY on a hand-built plan: rows
+      // [0,90) are 36-dip system lines, rows [90,100) are 80-dip permanent
+      // records, window is the whole thing. At vp=1000 the cover is 2000 dip:
+      // from the FOOT that is 10 records (800) + 34 lines (1224) = 2024, so
+      // K = 44; a head-walk would give ceil(2000/36) = 56. The floor never
+      // binds at 44, the cap never binds under 100.
+      std::vector<dv::ThreadRowPlan> hand(100);
+      for (std::size_t i = 0; i < 100; ++i)
+        hand[i].shape = i < 90 ? dv::ThreadRowShape::SystemLine
+                               : dv::ThreadRowShape::SystemPermanentRecord;
+      const ThreadWindow hw{0, 100};
+      const std::size_t dir = dv::InitialViewportRows(1000.0, hand, hw);
+      const bool directionOk = (dir == 44);  // the foot's answer, not the head's 56
+      // MINIMALITY at the same probe: one row fewer must NOT cover.
+      bool minimalOk = false;
+      {
+        double est = 0.0;
+        for (std::size_t i = 100 - dir; i < 100; ++i) est += dv::EstimatedRowDip(hand[i].shape);
+        double estLess = 0.0;
+        for (std::size_t i = 100 - (dir - 1); i < 100; ++i)
+          estLess += dv::EstimatedRowDip(hand[i].shape);
+        minimalOk = (est >= 2000.0) && (estLess < 2000.0);
+      }
+      const bool floorOk = dv::InitialViewportRows(60.0, hand, hw) == 32;
+      const bool capOk = dv::InitialViewportRows(100000.0, hand, hw) == 100;
+      const bool ok = sizingOk && fallbackOk && directionOk && minimalOk && floorOk && capOk;
+      lines.push_back(std::format(
+          L"  T9 hydrate sizing    : {} — initial set = newest K rows covering 2.0 "
+          L"viewports of estimated shape dip, clamped [32, window]: 524-row plan "
+          L"K at vp 0/1/300/700/1400/5000/100000 = {}/{}/{}/{}/{}/{}/{}; fallback "
+          L"{}; foot-vs-head probe K=44 (head would say 56) {}; floor 32 {}, cap "
+          L"window {}, minimal {}",
+          ok ? L"PASS" : L"FAIL", ks[0], ks[1], ks[2], ks[3], ks[4], ks[5], ks[6],
+          fallbackOk ? L"ok" : L"BROKEN", directionOk ? L"ok" : L"BROKEN",
+          floorOk ? L"ok" : L"BROKEN", capOk ? L"ok" : L"BROKEN",
+          minimalOk ? L"ok" : L"BROKEN"));
+    }
+
+    // 2. BEAT PARTITION. The fill walks from the initial set's top (cursor)
+    //    down to the initial window's start (target) in <=100-row beats. THE
+    //    TILING IS THE ASSERTION: every index in [target, cursor) is covered
+    //    by exactly one beat — no gaps, no dupes, no overrun past the target
+    //    (an overrun would overshoot into history the window never asked for
+    //    and, past the cap, trim the FOOT — the yank the beat clamp exists to
+    //    avoid). Beat count, the exact landing on the target, and idempotence
+    //    below it are asserted against recomputation.
+    //
+    //    MUTATIONS CAUGHT: a 99-row beat (per-beat arithmetic + count fail),
+    //    a beat that starts from cursor+1 (the dupe check fails), and a clamp
+    //    of target-1 (the last beat overruns and the tiling fails below it).
+    {
+      const std::size_t k = dv::InitialViewportRows(800.0, splan, swindow);
+      const std::size_t target = swindow.start;         // 24
+      const std::size_t open = swindow.end - k;         // the initial cursor
+      std::vector<bool> tiled(sc.rows.size(), false);
+      std::size_t beats = 0, coveredRows = 0;
+      bool beatsOk = true;
+      std::size_t cursor = open;
+      while (dv::HydrateFillActive(cursor, target)) {
+        const auto b = dv::PlanHydrateBeat(cursor, target, 3, 3);
+        if (!b.run) { beatsOk = false; break; }
+        const std::size_t wantAdd = (std::min)(std::size_t{100}, cursor - target);
+        if (cursor - b.newStart != wantAdd) beatsOk = false;
+        if (b.newStart < target) beatsOk = false;  // overrun past the target
+        for (std::size_t i = b.newStart; i < cursor; ++i) {
+          if (tiled[i]) beatsOk = false;  // a dupe
+          tiled[i] = true;
+          ++coveredRows;
+        }
+        cursor = b.newStart;
+        ++beats;
+        if (b.reschedule != dv::HydrateFillActive(cursor, target)) beatsOk = false;
+        if (256 < beats) break;  // loop guard, as in the T8 slide walk
+      }
+      const std::size_t wantBeats = (open - target + 99) / 100;
+      if (cursor != target || beats != wantBeats || coveredRows != open - target)
+        beatsOk = false;
+      for (std::size_t i = target; i < open; ++i)
+        if (!tiled[i]) beatsOk = false;  // a gap
+      // Idempotent AT the target and silent BELOW it (a scroll slide that
+      // jumped past mid-fill must not owe a negative-size beat).
+      const auto atEnd = dv::PlanHydrateBeat(target, target, 3, 3);
+      const auto pastEnd = dv::PlanHydrateBeat(target > 10 ? target - 10 : 0, target, 3, 3);
+      const bool endsOk = !atEnd.run && !atEnd.reschedule && !pastEnd.run &&
+                          !pastEnd.reschedule &&
+                          !dv::HydrateFillActive(target, target) &&
+                          !dv::HydrateFillActive(target - 10, target);
+      lines.push_back(std::format(
+          L"  T9 hydrate beats     : {} — 524-row window, K={} at 800 dip: fill "
+          L"[{},{}) in {} beats of <=100 ({} rows tiled exactly once, landed on "
+          L"the target exactly), reschedule matches fill-active, idempotent at "
+          L"and below the target {}",
+          beatsOk && endsOk ? L"PASS" : L"FAIL", k, target, open, beats, coveredRows,
+          endsOk ? L"ok" : L"BROKEN"));
+    }
+
+    // 3. COALESCING, as scripted scenarios over the pure arithmetic — the
+    //    rules the view's beats and slides BOTH spend, so neither can
+    //    double-materialize the other's rows:
+    //
+    //    A. fill mid-way + scroll prepend: two beats land, then a slide takes
+    //       its 100 rows from the LIVE cursor, then the fill resumes from the
+    //       slide's new start. Every index in [target, open) must be covered
+    //       exactly once across BOTH mechanisms. A beat that cached its next
+    //       range at schedule time (instead of recomputing from the live
+    //       window.start) re-covers the slide's rows HERE and fails.
+    //    B. a slide jumping PAST the target ends the fill: cursor < target
+    //       means the slide already covered the remainder; the beat must not
+    //       run, and must not reschedule.
+    //    C. the switch guard: a beat carrying a stale generation neither runs
+    //       nor reschedules — the dead conversation's chain ends this turn —
+    //       while the new conversation's own generation runs normally.
+    //
+    //    MUTATION CAUGHT for A: PlanHydrateBeat answered from a cursor the
+    //    caller snapshotted — the dupe check fires. For C: `>` for `!=`
+    //    passes every probe here (beat < current is never scheduled), so the
+    //    stale case is probed in BOTH directions (7-after-8 stale, 8-after-7
+    //    stale).
+    {
+      bool coalesceOk = true;
+      // The gate-2 geometry, recomputed rather than copied: the 524-row
+      // window's start as target, and the cursor the 800-dip sizing yields.
+      const std::size_t target = swindow.start;
+      const std::size_t open = swindow.end - dv::InitialViewportRows(800.0, splan, swindow);
+      std::vector<bool> covered(sc.rows.size(), false);
+      auto mark = [&](std::size_t lo, std::size_t hi) {
+        for (std::size_t i = lo; i < hi; ++i) {
+          if (covered[i]) coalesceOk = false;  // double-materialized
+          covered[i] = true;
+        }
+      };
+      // A: two beats, a slide, the fill to completion. The scenario needs
+      // working room — two beats and a slide must all fit above the target —
+      // and that dependency on the sizing constants is stated outright rather
+      // than failing mysteriously inside the script.
+      const bool room = open >= target + 400;
+      if (!room) coalesceOk = false;
+      std::size_t cursor = open;
+      ThreadWindow win{open, sc.rows.size()};
+      for (int step = 0; step < 2; ++step) {
+        const auto b = dv::PlanHydrateBeat(cursor, target, 7, 7);
+        if (!b.run) coalesceOk = false;
+        mark(b.newStart, cursor);
+        cursor = b.newStart;
+        win.start = cursor;
+      }
+      win = dv::SlideWindowUp(win);  // the scroll prepend takes the next 100
+      if (win.start != cursor - 100) coalesceOk = false;
+      mark(win.start, cursor);
+      cursor = win.start;  // the fill resumes from the LIVE cursor
+      std::size_t steps = 0;
+      while (dv::HydrateFillActive(cursor, target)) {
+        const auto b = dv::PlanHydrateBeat(cursor, target, 7, 7);
+        if (!b.run) { coalesceOk = false; break; }
+        mark(b.newStart, cursor);
+        cursor = b.newStart;
+        if (256 < ++steps) { coalesceOk = false; break; }  // a stuck beat must not hang the gate
+      }
+      for (std::size_t i = target; i < open; ++i)
+        if (!covered[i]) coalesceOk = false;  // the fill forgot a range
+      // B: the slide jumps past the target. SlideWindowUp({target+36, 524})
+      // has only target+36 rows above it, lands at 0, and the fill must stop
+      // on BOTH the exact landing and the overshoot.
+      const ThreadWindow jump{target + 36, sc.rows.size()};
+      const ThreadWindow jumped = dv::SlideWindowUp(jump);
+      if (jumped.start != 0) coalesceOk = false;
+      const auto afterJump = dv::PlanHydrateBeat(jumped.start, target, 7, 7);
+      if (afterJump.run || afterJump.reschedule) coalesceOk = false;
+      const auto exactEnd = dv::PlanHydrateBeat(target, target, 7, 7);
+      if (exactEnd.run || exactEnd.reschedule) coalesceOk = false;
+      // C: the switch guard, both directions of staleness.
+      const auto stale = dv::PlanHydrateBeat(open - 100, target, 7, 8);
+      const auto staleBack = dv::PlanHydrateBeat(open - 100, target, 8, 7);
+      const auto live = dv::PlanHydrateBeat(open - 100, target, 8, 8);
+      if (stale.run || stale.reschedule || staleBack.run || staleBack.reschedule)
+        coalesceOk = false;
+      if (!live.run || !live.reschedule || live.newStart != open - 200) coalesceOk = false;
+      lines.push_back(std::format(
+          L"  T9 hydrate coalesce  : {} — fill + scroll-prepend share one cursor: "
+          L"2 beats, a 100-row slide, fill resumes — [{},{}) covered exactly once "
+          L"across both; slide past the target ends the fill; a stale-generation "
+          L"beat dies unrescheduled (both directions), the live one runs",
+          coalesceOk ? L"PASS" : L"FAIL", target, open));
+    }
+
+    // 4. THE UNDER-500 NO-OP. Every real fixture conversation is under the
+    //    cap; for them the initial set must be the WHOLE window and no beat
+    //    may exist — the open is pixel-identical to the pre-hydration path.
+    //    Probed at 300/500/501 with locally built worlds (276/476/477
+    //    synthetic rows over the 24-row fixture): the boundary sits BETWEEN
+    //    500 and 501 and both sides are stated, not sampled.
+    //
+    //    The composition asserted here is the view's own:
+    //      hydrate = WindowActive(total) && keepOffset < 0   (ThreadView.cpp)
+    //      initial = hydrate ? InitialViewportRows(...) : WindowRowCount(...)
+    //    The keepOffset clause is the half the gate cannot reach (it excludes
+    //    the position-preserving refresh — view state, no pure probe); what
+    //    IS asserted is the WindowActive half, the one with pixel-identity
+    //    consequences.
+    {
+      bool noopOk = true;
+      for (int synth : {276, 476, 477}) {  // 300 / 500 / 501 rows total
+        dd::World w = dd::GetWorld();
+        dd::PrependStressHistory(w, synth);
+        dd::Conversation const& c = w.conversations.front();
+        const std::size_t total = c.rows.size();
+        const auto plan = dv::PlanThreadRows(c);
+        const ThreadWindow win = dv::InitialWindow(total);
+        // The view's composition, restated: under the cap the sizing function
+        // is never the one that decides — the window is taken WHOLE.
+        const std::size_t k = dv::WindowActive(total)
+                                  ? dv::InitialViewportRows(800.0, plan, win)
+                                  : dv::WindowRowCount(win);
+        const std::size_t cursor = win.end - k;
+        const bool fills = dv::HydrateFillActive(cursor, win.start);
+        if (total <= 500) {
+          // Whole window synchronously, cursor lands ON the target, no beat.
+          if (k != total || cursor != win.start || fills) noopOk = false;
+        } else {
+          // Over the cap by ONE row: the fill exists and walks exactly the
+          // rows the initial set did not take, landing on the target.
+          if (k >= dv::WindowRowCount(win) || !fills) noopOk = false;
+          const auto b = dv::PlanHydrateBeat(cursor, win.start, 1, 1);
+          if (!b.run || cursor - b.newStart != 100 || !b.reschedule) noopOk = false;
+          std::size_t cur = b.newStart;
+          std::size_t guard = 0;
+          while (dv::HydrateFillActive(cur, win.start)) {
+            cur = dv::PlanHydrateBeat(cur, win.start, 1, 1).newStart;
+            if (256 < ++guard) { noopOk = false; break; }
+          }
+          if (cur != win.start) noopOk = false;
+        }
+      }
+      lines.push_back(std::format(
+          L"  T9 hydrate noop      : {} — 300/500-row worlds: initial set IS the "
+          L"whole window, zero beats (pixel-identical default path); 501 rows: "
+          L"initial 32 + 100-row beats tiling [1,469) to the target",
+          noopOk ? L"PASS" : L"FAIL"));
+    }
+  }
+
   // GUARDED, and the guard is not a nicety. CollectDiagnostics() is NOT the
   // --diagnose path: it runs on EVERY launch, before winrt::init_apartment and
   // before WantsDiagnose(), inside the try/catch in wWinMain whose failure path
