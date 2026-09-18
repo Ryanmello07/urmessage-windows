@@ -14,13 +14,22 @@
 // file" rule is deliberately narrowed here, not broken by accident - and they go
 // back through it the day the demo becomes product.
 //
-// NOTHING HERE CLAIMS A MESSAGE WAS ENCRYPTED, VERIFIED OR ATTESTED, and on this
-// file that is a correctness constraint rather than a footnote. There is no
-// protocol and no crypto behind this window: every value these functions return
-// is fabricated by Demo/DemoWorld.cpp. So each label names a FIELD the rail
-// would display, and no value is phrased as the result of a check this binary
-// performed - see AttestationLabel, the one field where the difference is not
-// academic.
+// NOTHING HERE CLAIMS A CHECK RAN THAT DID NOT RUN, AND NOTHING HERE DENIES ONE
+// THAT DID. That is one constraint with two halves and this file has now been
+// through both. In RunMode::Fabricated there is no protocol and no crypto behind
+// this window - every value is built by Demo/DemoWorld.cpp - so each label names
+// a FIELD the rail would display and no value is phrased as a result. In
+// RunMode::Live the records are real and were opened under MLS, so a value that
+// DENIES a property the run has is exactly as false as one that invents a
+// property it does not: see AttestationLabel, where the live answer is neither
+// "verified" nor "not verified" but the ONE placeholder, because the ABI carries
+// no per-message attestation and there is therefore no result of either sign to
+// report.
+//
+// THE MODE IS A PARAMETER, never read from urmsg::ActiveRunMode() inside these
+// functions. That is what lets the --diagnose probe at the foot of the .cpp
+// assert BOTH modes from one fabricated launch - the only arrangement under
+// which a default launch can gate the live copy at all.
 //
 // AND A FIELD THAT MUST STAY UNRENDERED, for whoever extends this list next.
 // MessageInspect::cipher carries "XChaCha20-Poly1305" (DemoWorld.cpp:172) and is
@@ -42,6 +51,7 @@
 
 #include "Demo/DemoSwitches.h"  // DemoScreen, for InitialRailMode - pure, no winrt
 #include "Demo/DemoWorld.h"
+#include "RunMode.h"            // urmsg::RunMode - pure, no winrt
 
 namespace urmsg::views {
 
@@ -75,14 +85,28 @@ inline constexpr size_t kInspectValueMaxChars = 28;
 std::wstring RetentionClassLabel(demo::RetentionClass retention);
 
 // The one field on this surface where the wording is a correctness question and
-// not a copy preference. MessageInspect::attestationVerified is a boolean
-// DemoWorld derives from the row's delivery state (DemoWorld.cpp:171); nothing
-// in this binary verifies anything. So the value names what the RAIL is showing
-// - a demo model's flag, and the reading that flag would carry - instead of
-// asserting that a check ran and passed. The KEY stays "Attestation" (task R3
-// checks the eight message keys by name); only the VALUE carries the framing,
-// and InspectRailFieldsProbe asserts that it still does.
-std::wstring AttestationLabel(bool verified);
+// not a copy preference, and the only one whose two modes answer DIFFERENT
+// QUESTIONS rather than the same question in different words.
+//
+// Fabricated -> "Demo model: verified" / "Demo model: not verified".
+// MessageInspect::attestationVerified is a boolean DemoWorld derives from the
+// row's delivery state (DemoWorld.cpp:171); nothing in this binary verifies
+// anything. So the value names what the RAIL is showing - a demo model's flag,
+// and the reading that flag would carry - instead of asserting that a check ran
+// and passed.
+//
+// Live -> demo::kUnavailable, for BOTH values of the bit, and the distinction is
+// the whole reason this parameter exists. "Not verified" asserts a NEGATIVE
+// RESULT - a check ran, it failed - and in live mode no check ran: the ABI's
+// per-message metadata carries no attestation at all, so there is no result of
+// either sign. An absence is not a negative. The one placeholder is how this
+// window already says "no source has this" (Demo/DemoWorld.h), and it is what
+// `Sender leaf index` and `Wire size` render beside it in the same mode.
+//
+// The KEY stays "Attestation" in both (task R3 checks the eight message keys by
+// name); only the VALUE moves, and InspectRailFieldsProbe asserts both arms and
+// that no wording is shared between the modes.
+std::wstring AttestationLabel(bool verified, urmsg::RunMode mode);
 
 // Named here rather than in the thread because the rail's --diagnose probe has
 // to PRINT it (a verification step cannot check a delivery state it has no way
@@ -120,7 +144,8 @@ std::wstring ShortHex(std::wstring const& hex, size_t keep = 8);
 // Extending this list is a G4 decision, not a layout one - MessageInspect::cipher
 // is the specific trap, and the file header says why.
 std::vector<InspectField> BuildMessageFields(demo::Conversation const& conv,
-                                             demo::MessageRow const& row, bool advanced);
+                                             demo::MessageRow const& row, bool advanced,
+                                             urmsg::RunMode mode);
 
 // Conversation mode's retention block. The member list is not here: it is a list
 // of person rows, not key/value pairs. Advanced adds the conversation id always,

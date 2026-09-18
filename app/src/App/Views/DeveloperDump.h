@@ -28,11 +28,13 @@
 #include <string>
 #include <vector>
 
+#include "RunMode.h"  // urmsg::RunMode - the framing first line is a pair
+
 namespace urmsg::views {
 
 // The whole seeded world, rendered field by field. Deterministic: two calls
 // in one process are byte-identical, which WorldDumpDiagnostics asserts.
-std::wstring DumpDemoWorld();
+std::wstring DumpDemoWorld(urmsg::RunMode mode);
 
 // The --diagnose assertions for the dump. Touches no global state and writes
 // nothing. What is asserted is a PROPERTY — every conversation and every row

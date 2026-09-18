@@ -22,6 +22,29 @@
     <UrmWindowsAppSdkVersion>2.2.0</UrmWindowsAppSdkVersion>
   </PropertyGroup>
 
+  <!-- THE VENDORED URnetwork SDK — the C ABI this app reaches the real message
+       mesh through. Directory.Build.props notes that the VPN client's vendored
+       SDK (UrnSdkDir) went "with the tunnel"; this is the messaging half of it
+       coming back, under a name of its own.
+
+       WHAT IS VENDORED AND WHAT IS NOT. The two headers live in
+       third_party\vendor-include (already on every project's include path, see
+       Directory.Build.props) and are committed, exactly as nlohmann\json.hpp
+       beside them is. The import library and the 33 MB dll are BUILD OUTPUT of
+       ..\..\..\sdk\cgo (`make build_windows_amd64`, then lib.exe /def:) and are
+       NOT committed — .gitignore's [Bb]in/ and x64/ already exclude both, which
+       is why they sit under bin\$(Platform) and lib\$(Platform).
+
+       $(Platform) rather than a hard-coded x64 because the SDK Makefile builds
+       windows/amd64 and windows/arm64 alike; only amd64 is vendored here today,
+       so an ARM64 build will fail at link naming this path, which is the honest
+       failure for a dependency nobody has staged yet. -->
+  <PropertyGroup>
+    <UrmSdkRoot Condition="'$(UrmSdkRoot)'==''">$(MSBuildProjectDirectory)\..\..\third_party\urnetwork-sdk\</UrmSdkRoot>
+    <UrmSdkLibDir>$(UrmSdkRoot)lib\$(Platform)\</UrmSdkLibDir>
+    <UrmSdkBinDir>$(UrmSdkRoot)bin\$(Platform)\</UrmSdkBinDir>
+  </PropertyGroup>
+
   <!-- SELF-CONTAINED, unconditionally. With WindowsPackageType=None the App SDK
        bootstrapper runs from a CRT INITIALIZER, ahead of wWinMain, and with no
        options set it defaults to show-UI-then-exit(hr): a missing machine-wide
@@ -161,7 +184,21 @@
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
-      <AdditionalDependencies>shell32.lib;advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>shell32.lib;advapi32.lib;delayimp.lib;$(UrmSdkLibDir)URnetworkSdk.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <!-- DELAY-LOADED, AND THAT IS THE WHOLE POINT OF LINKING IT THIS WAY.
+           URnetworkSdk.dll is 33 MB of Go runtime: loading it installs Go's
+           exception handlers and sets the process error mode (the VPN client's
+           main.cpp clears SEM_NOGPFAULTERRORBOX again after the Go runtime sets
+           it). A normal import would pay all of that on EVERY launch, including
+           the diagnose run CI reads, for a code path that is off by default.
+           With /DELAYLOAD the dll is not touched until the first ABI call, which
+           only Live\LiveMesh.cpp makes and only when the live switch is on: an
+           ordinary launch never maps it and behaves exactly as it did before.
+           (This comment spells those switches without their leading hyphens on
+           purpose: an XML comment may not contain a double hyphen.)
+           It also means a MISSING dll cannot stop the app from starting — the
+           worker probes for it with LoadLibraryW and says so in one line. -->
+      <DelayLoadDLLs>URnetworkSdk.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
     </Link>
     <Manifest>
       <AdditionalManifestFiles>app.manifest</AdditionalManifestFiles>
@@ -224,8 +261,19 @@
          call. -->
     <ClCompile Include="Demo\DeveloperSwitches.cpp" />
     <ClCompile Include="Identicon.cpp" />
+    <!-- NotUsing for the same reason as Demo\DemoWorld.cpp above, with a second
+         reason of its own: this TU is Win32 plus the SDK's C ABI and runs on a
+         worker thread that must never touch winrt/ or XAML. Keeping the pch out
+         is what makes that a property of the build rather than a comment. -->
+    <ClCompile Include="Live\LiveMesh.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <!-- NotUsing for the same two reasons as Live\LiveMesh.cpp: it is built on
+         the live worker thread and must never acquire a winrt/ or XAML
+         dependency. It maps what the protocol hands over onto the World the
+         existing views already read. -->
+    <ClCompile Include="Live\LiveWorld.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="MainWindow.xaml.cpp"><DependentUpon>MainWindow.xaml</DependentUpon></ClCompile>
     <ClCompile Include="Localization.cpp" />
+    <ClCompile Include="RunMode.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="Startup.cpp" />
     <ClCompile Include="UrComponents.cpp" />
     <ClCompile Include="UrMotion.cpp" />
@@ -287,9 +335,12 @@
     <ClInclude Include="Demo\AdvancedMode.h" />
     <ClInclude Include="Demo\DeveloperSwitches.h" />
     <ClInclude Include="Identicon.h" />
+    <ClInclude Include="Live\LiveMesh.h" />
+    <ClInclude Include="Live\LiveWorld.h" />
     <ClInclude Include="MainWindow.xaml.h"><DependentUpon>MainWindow.xaml</DependentUpon></ClInclude>
     <ClInclude Include="Localization.h" />
     <ClInclude Include="Demo\DemoShellState.h" />
+    <ClInclude Include="RunMode.h" />
     <ClInclude Include="Startup.h" />
     <ClInclude Include="UrColors.h" />
     <ClInclude Include="UrComponents.h" />
@@ -311,6 +362,20 @@
   <ItemGroup>
     <ResourceCompile Include="App.rc" />
   </ItemGroup>
+
+  <!-- THE SDK DLL, NEXT TO THE EXE. It is delay-loaded, so a missing one does
+       not stop the app starting — but the live path cannot work without it, and
+       LoadLibraryW resolves a bare name out of the exe's own directory first.
+       CopyFileToFolders rather than a PostBuildEvent, matching the fonts and the
+       icon below: it is incremental and it participates in up-to-date checks. -->
+  <ItemGroup>
+    <CopyFileToFolders Include="$(UrmSdkBinDir)URnetworkSdk.dll" Condition="Exists('$(UrmSdkBinDir)URnetworkSdk.dll')">
+      <DestinationFolders>$(OutDir)</DestinationFolders>
+    </CopyFileToFolders>
+  </ItemGroup>
+  <Target Name="UrmWarnMissingSdkDll" AfterTargets="Build" Condition="!Exists('$(UrmSdkBinDir)URnetworkSdk.dll')">
+    <Warning Text="URnetworkSdk.dll is not staged at $(UrmSdkBinDir): the app builds and runs, but the --live path will report that it could not load the SDK. Build it with sdk/cgo's build_windows_amd64 target and copy it there." />
+  </Target>
 
   <!-- The app icon, copied next to the exe so it is resolvable as
        ms-appx:///Assets/app.ico from the title bar's Image. It is already the

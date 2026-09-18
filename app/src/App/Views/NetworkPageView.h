@@ -20,32 +20,46 @@
 #include <winrt/Microsoft.UI.Xaml.h>
 
 #include "Demo/DemoWorld.h"
+#include "RunMode.h"  // urmsg::RunMode — FormatKeyState answers a different question per mode
 
 namespace urmsg::views {
 
-// The framing header over the relay path (d5 §3.4): prefix-first honesty in
-// the letterspaced chrome voice, always visible in both modes — the page's
-// single always-on frame, the analogue of the rail's "Demo model: end-to-end
-// encrypted" header (InspectRailView.cpp:410). It cannot be cropped away from
-// the diagram it frames because it sits directly on top of it. The page
-// renders THIS constant and `net framing` asserts the same constant, so the
-// framing cannot be dropped silently (d5 §6).
-inline constexpr wchar_t kRelayPathGroupTitle[] = L"DEMO MODEL: RELAY PATH";
+// THE RELAY-PATH FRAMING HEADER MOVED to urmsg::RelayPathGroupTitle (RunMode.h)
+// when it became a PAIR, and the constant that used to live here is gone rather
+// than kept beside it — one owner, or the two drift. It is still the page's
+// single always-on honesty frame (d5 §3.4), still prefix-first in the
+// letterspaced chrome voice, still rendered by the page and asserted by
+// `net framing` through the SAME function so it cannot be dropped silently
+// (d5 §6). What changed is that "DEMO MODEL: RELAY PATH" is the FABRICATED arm
+// only: in live mode those three nodes are observations — the platform url the
+// library dialled and the message server's own client_id — so framing them as a
+// demo model denies the run a property it has, which the honesty rule forbids in
+// the same breath as it forbids the opposite.
 
 // 18 -> "18 ms". Also formats a RelayNode::hopMs for the Advanced wire labels.
 std::wstring FormatLatency(int latencyMs);
 
-// true -> "Demo model: verified", false -> "Demo model: not verified".
+// Fabricated: true -> "Demo model: verified", false -> "Demo model: not verified".
+// Live:       the ONE placeholder (demo::kUnavailable), for BOTH.
 //
-// PREFIX-FIRST, matching AttestationLabel (InspectRailFields.cpp:113)
-// character for character in shape, and for the reason recorded there: the
-// bare words state that a check RAN and returned a result, and this binary
-// runs no check. Leading with the claim loses the framing to exactly the crop
-// a screenshot performs, and --demo-watermark=off removes the chip a suffix
-// would lean on. This function is the ONE owner of the string: N4's Server
-// key row renders it and A3's settings row calls it (the d7 audit's N2/N4/A3
-// overrides); the bare words ship in no label, no automation name, no gate.
-std::wstring FormatKeyState(bool keyVerified);
+// PREFIX-FIRST in the fabricated arm, matching AttestationLabel
+// (InspectRailFields.h) character for character in shape, and for the reason
+// recorded there: the bare words state that a check RAN and returned a result,
+// and this binary runs no check. Leading with the claim loses the framing to
+// exactly the crop a screenshot performs, and --demo-watermark=off removes the
+// chip a suffix would lean on.
+//
+// THE LIVE ARM IS NOT A PREFIX SWAP, and that is the half worth reading twice.
+// "Live session: not verified" would still assert a negative RESULT — a check
+// that ran and failed — and no check runs: this build pins no server key, which
+// is why the live world hard-codes keyVerified false (Live/LiveWorld.cpp:350-352).
+// An absence is not a negative, so the live value is the same placeholder the
+// rail renders for every field no source can fill.
+//
+// This function is the ONE owner of the string: N4's Server key row renders it
+// and A3's settings row calls it (the d7 audit's N2/N4/A3 overrides); the bare
+// words ship in no label, no automation name, no gate.
+std::wstring FormatKeyState(bool keyVerified, urmsg::RunMode mode);
 
 // isThisComputer -> "This computer · Online"
 // online         -> "Online"

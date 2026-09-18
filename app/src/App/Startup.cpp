@@ -24,6 +24,7 @@
 #include "Strings.h"
 #include "UrMotion.h"
 #include "Views/ConversationRowModel.h"
+#include "RunMode.h"  // RunModeCopyDiagnostics - the mode-dependent honesty copy's gate
 #include "Views/DeveloperDump.h"
 #include "Views/InspectRailFields.h"
 #include "Views/StatusStripRules.h"
@@ -637,6 +638,16 @@ std::vector<std::wstring> CollectDiagnostics() {
   // DemoWorld.cpp is: this runs before winrt::init_apartment.
   for (auto& line : urmsg::views::WorldDumpDiagnostics())
     lines.push_back(std::move(line));
+  // THE HONESTY COPY THAT DIFFERS BETWEEN THE TWO WORLDS, asserted in BOTH modes from
+  // whichever mode this launch happens to be in. It sits here, beside the dump, because
+  // the dump's own framing line is one of the strings it covers.
+  //
+  // The reason this can gate the live wording at all from a default launch is that every
+  // function it calls takes the mode as a PARAMETER: nothing in RunMode.cpp reads
+  // ActiveRunMode(), so both arms are evaluable at any time. A gate that asked "what does
+  // the app say right now" would have gated exactly half the copy and would have gated
+  // the half that was already correct.
+  for (auto& line : urmsg::RunModeCopyDiagnostics()) lines.push_back(std::move(line));
   {
     using namespace urmsg::demo;
     World const& w = GetWorld();
@@ -2700,6 +2711,50 @@ std::vector<std::wstring> CollectDiagnostics() {
           ok ? L"PASS" : L"FAIL", switchRuns ? L"ok" : L"BROKEN",
           firstOpenRuns ? L"ok" : L"BROKEN", refreshSkips ? L"ok" : L"BROKEN",
           emptyPairSkips ? L"ok" : L"BROKEN", tail, tailOk ? L"ok" : L"BROKEN"));
+    }
+
+    // 5b. THE WHOLE-THREAD ENTRANCE'S PURE HALF — the container timeline table
+    //     the view's RunThreadEntrance spends on a true open/switch (the same
+    //     ShouldRunEntrance gate as 5). TWO timelines with motion on (fade +
+    //     a kDist8 rise), ZERO with it off — the empty half is the gate, the
+    //     bubble table's rule. The rise is pinned against the TOKEN
+    //     (urnw::motion::kDist8), not a restated literal, so a token change
+    //     turns this line red rather than drifting the entrance. Per-entry
+    //     field checks, not a census (the T4 lesson): path, from/to, begin,
+    //     and both flags on each of the two.
+    //
+    //     WHAT THIS GATE CANNOT SEE: that the view targets the SCROLLER, runs
+    //     the board only under runEntrance, or lands the final pose — those
+    //     are winrt-side; the .verify-switchentrance captures cover them.
+    //     MUTATIONS CAUGHT: a dropped TranslateY timeline (count), a rise
+    //     re-typed to kDist4 (the token pin), a begin offset off 0, a flag
+    //     flipped on either entry, the animate=false table left non-empty.
+    {
+      const auto on = dv::ThreadEntranceTimelines(true);
+      const auto off = dv::ThreadEntranceTimelines(false);
+      const bool countOk = dv::ThreadEntranceTimelineCount(true) == 2 &&
+                           dv::ThreadEntranceTimelineCount(false) == 0;
+      bool fieldsOk = on.size() == 2 && off.empty();
+      if (fieldsOk) {
+        const dv::TimelineSpec& fade = on[0];
+        const dv::TimelineSpec& rise = on[1];
+        fieldsOk =
+            std::wstring{fade.path} == L"Opacity" && fade.from == 0.0 && fade.to == 1.0 &&
+            fade.beginMs == 0 && !fade.autoReverse && !fade.forever &&
+            std::wstring{rise.path} ==
+                L"(UIElement.RenderTransform).(CompositeTransform.TranslateY)" &&
+            rise.from == urnw::motion::kDist8 && rise.to == 0.0 && rise.beginMs == 0 &&
+            !rise.autoReverse && !rise.forever;
+      }
+      const bool ok = countOk && fieldsOk;
+      lines.push_back(std::format(
+          L"  SE thread entrance : {} — whole-thread container entrance on a "
+          L"true open/switch: {} timelines with motion on ({}), {} with it off "
+          L"({}); fade 0->1 {}, rise {:.0f} dip -> 0 (the kDist8 token) {}",
+          ok ? L"PASS" : L"FAIL", on.size(), countOk ? L"count ok" : L"COUNT BROKEN",
+          off.size(), off.empty() ? L"off ok" : L"OFF BROKEN",
+          (on.size() == 2 && std::wstring{on[0].path} == L"Opacity") ? L"ok" : L"BROKEN",
+          (on.size() == 2 ? on[1].from : -1.0), fieldsOk ? L"ok" : L"BROKEN"));
     }
   }
 

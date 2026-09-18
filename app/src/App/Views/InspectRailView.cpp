@@ -431,11 +431,32 @@ FrameworkElement MakeSubjectRow(demo::Conversation const& conv) {
   return root;
 }
 
-// Message mode's subject: a padlock and what the product WILL say about a
-// message, FRAMED as a statement about the demo model rather than about this
-// message.
+// Message mode's subject: a padlock and what is true of THIS RUN about the
+// message beside it, FRAMED by a prefix that names which run that is.
 //
-// THE RULING, AND WHY THE BRIEF'S VERSION IS NOT WHAT SHIPPED. Design 2 makes it
+// ── THE SECOND HALF OF THE RULE, ADDED AFTER THE APP SHIPPED THE FIRST ──────
+// Both strings now come from urmsg::LockHeaderTitle/Note(mode) and there are
+// two of each. The reason is not symmetry, it is a measured defect: with a live
+// world on screen this card rendered "Demo model: end-to-end encrypted /
+// Demo model: fabricated data, no crypto in this build" directly above a record
+// that a real device really had opened under MLS, having really crossed a
+// network from a second account. The honesty rule that produced the fabricated
+// wording exists to stop the app claiming security it does not have; the same
+// rule, in the same words, forbids denying security it does have. A screenshot
+// of that state is what commissioned this change.
+//
+// The two strings are NOT reworded into one that is true in both modes. Any
+// such string is necessarily the vaguer of the candidates - it would have to
+// drop either "fabricated" or "real" - and the whole value of this card is that
+// it is specific. Two precise strings cost one `switch` (RunMode.cpp).
+//
+// THE PADLOCK AND THE GREEN ARE UNCHANGED IN BOTH MODES, which is now a
+// stronger statement than it was: in live mode the glyph is a restatement of a
+// property the run actually has.
+//
+// THE RULING BELOW IS THE ORIGINAL ONE AND STILL STANDS FOR THE FABRICATED ARM.
+//
+// WHY THE BRIEF'S VERSION IS NOT WHAT SHIPPED. Design 2 makes it
 // a hard constraint that "no copy in the demo may state that a message WAS
 // encrypted as a fact about a real operation". The plan proposed the bare
 // "End-to-end encrypted" plus MessageInspect::cipher underneath, on the grounds
@@ -460,9 +481,10 @@ FrameworkElement MakeSubjectRow(demo::Conversation const& conv) {
 // instead, which is the question a reader of this row actually has.
 //
 // If the owner wants the plain product wording back, the change is these two
-// strings and nothing else - no other row, count or check in the rail reads
-// them. The padlock and the green stay either way: the picture is fine, it was
-// the words that made the claim.
+// strings and nothing else - they live in urmsg::LockHeaderTitle/Note
+// (RunMode.cpp) now, with their gate beside them, and no other row, count or
+// check in the rail reads them. The padlock and the green stay either way: the
+// picture is fine, it was the words that made the claim.
 //
 // THE HEADER IS A CARD NOW (design d4 §6), and the reason is the reviewer's
 // note in the handoff: the green padlock was the only UNFRAMED positive claim
@@ -471,7 +493,7 @@ FrameworkElement MakeSubjectRow(demo::Conversation const& conv) {
 // crop now keeps both lines because they are vertically adjacent inside a
 // bounded box. Framing is ADDED with layout and typography, which cannot be
 // misquoted; nothing is removed and both strings stay byte-exact.
-FrameworkElement MakeLockHeader() {
+FrameworkElement MakeLockHeader(urmsg::RunMode mode) {
   auto card = kit::MakePaneCard();
   // The mode's hero, so it leaves the (12,0,12,10) section-card margin: it
   // opens the body, and the note below needs every DIP the column has.
@@ -522,7 +544,7 @@ FrameworkElement MakeLockHeader() {
   text.VerticalAlignment(VerticalAlignment::Center);
   TextBlock title;
   if (auto style = kit::StyleByKey(L"UrBodyStrongTextStyle")) title.Style(style);
-  title.Text(L"Demo model: end-to-end encrypted");
+  title.Text(winrt::hstring{urmsg::LockHeaderTitle(mode)});
   text.Children().Append(title);
   TextBlock note;
   if (auto style = kit::StyleByKey(L"UrRowNoteStyle")) note.Style(style);
@@ -546,7 +568,7 @@ FrameworkElement MakeLockHeader() {
   // change vocabulary too ("Fabricated demo data ... this build"), naming in two
   // ways the same object the title and AttestationLabel both call the demo
   // model. Same prefix, and the note now DEFINES the term the other two use.
-  note.Text(L"Demo model: fabricated data, no crypto in this build");
+  note.Text(winrt::hstring{urmsg::LockHeaderNote(mode)});
   text.Children().Append(note);
   Grid::SetColumn(text, 1);
   grid.Children().Append(text);
@@ -605,7 +627,7 @@ void AppendFailureBlock(UIElementCollection const& body, std::wstring const& rea
   // A Button whose Content is text still gets a name from that text, but the
   // reason it cannot be pressed is not in it. This project has paid twice for
   // controls that reach a screen reader as "button" and nothing else.
-  automation::AutomationProperties::SetName(retry, L"Try again, not available in the demo");
+  automation::AutomationProperties::SetName(retry, L"Try again, not available in this build");
   body.Append(retry);
 }
 
@@ -990,12 +1012,21 @@ void PopulateConversation(InspectRailView& v, demo::Conversation const& conv,
     online += OnlineDeviceCount(member);
     total += member.devices.size();
   }
+  // AN EMPTY LIST IS "NO SOURCE HAS ONE", NOT "NOBODY IS IN IT", and the two must not read alike.
+  // A conversation backed by the message protocol has no membership to draw - the ABI carries no
+  // roster, contact discovery is not built, and a member who has never spoken is invisible - so
+  // "0 members / 0/0 online" and "No members" would both be statements about the group that this
+  // app cannot make. The one placeholder says the true thing instead. The fabricated world never
+  // reaches this branch (assertion I2 requires every conversation's memberCount to equal a
+  // non-empty members.size()), so the demo's rendering is unchanged.
   AppendCaption(panel, L"MEMBERS",
-                std::format(L"{} members \u00B7 {}/{} online",  // U+00B7 MIDDLE DOT
-                            conv.members.size(), online, total),
+                conv.members.empty()
+                    ? std::wstring(demo::kUnavailable)
+                    : std::format(L"{} members \u00B7 {}/{} online",  // U+00B7 MIDDLE DOT
+                                  conv.members.size(), online, total),
                 /*first=*/true);
   if (conv.members.empty()) {
-    body.Append(kit::MakePaneEmptyLine(L"No members"));
+    body.Append(kit::MakePaneEmptyLine(demo::kUnavailable));
   } else {
     auto card = kit::MakePaneCard();
     for (auto const& member : conv.members) {
@@ -1021,7 +1052,16 @@ void PopulateMessage(InspectRailView const& v, demo::Conversation const& conv,
   if (!panel) return;
   auto body = panel.Children();
   body.Clear();
-  body.Append(MakeLockHeader());
+  // THE ONE urmsg::ActiveRunMode() READ ON THIS SURFACE, and it is taken HERE rather
+  // than inside MakeLockHeader or AttestationLabel on purpose: those stay pure
+  // functions of their arguments so the --diagnose probe can evaluate both modes from
+  // one launch (InspectRailFields.h says why). Read at POPULATE time, not at build
+  // time, which is what makes the rail follow the latch: MainWindow rebuilds the open
+  // thread and re-populates this panel on the beat that a live world lands
+  // (MainWindow::ApplyLiveWorld), so the header and the Attestation row are chosen
+  // after ActiveRunMode() has flipped, never before.
+  const urmsg::RunMode mode = urmsg::ActiveRunMode();
+  body.Append(MakeLockHeader(mode));
 
   // failureReason is documented non-empty ONLY when state == Failed, and an
   // empty reason must produce NO block rather than an empty one: a StackPanel
@@ -1038,7 +1078,7 @@ void PopulateMessage(InspectRailView const& v, demo::Conversation const& conv,
   // one call in the module that would skip RailValueOr, on the one mode that
   // holds every blank value in the world. It no longer compiles; see the block
   // under this file's includes.
-  AppendFieldRows(panel, conv, BuildMessageFields(conv, row, advanced),
+  AppendFieldRows(panel, conv, BuildMessageFields(conv, row, advanced, mode),
                   /*messageMode=*/true);
 
   // The device lists are always LAST (R4's step-8 invariant: Advanced Mode

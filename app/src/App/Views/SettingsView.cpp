@@ -83,7 +83,7 @@ kit::PaneTwoLineRow MakeValueRow(winrt::hstring const& title, winrt::hstring con
 void AppendInertGroup(StackPanel const& column, winrt::hstring const& title) {
   AppendCaption(column, title, {}, /*first=*/false);
   auto card = kit::MakePaneCard();
-  auto row = kit::MakePaneTwoLineRow(L"Not part of this demo.", {}, kRowHeight);
+  auto row = kit::MakePaneTwoLineRow(L"Not part of this build.", {}, kRowHeight);
   row.title.Foreground(urnw::colors::FaintBrush());
   card.body.Children().Append(row.root);
   kit::FinalizePaneCard(card);
@@ -92,8 +92,16 @@ void AppendInertGroup(StackPanel const& column, winrt::hstring const& title) {
 
 }  // namespace
 
-SettingsView MakeSettings(std::function<void(bool)> onAdvancedChanged, bool advanced) {
+SettingsView MakeSettings(urmsg::demo::World const& world,
+                          std::function<void(bool)> onAdvancedChanged, bool advanced) {
   SettingsView view;
+
+  // THE ONE urmsg::ActiveRunMode() READ ON THIS PAGE, taken at build time and never
+  // inside the copy functions themselves — they stay pure functions of their arguments
+  // so RunModeCopyDiagnostics can evaluate both arms from one launch (RunMode.h says
+  // why). MainWindow rebuilds this page on the beat it latches a live world, so the read
+  // happens after the flip rather than before it.
+  const urmsg::RunMode mode = urmsg::ActiveRunMode();
 
   // SettingsHost (MainWindow.xaml:284) is a bare UrPaneStyle Grid — no pane
   // header strip and no scroller, the same shape NetworkHost is — so the page
@@ -142,7 +150,12 @@ SettingsView MakeSettings(std::function<void(bool)> onAdvancedChanged, bool adva
   Grid::SetRow(scroller, 1);
   pane.Children().Append(scroller);
 
-  auto const& world = demo::GetWorld();
+  // THE WORLD IS A PARAMETER NOW, not demo::GetWorld(). Every other world-level view in
+  // this window (MakeNetworkPage, MakeDeveloper, MakeStatusStrip) already took one, and
+  // this page reading the fixture directly is why a --live launch showed the fabricated
+  // server host, the fabricated device names and the fabricated key state on the
+  // Settings pane while real messages sat one destination away. MainWindow passes
+  // ActiveWorld() and rebuilds this page on the beat a live world lands.
 
   // ---- Appearance -----------------------------------------------------------
   AppendCaption(column, L"APPEARANCE", {}, /*first=*/true);
@@ -220,9 +233,13 @@ SettingsView MakeSettings(std::function<void(bool)> onAdvancedChanged, bool adva
       // restates the words, so the meaning is never carried on colour alone.
       auto row = MakeValueRow(
           L"Server key", L"Whether this client has pinned the server's key.",
-          winrt::hstring{FormatKeyState(world.server.keyVerified)});
+          winrt::hstring{FormatKeyState(world.server.keyVerified, mode)});
       if (auto value = row.trailing.Children().GetAt(0).try_as<TextBlock>()) {
-        value.Foreground(world.server.keyVerified
+        // Muted in live mode whatever the bit says: the value is the placeholder there,
+        // and green on an absence would be a positive claim carried by colour alone —
+        // the one thing contract rule 6 forbids. (This row's negative arm was already
+        // muted rather than red, so only the affirmative needed guarding.)
+        value.Foreground(world.server.keyVerified && mode != urmsg::RunMode::Live
                              ? urnw::colors::MakeBrush(urnw::colors::kUrGreen)
                              : urnw::colors::MutedBrush());
       }
@@ -275,11 +292,11 @@ SettingsView MakeSettings(std::function<void(bool)> onAdvancedChanged, bool adva
   // Design §2's hard constraint, IN the product — cheaper than hoping a
   // presenter says it. A click that opens a panel THIS FILE owns, so it cannot
   // become a dead affordance if another surface slips.
-  AppendCaption(column, L"THIS DEMO", {}, /*first=*/false);
+  AppendCaption(column, winrt::hstring{urmsg::DisclosureCaption(mode)}, {}, /*first=*/false);
   {
     auto card = kit::MakePaneCard();
     auto row = kit::MakePaneTwoLineRowButton(
-        L"What this demo does not do",
+        winrt::hstring{urmsg::DisclosureTitle(mode)},
         L"Read this before drawing a conclusion from any screen.", kRowHeight);
     // The ON-CARD button variant: UrPaneRowButtonStyle's hover fill IS the
     // card token, so on a card it would paint nothing (the same reason
@@ -294,11 +311,15 @@ SettingsView MakeSettings(std::function<void(bool)> onAdvancedChanged, bool adva
     TextBlock body;
     if (auto style = StyleByKey(L"UrCaptionTextStyle")) body.Style(style);
     body.TextWrapping(TextWrapping::Wrap);
-    body.Text(L"No protocol, no store, no network and no cryptography are running. "
-              L"Every value on these screens is fabricated in one module. Nothing has "
-              L"been sent, received, stored, encrypted or decrypted. The inspector "
-              L"shows what URmessage will one day say about a real message; it is not "
-              L"a statement about one.");
+    // THE APP'S LONGEST HONESTY STRING, AND ITS MOST FALSE ONE UNDER --live. The
+    // paragraph that shipped opens "No protocol, no store, no network and no
+    // cryptography are running", which with a live world on screen is wrong in all four
+    // clauses at once. urmsg::DisclosureBody (RunMode.cpp) owns both paragraphs; the
+    // fabricated one is the shipped text with nothing removed, and the live one keeps its
+    // shape — what is real, then the complete list of what is absent, then how the
+    // absences are drawn — because that shape is what makes a disclosure checkable
+    // against the app rather than merely reassuring.
+    body.Text(winrt::hstring{urmsg::DisclosureBody(mode)});
     panel.Child(body);
 
     // The row's bottom hairline follows the panel's visibility: open, it

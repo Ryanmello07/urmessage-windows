@@ -23,6 +23,9 @@
 
 #include <functional>
 
+#include "Demo/DemoWorld.h"
+#include "RunMode.h"
+
 #include <winrt/Microsoft.UI.Xaml.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
 
@@ -41,6 +44,7 @@ struct SettingsView {
 // the value the pane is BUILT in. MainWindow wires the callback to
 // urmsg::SetAdvancedModeEnabled and passes urmsg::AdvancedModeEnabled() — no
 // view reads the preference itself (Demo/AdvancedMode.h).
-SettingsView MakeSettings(std::function<void(bool)> onAdvancedChanged, bool advanced);
+SettingsView MakeSettings(urmsg::demo::World const& world,
+                          std::function<void(bool)> onAdvancedChanged, bool advanced);
 
 }  // namespace urmsg::views

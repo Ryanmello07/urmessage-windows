@@ -136,6 +136,27 @@ struct World {
 // the state a screenshot needs.
 inline constexpr wchar_t kInspectTargetRowId[] = L"c0-r12";
 
+// THE ONE PLACEHOLDER FOR A FIELD NO SOURCE CAN FILL, and the only one: pick this, never a second
+// spelling. It is VISIBLE by design — hiding the field would let a reader assume there is simply
+// nothing to show, and filling it would be a fabrication. A protocol-backed world
+// (App\Live\LiveWorld.cpp) writes it wherever the message protocol carries no value: there are no
+// group names, no member lists, no sender names, no receipts past "the server took it", and no
+// read cursor. It lives here, beside the structs, because every view that renders one of those
+// fields already includes this header and none of them may reach into Live\.
+inline constexpr wchar_t kUnavailable[] = L"unavailable";
+
+// THE "NOT AVAILABLE" SENTINEL FOR THE TWO NUMERIC INSPECT FIELDS, and why it is a constant rather
+// than a field. MessageInspect::senderLeafIndex and ::wireSizeBytes are uint32_t, so a source that
+// cannot supply them has no text channel to say so in — 0 renders as "0" and as
+// "0 bytes", which are claims. A protocol-backed world (App\Live\LiveWorld.cpp) writes this value
+// instead and InspectRailFields renders the placeholder for it.
+//
+// A constexpr AND NOT A NEW STRUCT FIELD, which is load bearing: Startup.cpp's assertion I10
+// hashes every byte of this world against a fixed fingerprint and runs on EVERY launch, so a new
+// field in MessageInspect would turn that gate red for the fabricated world too. A constant adds
+// no bytes. DemoWorld.cpp never writes it, so the demo's rendering is unchanged.
+inline constexpr uint32_t kUnknownUint32 = 0xFFFFFFFFu;
+
 // Built once, seeded, deterministic. Same bytes on every launch.
 const World& GetWorld();
 

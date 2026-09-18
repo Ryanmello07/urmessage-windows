@@ -22,7 +22,7 @@
 #include "UrComponents.h"
 #include "UrMotion.h"
 #include "Views/StatusStripRules.h"  // StatusStateWord, the pane header meta's one owner
-#include "Views/StatusStripView.h"   // kStatusDrawerName, for the framing gate
+#include "Views/StatusStripView.h"   // the strip half of the framing gate
 
 using namespace winrt::Microsoft::UI::Xaml;
 using namespace winrt::Microsoft::UI::Xaml::Controls;
@@ -50,13 +50,17 @@ const wchar_t* Check(bool ok) { return ok ? L"PASS" : L"FAIL"; }
 // voice is uppercase (DEMO MODEL: RELAY PATH) and the automation-name voice is
 // mixed-case ("Demo model: relay path preview"); the gated property is that
 // the PREFIX is present, not which casing carries it.
-bool StartsWithDemoModel(std::wstring const& s) {
-  const std::wstring prefix = L"demo model:";
-  if (s.size() < prefix.size()) return false;
-  for (size_t i = 0; i < prefix.size(); ++i)
-    if (std::towlower(s[i]) != prefix[i]) return false;
+bool StartsWithLower(std::wstring const& s, std::wstring const& prefixLower) {
+  if (s.size() < prefixLower.size()) return false;
+  for (size_t i = 0; i < prefixLower.size(); ++i)
+    if (std::towlower(s[i]) != prefixLower[i]) return false;
   return true;
 }
+bool StartsWithDemoModel(std::wstring const& s) { return StartsWithLower(s, L"demo model:"); }
+// The live half of the same test. It is a SEPARATE predicate and not a parameter with a
+// default, so a gate that means "the live wording" cannot be satisfied by the fabricated
+// prefix through an argument someone forgot to pass.
+bool StartsWithLiveSession(std::wstring const& s) { return StartsWithLower(s, L"live session:"); }
 
 // The page's elements, module-private.
 //
@@ -530,10 +534,22 @@ void SetRemoveRevealed(Button const& remove, bool shown) {
 }  // namespace
 
 std::wstring FormatLatency(int latencyMs) {
+  // A NON-POSITIVE LATENCY IS "NOT MEASURED", NOT "ZERO MILLISECONDS". A world built from the
+  // message protocol measures no round trip and has none to give, and "0 ms" is a claim rather
+  // than an absence. The fabricated world's latencies are all positive, so this branch is dead
+  // for it and `net fmt latency` (FormatLatency(18) == "18 ms") is unaffected.
+  if (latencyMs <= 0) return std::wstring(urmsg::demo::kUnavailable);
   return std::to_wstring(latencyMs) + L" ms";
 }
 
-std::wstring FormatKeyState(bool keyVerified) {
+std::wstring FormatKeyState(bool keyVerified, urmsg::RunMode mode) {
+  // LIVE: THE ONE PLACEHOLDER, for both arms, and for the same reason
+  // AttestationLabel gives (InspectRailFields.cpp). "Not verified" reports the RESULT of
+  // a check; this build pins no server key and the live world hard-codes keyVerified
+  // false for exactly that reason (Live/LiveWorld.cpp:350-352), so there is no result of
+  // either sign to report. An absence is not a negative. The affirmative arm is
+  // unreachable in live mode and is not written as a claim that could be reached.
+  if (mode == urmsg::RunMode::Live) return std::wstring(urmsg::demo::kUnavailable);
   return keyVerified ? std::wstring(L"Demo model: verified")
                      : std::wstring(L"Demo model: not verified");
 }
@@ -549,6 +565,9 @@ std::wstring FormatDeviceMeta(urmsg::demo::DeviceRef const& device) {
 }
 
 std::wstring FormatRoundTrip(urmsg::demo::ServerInfo const& server) {
+  // "unavailable round trip" would be a sentence nobody wrote; an unmeasured round trip is just
+  // unavailable.
+  if (server.latencyMs <= 0) return std::wstring(urmsg::demo::kUnavailable);
   return FormatLatency(server.latencyMs) + L" round trip";
 }
 
@@ -563,12 +582,26 @@ std::vector<std::wstring> CollectNetworkDiagnostics() {
   // The prefix-first pair, and nothing else: the bare words "Verified" /
   // "Not verified" state that a check RAN (G4), so a regression to them fails
   // this line (the d7 audit's N2 override).
+  //
+  // AND THE LIVE ARM, asserted from this same fabricated launch by passing the enum
+  // explicitly — the only arrangement under which a default launch gates the live copy
+  // at all. Three clauses, and the third is the one that matters: BOTH live arms are
+  // EXACTLY the one placeholder (not merely "something else"), and NEITHER fabricated
+  // wording is that placeholder. That is the disjointness, and it fails if a copy edit
+  // ever makes one wording serve both modes in either direction.
+  const std::wstring placeholder{urmsg::demo::kUnavailable};
+  const bool keyStateOk =
+      FormatKeyState(true, urmsg::RunMode::Fabricated) == L"Demo model: verified" &&
+      FormatKeyState(false, urmsg::RunMode::Fabricated) == L"Demo model: not verified" &&
+      FormatKeyState(true, urmsg::RunMode::Live) == placeholder &&
+      FormatKeyState(false, urmsg::RunMode::Live) == placeholder;
   lines.push_back(std::format(
-      L"  net fmt keystate : {}  FormatKeyState(true|false) == \"Demo model: "
-      L"verified\" | \"Demo model: not verified\" -> \"{}\" | \"{}\"",
-      Check(FormatKeyState(true) == L"Demo model: verified" &&
-            FormatKeyState(false) == L"Demo model: not verified"),
-      FormatKeyState(true), FormatKeyState(false)));
+      L"  net fmt keystate : {}  fabricated(true|false) == \"Demo model: verified\" | "
+      L"\"Demo model: not verified\" and live(true|false) == \"{}\" (no check runs, so "
+      L"neither result exists) -> \"{}\" | \"{}\" || \"{}\" | \"{}\"",
+      Check(keyStateOk), placeholder, FormatKeyState(true, urmsg::RunMode::Fabricated),
+      FormatKeyState(false, urmsg::RunMode::Fabricated),
+      FormatKeyState(true, urmsg::RunMode::Live), FormatKeyState(false, urmsg::RunMode::Live)));
 
   // A PROPERTY over the whole device list, not one hand-built probe: exactly
   // the device DemoWorld marks isThisComputer names itself, and no other device
@@ -620,17 +653,31 @@ std::vector<std::wstring> CollectNetworkDiagnostics() {
 
   // The framing header is the page's single always-on honesty frame (d5 §3.4),
   // so its prefix cannot be dropped silently (d5 §6): the page renders
-  // kRelayPathGroupTitle and this gate reads the SAME constant. The strip's
-  // preview drawer renders that same constant for its header (one owner, one
-  // sentence — d5 §4.4), so the drawer's own always-present string is what
-  // gets checked beside it: the automation name kStatusDrawerName.
-  const std::wstring relayTitle{kRelayPathGroupTitle};
-  const std::wstring drawerName{kStatusDrawerName};
+  // urmsg::RelayPathGroupTitle(mode) and this gate reads the SAME function. The
+  // strip's drawer renders that same function for its header (one owner, one
+  // sentence — d5 §4.4), so the drawer's own always-present string is what gets
+  // checked beside it: the automation name urmsg::RelayDrawerName(mode).
+  //
+  // BOTH MODES, FROM A FABRICATED LAUNCH, and the prefix checked is now the one
+  // that belongs to the mode being evaluated. In live mode those three nodes are
+  // OBSERVATIONS — the platform url the library dialled and the message server's
+  // own client_id (Live/LiveWorld.cpp:336-345) — so framing them as a demo model
+  // is the false denial, and the drawer's "preview" was wrong on top of it. The
+  // fourth clause is the disjointness: the fabricated strings must not be the
+  // live ones.
+  const std::wstring relayTitle{urmsg::RelayPathGroupTitle(urmsg::RunMode::Fabricated)};
+  const std::wstring drawerName{urmsg::RelayDrawerName(urmsg::RunMode::Fabricated)};
+  const std::wstring relayTitleLive{urmsg::RelayPathGroupTitle(urmsg::RunMode::Live)};
+  const std::wstring drawerNameLive{urmsg::RelayDrawerName(urmsg::RunMode::Live)};
+  const bool framingOk = StartsWithDemoModel(relayTitle) && StartsWithDemoModel(drawerName) &&
+                         StartsWithLiveSession(relayTitleLive) &&
+                         StartsWithLiveSession(drawerNameLive) && relayTitle != relayTitleLive &&
+                         drawerName != drawerNameLive;
   lines.push_back(std::format(
-      L"  net framing      : {}  relay group title + strip drawer name open "
-      L"with \"demo model:\" (either casing) -> \"{}\" | \"{}\"",
-      Check(StartsWithDemoModel(relayTitle) && StartsWithDemoModel(drawerName)),
-      relayTitle, drawerName));
+      L"  net framing      : {}  fabricated relay title + drawer name open with "
+      L"\"demo model:\" and the live pair with \"live session:\" (either casing), and the "
+      L"two pairs differ -> \"{}\" | \"{}\" || \"{}\" | \"{}\"",
+      Check(framingOk), relayTitle, drawerName, relayTitleLive, drawerNameLive));
 
   return lines;
 }
@@ -699,8 +746,8 @@ NetworkPageView MakeNetworkPage(urmsg::demo::World const& world) {
   // it sits directly on top of it. It FLOATS now, the same caption the two
   // groups below use: a ruled sheet strip across the capped column would
   // re-bleed exactly what this wave capped. The STRING is untouched —
-  // kRelayPathGroupTitle is still what the `net framing` gate reads.
-  AppendCaption(pathSection, winrt::hstring{kRelayPathGroupTitle},
+  // urmsg::RelayPathGroupTitle is still what the `net framing` gate reads.
+  AppendCaption(pathSection, winrt::hstring{urmsg::RelayPathGroupTitle(urmsg::ActiveRunMode())},
                 winrt::to_hstring(static_cast<int>(world.relayPath.size())) + L" nodes",
                 /*first=*/true);
 
@@ -763,10 +810,20 @@ NetworkPageView MakeNetworkPage(urmsg::demo::World const& world) {
   // The bare "Verified" and MessageInspect::cipher render nowhere on this
   // page, under any label.
   auto keyRow = urnw::kit::MakePaneKeyValueRow(
-      L"Server key", winrt::hstring{FormatKeyState(world.server.keyVerified)});
-  keyRow.value.Foreground(world.server.keyVerified
-                              ? urnw::colors::MakeBrush(urnw::colors::kUrGreen)
-                              : urnw::colors::DangerBrush());
+      L"Server key", winrt::hstring{FormatKeyState(world.server.keyVerified, urmsg::ActiveRunMode())});
+  // COLOUR IS A CLAIM TOO, and in live mode it was making the one the words had just
+  // stopped making: the value reads "unavailable" there, and DangerBrush painted it the
+  // same red as a failed verification — a viewer scanning the page sees a red row and
+  // reads "this check failed", which is exactly the negative result that does not exist.
+  // Red belongs to the fabricated arm's "not verified", which IS a (fabricated) negative
+  // result; an absence gets the muted voice every other unavailable value on this page
+  // already uses. The words are unchanged by this and still carry the whole meaning —
+  // the colour only ever restates them (contract rule 6).
+  keyRow.value.Foreground(urmsg::ActiveRunMode() == urmsg::RunMode::Live
+                              ? urnw::colors::MutedBrush()
+                              : (world.server.keyVerified
+                                     ? urnw::colors::MakeBrush(urnw::colors::kUrGreen)
+                                     : urnw::colors::DangerBrush()));
   serverCard.body.Children().Append(keyRow.root);
   urnw::kit::FinalizePaneCard(serverCard);
   serverSection.Children().Append(serverCard.root);
@@ -780,8 +837,14 @@ NetworkPageView MakeNetworkPage(urmsg::demo::World const& world) {
   StackPanel devicesSection;
   devicesSection.Orientation(Orientation::Vertical);
   parts->deviceRemaining = static_cast<int>(world.myDevices.size());
+  // AN EMPTY LIST IS "NO SOURCE HAS ONE". A world built from the message protocol knows exactly
+  // one device — the process drawing this page — and nothing about the account's others, so both
+  // "0" and "1" would be counts this app cannot stand behind. The fabricated world is never empty
+  // (CollectNetworkDiagnostics requires it), so this branch is dead for the demo.
   auto devicesGroup = AppendCaption(devicesSection, L"YOUR DEVICES",
-                                    winrt::to_hstring(parts->deviceRemaining),
+                                    world.myDevices.empty()
+                                        ? winrt::hstring{urmsg::demo::kUnavailable}
+                                        : winrt::to_hstring(parts->deviceRemaining),
                                     /*first=*/false);
   parts->deviceCount = devicesGroup.meta;
 
@@ -797,8 +860,9 @@ NetworkPageView MakeNetworkPage(urmsg::demo::World const& world) {
   // TextBlock sitting last would keep the last row's hairline alive flush
   // against the card's own edge. A TextBlock is neither Border nor Control,
   // so FinalizePaneCard leaves it alone wherever it sits.
-  parts->deviceEmpty = urnw::kit::MakePaneEmptyLine(
-      L"No devices are linked to this account.");
+  // NOT "no devices are linked to this account": that sentence is a statement ABOUT the account,
+  // and an empty list here means this build has no way to ask. The one placeholder says so.
+  parts->deviceEmpty = urnw::kit::MakePaneEmptyLine(urmsg::demo::kUnavailable);
   parts->deviceEmpty.Visibility(world.myDevices.empty() ? Visibility::Visible
                                                         : Visibility::Collapsed);
   deviceCard.body.Children().Append(parts->deviceEmpty);

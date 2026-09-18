@@ -9,6 +9,8 @@
 
 #include <format>
 
+#include "RunMode.h"
+
 namespace urmsg::views {
 namespace {
 
@@ -93,13 +95,40 @@ bool ReadsAsVerified(std::wstring const& attestationValue) {
   return attestationValue.find(L" not ") == std::wstring::npos;
 }
 
+// A uint32 field, or the ONE placeholder when the source could not supply it.
+//
+// WHY THIS EXISTS. `Sender leaf index` and `Wire size` are the only two rows in the table below
+// whose value is a NUMBER, and a number has no way of saying "no source has this". A world built
+// from the message protocol has neither figure — the ABI carries no leaf index and no wire size —
+// and writing 0 would render "0" and "0 bytes", which are claims rather than absences. The
+// fabricated world never writes the sentinel, so this branch is dead for it and the demo's twelve
+// rendered values are unchanged; the eight-then-four SHAPE, which four gates read by position, is
+// unchanged either way, because the row is still emitted.
+std::wstring UnsignedOrUnavailable(uint32_t value, std::wstring_view suffix) {
+  if (value == demo::kUnknownUint32) return std::wstring(demo::kUnavailable);
+  return std::to_wstring(value) + std::wstring(suffix);
+}
+
 }  // namespace
 
 std::wstring RetentionClassLabel(demo::RetentionClass retention) {
   return retention == demo::RetentionClass::Eph ? L"Disappearing" : L"Permanent";
 }
 
-std::wstring AttestationLabel(bool verified) {
+std::wstring AttestationLabel(bool verified, urmsg::RunMode mode) {
+  // ── LIVE: THE ONE PLACEHOLDER, AND THIS IS THE WHOLE POINT OF THE FIELD ──
+  // "not verified" asserts a NEGATIVE RESULT: it says a check ran and came back
+  // false. In live mode no check runs and none could — the ABI's per-message
+  // metadata (urnet_message_list_info) carries no attestation, so there is no
+  // result of either sign to report. An absence is not a negative, and the rail
+  // already has exactly one way to say "no source has this": demo::kUnavailable,
+  // the same string `Sender leaf index` and `Wire size` render in this mode.
+  // Both arms return it because the live world never sets the bit
+  // (Live/LiveWorld.cpp:290) — an affirmative here would be unreachable AND a
+  // claim, so it is not written.
+  if (mode == urmsg::RunMode::Live) return std::wstring(demo::kUnavailable);
+
+  // ── FABRICATED: unchanged, and the reasoning is unchanged with it ──
   // G4, and this is the whole of it in two strings. "Verified" / "Not verified"
   // states that a check RAN and returned a result; this binary runs no check,
   // and MessageInspect::attestationVerified is a boolean DemoWorld derives from
@@ -153,16 +182,17 @@ demo::Seed DeviceIdenticonSeed(demo::Conversation const& conv, demo::DeviceRef c
 }
 
 std::vector<InspectField> BuildMessageFields(demo::Conversation const& conv,
-                                             demo::MessageRow const& row, bool advanced) {
+                                             demo::MessageRow const& row, bool advanced,
+                                             urmsg::RunMode mode) {
   std::vector<InspectField> out;
   out.push_back({L"Sender", SenderLabel(row)});
   out.push_back({L"Sent", row.inspect.sentAtLabel});
   out.push_back({L"Received", row.inspect.receivedAtLabel});
   out.push_back({L"Epoch", std::format(L"{}", row.inspect.epoch)});
-  out.push_back({L"Sender leaf index", std::format(L"{}", row.inspect.senderLeafIndex)});
+  out.push_back({L"Sender leaf index", UnsignedOrUnavailable(row.inspect.senderLeafIndex, L"")});
   out.push_back({L"Retention class", RetentionClassLabel(row.inspect.retention)});
   out.push_back({L"Size", row.inspect.sizeBucket});
-  out.push_back({L"Attestation", AttestationLabel(row.inspect.attestationVerified)});
+  out.push_back({L"Attestation", AttestationLabel(row.inspect.attestationVerified, mode)});
   if (!advanced) return out;
   // Design §6.6's four Advanced additions for this surface - "raw ids, hex group
   // id, leaf index, wire size" - minus the leaf index, which §6.3 already put in
@@ -179,7 +209,7 @@ std::vector<InspectField> BuildMessageFields(demo::Conversation const& conv,
   // than letting a screenshot find it; the fix belongs to whoever renders these
   // rows (skip an empty value) or to DemoWorld, not to the field order.
   out.push_back({L"Group id", ShortHex(row.inspect.groupIdHex)});
-  out.push_back({L"Wire size", std::format(L"{} bytes", row.inspect.wireSizeBytes)});
+  out.push_back({L"Wire size", UnsignedOrUnavailable(row.inspect.wireSizeBytes, L" bytes")});
   out.push_back({L"Message id", row.id});
   out.push_back({L"Conversation id", conv.id});
   return out;
@@ -291,8 +321,8 @@ std::wstring InspectRailFieldsProbe() {
   if (row == nullptr)
     return L"  inspect rail     : FAIL - conversation 0 has no message row";
 
-  const auto normal = BuildMessageFields(conv, *row, false);
-  const auto advanced = BuildMessageFields(conv, *row, true);
+  const auto normal = BuildMessageFields(conv, *row, false, urmsg::RunMode::Fabricated);
+  const auto advanced = BuildMessageFields(conv, *row, true, urmsg::RunMode::Fabricated);
 
   // PROPERTIES, not spot checks. "normal[0].value is non-empty" cannot fail by
   // construction and would print PASS over a column of blanks; these two can
@@ -416,7 +446,7 @@ std::wstring InspectRailFieldsProbe() {
       const bool notYetReceived = r.outgoing &&
                                   r.state != demo::DeliveryState::Delivered &&
                                   r.state != demo::DeliveryState::Read;
-      for (auto const& f : BuildMessageFields(c, r, true)) {
+      for (auto const& f : BuildMessageFields(c, r, true, urmsg::RunMode::Fabricated)) {
         ++sweepValues;
         if (!f.value.empty()) continue;
         ++sweepBlanks;
@@ -448,7 +478,8 @@ std::wstring InspectRailFieldsProbe() {
   // to hide in.
   demo::MessageRow overlong = *row;
   overlong.inspect.sizeBucket.assign(kInspectValueMaxChars + 1, L'x');
-  const ValueScan over = ScanValues(BuildMessageFields(conv, overlong, true));
+  const ValueScan over =
+      ScanValues(BuildMessageFields(conv, overlong, true, urmsg::RunMode::Fabricated));
   // Split, so a failure says WHICH of the three fell rather than "no".
   std::wstring budgetBad;
   {
@@ -544,7 +575,13 @@ std::wstring InspectRailFieldsProbe() {
       // verification on that one Failed send. A fabricated positive verification
       // claim on a failed message is precisely what G4 forbids, so the polarity
       // is now read the way a viewer reads it.
-      const bool saysVerified = ReadsAsVerified(AttestationLabel(r.inspect.attestationVerified));
+      //
+      // RunMode::Fabricated IS PASSED EXPLICITLY AND NOT ActiveRunMode(). This whole
+      // sweep runs over demo::GetWorld(), so the fabricated arm is the one that has to
+      // agree with these rows whatever mode the process is in — and a launch that read
+      // the ambient mode would silently stop gating this the moment a live world landed.
+      const bool saysVerified = ReadsAsVerified(
+          AttestationLabel(r.inspect.attestationVerified, urmsg::RunMode::Fabricated));
       if (saysVerified != (r.state != demo::DeliveryState::Failed)) ++attestationWrong;
     }
 
@@ -562,12 +599,34 @@ std::wstring InspectRailFieldsProbe() {
   //     in attestationWrong above. Two independent gates on one polarity, because
   //     this is the field where backwards is a false claim about crypto rather
   //     than a cosmetic defect.
-  const std::wstring attYes = AttestationLabel(true);
-  const std::wstring attNo = AttestationLabel(false);
+  const std::wstring attYes = AttestationLabel(true, urmsg::RunMode::Fabricated);
+  const std::wstring attNo = AttestationLabel(false, urmsg::RunMode::Fabricated);
   const bool attestationFramed = attYes != attNo && !attYes.empty() && !attNo.empty() &&
                                  attYes.find(L"Demo") != std::wstring::npos &&
                                  attNo.find(L"Demo") != std::wstring::npos &&
                                  ReadsAsVerified(attYes) && !ReadsAsVerified(attNo);
+
+  // ---- and the LIVE arm, which is a different property, not a fourth clause ----
+  //
+  // WHY IT CANNOT JOIN THE THREE ABOVE. In live mode the field renders the ONE
+  // placeholder, demo::kUnavailable, for both values of the bit: the ABI carries no
+  // per-message attestation, so "not verified" would assert a negative RESULT where no
+  // result exists. That makes the two arms EQUAL, which fails `attYes != attNo` by
+  // construction, and it names no model, which fails the "Demo" clauses. Bolting an
+  // exemption onto the gate above would have relaxed it for fabricated mode too — the
+  // failure mode the task that wrote this line exists to prevent — so the live property
+  // is asserted separately and it is a STRONGER one:
+  //
+  //   * both live arms are EXACTLY the placeholder (not merely "some other string"), and
+  //   * neither live arm is EITHER fabricated wording, and neither fabricated wording is
+  //     the placeholder. That clause is the disjointness: it is what fails if someone
+  //     makes one wording serve both modes, in either direction.
+  const std::wstring attLiveYes = AttestationLabel(true, urmsg::RunMode::Live);
+  const std::wstring attLiveNo = AttestationLabel(false, urmsg::RunMode::Live);
+  const std::wstring placeholder{demo::kUnavailable};
+  const bool attestationLive = attLiveYes == placeholder && attLiveNo == placeholder &&
+                               attYes != placeholder && attNo != placeholder &&
+                               attLiveYes != attYes && attLiveYes != attNo;
 
   // DeliveryLabel over the ENUM rather than the world: the world never reaches
   // Expired, so a world sweep would leave that case uncovered. A dropped switch
@@ -605,7 +664,7 @@ std::wstring InspectRailFieldsProbe() {
                   0 < sweepRows && sweepUnexpected == 0 && retentionWrong == 0 &&
                   0 < ephRows && ephRows < sweepRows && senderWrong == 0 &&
                   senderBlank == 0 && 0 < namedRows && attestationWrong == 0 &&
-                  attestationFramed && deliveryOk == kStateCount;
+                  attestationFramed && attestationLive && deliveryOk == kStateCount;
 
   return std::format(
       L"  inspect rail     : {} - message fields {}/8 normal {}/12 advanced, "
@@ -619,7 +678,8 @@ std::wstring InspectRailFieldsProbe() {
       L"over-long \"{}\", ok {}; ShortHex(32) = \"{}\", ok {}; "
       L"labels: retention {} wrong over {} message rows ({} disappearing), "
       L"sender {} wrong and {} blank over {} named rows, attestation {} wrong, "
-      L"G4 framing {}, delivery {}/{} exact",
+      L"G4 framing {}, live attestation {} (both arms == \"{}\", neither is a fabricated "
+      L"wording: \"{}\" | \"{}\"), delivery {}/{} exact",
       ok ? L"PASS" : L"FAIL", normal.size(), advanced.size(), convOk,
       world.conversations.size(), picked.blanks, picked.widest, picked.widestKey,
       kInspectValueMaxChars,
@@ -632,7 +692,7 @@ std::wstring InspectRailFieldsProbe() {
       shortHexBad.empty() ? std::wstring{L"yes"} : L"no (" + shortHexBad + L")", retentionWrong,
       sweepRows, ephRows,
       senderWrong, senderBlank, namedRows, attestationWrong, attestationFramed ? L"yes" : L"no",
-      deliveryOk, kStateCount);
+      attestationLive ? L"yes" : L"no", attLiveYes, attYes, attNo, deliveryOk, kStateCount);
 }
 
 std::wstring InspectRailDeviceProbe() {

@@ -341,7 +341,7 @@ DeveloperView MakeDeveloper(urmsg::demo::World const& world) {
     // page (G4; the d7 audit's A6 framing override).
     copy.Click([](auto const&, auto const&) {
       winrt::Windows::ApplicationModel::DataTransfer::DataPackage package;
-      package.SetText(winrt::hstring{DumpDemoWorld()});
+      package.SetText(winrt::hstring{DumpDemoWorld(urmsg::ActiveRunMode())});
       winrt::Windows::ApplicationModel::DataTransfer::Clipboard::SetContent(package);
     });
     group.trailing.Children().Append(copy);
@@ -357,7 +357,7 @@ DeveloperView MakeDeveloper(urmsg::demo::World const& world) {
     dump.Foreground(urnw::colors::TextBrush());
     dump.IsTextSelectionEnabled(true);
     dump.TextWrapping(TextWrapping::NoWrap);
-    dump.Text(winrt::hstring{DumpDemoWorld()});
+    dump.Text(winrt::hstring{DumpDemoWorld(urmsg::ActiveRunMode())});
 
     // The dump is WIDE and the pane must not be. Its own horizontal scroller
     // keeps the long lines readable without widening the destination.

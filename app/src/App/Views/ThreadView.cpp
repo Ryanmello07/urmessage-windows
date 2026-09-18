@@ -16,6 +16,7 @@
 #include "Demo/DemoSwitches.h"
 #include "Demo/ThreadLayout.h"
 #include "Identicon.h"
+#include "RunMode.h"  // urmsg::ComposerNote - the composer caption's two wordings
 #include "Log.h"
 #include "Strings.h"  // Narrow, for the window instrumentation lines
 #include "UrColors.h"
@@ -413,7 +414,7 @@ FrameworkElement MakeDeliveryCluster(demo::MessageRow const& row) {
   retry.MinHeight(24);
   retry.IsEnabled(false);
   Automation::AutomationProperties::SetName(
-      retry, winrt::hstring{L"Try again: resend this message (not available in the demo)"});
+      retry, winrt::hstring{L"Try again: resend this message (not available in this build)"});
   column.Children().Append(retry);
   return column;
 }
@@ -696,6 +697,11 @@ struct ThreadParts {
   // by SetThreadConversation (the one writer).
   TextBlock headerTitle{nullptr};
   TextBlock headerMeta{nullptr};
+  // The composer caption. Held so SetThreadRunMode can re-point it when the
+  // window latches a live world: the bar is built ONCE, by MakeThread, and every
+  // other mode-dependent surface in the app is rebuilt on that beat rather than
+  // re-pointed. This one is not rebuilt, so it needs the handle.
+  TextBlock composerNote{nullptr};
   // The no-selection empty state (one centred muted line under the identicon
   // lattice), built Visible and collapsed by the first SetThreadConversation.
   FrameworkElement emptyState{nullptr};
@@ -749,6 +755,14 @@ struct ThreadParts {
   // to avoid).
   anim::Storyboard chunkFadeStory{nullptr};
   std::vector<FrameworkElement> fadingRows;
+
+  // The in-flight whole-THREAD entrance board (RunThreadEntrance). Unlike a
+  // bubble board its target is the PERSISTENT scroller, so a rapid second
+  // switch can re-trigger the entrance while this is still playing: the
+  // re-run Stops it first — a Stop raises no Completed, so the old board's
+  // final-pose landing can never write over the new run's flight. Null when
+  // no container entrance is playing.
+  anim::Storyboard threadEntranceStory{nullptr};
 
   // ---- T9: progressive hydration of the open window -------------------------
   // SetThreadConversation renders only the viewport-covering INITIAL SET
@@ -1003,7 +1017,7 @@ FrameworkElement MakeKeyChangeRecord(winrt::hstring const& text) {
       // "identity key changed" is what the record actually says on screen; a
       // name that said "safety number" would announce different words from the
       // ones beside it.
-      winrt::hstring{L"Review the identity-key change (not available in the demo)"});
+      winrt::hstring{L"Review the identity-key change (not available in this build)"});
   column.Children().Append(review);
 
   root.Children().Append(column);
@@ -1232,7 +1246,7 @@ Button MakeInertIconButton(wchar_t const* glyph, wchar_t const* name) {
   return b;
 }
 
-FrameworkElement MakeComposer() {
+FrameworkElement MakeComposer(std::shared_ptr<ThreadParts> const& parts) {
   Border bar;
   // design d2 §3: the bar is SHEET (#151515, one step above the page) and the
   // input sits in a CARD well on it — the palette's own page -> sheet -> card
@@ -1277,9 +1291,9 @@ FrameworkElement MakeComposer() {
   }
 
   auto attach = MakeInertIconButton(L"\uE723",  // Segoe Fluent "Attach" - paperclip
-                                    L"Attach a file (not available in the demo)");
+                                    L"Attach a file (not available in this build)");
   auto emoji = MakeInertIconButton(L"\uE76E",   // Segoe Fluent "Emoji2" - outline smiley
-                                   L"Insert an emoji (not available in the demo)");
+                                   L"Insert an emoji (not available in this build)");
   Grid::SetColumn(attach, 0);
   Grid::SetColumn(emoji, 1);
   row.Children().Append(attach);
@@ -1316,7 +1330,7 @@ FrameworkElement MakeComposer() {
   timer.MinWidth(0);
   timer.IsEnabled(false);
   Automation::AutomationProperties::SetName(
-      timer, L"Disappearing messages: 24 hours (not available in the demo)");
+      timer, L"Disappearing messages: 24 hours (not available in this build)");
   Grid::SetColumn(timer, 2);
   row.Children().Append(timer);
 
@@ -1345,7 +1359,7 @@ FrameworkElement MakeComposer() {
   box.Resources().Insert(winrt::box_value(winrt::hstring{L"TextControlCaretBrush"}),
                          urnw::colors::AccentBrush());
   box.VerticalAlignment(VerticalAlignment::Center);
-  Automation::AutomationProperties::SetName(box, L"Message (the demo does not send)");
+  Automation::AutomationProperties::SetName(box, L"Message (sending is not wired up yet)");
   Grid::SetColumn(box, 3);
   row.Children().Append(box);
 
@@ -1371,7 +1385,7 @@ FrameworkElement MakeComposer() {
   // design d2 §3: a real pill (16) against the 12 dip well and chips.
   send.CornerRadius(CornerRadiusHelper::FromUniformRadius(16));
   send.IsEnabled(false);  // design §9.1 — inert in BOTH text states below
-  Automation::AutomationProperties::SetName(send, L"Send (not available in the demo)");
+  Automation::AutomationProperties::SetName(send, L"Send (not wired up yet)");
   Grid::SetColumn(send, 4);
   row.Children().Append(send);
 
@@ -1452,13 +1466,31 @@ FrameworkElement MakeComposer() {
 
   // Said ONCE, here, instead of on every inert control in the window: the
   // failed message's [ Try again ], the [ Review ] on the key-change record and
-  // these four all point at the same fact. It says what is NOT happening; it
-  // claims nothing about encryption, because there is none.
+  // these four all point at the same fact.
+  //
+  // MODE-DEPENDENT, AND THIS IS THE STRING THAT MADE IT SO. The shipped wording
+  // was "Demo — nothing is sent, and no message leaves this window.", and under
+  // --live that sentence sat under a thread whose newest line had been sealed on
+  // a different machine and had very much left a window to get here. It reads as
+  // a claim that the app is inert, which is the false denial the honesty rule
+  // forbids in its second direction. urmsg::ComposerNote(mode) (RunMode.cpp)
+  // owns both wordings and RunModeCopyDiagnostics gates them; the live one says
+  // the true thing about the SEND PATH — the ABI has the verbs, this button is
+  // not wired to them — and affirms what the reader can already see.
+  //
+  // WRAPPING, newly: the live wording is 8 characters longer than the fabricated
+  // one and this TextBlock's default is NoWrap, so at a narrow thread column the
+  // old default would TRIM the framing away — the exact failure prefix-first
+  // framing exists to prevent (the rail's own note took Wrap for this reason,
+  // InspectRailView.cpp). It costs nothing: the composer bar is Auto-height.
   TextBlock note;
-  note.Text(L"Demo — nothing is sent, and no message leaves this window.");  // U+2014 EM DASH
+  note.Text(winrt::hstring{urmsg::ComposerNote(urmsg::ActiveRunMode())});
+  note.TextWrapping(TextWrapping::Wrap);
+  note.TextTrimming(TextTrimming::None);
   if (auto st = StyleByKey(L"UrCaptionTextStyle")) note.Style(st);
   note.FontSize(11);
   note.Foreground(urnw::colors::FaintBrush());
+  parts->composerNote = note;
   column.Children().Append(note);
 
   // seam and seamFocus share row 0 so the focus lift lands on the SAME pixels
@@ -1542,7 +1574,7 @@ ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
   Grid::SetRow(typingRow, 2);
   root.Children().Append(typingRow);
 
-  auto composer = MakeComposer();
+  auto composer = MakeComposer(parts);
   Grid::SetRow(composer, 3);
   root.Children().Append(composer);
 
@@ -2296,6 +2328,97 @@ void RunHydrateBeat(std::shared_ptr<ThreadParts> const& parts, std::uint64_t gen
   }
 }
 
+// The whole-THREAD half of a conversation open (design d2 §8.2; the pure
+// table is ThreadEntranceTimelines, Views/ThreadLayout.h): the thread's
+// CONTENT CONTAINER fades 0 -> 1 and rises kDist8 as ONE unit under the
+// per-bubble stagger. THE CONTAINER IS THE SCROLLER, deliberately: it carries
+// every row and nothing else persistent — the composer and the typing row are
+// its siblings in MakeThread's grid, the empty state and the earlier-load
+// marker are overlays declared after it — so nothing outside the backlog
+// fades, and rows the hydration beats or window slides insert INTO its stack
+// inherit its opacity mid-fade, joining the settle instead of fighting it
+// (the first beat also waits out the stagger tail, OpenStaggerTailMs, which
+// at today's tokens already outlasts this board's kBaseMs).
+//
+// The canonical rules are RunBubbleEntrance's (commit 801b954), restated
+// where a persistent target bends them: the from-pose is written as LOCAL
+// values synchronously in the rebuild turn (no frame can render the container
+// final-first), Begin happens in the same turn, Completed lands the final
+// pose and Stops, and ShouldAnimate()==false lands the final pose instantly.
+// The bend: bubbles are rebuilt per switch, but this target is PERSISTENT, so
+// a rapid A->B->A re-run can arrive mid-flight — it Stops the in-flight board
+// before Beginning, because a stopped board raises no Completed and a
+// completed one's final-pose write would clobber the new flight.
+//
+// The CALLER owns the gate: SetThreadConversation invokes this only when its
+// runEntrance (ShouldRunEntrance) is true — a delivery-advance refresh plays
+// NO container motion, exactly the per-bubble rule (the animfix2 audit's B1).
+void RunThreadEntrance(std::shared_ptr<ThreadParts> const& parts) {
+  if (!parts || !parts->scroller) return;
+  auto const& scroller = parts->scroller;
+
+  // ShouldAnimate() is consulted ONCE and its answer is the pure table's, so
+  // "is motion on" and "which timelines exist" cannot disagree — an empty
+  // table IS the reduce-motion path (RunBubbleEntrance carries why this
+  // branch has never executed on this machine: SPI_GETCLIENTAREAANIMATION=1).
+  const auto plan = ThreadEntranceTimelines(urnw::motion::ShouldAnimate());
+  if (plan.empty() || !ChainVisible(scroller)) {
+    // Motion GONE, or a board that could never play under a collapsed
+    // ThreadHost (RunBubbleEntrance's ChainVisible rule): the final pose,
+    // immediately, and no transform left on the scroller. A mid-flight board
+    // is Stopped too — the narrowed-window re-open must not leave one owning
+    // properties it can no longer advance.
+    if (parts->threadEntranceStory) {
+      parts->threadEntranceStory.Stop();
+      parts->threadEntranceStory = nullptr;
+    }
+    scroller.Opacity(1.0);
+    scroller.RenderTransform(nullptr);
+    return;
+  }
+
+  // The mid-flight re-run (rapid switching): Stop raises no Completed, so the
+  // old board's landing never fires over the new run.
+  if (parts->threadEntranceStory) {
+    parts->threadEntranceStory.Stop();
+    parts->threadEntranceStory = nullptr;
+  }
+
+  // From-pose as LOCAL values, this turn. The rise is the same kDist8 token
+  // the pure table encodes (the gate pins table == token, the pose uses the
+  // token, so pose and table cannot drift).
+  Media::CompositeTransform t;
+  t.TranslateY(urnw::motion::kDist8);
+  scroller.RenderTransform(t);
+  scroller.Opacity(0.0);
+
+  // ONE Storyboard for both timelines, so they finish on the same frame —
+  // RunBubbleEntrance carries why two boards can land a frame apart.
+  anim::Storyboard sb;
+  for (auto const& spec : plan) {
+    auto a = urnw::motion::MakeSplineDouble(spec.from, spec.to, urnw::motion::kBaseMs,
+                                            spec.beginMs, urnw::motion::kStandardP1,
+                                            urnw::motion::kStandardP2);
+    if (spec.autoReverse) a.AutoReverse(true);
+    if (spec.forever) a.RepeatBehavior(anim::RepeatBehaviorHelper::Forever());
+    anim::Storyboard::SetTarget(a, scroller);
+    anim::Storyboard::SetTargetProperty(a, spec.path);
+    sb.Children().Append(a);
+  }
+  sb.Completed([parts, weakSb = winrt::make_weak(sb)](auto const&, auto const&) {
+    // The landing, RunBubbleEntrance's rule: FINAL pose as local values, then
+    // Stop, so a completed board's HoldEnd owns none of the properties. Only
+    // the current board can complete (a re-run Stopped the last one), so
+    // clearing the member here cannot drop a newer flight.
+    parts->scroller.Opacity(1.0);
+    parts->scroller.RenderTransform(nullptr);
+    if (auto board = weakSb.get()) board.Stop();
+    parts->threadEntranceStory = nullptr;
+  });
+  parts->threadEntranceStory = sb;
+  sb.Begin();
+}
+
 }  // namespace
 
 void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
@@ -2448,7 +2571,9 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
   //
   // bubbleCount is the count the OPEN STAGGER sees (design d2 §8.2): the
   // rendered slice's bubble rows — only the last min(kMaxStaggerSteps, count)
-  // animate, which is the visible foot either way.
+  // animate PER-ROW, which is the visible foot either way. The rows the cap
+  // leaves out are not motionless on an open: the container's one-unit
+  // entrance (RunThreadEntrance, below the ChangeView block) carries them.
   std::size_t bubbleCount = 0;
   for (std::size_t i = parts->window.start; i < parts->window.end; ++i)
     if (c.rows[i].kind == demo::RowKind::Message) ++bubbleCount;
@@ -2459,16 +2584,18 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
     if (built.root) parts->stack.Children().Append(built.root);
     if (built.bubble.root) {
       parts->bubbles.push_back(built.bubble);
-      // design d2 §8.2: on OPEN only the visible foot animates — the last
-      // min(kMaxStaggerSteps, count) bubble rows, kStaggerMs apart, newest
-      // last. Begun synchronously HERE, not on a Loaded hook: every path that
-      // reaches this build is already post-layout on a realized tree, so the
-      // board always plays, and RunBubbleEntrance's Completed landing writes
-      // the final pose back. runEntrance is the gate (ShouldRunEntrance — the
-      // open-vs-refresh decision made above): a same-conversation refresh
-      // re-renders the foot because a delivery READING changed, and an
-      // entrance replayed there is old bubbles re-popping under the reader's
-      // eye — deep-reader and at-foot refreshes alike play none.
+      // design d2 §8.2: on OPEN the visible foot animates PER-ROW on top of
+      // the container's settle — the last min(kMaxStaggerSteps, count) bubble
+      // rows, kStaggerMs apart, newest last, opacities multiplying with the
+      // container's. Begun synchronously HERE, not on a Loaded hook: every
+      // path that reaches this build is already post-layout on a realized
+      // tree, so the board always plays, and RunBubbleEntrance's Completed
+      // landing writes the final pose back. runEntrance is the gate
+      // (ShouldRunEntrance — the open-vs-refresh decision made above): a
+      // same-conversation refresh re-renders the foot because a delivery
+      // READING changed, and an entrance replayed there is old bubbles
+      // re-popping under the reader's eye — deep-reader and at-foot
+      // refreshes alike play none.
       if (runEntrance) {
         const int64_t stagger = OpenStaggerBeginMs(bubbleIndex, bubbleCount);
         if (0 <= stagger)
@@ -2542,11 +2669,21 @@ void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
         true);
   }
 
+  // The whole-THREAD half of the open, issued LAST so the first presented
+  // frame holds the foot pin AND the container's from-pose together: every
+  // row of the NEW conversation sits behind the container's Opacity 0 and
+  // rises with it as one unit (RunThreadEntrance carries the mechanism and
+  // the mid-flight re-run rule). runEntrance is the same ShouldRunEntrance
+  // gate the per-bubble stagger reads — a delivery-advance refresh re-renders
+  // the foot with NO container motion, exactly as it played no stagger.
+  if (runEntrance) RunThreadEntrance(parts);
+
   // T9: the synchronous phase ends HERE — everything the first presented
   // frame of this thread needs has been issued (plan, initial-set parent,
-  // measure/arrange, foot pin). That is the number the owner feels on a
-  // switch, and the honest before/after against the pre-hydration single-turn
-  // open: the fill below is background by construction.
+  // measure/arrange, foot pin, the open's from-poses). That is the number the
+  // owner feels on a switch, and the honest before/after against the
+  // pre-hydration single-turn open: the fill below is background by
+  // construction.
   const double syncMs =
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - buildStart)
           .count();
@@ -2632,6 +2769,25 @@ void SetThreadSelectedMessage(ThreadView& v, std::wstring const& id) {
 // dots frozen mid-fade) and the word beside them carries the state on its own.
 // TypingTimelineCount() is the pure statement of that — kTypingDots timelines
 // with motion on, ZERO with it off — and --diagnose asserts both halves.
+// THE COMPOSER BAR IS BUILT ONCE AND IS NEVER REBUILT, which is why this exists
+// and why nothing else in the app needs a Set*RunMode.
+//
+// Every other surface that carries mode-dependent copy is REBUILT on the beat a
+// live world lands: MainWindow::ApplyLiveWorld calls BuildNetworkPage,
+// BuildDeveloper, BuildStatusStrip, BuildSettings and re-populates the open
+// thread and the rail. The bar is inside thread_.root, which BuildDemoViews
+// builds once in the constructor, so without this call it would keep the caption
+// it was born with - "Demo model - nothing is sent..." - under real messages,
+// which is the exact defect the caption was changed to remove.
+//
+// Safe to call before the mode ever flips and safe to call twice: it writes the
+// answer urmsg::ComposerNote gives for the mode passed in, and nothing else.
+void SetThreadRunMode(ThreadView& v, urmsg::RunMode mode) {
+  auto parts = Find(v.root);
+  if (!parts || !parts->composerNote) return;
+  parts->composerNote.Text(winrt::hstring{urmsg::ComposerNote(mode)});
+}
+
 void SetThreadTyping(ThreadView& v, bool typing) {
   auto parts = Find(v.root);
   if (!parts || !parts->typingRow) return;

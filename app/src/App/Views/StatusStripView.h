@@ -27,16 +27,22 @@
 #include <winrt/Microsoft.UI.Xaml.h>
 
 #include "Demo/DemoWorld.h"
+#include "RunMode.h"  // urmsg::RelayDrawerName / ServerKeyStateName
 
 namespace urmsg::views {
 
-// The drawer's automation name (d5 §4.4, the d7 audit's S3 override).
-// Prefix-first framing for the reason InspectRailFields.cpp:113 records: the
-// drawer states three live hops and per-node health as fact and carries no
-// other always-visible frame off the Network page, and --demo-watermark=off
-// removes the chip. Declared HERE and not in the .cpp so the `net framing`
-// diagnose line reads the SAME constant the view sets.
-inline constexpr wchar_t kStatusDrawerName[] = L"Demo model: relay path preview";
+// THE DRAWER'S AUTOMATION NAME MOVED to urmsg::RelayDrawerName (RunMode.h) when
+// it became a PAIR, and the constant is gone rather than kept beside it — one
+// owner, or the two drift. Everything the constant's note said still holds for
+// the fabricated arm (d5 §4.4, the d7 audit's S3 override): the drawer states
+// three hops and per-node health as fact, carries no other always-visible frame
+// off the Network page, and --demo-watermark=off removes the chip, so it frames
+// itself. `net framing` still reads the SAME function the view sets.
+//
+// What the live arm drops is the word "preview": with a live world those three
+// nodes are the platform url the library actually dialled and the message
+// server's own client_id (Live/LiveWorld.cpp:336-345), so the drawer is showing
+// a path rather than previewing what one would look like.
 
 struct StatusStripView {
   // the 26 DIP surface: UrStatusStripStyle's #151515 and its top hairline

@@ -17,8 +17,11 @@
 #include "Demo/DemoSwitches.h"
 #include "Demo/DemoWorld.h"
 #include "Identicon.h"
+#include "Live/LiveMesh.h"
+#include "Live/LiveWorld.h"
 #include "Localization.h"
 #include "Log.h"
+#include "RunMode.h"  // ActiveRunMode / SetActiveRunMode - this file is the latch's one writer
 #include "Strings.h"
 #include "UrColors.h"
 #include "UrMotion.h"
@@ -49,7 +52,13 @@ winrt::hstring Loc(std::string_view key) { return winrt::hstring{urnw::Localized
 // directory: the diff that deletes the demo must be short.
 constexpr const wchar_t* kDemoNavNetwork = L"Network";
 constexpr const wchar_t* kDemoNavDeveloper = L"Developer";
-constexpr const wchar_t* kDemoWatermark = L"DEMO";
+// THE WATERMARK IS NO LONGER A CONSTANT, because there are two of them and
+// which one is right is a statement about this run. urmsg::ModeChipText
+// (RunMode.h) owns the pair: "DEMO" for the fabricated world, "LIVE" when the
+// window has latched a world built from records this device really fetched and
+// opened. A "DEMO" chip over a real mesh is the loudest of the false denials —
+// it is the one string a reader sees without opening anything — and it was on
+// screen in the capture that commissioned this change.
 
 // NavigationView Auto's overlay threshold (the platform default,
 // ExpandedModeThresholdWidth = 640 effective pixels): below it the pane is an
@@ -91,6 +100,31 @@ constexpr std::array kSampleConversations{
 
 }  // namespace
 
+// ── the live world's crossing onto the UI thread ──────────────────────────────
+//
+// The live worker publishes from a BACKGROUND thread; every XAML object in this window may only
+// be touched from this one. So the worker's notification does nothing but enqueue, and all of the
+// drawing happens in ApplyLiveWorld on the UI thread.
+//
+// COPIED FROM ThreadView.cpp's QueueHydrateBeat (:2173), including its three reasons:
+//   * shared_ptr capture — the beat may land after the window is gone, so the state it needs
+//     outlives the window and holds a WEAK reference to it.
+//   * generation counter — a publish that lands while a beat is still queued must collapse into
+//     one redraw, not queue a second.
+//   * CHECKED TryEnqueue — it returns false once the queue is shutting down, and a flag set
+//     before an enqueue that never happened would wedge the chain for ever.
+//
+// AND NOTHING HERE EVER join()s. The worker is detached and this window never waits on it; a
+// std::thread::join() on a single-threaded apartment does not pump messages and would freeze the
+// window for as long as the SDK's blocking call takes.
+struct LiveWorldBridge {
+  winrt::weak_ref<MainWindow> window;
+  winrt::Microsoft::UI::Dispatching::DispatcherQueue queue{nullptr};
+  // Written from BOTH threads: set by the worker when it takes the slot, cleared by the UI thread
+  // when the beat runs (and by the worker when the enqueue is refused).
+  std::atomic<bool> queued{false};
+};
+
 MainWindow::MainWindow() {
   InitializeComponent();
 
@@ -123,6 +157,11 @@ MainWindow::MainWindow() {
   BuildSettings();
   BuildDeveloper();
   BuildStatusStrip();
+
+  // LAST, and after every builder above: the first live publication may already be standing by the
+  // time this runs, and ApplyLiveWorld redraws the views those builders created. Arming it before
+  // them would let a beat land on a half-built window.
+  ArmLiveWorldUpdates();
 
   // The window reveal: bind now that the content tree exists, then arm BEFORE
   // Activate() so the first composed frame is already the start pose rather
@@ -268,9 +307,140 @@ void MainWindow::BuildConversationList() {
                 kSampleConversations.size());
 }
 
+// THE ONLY urmsg::demo::GetWorld() IN THIS FILE. Every other site reads ActiveWorld().
+urmsg::demo::World const& MainWindow::ActiveWorld() const {
+  if (liveWorld_) return *liveWorld_;
+  return urmsg::demo::GetWorld();
+}
+
+void MainWindow::ArmLiveWorldUpdates() {
+  // OFF BY DEFAULT AND THIS IS THE GATE. Without --live / %URMESSAGE_LIVE% nothing here runs, no
+  // callback is registered, and the window draws exactly what it drew before this existed.
+  if (!urmsg::live::IsEnabled()) return;
+
+  liveBridge_ = std::make_shared<LiveWorldBridge>();
+  liveBridge_->window = get_weak();
+  // The static GetForCurrentThread(), the same one StartAmbientActivity uses and for the same
+  // reason: this constructor runs on the UI thread, which is the thread that owns the queue.
+  liveBridge_->queue =
+      winrt::Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread();
+
+  // A publication may already be standing: the worker started before this window existed.
+  ApplyLiveWorld();
+
+  urmsg::live::SetOnPublish([bridge = liveBridge_] {
+    // ── ON THE LIVE WORKER THREAD. Touch no XAML here. ──
+    if (bridge->queued.exchange(true)) return;  // a beat is already on its way
+    if (!bridge->queue) {
+      bridge->queued = false;
+      return;
+    }
+    const bool enqueued = bridge->queue.TryEnqueue(
+        winrt::Microsoft::UI::Dispatching::DispatcherQueuePriority::Low, [bridge] {
+          // ── ON THE UI THREAD ──
+          // Cleared FIRST, so a publication that lands while this beat is drawing queues the next
+          // one instead of being swallowed.
+          bridge->queued = false;
+          if (auto self = bridge->window.get()) self->ApplyLiveWorld();
+        });
+    // TryEnqueue answers false once the queue is shutting down. Leaving the flag set on a beat
+    // that was never queued would wedge the chain for the rest of the session.
+    if (!enqueued) bridge->queued = false;
+  });
+  urnw::LogInfo("window: live world updates armed");
+}
+
+void MainWindow::ApplyLiveWorld() {
+  const std::uint64_t generation = urmsg::live::Generation();
+  if (generation == liveDrawn_) return;
+  auto snapshot = urmsg::live::Snapshot();
+  if (!snapshot) return;
+  liveDrawn_ = generation;
+  const bool first = !liveWorld_;
+  liveWorld_ = std::move(snapshot);
+
+  // ── THE LATCH, AND IT IS DELIBERATELY IN THIS STATEMENT AND NOT AT STARTUP ──
+  // Every honesty string in the app that differs between the two worlds is chosen by
+  // urmsg::ActiveRunMode(), and this is its only writer. It sits HERE, on the UI thread,
+  // in the same breath as the assignment above, because the property that has to hold is
+  // "the mode names the world that is on screen" — not "the mode names the switch the
+  // process was started with".
+  //
+  // urmsg::live::IsEnabled() would have been the easy hook and it is the WRONG one: it
+  // answers true from the first instruction of a --live launch, including for the whole
+  // 90-second connect budget and for ever afterwards if the mesh never answers — and in
+  // exactly that case ActiveWorld() below keeps returning the fabricated world. Keying
+  // the copy off the switch would therefore put "Live session: end-to-end encrypted" over
+  // fabricated data, which is the original defect with its polarity flipped. Latching on
+  // the arrival of a real world cannot do that: there IS one, and the rebuilds below draw
+  // it in the same beat.
+  urmsg::SetActiveRunMode(urmsg::RunMode::Live);
+  // The chip and the composer caption are the two mode-dependent surfaces that are NOT
+  // rebuilt below — the chip is written once in EnterDemoMode and the composer bar once
+  // by MakeThread — so they are re-pointed by hand. Both are cheap and both are idempotent.
+  if (DemoChip()) DemoChipText().Text(winrt::hstring{urmsg::ModeChipText(urmsg::RunMode::Live)});
+  if (thread_.root) urmsg::views::SetThreadRunMode(thread_, urmsg::RunMode::Live);
+
+  // The three content views exist only under --demo (BuildDemoViews is demo-gated, and its own
+  // comment says why). A live world with nothing built to draw it is not an error: the worker
+  // keeps fetching and the log keeps the record.
+  if (!options_.enabled || !thread_.root) {
+    urnw::LogInfo(
+        "window: live world generation {} ({} conversation(s)) held, and no view is built to draw "
+        "it — the conversation views are built under --demo",
+        generation, liveWorld_->conversations.size());
+    return;
+  }
+
+  RebuildConversationList();
+  // THE ROWS ARE BUILT INVISIBLE. MakeConversationList writes the entrance START POSE — opacity 0
+  // and 8 dip low (ConversationListView.cpp:133) — and something else has to play the entrance.
+  // On a normal launch that is StartReveal (:202), which runs ONCE after Activate. A rebuild after
+  // it has run therefore leaves every row at opacity 0, which is not "a bug in the animation": the
+  // conversation list renders EMPTY while its header counts the rows that are there. Measured, on
+  // the first live run of this window.
+  urmsg::views::AnimateConversationListEntrance(list_);
+
+  // THE THREE WORLD-LEVEL SURFACES ARE BUILT ONCE, IN THE CONSTRUCTOR, AND THE LIVE WORLD DOES NOT
+  // EXIST YET WHEN THEY ARE. Converting their GetWorld() call sites to ActiveWorld() is necessary
+  // and is NOT sufficient: each reads the world exactly once, at build time, so without this they
+  // keep drawing the fabricated server, the fabricated epoch and the fabricated device list beside
+  // real messages — which is precisely the failure the conversion was meant to prevent. Measured:
+  // the first live screenshot had real messages in the thread and "server urmsg-01.ur.io / epoch
+  // 4182 / rec/s 12" along the bottom. Every one of the three clears its host before mounting, so
+  // calling them again is a replacement rather than a second copy.
+  BuildNetworkPage();
+  // BuildSettings JOINS THE REBUILD LIST HERE, and it is not a cosmetic addition: the
+  // page renders the server host, the linked-device count and the server-key state, all
+  // read at build time, and it carries the app's longest honesty paragraph ("What this
+  // demo does not do"). Left out of this list it kept drawing the fabricated fixture's
+  // server and the sentence "No protocol, no store, no network and no cryptography are
+  // running" beside a live thread — the same class of defect as the rail header, one
+  // screen further away from the capture that found it.
+  BuildSettings();
+  BuildDeveloper();
+  BuildStatusStrip();
+  urmsg::views::SetNetworkPageAdvanced(network_, advanced_);
+  urmsg::views::SetStatusStripAdvanced(statusStrip_, advanced_);
+
+  const int open = OpenConversationIndex();
+  if (first || open < 0) {
+    // SelectConversation is a no-op on the conversation that is already open, and the live
+    // conversation's id is the group id and never changes — so this opens it once and every later
+    // beat falls through to the refresh below.
+    openConversationId_.clear();
+    SelectConversation(0);
+  } else {
+    RefreshOpenThread();
+  }
+  urnw::LogInfo("window: live world generation {} drawn: {} row(s) in conversation 0", generation,
+                liveWorld_->conversations.empty() ? size_t{0}
+                                                  : liveWorld_->conversations.front().rows.size());
+}
+
 int MainWindow::OpenConversationIndex() const {
   if (openConversationId_.empty()) return -1;
-  auto const& conversations = urmsg::demo::GetWorld().conversations;
+  auto const& conversations = ActiveWorld().conversations;
   for (size_t i = 0; i < conversations.size(); ++i)
     if (conversations[i].id == openConversationId_) return static_cast<int>(i);
   return -1;
@@ -280,7 +450,7 @@ void MainWindow::RebuildConversationList() {
   // The view wires its own rows and calls back with an INDEX into
   // World::conversations (contract v2 section 4), so there is one place that
   // knows how a row maps to a conversation and it is not here.
-  auto const& world = urmsg::demo::GetWorld();
+  auto const& world = ActiveWorld();
   list_ = urmsg::views::MakeConversationList(world, [weak = get_weak()](int index) {
     if (auto self = weak.get()) self->SelectConversation(index);
   });
@@ -316,16 +486,28 @@ void MainWindow::RebuildConversationList() {
     Controls::InfoBadge badge;
     badge.Value(unreadTotal);
     ChatsNavItem().InfoBadge(badge);
+  } else {
+    // CLEARED, not just skipped. This function now runs a SECOND time when a live world replaces
+    // the fabricated one, and a live world has no unread count to give (there is no read cursor in
+    // this build) — so a badge left standing from the first pass would be the demo's number sitting
+    // over a real conversation.
+    ChatsNavItem().InfoBadge(nullptr);
   }
   // TextChanged, not KeyDown: it fires for paste, for undo and for a
   // programmatic Text() write, and the filter must be true of the box's
   // CONTENT rather than of the last key that touched it. The box is built by
   // BuildConversationList, which is why the constructor runs that function
   // before EnterDemoMode reaches this one.
-  search_.box.TextChanged([weak = get_weak()](winrt::Windows::Foundation::IInspectable const&,
-                                              TextChangedEventArgs const&) {
-    if (auto self = weak.get()) self->ApplyConversationFilter();
-  });
+  // ONCE. This function now runs again on every live world that changes, and a second
+  // registration on the same box would run the filter twice per keystroke, a third three times,
+  // and so on for the session — the searchEmpty_ guard below is the same rule for the same reason.
+  if (!searchWired_) {
+    searchWired_ = true;
+    search_.box.TextChanged([weak = get_weak()](winrt::Windows::Foundation::IInspectable const&,
+                                                TextChangedEventArgs const&) {
+      if (auto self = weak.get()) self->ApplyConversationFilter();
+    });
+  }
 
   // The search empty state (d3 2.5): when the filter returns nothing, the
   // pane says WHY rather than going blank - the identicon lattice (an
@@ -432,7 +614,7 @@ void MainWindow::BuildDemoViews() {
 }
 
 void MainWindow::SelectConversation(int index) {
-  auto const& conversations = urmsg::demo::GetWorld().conversations;
+  auto const& conversations = ActiveWorld().conversations;
   if (index < 0 || conversations.size() <= static_cast<size_t>(index)) return;
   auto const& conversation = conversations[static_cast<size_t>(index)];
   // Re-clicking the conversation that is already open is a NO-OP, not a
@@ -462,7 +644,7 @@ void MainWindow::SelectMessage(std::wstring id) {
   const int index = OpenConversationIndex();
   if (index < 0) return;
   auto const& conversation =
-      urmsg::demo::GetWorld().conversations[static_cast<size_t>(index)];
+      ActiveWorld().conversations[static_cast<size_t>(index)];
   for (auto const& row : conversation.rows) {
     if (row.id != id) continue;
     selectedMessageId_ = id;
@@ -482,7 +664,7 @@ void MainWindow::ClearMessageSelection() {
   const int index = OpenConversationIndex();
   if (0 <= index)
     urmsg::views::SetInspectRailConversation(
-        rail_, urmsg::demo::GetWorld().conversations[static_cast<size_t>(index)]);
+        rail_, ActiveWorld().conversations[static_cast<size_t>(index)]);
   urnw::LogInfo("window: message inspect cleared");
 }
 
@@ -536,7 +718,7 @@ void MainWindow::RefreshOpenThread() {
   const int index = OpenConversationIndex();
   if (index < 0) return;
   auto const& conversation =
-      urmsg::demo::GetWorld().conversations[static_cast<size_t>(index)];
+      ActiveWorld().conversations[static_cast<size_t>(index)];
   urmsg::views::SetThreadConversation(thread_, conversation);
   // SetThreadConversation rebuilds the bubbles, so the selection outline has
   // to be put back. Restoring a selection is the opposite of moving one:
@@ -548,6 +730,16 @@ void MainWindow::RefreshOpenThread() {
 
 void MainWindow::StartAmbientActivity() {
   if (!options_.enabled || !options_.autoplay) return;
+  // NOT OVER A REAL CONVERSATION, EVER. Ambient activity invents rows: it appends a fabricated
+  // MessageRow to the world and advances a fabricated delivery state. Running it while this window
+  // is drawing real messages would put a line NOBODY SENT into a conversation with a real person
+  // on the other end, indistinguishable from the ones that crossed the mesh. The gate is
+  // live::IsEnabled() and not `liveWorld_`, so the answer does not depend on whether the first
+  // publication has landed yet.
+  if (urmsg::live::IsEnabled()) {
+    urnw::LogInfo("window: ambient activity suppressed - the live path is on and its rows are real");
+    return;
+  }
 
   urmsg::demo::AutoplayCallbacks callbacks;
   callbacks.openConversationIndex = [weak = get_weak()]() -> int {
@@ -587,7 +779,7 @@ void MainWindow::BuildNetworkPage() {
   // a normal launch (design §8: the app behaves exactly as it does today).
   if (!options_.enabled) return;
 
-  network_ = urmsg::views::MakeNetworkPage(urmsg::demo::GetWorld());
+  network_ = urmsg::views::MakeNetworkPage(ActiveWorld());
   // NetworkHost, NOT a host of the network task's own: MainWindow.xaml:282
   // already declares it and ShowDestination's network arm routes to it, and a
   // second Grid would be "mounted into the collapsed twin", the failure this
@@ -623,7 +815,7 @@ void MainWindow::BuildSettings() {
   // AdvancedModeEnabled() is already resolved:
   // EnterDemoMode ran InitAdvancedMode before any Build* call.
   settings_ = urmsg::views::MakeSettings(
-      [](bool on) { urmsg::SetAdvancedModeEnabled(on); },
+      ActiveWorld(), [](bool on) { urmsg::SetAdvancedModeEnabled(on); },
       urmsg::AdvancedModeEnabled());
   // SettingsHost, NOT a Grid of this task's own: MainWindow.xaml:284 already
   // declares it and ShowDestination's settings arm routes to it (the d7
@@ -647,7 +839,7 @@ void MainWindow::BuildDeveloper() {
   // does today).
   if (!options_.enabled) return;
 
-  developer_ = urmsg::views::MakeDeveloper(urmsg::demo::GetWorld());
+  developer_ = urmsg::views::MakeDeveloper(ActiveWorld());
   // DeveloperHost, NOT a Grid of this task's own: MainWindow.xaml:286 already
   // declares it and ShowDestination's developer arm routes to it (the d7
   // audit's A5 override — do not add a DeveloperPage Grid; that is "mounted
@@ -676,7 +868,7 @@ void MainWindow::BuildStatusStrip() {
     return;
   }
 
-  statusStrip_ = urmsg::views::MakeStatusStrip(urmsg::demo::GetWorld());
+  statusStrip_ = urmsg::views::MakeStatusStrip(ActiveWorld());
   // StatusStripHost (MainWindow.xaml:309) already exists with its Collapsed
   // markup default, and ApplyBreakpoint is the one writer of its Visibility
   // (options_.enabled && layout_.strip, at the foot of ApplyBreakpoint) — the
@@ -726,7 +918,7 @@ void MainWindow::ToggleStatusDrawer() {
 
 void MainWindow::ApplyConversationFilter() {
   if (!search_.box || !list_.root) return;
-  auto const& world = urmsg::demo::GetWorld();
+  auto const& world = ActiveWorld();
   const std::wstring query{search_.box.Text()};
   const std::size_t visible =
       urmsg::views::ApplyConversationListFilter(list_, world, query);
@@ -865,7 +1057,7 @@ void MainWindow::EnterDemoMode() {
   }
   Controls::ToolTipService::SetToolTip(developerNavItem_, box_value(hstring{kDemoNavDeveloper}));
 
-  DemoChipText().Text(kDemoWatermark);
+  DemoChipText().Text(winrt::hstring{urmsg::ModeChipText(urmsg::ActiveRunMode())});
   // d3 3.4: the identicon lattice as the chip's prefix - decorative, links
   // the chip to the identicon language. It adds no WORDS, so nothing
   // honesty-bearing depends on a chip --demo-watermark=off removes (G4).
@@ -1001,7 +1193,7 @@ void MainWindow::DrainDeepLink() {
   // InspectRailDeviceProbe asserts the pick equals kInspectTargetRowId, so the
   // rail and the outline cannot part.
   if (pendingLink_.selectMessage) {
-    auto const& conv = urmsg::demo::GetWorld().conversations.front();
+    auto const& conv = ActiveWorld().conversations.front();
     if (auto const* picked = urmsg::views::PickInspectMessage(conv))
       SelectMessage(picked->id);
     else
@@ -1047,8 +1239,12 @@ void MainWindow::DrainDeepLink() {
   // v2 section 1); the fixture FILE stays byte-frozen, because I10
   // fingerprints the seeded world at --diagnose time, before any window
   // exists.
-  if (options_.autoplay && options_.screen == urmsg::demo::DemoScreen::Thread &&
-      thread_.root && !urmsg::demo::GetWorld().conversations.empty()) {
+  // !live::IsEnabled() FIRST: the two rows below are fabricated and are appended straight into the
+  // open thread, so on a live session they would sit among real messages with nothing to tell them
+  // apart. Same ruling as StartAmbientActivity's.
+  if (!urmsg::live::IsEnabled() && options_.autoplay &&
+      options_.screen == urmsg::demo::DemoScreen::Thread && thread_.root &&
+      !ActiveWorld().conversations.empty()) {
     // front() is the open conversation: DeepLinkFor(Thread).selectConversation
     // is true, so SelectConversation(0) ran above, and c0-ambient-*'s ids name
     // that conversation.
@@ -1107,6 +1303,37 @@ void MainWindow::DrainDeepLink() {
   // it in the constructor would have every round before the first click skip
   // whole. Gated inside on options_.enabled && options_.autoplay.
   StartAmbientActivity();
+
+  // TEMPORARY VERIFICATION HOOK — REVERT BEFORE COMMIT (switchentrance wave).
+  // URMESSAGE_DEMO_SWITCH_MS=<ms> toggles the open conversation 0 -> 1 -> 0 on
+  // a plain timer so a capture harness can photograph switch bursts WITHOUT
+  // input synthesis: SelectConversation is a property write, the sanctioned
+  // no-input path, and its "window: conversation ->" log line is the harness's
+  // burst marker. The Tick lambda captures the timer itself — a deliberate
+  // reference cycle that keeps a member-less hook alive for the session (this
+  // whole block is reverted, so the cycle never ships).
+  if (options_.enabled) {
+    wchar_t switchBuf[16]{};
+    const DWORD switchLen =
+        ::GetEnvironmentVariableW(L"URMESSAGE_DEMO_SWITCH_MS", switchBuf, 16);
+    const long switchMs = (0 < switchLen && switchLen < 16) ? ::_wtol(switchBuf) : 0;
+    if (switchMs >= 200 && ActiveWorld().conversations.size() >= 2) {
+      auto switchTimer =
+          winrt::Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread()
+              .CreateTimer();
+      switchTimer.Interval(
+          winrt::Windows::Foundation::TimeSpan{std::chrono::milliseconds(switchMs)});
+      auto next = std::make_shared<int>(1);
+      switchTimer.Tick([weak = get_weak(), next, switchTimer](auto const&, auto const&) {
+        if (auto self = weak.get()) {
+          self->SelectConversation(*next);
+          *next = 1 - *next;
+        }
+      });
+      switchTimer.Start();
+      urnw::LogInfo("window: switch hook armed, {} ms", switchMs);
+    }
+  }
 }
 
 void MainWindow::ApplyBreakpoint() {

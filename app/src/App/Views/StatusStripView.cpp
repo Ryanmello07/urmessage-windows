@@ -44,8 +44,10 @@ constexpr wchar_t kStripName[] = L"Connection status. Activate to show the relay
 // recorded there (the bare words state that a check RAN and returned a
 // result; this binary runs no check, and --demo-watermark=off removes the
 // chip a suffix would lean on).
-constexpr wchar_t kKeyVerifiedName[] = L"Demo model: server key verified";
-constexpr wchar_t kKeyUnverifiedName[] = L"Demo model: server key not verified";
+// The two wordings moved to urmsg::ServerKeyStateName (RunMode.h) when they
+// became three: in live mode the two arms collapse to ONE string, because this
+// build pins no server key and the live world never sets the bit, so "not
+// verified" would report the result of a check that never ran.
 // The marker SetStatusStripAdvanced looks for. A Tag rather than a list of six
 // named members: a separator has no identity beyond "the rule in front of that
 // field", and a list of names is how one of them gets forgotten and a hairline
@@ -331,22 +333,23 @@ Border MakeStatusDrawer(std::vector<demo::RelayNode> const& path) {
   // (UrComponents.cpp's SetHeadingLevel), so the group is reachable by heading
   // navigation. The drawer's own container still needs a name: a heading
   // INSIDE a container does not name the container. The name is the framed
-  // kStatusDrawerName (the d7 audit's S3 override) — the header's words frame
+  // urmsg::RelayDrawerName (the d7 audit's S3 override) — the header's words frame
   // the EYES, this frames the screen reader, and neither leans on the chip
   // --demo-watermark=off removes.
-  Automation::AutomationProperties::SetName(drawer, winrt::hstring{kStatusDrawerName});
+  Automation::AutomationProperties::SetName(
+      drawer, winrt::hstring{urmsg::RelayDrawerName(urmsg::ActiveRunMode())});
   // The rise's transform, attached at rest so SetStatusStripDrawerOpen never
   // grows a transform-attachment block of its own (SettleIn's precedent).
   drawer.RenderTransform(Media::CompositeTransform());
 
   StackPanel nodes;
 
-  // The framing header: kRelayPathGroupTitle ITSELF, the constant the Network
+  // The framing header: urmsg::RelayPathGroupTitle ITSELF, the function the Network
   // page's hero wears — one owner, so the drawer and the page speak one
   // sentence (d5 §4.4) and can never drift into two spellings of it. The
   // letterspaced chrome voice carries the framing; no new colour, no new key.
   auto header = kit::MakePaneGroupHeader(
-      winrt::hstring{kRelayPathGroupTitle},
+      winrt::hstring{urmsg::RelayPathGroupTitle(urmsg::ActiveRunMode())},
       winrt::to_hstring(static_cast<int>(path.size())));
   // Its top hairline would land one DIP under the drawer's own top edge and
   // read as a 2 px rule — the same double-rule fix the LAST row gets at the
@@ -498,8 +501,8 @@ StatusStripView MakeStatusStrip(urmsg::demo::World const& world) {
   Automation::AutomationProperties::SetAccessibilityView(
       lock, Automation::Peers::AccessibilityView::Content);
   Automation::AutomationProperties::SetName(
-      lock, winrt::hstring{world.server.keyVerified ? kKeyVerifiedName
-                                                    : kKeyUnverifiedName});
+      lock, winrt::hstring{urmsg::ServerKeyStateName(world.server.keyVerified,
+                                                     urmsg::ActiveRunMode())});
   fields.Children().Append(lock);
 
   // Advanced Mode's three, in §6.6's order ("+ epoch, session mode,

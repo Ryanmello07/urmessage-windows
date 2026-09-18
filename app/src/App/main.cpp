@@ -34,6 +34,7 @@
 #include "Demo/AdvancedMode.h"
 #include "Demo/DemoSwitches.h"
 #include "Ids.h"
+#include "Live/LiveMesh.h"
 #include "Log.h"
 #include "Startup.h"
 #include "Strings.h"
@@ -259,6 +260,28 @@ int __stdcall wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
       FAILED(hr)) {
     urnw::LogWarn("startup: SetCurrentProcessExplicitAppUserModelID failed: 0x{:08X}",
                   static_cast<uint32_t>(hr));
+  }
+
+  // THE LIVE MESH WORKER, and its position here is the whole of its safety.
+  //
+  // HERE AND NOT EARLIER, because a second launch must never start one. The
+  // same client_id connected twice — or two state directories descended from
+  // one — is two devices at one MLS leaf: one sender_handle, one stream
+  // counter, and so a reused (epoch, sender_handle, stream_index), which is a
+  // reused nonce under a reused record key. Past this point the non-primary
+  // launches have already redirected and returned, so exactly one process in
+  // this user's session can reach this line.
+  //
+  // HERE AND NOT LATER, because it must be running while the UI is, not after
+  // it: Application::Start does not return until the app exits. The call
+  // detaches a background thread and returns immediately — it neither blocks
+  // this apartment nor gives anyone a handle to block on.
+  //
+  // OFF BY DEFAULT. Without --live or %URMESSAGE_LIVE%=1 this is one env-var
+  // read and a return, the SDK dll is never even mapped (it is delay-loaded),
+  // and the launch is byte-for-byte the launch it was before.
+  if (urmsg::live::StartIfEnabled()) {
+    urnw::LogInfo("startup: live mesh worker started on a background thread");
   }
 
   urnw::LogInfo("startup: Application::Start (XAML)");

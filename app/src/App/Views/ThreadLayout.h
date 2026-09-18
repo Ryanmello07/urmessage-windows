@@ -209,6 +209,30 @@ std::vector<TimelineSpec> TypingTimelines(bool animate);
 int EntranceTimelineCount(bool animate);
 int TypingTimelineCount(bool animate);
 
+// ---- the whole-THREAD open entrance (the unit the stagger plays over) ------
+// design d2 §8.2's open made coherent. The stagger caps at kMaxStaggerSteps
+// rows, so row-by-row it CANNOT cover a tall viewport: on a switch's first
+// frame every non-staggered row rendered at full opacity above six invisible
+// ones (the "pre-rendered pop" the owner reported, captured in
+// .verify-switchentrance's before/ frames). The fix animates the thread's
+// CONTENT CONTAINER — the scroller, which carries every row and neither the
+// composer nor the typing row — as ONE unit under the stagger: fade 0 -> 1
+// plus a small rise over kBaseMs on the standard curve, on a true open/switch
+// only (the caller's runEntrance, ShouldRunEntrance below). The per-bubble
+// stagger keeps playing on top; opacity multiplies down the tree, so the
+// cascade survives the shared fade.
+//
+// TWO timelines — opacity, TranslateY — and EMPTY when `animate` is false
+// (the EntranceTimelines rule: off means gone). The rise is kDist8, read off
+// UrMotion.h textually in the .cpp (the OpenStaggerTailMs arrangement), and
+// kDist8 rather than kDist4 because the surface is ~1000 dip tall: 4 dip on
+// it does not read as a gesture, while 8 stays under the bubbles' own 10
+// (kBubbleRiseDip) so the foot cascade keeps the lead over the shared settle.
+// No stagger parameter: the container is one element, there is nothing to
+// cascade it against.
+std::vector<TimelineSpec> ThreadEntranceTimelines(bool animate);
+int ThreadEntranceTimelineCount(bool animate);
+
 // ---- conversation-open stagger (design d2 §8.2) -----------------------------
 // A freshly built thread used to pop in whole while the conversation list
 // beside it staggers. Now only the visible FOOT animates: the last
@@ -216,6 +240,8 @@ int TypingTimelineCount(bool animate);
 // oldest-to-newest so the newest settles last. Only the foot animates because
 // rows above the fold animating invisibly would be waste, and 6 is the cap the
 // list already uses (ConversationRowDelayMs, gated by demo.list.stagger).
+// Per-ROW motion, that is — the container's own one-unit entrance is
+// ThreadEntranceTimelines above, and the two compose on a true open.
 //
 // Returns -1 for "does not animate" (every row above the foot) and a begin
 // delay >= 0 for a foot row — the SelectedBubbleIndex precedent: 0 is a valid

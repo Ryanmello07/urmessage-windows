@@ -23,6 +23,7 @@
 #include "Demo/DemoAutoplayLoop.h"
 #include "Demo/DemoShellState.h"
 #include "Demo/DemoSwitches.h"
+#include "Live/LiveWorld.h"
 #include "UrComponents.h"
 #include "Views/ConversationListView.h"
 #include "Views/DeveloperView.h"
@@ -34,6 +35,14 @@
 #include "WindowReveal.h"
 
 namespace winrt::URmessage::implementation {
+
+// Everything the live worker needs in order to wake this window, defined in MainWindow.xaml.cpp.
+// A struct of its own, held by shared_ptr, because the notification fires on a BACKGROUND thread
+// and the window may be gone by the time it lands: the bridge outlives the window, holds a weak
+// reference to it, and the beat that resolves to nothing simply dies. The pattern is
+// ThreadView.cpp's QueueHydrateBeat (:2173) — shared_ptr capture, generation counter, checked
+// TryEnqueue — and the reasons are stated there.
+struct LiveWorldBridge;
 
 struct MainWindow : MainWindowT<MainWindow> {
   MainWindow();
@@ -94,6 +103,36 @@ struct MainWindow : MainWindowT<MainWindow> {
   // they are all told, from here, in one order. Private, matching the
   // wiring.md:533 and advanced.md:986 declarations.
   void ApplyAdvanced(bool on);
+
+  // ---- WHICH WORLD THIS WINDOW IS DRAWING -------------------------------------------------
+  //
+  // THE ONE READER OF THE MODEL, and every site in the .cpp goes through it. It answers the LIVE
+  // world — real messages, off the real mesh, built by Live\LiveWorld.cpp — as soon as one has
+  // been published, and the fabricated demo world before that and on a launch with the live path
+  // off.
+  //
+  // WHY A FUNCTION AND NOT A MEMBER SWAPPED ONCE: a site left calling urmsg::demo::GetWorld()
+  // directly does not fail to compile and does not log anything. It silently draws the fabricated
+  // world beside real messages, in the same window, and the reader cannot tell which row is which.
+  // So there is one accessor, it is private, and demo::GetWorld() appears in this file ONLY inside
+  // it.
+  //
+  // THE REFERENCE IS STABLE FOR AS LONG AS THE CALLER HOLDS IT. liveWorld_ is a shared_ptr to an
+  // IMMUTABLE snapshot; a newer publish replaces the pointer and cannot mutate the world a caller
+  // is already walking.
+  urmsg::demo::World const& ActiveWorld() const;
+
+  // Subscribe to the live worker's publications and marshal them onto this thread. Called once,
+  // from the constructor, and only when the live path is switched on.
+  void ArmLiveWorldUpdates();
+  // The UI-thread half: pick up the newest snapshot and redraw. Runs on this thread, always.
+  void ApplyLiveWorld();
+
+  std::shared_ptr<LiveWorldBridge> liveBridge_;
+  urmsg::live::WorldPtr liveWorld_;
+  // The generation this window has already drawn. A publish that lands while an earlier beat is
+  // still queued collapses into one redraw rather than N.
+  std::uint64_t liveDrawn_ = 0;
 
   urmsg::views::ThreadView thread_{};
   urmsg::views::InspectRailView rail_{};
@@ -222,6 +261,10 @@ struct MainWindow : MainWindowT<MainWindow> {
   // handler never collapses a module that was re-shown mid-fade.
   winrt::Microsoft::UI::Xaml::Controls::Grid searchEmpty_{nullptr};
   bool searchEmptyShown_ = false;
+  // RebuildConversationList registers the search box's TextChanged handler, and it is now called
+  // again on every live world that changes. Without this guard each rebuild would add ANOTHER
+  // handler to the same box and the filter would run once per rebuild since the window opened.
+  bool searchWired_ = false;
   // Empty on a non-demo launch: BuildDemoViews only fills it under --demo.
   urmsg::views::ConversationListView list_{};
   // The whole layout answer, not one bool: three thresholds now (list beside

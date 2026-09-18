@@ -240,11 +240,30 @@ std::vector<TimelineSpec> TypingTimelines(bool animate) {
   return out;
 }
 
+// The two channels of the whole-thread container entrance, in the order they
+// are started — RunThreadEntrance (Views/ThreadView.cpp) walks exactly this
+// vector, the EntranceTimelines discipline: deleting an entry here deletes
+// the timeline there and the --diagnose count follows. The rise reads the
+// kDist8 TOKEN off UrMotion.h textually (the OpenStaggerTailMs arrangement
+// above: no winrt construction on this path), so the --diagnose probe pins
+// the table against the token rather than against a restated literal.
+std::vector<TimelineSpec> ThreadEntranceTimelines(bool animate) {
+  if (!animate) return {};  // motion GONE, not shortened
+  return {
+      {L"Opacity", 0.0, 1.0, 0, false, false},
+      {L"(UIElement.RenderTransform).(CompositeTransform.TranslateY)",
+       urnw::motion::kDist8, 0.0, 0, false, false},
+  };
+}
+
 int EntranceTimelineCount(bool animate) {
   return static_cast<int>(EntranceTimelines(animate).size());
 }
 int TypingTimelineCount(bool animate) {
   return static_cast<int>(TypingTimelines(animate).size());
+}
+int ThreadEntranceTimelineCount(bool animate) {
+  return static_cast<int>(ThreadEntranceTimelines(animate).size());
 }
 
 // The whole decision an append makes about the delivery cluster, on BOTH rows.

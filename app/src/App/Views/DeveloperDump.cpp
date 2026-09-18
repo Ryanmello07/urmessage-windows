@@ -12,6 +12,7 @@
 #include <string_view>
 
 #include "Demo/DemoWorld.h"
+#include "RunMode.h"
 
 namespace urmsg::views {
 namespace {
@@ -88,17 +89,27 @@ std::wstring_view KeyToken(bool verified) {
 
 }  // namespace
 
-std::wstring DumpDemoWorld() {
+std::wstring DumpDemoWorld(urmsg::RunMode mode) {
   auto const& world = demo::GetWorld();
   std::wstring out;
 
   // The framing is the FIRST LINE OF THE TEXT ITSELF, not a group header on
   // the page: the text is what the Copy button moves, and the framing has to
   // travel with it (the d7 audit's A6 framing override). The exact string the
-  // rail's lock header already ships (InspectRailView.cpp:516), reused rather
-  // than paraphrased so the demo carries one wording of this sentence.
-  // WorldDumpDiagnostics asserts this line, so it cannot be dropped silently.
-  out += L"Demo model: fabricated data, no crypto in this build\n";
+  // rail's lock header used to ship, reused rather than paraphrased so the demo
+  // carries one wording of this sentence. WorldDumpDiagnostics asserts this
+  // line, so it cannot be dropped silently.
+  //
+  // BOTH ARMS OF urmsg::WorldDumpFramingLine KEEP "Demo model:", and that is not
+  // an oversight in a file full of mode-split pairs: this function renders
+  // demo::GetWorld() IN BOTH MODES — there is no live variant of the dump and
+  // the Developer card is titled DEMOWORLD DUMP — so the fixture framing is true
+  // whichever world is on screen. What the live arm adds is the sentence a
+  // reader of a LIVE window needs and a reader of a demo window does not: that
+  // this text is the fixture and not the conversation they were looking at.
+  // Without it the dump is an honest description of itself that would be
+  // misread as a record of the session it was copied out of.
+  out += urmsg::WorldDumpFramingLine(mode) + L"\n";
 
   out += std::format(L"world  epoch={} conversations={} devices={} relay={} state={} "
                      L"session={} records/s={}\n",
@@ -174,7 +185,11 @@ std::vector<std::wstring> WorldDumpDiagnostics() {
   size_t expectedRows = 0;
   for (auto const& c : world.conversations) expectedRows += c.rows.size();
 
-  const std::wstring dump = DumpDemoWorld();
+  // RunMode::Fabricated EXPLICITLY, not urmsg::ActiveRunMode(): every count below is a
+  // property of demo::GetWorld(), which this dump renders in both modes, so the arm that
+  // has to be gated is fixed. The LIVE arm's framing line is asserted beside it, further
+  // down, from this same fabricated launch.
+  const std::wstring dump = DumpDemoWorld(urmsg::RunMode::Fabricated);
 
   auto count = [&dump](std::wstring_view prefix) {
     size_t n = 0, pos = 0;
@@ -195,7 +210,7 @@ std::vector<std::wstring> WorldDumpDiagnostics() {
 
   // The dump is built from the SEEDED world (design §5, contract §1), so two
   // calls in one process must be byte-identical.
-  const bool stable = (dump == DumpDemoWorld());
+  const bool stable = (dump == DumpDemoWorld(urmsg::RunMode::Fabricated));
 
   // The framing is part of the dump's contract (G4): it is what the Copy
   // button puts on the clipboard, so dropping it must fail here rather than
@@ -205,17 +220,39 @@ std::vector<std::wstring> WorldDumpDiagnostics() {
   const std::wstring firstLine = dump.substr(0, dump.find(L'\n'));
   const bool framed = firstLine.find(L"Demo model:") != std::wstring::npos;
 
+  // AND THE LIVE ARM, ASSERTED FROM THIS FABRICATED LAUNCH by building the dump a third
+  // time with the other enum. Three clauses, because "both contain Demo model:" alone
+  // would pass on a live arm that is a byte-for-byte copy of the fabricated one — which
+  // is exactly the defect that shipped everywhere else in this app:
+  //
+  //   * the live dump ALSO opens "Demo model:" (the dump is the fixture in both modes,
+  //     so dropping the fixture framing in live mode would be a NEW lie, not a fix),
+  //   * its first line DIFFERS from the fabricated one, and
+  //   * only the live one names the live session it is not.
+  //
+  // The dump's BODY is deliberately not compared: it is demo::GetWorld() either way, and
+  // `stable` above already pins it.
+  const std::wstring liveDump = DumpDemoWorld(urmsg::RunMode::Live);
+  const std::wstring liveFirst = liveDump.substr(0, liveDump.find(L'\n'));
+  const bool liveFramed = liveFirst.find(L"Demo model:") != std::wstring::npos &&
+                          liveFirst != firstLine &&
+                          liveFirst.find(L"live session") != std::wstring::npos &&
+                          firstLine.find(L"live session") == std::wstring::npos;
+
   // EQUALITY, not >=. A dump that silently dropped rows must fail here; that
   // is the whole reason this assertion exists.
   const bool ok = (convLines == world.conversations.size()) &&
-                  (rowLines == expectedRows) && stable && framed && !dump.empty();
+                  (rowLines == expectedRows) && stable && framed && liveFramed &&
+                  !dump.empty();
   lines.push_back(std::format(
       L"  dump.world       : {} {} conv lines == {} conversations; {} row lines == "
-      L"{} rows; stable across two calls: {}; framing first line: {}   [query: "
-      L"occurrences of \"\\nconv \" and of \"\\n  msg \"+\"\\n  day \"+\"\\n  sys \"; "
-      L"first line contains \"Demo model:\"]",
+      L"{} rows; stable across two calls: {}; framing first line: {}; live framing "
+      L"first line: {}   [query: occurrences of \"\\nconv \" and of \"\\n  msg \"+"
+      L"\"\\n  day \"+\"\\n  sys \"; both first lines contain \"Demo model:\", they "
+      L"differ, and only the live one contains \"live session\"]",
       ok ? L"PASS" : L"FAIL", convLines, world.conversations.size(), rowLines,
-      expectedRows, stable ? L"yes" : L"NO", framed ? L"yes" : L"NO"));
+      expectedRows, stable ? L"yes" : L"NO", framed ? L"yes" : L"NO",
+      liveFramed ? L"yes" : L"NO"));
   return lines;
 }
 

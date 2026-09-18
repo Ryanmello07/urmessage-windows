@@ -17,6 +17,7 @@
 #include <winrt/Microsoft.UI.Xaml.h>
 
 #include "Demo/DemoWorld.h"
+#include "RunMode.h"             // urmsg::RunMode, for SetThreadRunMode
 #include "Views/ThreadLayout.h"  // BubbleRunPos, for MakeBubbleRow
 
 namespace urmsg::views {
@@ -36,6 +37,11 @@ ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
                       std::function<void()> onDeselect);
 void SetThreadConversation(ThreadView& v, urmsg::demo::Conversation const& c);
 void SetThreadSelectedMessage(ThreadView& v, std::wstring const& id);
+// Re-point the composer caption at the wording for `mode`. The composer bar is
+// built ONCE by MakeThread and is never rebuilt, so unlike every other surface
+// that carries mode-dependent copy it cannot pick the new wording up from a
+// rebuild; MainWindow calls this on the beat it latches a live world.
+void SetThreadRunMode(ThreadView& v, urmsg::RunMode mode);
 void SetThreadTyping(ThreadView& v, bool typing);
 void AppendThreadRow(ThreadView& v, urmsg::demo::MessageRow const& row);
 
