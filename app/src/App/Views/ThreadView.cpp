@@ -321,6 +321,14 @@ void SetBubbleEdge(Button const& bubble, bool outgoing, bool selected) {
 // and every state prints its own word, which is what survives a greyscale
 // screenshot. BadgeFor() (Views/ThreadLayout.h) holds the table, so --diagnose
 // asserts the three channels instead of a screenshot having to be believed.
+// THE ONE SEND VERB (ThreadView.h). A function-static rather than a file-static so the
+// initialisation order of this TU cannot matter, which is the same shape Registry() below takes and
+// for the same reason.
+ThreadSendVerb& MutableSendVerb() {
+  static ThreadSendVerb verb;
+  return verb;
+}
+
 FrameworkElement MakeDeliveryCluster(demo::MessageRow const& row) {
   const DeliveryBadge badge = BadgeFor(row.state);
   Media::Brush brush = badge.danger ? urnw::colors::DangerBrush()
@@ -402,19 +410,43 @@ FrameworkElement MakeDeliveryCluster(demo::MessageRow const& row) {
   MarkRaw(reason);
   column.Children().Append(reason);
 
-  // Retry would have to mutate the world, and CONTRACT-V2 §1 gives ambient
-  // activity the only key to MutableWorld(). So it cannot act, and per design
-  // §9.1 it is disabled rather than live-but-dead. The composer's one honest
-  // line (T6) is where the demo says why, once, instead of five times.
+  // THE RETRY ACTS NOW, WHERE THERE IS A SESSION TO ACT INTO — and is disabled where there is not,
+  // which is design §9.1 unchanged rather than relaxed. It used to be unconditionally dead: retry
+  // would have had to mutate the world and CONTRACT-V2 §1 gives ambient activity the only key to
+  // MutableWorld(), so in the fabricated world it still cannot act and still says so. What changed
+  // is that a LIVE session has a real verb behind it (ThreadView.h's SendVerb), and this is the one
+  // button on the surface whose whole reason to exist is that a message did not get through.
+  //
+  // IT NAMES THE ROW IT CAME FROM. The send is a retry OF THIS MESSAGE, not a second one like it;
+  // the host drops the failed entry this id names in the same beat it queues the attempt.
+  const bool canRetry = CanRetrySend();
   Button retry;
   retry.Content(winrt::box_value(winrt::hstring{L"Try again"}));
   retry.HorizontalAlignment(HorizontalAlignment::Right);
   retry.FontSize(11);
   retry.Padding(ThicknessHelper::FromLengths(10, 2, 10, 2));
   retry.MinHeight(24);
-  retry.IsEnabled(false);
+  retry.IsEnabled(canRetry);
+  // A Button whose Content is text gets a name from that text, and "Try again" alone says neither
+  // what it would retry nor — when it is dark — why it cannot. The two wordings are a PAIR: the
+  // disabled one names the missing session rather than the build, because this build can send.
   Automation::AutomationProperties::SetName(
-      retry, winrt::hstring{L"Try again: resend this message (not available in this build)"});
+      retry, winrt::hstring{canRetry
+                                ? L"Try again: send this message again"
+                                : L"Try again: there is no live session to send this into"});
+  if (canRetry) {
+    retry.Click([id = row.id, body = row.body](
+                    winrt::Windows::Foundation::IInspectable const& sender, auto const&) {
+      auto const& verb = SendVerb();
+      if (!verb.enabled || !verb.send) return;
+      // Dark the moment it is taken, so a second click cannot queue the same message twice while
+      // the first attempt is still inside the ABI. The row is replaced by the host's next publish
+      // either way — as the record, or as a fresh failure — so nothing has to turn it back on.
+      if (verb.send(body, id)) {
+        if (auto button = sender.try_as<Button>()) button.IsEnabled(false);
+      }
+    });
+  }
   column.Children().Append(retry);
   return column;
 }
@@ -656,6 +688,10 @@ struct ThreadParts {
   StackPanel stack{nullptr};
   std::function<void(std::wstring)> onSelect;
   std::function<void()> onDeselect;
+  // The composer's verb. Null in a host that wired none, and the Send button is then dark whatever
+  // the box holds. MutableSendVerb() holds the SAME function, for the two retry buttons that are
+  // built where no parts pointer reaches; this copy is what the composer itself spends.
+  std::function<bool(std::wstring, std::wstring)> onSend;
   std::vector<ThreadBubble> bubbles;  // the canonical list; ThreadView::bubbles mirrors it
   double columnWidth = 0.0;
 
@@ -702,6 +738,16 @@ struct ThreadParts {
   // other mode-dependent surface in the app is rebuilt on that beat rather than
   // re-pointed. This one is not rebuilt, so it needs the handle.
   TextBlock composerNote{nullptr};
+  // The composer's two interactive elements, held for the SAME reason the caption is: the bar is
+  // built ONCE and the window re-points it when the live world lands. `sendEnabled` is the host's
+  // answer to "can this session send at all" (SetThreadSendEnabled); whether the BUTTON is live
+  // additionally needs text in the box and an onSend, and UpdateComposerSend is the one place that
+  // decision is made.
+  TextBox composerBox{nullptr};
+  Button composerSend{nullptr};
+  Media::SolidColorBrush composerSendWash{nullptr};
+  FontIcon composerSendGlyph{nullptr};
+  bool sendEnabled = false;
   // The no-selection empty state (one centred muted line under the identicon
   // lattice), built Visible and collapsed by the first SetThreadConversation.
   FrameworkElement emptyState{nullptr};
@@ -1246,6 +1292,71 @@ Button MakeInertIconButton(wchar_t const* glyph, wchar_t const* name) {
   return b;
 }
 
+// ── the composer's one decision, in one place ────────────────────────────────
+//
+// THREE CLAUSES, AND EACH ONE ANSWERS A DIFFERENT QUESTION:
+//   sendEnabled — can this SESSION send at all? (the host's answer: live, connected, group open)
+//   onSend      — was this thread built by a host that can send anything? (a fabricated launch
+//                 still wires one, and its sendEnabled stays false)
+//   text        — is there anything to send? An empty box has nothing, and a button that would
+//                 seal zero octets is the enabled-but-pointless control §9.1 is about.
+//
+// The AUTOMATION NAMES are a set of three, not an enabled/disabled pair, because the two ways of
+// being dark are different facts and a screen reader user cannot see which one applies. This app
+// has paid twice for a control that reaches a screen reader as "button" and nothing else.
+//
+// IT IS ALSO THE ONE WRITER OF THE PILL'S BRUSHES, which used to be a TextChanged lambda of its
+// own. Two writers of one SolidColorBrush.Color, one keyed off the text and one off the session,
+// would repaint in whichever order the events happened to fire.
+void UpdateComposerSend(std::shared_ptr<ThreadParts> const& parts) {
+  if (!parts || !parts->composerSend || !parts->composerBox) return;
+  const bool sessionCanSend = parts->sendEnabled && parts->onSend != nullptr;
+  const bool hasText = !parts->composerBox.Text().empty();
+  const bool live = sessionCanSend && hasText;
+
+  parts->composerSend.IsEnabled(live);
+  Automation::AutomationProperties::SetName(
+      parts->composerSend,
+      winrt::hstring{!sessionCanSend ? L"Send: there is no live session to send into"
+                     : hasText       ? L"Send"
+                                     : L"Send: type a message first"});
+  Automation::AutomationProperties::SetName(
+      parts->composerBox,
+      winrt::hstring{sessionCanSend
+                         ? L"Message"
+                         : L"Message: this launch has no live session, so nothing is sent"});
+
+  // The disabled wash (design d2 §3's enable-motion bullet) is only ever SEEN while the button is
+  // dark, and it still distinguishes the two dark states: transparent on an empty box — the bare
+  // #33EFF7BB disc read as muddy olive, an affordance pointing at nothing — and the pale wash once
+  // there is text. ENABLED, the AccentButtonStyle's own background paints the pill and this brush
+  // is not resolved at all, so it is left wherever it was.
+  if (parts->composerSendWash) {
+    parts->composerSendWash.Color(hasText ? winrt::Windows::UI::Color{0x33, 0xEF, 0xF7, 0xBB}
+                                          : winrt::Windows::UI::Color{0x00, 0x00, 0x00, 0x00});
+  }
+  if (parts->composerSendGlyph) {
+    // Muted only on the empty-box state. With text — dark or live — the glyph inherits, which is
+    // the disabled glyph under the wash and the accent button's own foreground when it is live.
+    if (!hasText)
+      parts->composerSendGlyph.Foreground(urnw::colors::MutedBrush());
+    else
+      parts->composerSendGlyph.ClearValue(Controls::IconElement::ForegroundProperty());
+  }
+}
+
+// Take what the box holds and hand it to the host. The box is cleared ONLY on a true answer: a
+// host that refused has queued nothing, and throwing the text away then would lose a message to a
+// race between the enablement check and the click.
+void SubmitComposer(std::shared_ptr<ThreadParts> const& parts) {
+  if (!parts || !parts->composerBox || !parts->onSend) return;
+  if (!parts->sendEnabled) return;
+  const std::wstring text{parts->composerBox.Text()};
+  if (text.empty()) return;
+  if (parts->onSend(text, std::wstring{})) parts->composerBox.Text(L"");
+  UpdateComposerSend(parts);
+}
+
 FrameworkElement MakeComposer(std::shared_ptr<ThreadParts> const& parts) {
   Border bar;
   // design d2 §3: the bar is SHEET (#151515, one step above the page) and the
@@ -1359,9 +1470,23 @@ FrameworkElement MakeComposer(std::shared_ptr<ThreadParts> const& parts) {
   box.Resources().Insert(winrt::box_value(winrt::hstring{L"TextControlCaretBrush"}),
                          urnw::colors::AccentBrush());
   box.VerticalAlignment(VerticalAlignment::Center);
-  Automation::AutomationProperties::SetName(box, L"Message (sending is not wired up yet)");
+  // The name is set by UpdateComposerSend, below and on every later change: it is one of the two
+  // strings that has to stop saying sending is unwired the moment this launch can send.
   Grid::SetColumn(box, 3);
   row.Children().Append(box);
+
+  // ENTER SENDS, and it is not a convenience. AcceptsReturn is false, so Enter in this box does
+  // nothing at all today — and a composer whose only send is a mouse click is one no keyboard user
+  // and no automation harness can reach. Shift is not special-cased because there is no newline to
+  // insert; the box is single-line by construction.
+  box.KeyDown([parts](winrt::Windows::Foundation::IInspectable const&,
+                      Input::KeyRoutedEventArgs const& e) {
+    if (e.Key() != winrt::Windows::System::VirtualKey::Enter) return;
+    // Handled either way: a dark composer must not let Enter bubble up to whatever a parent would
+    // do with it, which would make the key mean two different things in two sessions.
+    e.Handled(true);
+    SubmitComposer(parts);
+  });
 
   // UrAccentBrush's one legitimate home on this surface (the selection outline
   // is the other). AccentButtonStyle is what spends App.xaml's
@@ -1384,10 +1509,11 @@ FrameworkElement MakeComposer(std::shared_ptr<ThreadParts> const& parts) {
   send.Padding(ThicknessHelper::FromLengths(10, 6, 10, 6));
   // design d2 §3: a real pill (16) against the 12 dip well and chips.
   send.CornerRadius(CornerRadiusHelper::FromUniformRadius(16));
-  send.IsEnabled(false);  // design §9.1 — inert in BOTH text states below
-  Automation::AutomationProperties::SetName(send, L"Send (not wired up yet)");
+  // IsEnabled and the name are UpdateComposerSend's, on every beat that can change either. It
+  // starts dark, because nothing has been typed and no host has said this session can send.
   Grid::SetColumn(send, 4);
   row.Children().Append(send);
+  send.Click([parts](auto const&, auto const&) { SubmitComposer(parts); });
 
   // design d2 §3's enable-motion bullet, taken (the honesty note at the bottom
   // of MakeComposer covers why this is safe): the pill now tells the text->send
@@ -1407,19 +1533,17 @@ FrameworkElement MakeComposer(std::shared_ptr<ThreadParts> const& parts) {
   auto sendWash = urnw::colors::MakeBrush(winrt::Windows::UI::Color{0x00, 0x00, 0x00, 0x00});
   send.Resources().Insert(winrt::box_value(winrt::hstring{L"AccentButtonBackgroundDisabled"}),
                           sendWash);
-  plane.Foreground(urnw::colors::MutedBrush());  // the empty-box glyph
-  box.TextChanged([sendWash, plane](winrt::Windows::Foundation::IInspectable const& sender,
-                                    TextChangedEventArgs const&) {
-    const bool empty = sender.as<Controls::TextBox>().Text().empty();
-    // transparent <-> today's disabled wash #33EFF7BB; muted glyph <-> the
-    // inherited (dark) disabled glyph. Both states keep IsEnabled(false).
-    sendWash.Color(empty ? winrt::Windows::UI::Color{0x00, 0x00, 0x00, 0x00}
-                         : winrt::Windows::UI::Color{0x33, 0xEF, 0xF7, 0xBB});
-    if (empty)
-      plane.Foreground(urnw::colors::MutedBrush());
-    else
-      plane.ClearValue(Controls::IconElement::ForegroundProperty());  // inherit the disabled glyph
-  });
+  parts->composerBox = box;
+  parts->composerSend = send;
+  parts->composerSendWash = sendWash;
+  parts->composerSendGlyph = plane;
+  // The one writer, called here for the start pose and from every event that can move any of its
+  // three clauses. The TextChanged lambda this replaced painted the pill and nothing else.
+  UpdateComposerSend(parts);
+  box.TextChanged(
+      [parts](winrt::Windows::Foundation::IInspectable const&, TextChangedEventArgs const&) {
+        UpdateComposerSend(parts);
+      });
   inputWell.Child(row);
   well.Children().Append(inputWell);
 
@@ -1465,8 +1589,8 @@ FrameworkElement MakeComposer(std::shared_ptr<ThreadParts> const& parts) {
   });
 
   // Said ONCE, here, instead of on every inert control in the window: the
-  // failed message's [ Try again ], the [ Review ] on the key-change record and
-  // these four all point at the same fact.
+  // attachment clip, the emoji button, the disappearing timer and the [ Review ]
+  // on the key-change record all point at the same fact.
   //
   // MODE-DEPENDENT, AND THIS IS THE STRING THAT MADE IT SO. The shipped wording
   // was "Demo — nothing is sent, and no message leaves this window.", and under
@@ -1474,9 +1598,15 @@ FrameworkElement MakeComposer(std::shared_ptr<ThreadParts> const& parts) {
   // a different machine and had very much left a window to get here. It reads as
   // a claim that the app is inert, which is the false denial the honesty rule
   // forbids in its second direction. urmsg::ComposerNote(mode) (RunMode.cpp)
-  // owns both wordings and RunModeCopyDiagnostics gates them; the live one says
-  // the true thing about the SEND PATH — the ABI has the verbs, this button is
-  // not wired to them — and affirms what the reader can already see.
+  // owns both wordings and RunModeCopyDiagnostics gates them.
+  //
+  // THE LIVE ARM CHANGED AGAIN WITH THIS COMMIT, and the reason is exactly the
+  // one above with the polarity flipped a second time. It used to say "sending
+  // is not wired up yet", which was true of the button while the ABI had the
+  // verbs — and the moment the Send button above was wired to
+  // urnet_message_group_send, that sentence became a denial of something the app
+  // does. The pair, and the clause RunModeCopyDiagnostics added to guard it, are
+  // in RunMode.cpp.
   //
   // WRAPPING, newly: the live wording is 8 characters longer than the fabricated
   // one and this TextBlock's default is NoWrap, so at a narrow thread column the
@@ -1516,12 +1646,24 @@ FrameworkElement MakeComposer(std::shared_ptr<ThreadParts> const& parts) {
 
 }  // namespace
 
+ThreadSendVerb const& SendVerb() { return MutableSendVerb(); }
+
+bool CanRetrySend() {
+  auto const& verb = MutableSendVerb();
+  return verb.enabled && verb.send != nullptr;
+}
+
 ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
-                      std::function<void()> onDeselect) {
+                      std::function<void()> onDeselect,
+                      std::function<bool(std::wstring, std::wstring)> onSend) {
   ThreadView v;
   auto parts = std::make_shared<ThreadParts>();
   parts->onSelect = std::move(onSelectMessage);
   parts->onDeselect = std::move(onDeselect);
+  parts->onSend = std::move(onSend);
+  // The SAME function, in the one place the surfaces that are not the composer can reach it
+  // (ThreadView.h). Not a second verb: a retry and a send are one call to one host.
+  MutableSendVerb().send = parts->onSend;
 
   Grid root;
   root.Background(BrushByKey(L"UrBackgroundBrush", urnw::colors::kBackground));
@@ -2786,6 +2928,17 @@ void SetThreadRunMode(ThreadView& v, urmsg::RunMode mode) {
   auto parts = Find(v.root);
   if (!parts || !parts->composerNote) return;
   parts->composerNote.Text(winrt::hstring{urmsg::ComposerNote(mode)});
+}
+
+// The host's answer to "can this session send at all". Idempotent, safe before any world exists,
+// and it writes BOTH the composer's state and the one the two [ Try again ] buttons read — those
+// are built row by row as the thread redraws, so they read the flag rather than being visited.
+void SetThreadSendEnabled(ThreadView& v, bool enabled) {
+  MutableSendVerb().enabled = enabled;
+  auto parts = Find(v.root);
+  if (!parts) return;
+  parts->sendEnabled = enabled;
+  UpdateComposerSend(parts);
 }
 
 void SetThreadTyping(ThreadView& v, bool typing) {

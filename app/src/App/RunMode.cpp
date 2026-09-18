@@ -87,6 +87,54 @@ bool PairOk(Pair const& p) {
          ContainsWord(p.live, L"live") && !ContainsWord(p.live, L"demo");
 }
 
+// ---- the send clause, which is limit 1 above in the one place it has actually bitten ----------
+//
+// EVERY DENIAL OF A SEND PATH THIS APP HAS EVER PRINTED. PairOk asks only that the two arms name
+// their modes and differ, and "Live session - these messages are real; sending is not wired up yet"
+// satisfied all three of those clauses for an entire release while the ABI's send verbs sat
+// unspent. The day the Send button was wired to urnet_message_group_send that sentence became a
+// denial of something the app does, PairOk went on passing it, and nothing else would have looked.
+//
+// So the property asserted below is the one that actually tracks the capability: THE FABRICATED ARM
+// MUST DENY THE SEND PATH AND THE LIVE ARM MUST NOT. Both directions matter. A live arm that keeps
+// a denial is the defect this commit removed; a fabricated arm that loses one is "Demo model" over
+// a composer a reader would reasonably believe sends, which is the original defect wearing the
+// other mode's clothes.
+//
+// A LIST OF PHRASES IS A BLACKLIST AND THAT IS ADMITTED RATHER THAN HIDDEN: a live arm that denied
+// sending in words nobody has used yet would pass. What makes it worth having anyway is WHEN it
+// fires - on every launch, against the string that is actually compiled in - and that the
+// complement is printed, so a reader of --diagnose sees which phrases each arm carries rather than
+// a bare PASS. Add to it when a new wording is introduced; do not replace it with a count.
+constexpr std::wstring_view kSendDenials[] = {
+    L"not wired",  L"nothing is sent", L"no message leaves",
+    L"cannot send", L"not available",  L"does not send",
+};
+
+// Which of them `text` carries, as a printable list. Empty means none.
+std::wstring DenialsIn(std::wstring const& text) {
+  std::wstring found;
+  for (auto const& phrase : kSendDenials) {
+    if (!ContainsWord(text, std::wstring(phrase))) continue;
+    if (!found.empty()) found += L", ";
+    found += phrase;
+  }
+  return found;
+}
+
+// The live disclosure's ABSENCE LIST, on its own: everything between "What is NOT here:" and the
+// sentence's full stop. Pulled out rather than searched for inside the whole paragraph because the
+// paragraph legitimately talks about sending in the affirmative, and a check that could not tell
+// the two apart would either miss the defect or forbid the true sentence.
+std::wstring AbsenceList(std::wstring const& disclosure) {
+  constexpr std::wstring_view kLead = L"What is NOT here:";
+  const size_t at = disclosure.find(kLead);
+  if (at == std::wstring::npos) return {};
+  const size_t from = at + kLead.size();
+  const size_t stop = disclosure.find(L'.', from);
+  return disclosure.substr(from, (stop == std::wstring::npos ? disclosure.size() : stop) - from);
+}
+
 }  // namespace
 
 RunMode ActiveRunMode() { return static_cast<RunMode>(g_mode.load(std::memory_order_relaxed)); }
@@ -133,10 +181,24 @@ std::wstring ComposerNote(RunMode mode) {
   // The live form does NOT say "nothing is sent, and no message leaves this window". That sentence
   // is about isolation, and printing it under a thread whose newest line arrived from another
   // machine reads as a claim that the app is inert — which is the false denial in miniature. What
-  // is true of the send path in both modes is that it does not exist yet, so the live form says
-  // that and affirms what the reader can already see.
+  // is true of the send path in both modes WAS that it did not exist yet, and that is no longer
+  // true of either.
+  //
+  // IT NO LONGER SAYS "sending is not wired up yet", AND THAT IS THIS COMMIT. That wording held for
+  // exactly as long as the composer's Send button called nothing: the ABI shipped the send verbs
+  // and this client spent none of them. The button now calls urnet_message_group_send
+  // (Views/ThreadView.cpp's SubmitComposer -> Live/LiveMesh.cpp's QueueSend), so the old sentence
+  // became a denial of something the app does -- the same defect as the one above, one release
+  // later, and the SEND CLAUSE in RunModeCopyDiagnostics is what will catch the next one.
+  //
+  // WHAT THE LIVE FORM CLAIMS AND WHERE IT STOPS. It affirms the seal and the submit, because those
+  // are what the call does and what its answer reports, and it says plainly that nothing reports
+  // delivery -- so the ceiling stays where Live/LiveWorld.cpp puts it (DeliveryState::Sent) and no
+  // reader is invited to expect a tick this protocol cannot produce.
   return mode == RunMode::Live
-             ? L"Live session \u2014 these messages are real; sending is not wired up yet."
+             ? L"Live session \u2014 these messages are real, and so is the Send button: what you "
+               L"type is sealed on this device and submitted to the group. Nothing reports "
+               L"delivery, so a message you send stops at Sent."
              : L"Demo model \u2014 nothing is sent, and no message leaves this window.";
 }
 
@@ -189,14 +251,21 @@ std::wstring DisclosureBody(RunMode mode) {
   // then how the absences are drawn — because that shape is what makes the disclosure checkable
   // against the app instead of reassuring. The absence list is the ABI's own
   // (urnetwork_message.h: "WHAT IS STILL NOT HERE: receipts, edit, media, group names, contact
-  // discovery, a third member") plus the two this CLIENT is missing: a wired send button and any
-  // attestation check.
+  // discovery, a third member") plus the one this CLIENT is still missing: any attestation check.
+  //
+  // "sending" CAME OUT OF THAT ABSENCE LIST IN THE SAME COMMIT THAT WIRED THE BUTTON, and it is
+  // called out here because a stale absence list is the quieter half of this defect: nobody
+  // re-reads the long paragraph on the Settings page, so it would have gone on listing a capability
+  // the app has one screen away from the button that has it. The absence-list clause in
+  // RunModeCopyDiagnostics reads THE LIST ITSELF rather than the paragraph, so the next one fails a
+  // launch rather than waiting for somebody to re-read a wall of text.
   if (mode == RunMode::Live) {
     return L"Live session \u2014 the messages on these screens are real: this device fetched the "
-           L"records from the message server and opened them under MLS. What is NOT here: "
-           L"sending, delivery and read receipts, contact discovery, member lists, group names, "
-           L"and any per-message attestation check. Every field this build has no source for "
-           L"reads \"unavailable\" rather than a guess.";
+           L"records from the message server and opened them under MLS, and a message you write "
+           L"here is sealed on this device and submitted to the group. What is NOT here: delivery "
+           L"and read receipts, contact discovery, member lists, group names, attachments, and any "
+           L"per-message attestation check. Every field this build has no source for reads "
+           L"\"unavailable\" rather than a guess.";
   }
   return L"Demo model \u2014 no protocol, no store, no network and no cryptography are running. "
          L"Every value on these screens is fabricated in one module. Nothing has been sent, "
@@ -269,6 +338,36 @@ std::vector<std::wstring> RunModeCopyDiagnostics() {
       L"  run mode dump    : {}  both arms open \"Demo model:\" (the dump is the fixture in both "
       L"modes), they differ, and only the live arm names the live session -> \"{}\" | \"{}\"",
       dumpOk ? L"PASS" : L"FAIL", AsciiOnly(dumpFab), AsciiOnly(dumpLive)));
+
+  // ---- the send clause, on the two strings that claim something about sending ----------------
+  // BOTH ARMS ARE EVALUATED BY PASSING THE ENUM, exactly as every clause above does, so a
+  // fabricated launch gates the live copy. That property is what makes this gate worth running at
+  // all: the run that would notice a stale live string by looking at it is the run that is least
+  // likely to happen.
+  const std::wstring deniedByFabricated = DenialsIn(ComposerNote(RunMode::Fabricated));
+  const std::wstring deniedByLive = DenialsIn(ComposerNote(RunMode::Live));
+  const bool sendOk = !deniedByFabricated.empty() && deniedByLive.empty();
+  lines.push_back(std::format(
+      L"  run mode send    : {}  this build CAN send in live mode (the composer's Send button "
+      L"calls urnet_message_group_send), so the live composer note must deny none of it and the "
+      L"fabricated one must deny some -> fabricated denies [{}] | live denies [{}]   [query: "
+      L"case-insensitive substring over \"not wired\", \"nothing is sent\", \"no message leaves\", "
+      L"\"cannot send\", \"not available\", \"does not send\"]",
+      sendOk ? L"PASS" : L"FAIL",
+      deniedByFabricated.empty() ? std::wstring(L"(none)") : deniedByFabricated,
+      deniedByLive.empty() ? std::wstring(L"(none)") : deniedByLive));
+
+  // The disclosure's absence list is the SECOND string this commit made false, and it is checked as
+  // a list rather than as a paragraph. THE LIST IS PRINTED IN FULL, which is the whole point: a
+  // reader sees what the app claims it cannot do and can check it against the app, rather than
+  // being told a count of things it agreed with itself about.
+  const std::wstring absences = AbsenceList(DisclosureBody(RunMode::Live));
+  const bool absenceOk = !absences.empty() && !ContainsWord(absences, L"send");
+  lines.push_back(std::format(
+      L"  run mode absences: {}  the live disclosure's absence list must not name the send path "
+      L"-> \"{}\"   [query: the text between \"What is NOT here:\" and the next full stop, which "
+      L"must be non-empty and must not contain \"send\"]",
+      absenceOk ? L"PASS" : L"FAIL", AsciiOnly(absences)));
 
   // And the latch itself. A launch with no live world must report Fabricated: if this ever prints
   // "live" on a default launch, every string above is being chosen by the wrong arm and no other

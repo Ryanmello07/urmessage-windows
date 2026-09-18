@@ -22,6 +22,7 @@
 #include "UrColors.h"
 #include "UrMotion.h"
 #include "Views/InspectRailFields.h"
+#include "Views/ThreadView.h"  // views::SendVerb / CanRetrySend — the app's ONE send verb
 
 // ---- ONE key/value call site in this file, enforced by the build (R3) ------
 //
@@ -578,17 +579,25 @@ FrameworkElement MakeLockHeader(urmsg::RunMode mode) {
   return card.root;
 }
 
-// The reason AND the affordance, because design 9.1 asks for both - and the
-// button is EXPLICITLY DISABLED, because the same section forbids anything that
-// looks live and does nothing and there is no send path in the demo to retry
-// into (design 2). UrButtonBaseStyle's Disabled visual state dims the button, so
-// "present but not available" is VISIBLE rather than something a user discovers
-// by clicking.
+// The reason AND the affordance, because design 9.1 asks for both - and whether
+// the button ACTS is decided by whether there is a session to act into, which is
+// the same question the thread's own [ Try again ] asks and through the same
+// predicate (views::CanRetrySend). It used to be unconditionally disabled and
+// its name said "not available in this build": true while nothing in the app
+// called a send verb, and false the moment the composer was wired to
+// urnet_message_group_send. Where there is no live session it is still dark, and
+// the same section still forbids anything that looks live and does nothing.
+// UrButtonBaseStyle's Disabled visual state dims it, so "present but not
+// available" stays VISIBLE rather than something a user discovers by clicking.
+//
+// IT RETRIES THIS MESSAGE, NOT A COPY OF IT: `rowId` names the failed row, and
+// the host drops that entry in the same beat it queues the attempt.
 //
 // UrPaneActionSecondaryStyle, not UrSecondaryButtonStyle: the latter is the
 // 48-tall, 24pt NeueBit hero button, which in a 360 DIP rail would be a slab.
 // This one is 40 tall, radius 4, outlined, with its own 12 DIP inset.
-void AppendFailureBlock(UIElementCollection const& body, std::wstring const& reason) {
+void AppendFailureBlock(UIElementCollection const& body, std::wstring const& reason,
+                        std::wstring const& rowId, std::wstring const& messageBody) {
   auto row = kit::MakePaneRow(40);
   Grid grid;
   grid.ColumnSpacing(10);
@@ -620,14 +629,30 @@ void AppendFailureBlock(UIElementCollection const& body, std::wstring const& rea
   row.Child(grid);
   body.Append(row);
 
+  const bool canRetry = CanRetrySend() && !messageBody.empty();
   Button retry;
   if (auto style = kit::StyleByKey(L"UrPaneActionSecondaryStyle")) retry.Style(style);
   retry.Content(winrt::box_value(winrt::hstring{L"Try again"}));
-  retry.IsEnabled(false);
+  retry.IsEnabled(canRetry);
   // A Button whose Content is text still gets a name from that text, but the
   // reason it cannot be pressed is not in it. This project has paid twice for
   // controls that reach a screen reader as "button" and nothing else.
-  automation::AutomationProperties::SetName(retry, L"Try again, not available in this build");
+  automation::AutomationProperties::SetName(
+      retry, winrt::hstring{canRetry ? L"Try again, send this message again"
+                                     : L"Try again, there is no live session to send this into"});
+  if (canRetry) {
+    retry.Click([rowId, messageBody](winrt::Windows::Foundation::IInspectable const& sender,
+                                     auto const&) {
+      auto const& verb = SendVerb();
+      if (!verb.enabled || !verb.send) return;
+      // Dark once taken, so two clicks cannot queue one message twice while the
+      // first attempt is inside the ABI. The rail is re-populated by the host's
+      // next publish either way.
+      if (verb.send(messageBody, rowId)) {
+        if (auto button = sender.try_as<Button>()) button.IsEnabled(false);
+      }
+    });
+  }
   body.Append(retry);
 }
 
@@ -1067,7 +1092,8 @@ void PopulateMessage(InspectRailView const& v, demo::Conversation const& conv,
   // empty reason must produce NO block rather than an empty one: a StackPanel
   // gives every child its space whether or not the child drew anything, which is
   // the measured defect SetTextOrCollapse exists for.
-  if (!row.failureReason.empty()) AppendFailureBlock(body, row.failureReason);
+  if (!row.failureReason.empty())
+    AppendFailureBlock(body, row.failureReason, row.id, row.body);
 
   // Which message this is, directly under the lock card (and under the failure
   // block when present): message mode opens warm now, not cold on a table.

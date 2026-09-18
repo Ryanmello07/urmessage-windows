@@ -216,6 +216,11 @@ urmsg::demo::World BuildWorld(LiveGroup const& group) {
   int64_t lastDay = 0;
   int64_t newestMs = 0;
   std::wstring newestBody;
+  // THIS DEVICE'S OWN sender_handle, taken from a record it sealed rather than asked for: the ABI
+  // has no "who am I" call, and `mine` is exactly the bit that says a record is ours. It seeds the
+  // identicon on the outbox rows below, so a message waiting to be sent draws the same mark as the
+  // ones that got through. Empty until this device has sealed anything, which is the all-zero seed.
+  std::string myHandle;
 
   for (size_t i = 0; i < group.messages.size(); ++i) {
     LiveMessage const& m = group.messages[i];
@@ -274,6 +279,7 @@ urmsg::demo::World BuildWorld(LiveGroup const& group) {
     row.timeLabel = FormatClock(m.sentAtMs);
     // REAL: the ABI's `mine` is true when THIS device sealed the record.
     row.outgoing = m.mine;
+    if (m.mine && myHandle.empty()) myHandle = m.senderHandle;
     // SENT IS THE CEILING AND IT IS REAL: the server acknowledged the submit. Delivered and Read
     // are never set, because nothing in this protocol reports either — there are no receipts.
     row.state = urmsg::demo::DeliveryState::Sent;
@@ -316,8 +322,70 @@ urmsg::demo::World BuildWorld(LiveGroup const& group) {
     }
   }
 
+  // ── what this device tried to send, under the records that got through ──────
+  //
+  // AT THE FOOT AND NOWHERE ELSE, because that is where it happened: an outbox entry is newer than
+  // every record in the log above it (the server has not taken it, so nothing can be newer). The
+  // two states it renders are the two states the ABI can actually report, and NEITHER is invented:
+  //
+  //   Pending -> "Sending"   the call into urnet_message_group_send has not returned yet
+  //   Failed  -> "Not sent"  it returned NULL, and `failureReason` is the out_error it returned
+  //
+  // THERE IS NO THIRD STATE HERE ON PURPOSE. A send that SUCCEEDS is not drawn from this list at
+  // all: the record is in the log a line later and the entry is dropped in the same beat, so the
+  // ceiling on an outgoing row stays exactly where the protocol leaves it — Sent, the server
+  // acknowledged the submit — and nothing in this file can draw a delivery tick.
+  for (auto const& out : group.outbox) {
+    const int64_t day = DayOrdinal(out.attemptedAtMs);
+    if (day != 0 && day != lastDay) {
+      lastDay = day;
+      urmsg::demo::MessageRow sep;
+      sep.kind = urmsg::demo::RowKind::DaySeparator;
+      sep.id = L"outbox-" + urnw::Widen(out.localId) + L"-day";
+      sep.body = FormatDay(out.attemptedAtMs);
+      sep.state = urmsg::demo::DeliveryState::Sent;
+      conv.rows.push_back(std::move(sep));
+    }
+
+    urmsg::demo::MessageRow row;
+    row.kind = urmsg::demo::RowKind::Message;
+    row.id = L"outbox-" + urnw::Widen(out.localId);
+    row.senderName = kUnavailable;
+    row.senderKey = SeedFromHex(myHandle);
+    row.body = urnw::Widen(out.body);
+    row.timeLabel = FormatClock(out.attemptedAtMs);
+    row.outgoing = true;
+    row.state = out.failed ? urmsg::demo::DeliveryState::Failed
+                           : urmsg::demo::DeliveryState::Pending;
+    // Spec C §5.3's Reason, and it is the library's sentence rather than one written here: a
+    // rephrasing would be this app's guess at what went wrong, and the whole point of showing a
+    // failure is that the reader learns the actual one.
+    row.failureReason = out.failed ? urnw::Widen(out.error) : std::wstring();
+    row.permanentRecord = false;
+
+    // NOT ONE INSPECT FIELD IS REAL ON AN UNSEALED MESSAGE, and that is why they are all the
+    // placeholder: there is no record, so there is no epoch it was sealed under, no wire size, no
+    // sent-at the server agreed to and no sender leaf. The rail renders "unavailable" for each.
+    row.inspect.epoch = group.epoch;                             // the group's, not the record's
+    row.inspect.senderLeafIndex = urmsg::demo::kUnknownUint32;
+    row.inspect.retention = urmsg::demo::RetentionClass::Permanent;
+    row.inspect.sizeBucket = SizeBucket(static_cast<int32_t>(out.body.size()));  // real: the octets
+    row.inspect.wireSizeBytes = urmsg::demo::kUnknownUint32;
+    row.inspect.attestationVerified = false;
+    row.inspect.cipher.clear();
+    row.inspect.groupIdHex = conv.groupIdHex;
+    row.inspect.senderDisplayName = kUnavailable;
+    row.inspect.sentAtLabel = kUnavailable;  // nothing was sent, so there is no sent-at
+    row.inspect.receivedAtLabel = kUnavailable;
+    row.inspect.deliveredTo.clear();
+    row.inspect.readBy.clear();
+    conv.rows.push_back(std::move(row));
+  }
+
   // The preview is the newest real body. ALWAYS NON-EMPTY is the struct's own contract, so an
-  // empty conversation says so rather than drawing a blank line.
+  // empty conversation says so rather than drawing a blank line. AN OUTBOX ENTRY IS DELIBERATELY
+  // NOT A PREVIEW: the conversation list's second line is what the conversation last SAID, and a
+  // message the server refused was never said to anybody.
   conv.preview = newestBody.empty() ? std::wstring(kUnavailable) : newestBody;
   conv.timeLabel = newestMs > 0 ? FormatClock(newestMs) : std::wstring(kUnavailable);
   world.conversations.push_back(std::move(conv));

@@ -71,6 +71,27 @@ struct LiveMessage {
   std::vector<LiveReaction> reactions;
 };
 
+// ── a send that is not (yet) a record ─────────────────────────────────────────
+//
+// WHY THIS IS NOT A FABRICATION, which is the only question worth asking about a row the server
+// has never heard of. A refused send produces NO record: urnet_message_group_send answers NULL and
+// an out_error, the group's `submitted` counter does not move, and urnet_message_group_messages
+// therefore hands back exactly what it handed back before the attempt. So a UI built only from the
+// ABI's log cannot say a send failed — the message a person typed and watched disappear leaves no
+// trace anywhere but the log file. What each of these rows states is a thing THIS APP did: it took
+// those octets and tried to seal them, and the outcome was the error it carries.
+//
+// THE ENTRY IS SHORT LIVED BY CONSTRUCTION. A send that succeeds drops its entry in the same beat
+// the real record appears in the log, so one message is never two rows; only a failure survives a
+// publish, and only until it is retried or the session ends.
+struct LiveOutboxEntry {
+  std::string localId;      // stable for this session; the thread's row id is "outbox-" + this
+  std::string body;         // utf-8, byte for byte what the composer held
+  int64_t attemptedAtMs = 0;  // wall clock at the attempt — the row's time label, not a guess
+  bool failed = false;      // false while the ABI call is still in flight
+  std::string error;        // the ABI's own out_error, verbatim; non-empty only when failed
+};
+
 // Everything one live session knows about itself. All of it is observed; none of it is invented.
 struct LiveGroup {
   std::string groupIdHex;
@@ -82,6 +103,8 @@ struct LiveGroup {
   std::string host;            // the operator host asked for
   std::string statsJson;    // urnet_message_group_stats, verbatim
   std::vector<LiveMessage> messages;
+  // What this device tried to send and the server has not (or will not) take. Ordered by attempt.
+  std::vector<LiveOutboxEntry> outbox;
 };
 
 // ── the one placeholder ───────────────────────────────────────────────────────

@@ -33,10 +33,32 @@ struct ThreadView {
   winrt::Microsoft::UI::Xaml::Controls::StackPanel stack{nullptr};
   std::vector<ThreadBubble> bubbles;
 };
+// `onSend` IS THE COMPOSER'S ONE VERB, and the host's answer is what decides whether the text
+// survives the click: TRUE means the host has taken the octets and will report the outcome by
+// redrawing the thread, and the box is cleared; FALSE means nothing was queued and the box KEEPS
+// what was typed, so a send refused between the enablement check and the click costs nobody their
+// message. The other two callbacks answer void because neither can fail.
+//
+// Its second argument names a FAILED ROW THIS SEND REPLACES — the [ Try again ] under a "Not sent"
+// bubble passes the row's id, and the composer passes an empty string. A retry that did not name
+// the row it came from would leave the failure standing beside its own second attempt, which reads
+// as two messages where the person wrote one.
+//
+// The host MUST NOT BLOCK in it: this runs on the UI thread and the send path's ABI call does a
+// round trip to a server.
 ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
-                      std::function<void()> onDeselect);
+                      std::function<void()> onDeselect,
+                      std::function<bool(std::wstring, std::wstring)> onSend);
 void SetThreadConversation(ThreadView& v, urmsg::demo::Conversation const& c);
 void SetThreadSelectedMessage(ThreadView& v, std::wstring const& id);
+// Can the host send RIGHT NOW? The composer's Send button is live only when this is true AND the
+// box holds something AND MakeThread was given an onSend; a failed bubble's [ Try again ] is live
+// on the same condition. Everything else about the composer — focus, typing, the caret — is
+// untouched, because those are things this app can honestly do in either mode.
+//
+// Called by MainWindow on the beat it latches a live world, for the same reason SetThreadRunMode
+// is: the composer bar is built ONCE and is not among the surfaces that beat rebuilds.
+void SetThreadSendEnabled(ThreadView& v, bool enabled);
 // Re-point the composer caption at the wording for `mode`. The composer bar is
 // built ONCE by MakeThread and is never rebuilt, so unlike every other surface
 // that carries mode-dependent copy it cannot pick the new wording up from a
@@ -64,6 +86,27 @@ void AppendThreadRow(ThreadView& v, urmsg::demo::MessageRow const& row);
 // moving target misreads "the extent grew under a pinned reader" as
 // "scrolled away".
 bool ShouldPinToBottom(bool armed, double offset, double scrollableHeight);
+
+// ---- the send verb, where a surface that is not the composer can reach it ----
+//
+// THE COMPOSER IS NOT THE ONLY PLACE A MESSAGE CAN BE SENT FROM. A failed message's [ Try again ]
+// is drawn deep inside MakeBubbleRow — a free function this header fixes, which takes a row and no
+// host — and the inspect rail draws a SECOND [ Try again ] for the same failure, in another file
+// entirely. Both are retries of one message through one verb, and neither can be handed a callback
+// down the path it is built on without a signature change rippling through every caller.
+//
+// So the verb has one home. MakeThread fills it, SetThreadSendEnabled arms it, and a surface that
+// needs it asks HERE rather than growing a parameter. `send` is null and `enabled` false in a host
+// that wired none, which is what makes every retry in a fabricated launch inert without any of
+// those surfaces having to know what mode the app is in.
+struct ThreadSendVerb {
+  std::function<bool(std::wstring text, std::wstring replacesRowId)> send;
+  bool enabled = false;
+};
+ThreadSendVerb const& SendVerb();
+// True when a retry drawn right now would actually do something. The one predicate both [ Try
+// again ] buttons ask, so the two can never disagree about whether this session can resend.
+bool CanRetrySend();
 
 // ---- the thread's own internals (NOT in the contract) --------------------
 // The identicon gutter. 28 + 8 of air: Spec C §W9's 40x40 is the LIST row's

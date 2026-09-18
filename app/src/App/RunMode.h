@@ -70,11 +70,20 @@ std::wstring ModeChipText(RunMode mode);
 std::wstring LockHeaderTitle(RunMode mode);
 std::wstring LockHeaderNote(RunMode mode);
 
-// The line under the composer. In BOTH modes this app cannot send: the ABI has the send verbs
-// (urnet_message_group_send_reply/_react/_unreact/_delete) and the button is not wired to any of
-// them. So the live form says THAT, plainly, instead of "nothing is sent, and no message leaves
-// this window" — which reads as a claim about isolation beside messages that visibly arrived from
-// another machine.
+// The line under the composer, and the ONE STRING IN THIS FILE WHOSE TRUTH DEPENDS ON A CAPABILITY
+// RATHER THAN ON WHICH DATA IS ON SCREEN. In live mode this app SENDS: the composer's button calls
+// urnet_message_group_send through the live worker, and a failed send draws as a "Not sent" bubble
+// with a retry that works. In fabricated mode it sends nothing and never could. So the live form
+// affirms the send path and names the ceiling the protocol leaves it at (Sent - nothing reports
+// delivery), and the fabricated form keeps "nothing is sent, and no message leaves this window",
+// which is a claim about isolation and is true of exactly one of the two modes.
+//
+// IT HAS NOW BEEN WRONG IN BOTH DIRECTIONS, one release apart, which is why it has a gate of its
+// own. First the fabricated wording was printed under real messages (a denial of the crypto that
+// had run); then the live wording said "sending is not wired up yet" under a button that was about
+// to be wired (a denial of a capability). RunModeCopyDiagnostics' SEND CLAUSE asserts the thing
+// that actually tracks the capability: the fabricated arm must deny the send path, the live arm
+// must not, and the phrases it looks for are printed beside the verdict.
 std::wstring ComposerNote(RunMode mode);
 
 // The Network page's relay-path caption (chrome voice, letterspaced uppercase) and the status
@@ -109,6 +118,13 @@ std::wstring DisclosureBody(RunMode mode);
 // can tell what was checked rather than trusting the word PASS. Called from CollectDiagnostics on
 // every launch; the mode of the RUN is irrelevant to it, because it evaluates BOTH arms by passing
 // the enum explicitly. That is the only way a fabricated launch can gate the live copy at all.
+//
+// THREE CLAUSES BEYOND THE PAIRS, each one a property the pair test cannot see:
+//   * the DUMP line, whose two arms deliberately share a prefix;
+//   * the SEND clause - the fabricated composer note must deny the send path and the live one must
+//     not, because this build can send and only one of its two modes does;
+//   * the ABSENCE clause - the live disclosure's "What is NOT here:" list, printed in full, must
+//     not name the send path among the things the app cannot do.
 std::vector<std::wstring> RunModeCopyDiagnostics();
 
 }  // namespace urmsg

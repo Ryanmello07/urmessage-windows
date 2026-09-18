@@ -24,13 +24,17 @@
 #include <stdlib.h>  // _wdupenv_s, free
 #include <string.h>  // _wcsicmp
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <mutex>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -354,6 +358,56 @@ int64_t NowMs() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
              std::chrono::steady_clock::now().time_since_epoch())
       .count();
+}
+
+// WALL CLOCK, and a second function rather than a parameter on the one above: NowMs is steady_clock
+// and is used for DURATIONS, where a clock that can step backwards over an NTP correction would
+// print a negative elapsed. This one is the other kind of time — the instant a send was attempted,
+// which is formatted as a clock face beside message timestamps the protocol carries in the same
+// units (sent_at_ms, unix epoch milliseconds). Mixing the two would put a row at 03:14 on 1970.
+int64_t WallClockMs() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
+
+// ── the send queue ────────────────────────────────────────────────────────────
+//
+// THE UI THREAD PUTS OCTETS IN; THE WORKER TAKES THEM OUT AND CALLS THE ABI. Nothing else crosses:
+// the group handle, the context and every store stay owned by the worker, so there is no moment
+// where two threads are inside the library over one group.
+//
+// A CONDITION VARIABLE RATHER THAN THE POLL INTERVAL. The fetch loop sleeps 3 s between fetches and
+// a send dropped into that sleep would sit there for up to 3 s with the sender watching an empty
+// composer. The loop therefore WAITS on this instead of sleeping, so a click wakes it at once and a
+// quiet loop still ticks on its own timer.
+struct Outbound {
+  std::string localId;      // this session's name for the attempt
+  std::string body;         // utf-8 octets, exactly as the composer held them
+  std::string replaces;     // a failed entry this one supersedes, or empty
+};
+
+std::mutex g_sendMutex;
+std::condition_variable g_sendWake;
+std::deque<Outbound> g_sendQueue;
+// Written by the worker (one writer), read by the UI thread. Relaxed is enough: a stale read costs
+// one refused click or one accepted send the worker then refuses by name, and the fetch loop
+// rewrites it every poll.
+std::atomic<bool> g_canSend{false};
+std::atomic<uint64_t> g_nextLocalId{1};
+
+// The whole queue, taken at once. Called on the worker only.
+std::deque<Outbound> TakeSendQueue() {
+  std::lock_guard<std::mutex> lock(g_sendMutex);
+  std::deque<Outbound> taken;
+  taken.swap(g_sendQueue);
+  return taken;
+}
+
+// Sleep until there is something to send or `ms` has passed, whichever comes first.
+void WaitForSendOrPoll(int64_t ms) {
+  std::unique_lock<std::mutex> lock(g_sendMutex);
+  g_sendWake.wait_for(lock, std::chrono::milliseconds(ms), [] { return !g_sendQueue.empty(); });
 }
 
 std::string ToHex(const uint8_t* data, int32_t len) {
@@ -791,7 +845,124 @@ void RunSession() {
   // Session::Close below is only reached on the paths that give up.
   urnw::LogInfo("live: entering the fetch loop, every {} ms", kFetchPollMs);
   int64_t lastPublishedCount = -1;
+
+  // WHAT THIS DEVICE HAS TRIED TO SEND AND THE SERVER HAS NOT TAKEN. Owned by this thread and by
+  // nothing else — the UI hands over octets through the queue and reads the result back as a
+  // published world, so this vector needs no lock. See LiveWorld.h for why a row that is not a
+  // record is still not a fabrication.
+  std::vector<urmsg::live::LiveOutboxEntry> outbox;
+
+  // Build the world off the group AS IT STANDS and hand it to the UI. Every publish below goes
+  // through here, so the log and the outbox can never be drawn from two different moments — a send
+  // that succeeded between them would otherwise render as both a record and a pending row.
+  auto publishWorld = [&](bool logIfChanged) {
+    // THE WHOLE LOG, not just what a fetch answered — a reaction and a tombstone change a message
+    // that ALREADY arrived and are never in the fetch's own list, so a reader of the fetch alone
+    // never sees either.
+    urmsg::live::LiveGroup live;
+    live.groupIdHex = gidHex;
+    live.epoch = urnet_message_group_epoch(s.group);
+    live.open = urnet_message_group_is_open(s.group);
+    live.clientId = clientId;
+    live.serverClientId = kServerClientId;
+    live.platformUrl = platformUrl;
+    live.host = kHost;
+    live.statsJson = TakeString(urnet_message_group_stats(s.group));
+    live.outbox = outbox;
+    CollectMessages(s.group, live.messages);
+
+    // THE SEND BUTTON'S ONE GATE, re-read off the library every time rather than latched when the
+    // group opened: a group the server has closed under us stops accepting sends, and a button
+    // that learns that only from a failed click is the enabled-but-dead control design §9.1 bans.
+    g_canSend.store(live.open, std::memory_order_relaxed);
+
+    // Log a changed log, and only a changed one: this loop runs every three
+    // seconds for the life of the process and an unconditional dump would bury
+    // the session it is evidence about.
+    if (logIfChanged && static_cast<int64_t>(live.messages.size()) != lastPublishedCount) {
+      lastPublishedCount = static_cast<int64_t>(live.messages.size());
+      LogMessages(live);
+      urnw::LogInfo("live: group stats {}", live.statsJson);
+    }
+
+    // PUBLISH EVERY TIME, changed or not. The count is a poor change detector —
+    // a reaction landing on an existing message, or a tombstone, moves nothing —
+    // and the UI's own generation counter already drops a beat it has drawn.
+    urmsg::live::Publish(urmsg::live::BuildWorld(live));
+  };
+
+  // ── the send verb, on the thread that owns the handles ──────────────────────
+  //
+  // THREE PUBLISHES PER BATCH AND EACH ONE IS A DIFFERENT SENTENCE:
+  //   before the call  — "Sending", so the composer empties into a row the reader can see rather
+  //                      than into nothing for however long the server takes;
+  //   after each call  — the record itself (it is in this device's own log the instant the submit
+  //                      is acknowledged, so the pending row is dropped in the same beat it
+  //                      appears), or "Not sent" carrying the library's own reason;
+  //   the loop's own   — everything the far side has said since.
+  auto drainSends = [&] {
+    std::deque<Outbound> queued = TakeSendQueue();
+    if (queued.empty()) return;
+
+    for (auto const& out : queued) {
+      // A RETRY SUPERSEDES THE ENTRY IT CAME FROM rather than joining it. Without this the failed
+      // row stays on screen beside the second attempt and one message reads as two.
+      if (!out.replaces.empty()) {
+        outbox.erase(std::remove_if(outbox.begin(), outbox.end(),
+                                    [&](urmsg::live::LiveOutboxEntry const& e) {
+                                      return e.localId == out.replaces;
+                                    }),
+                     outbox.end());
+      }
+      urmsg::live::LiveOutboxEntry entry;
+      entry.localId = out.localId;
+      entry.body = out.body;
+      entry.attemptedAtMs = WallClockMs();
+      outbox.push_back(std::move(entry));
+    }
+    publishWorld(false);
+
+    for (auto const& out : queued) {
+      char* sendErr = nullptr;
+      const int64_t startedMs = NowMs();
+      // COUNTED OCTETS, NOT A char*. The body is whatever was typed and a UTF-8 encoding of it can
+      // hold a 0x00 nowhere except by a caller putting one there — but the ABI's rule for every
+      // binary value going in is a pointer and a length (cgo/ctest/message_abi_test.c's 21-octet
+      // body is two NULs and two multi-byte sequences precisely to hold this), and a length is what
+      // is passed here so that the rule is kept rather than relied on.
+      const std::string info = TakeString(urnet_message_group_send(
+          s.group, s.ctx, reinterpret_cast<const uint8_t*>(out.body.data()),
+          static_cast<int32_t>(out.body.size()), &sendErr));
+      const std::string failure = TakeError(&sendErr);
+      const int64_t tookMs = NowMs() - startedMs;
+
+      auto at = std::find_if(
+          outbox.begin(), outbox.end(),
+          [&](urmsg::live::LiveOutboxEntry const& e) { return e.localId == out.localId; });
+      if (!info.empty()) {
+        // The info json carries the record id, the message_id and body_len — and no body.
+        urnw::LogInfo("live: *** SENT *** {} octets in {} ms: {}", out.body.size(), tookMs, info);
+        if (at != outbox.end()) outbox.erase(at);
+      } else {
+        urnw::LogError("live: send of {} octets was REFUSED after {} ms: {}", out.body.size(),
+                       tookMs, failure.empty() ? "no reason given" : failure);
+        if (at != outbox.end()) {
+          at->failed = true;
+          // A refusal with no out_error is a library bug, not an empty reason — but the row still
+          // has to say something, and "it failed and would not say why" is the true sentence.
+          at->error = failure.empty() ? "the library refused the send and gave no reason" : failure;
+        }
+      }
+      publishWorld(false);
+    }
+  };
+
   for (;;) {
+    // SENDS FIRST, BEFORE THE FETCH. A fetch takes as long as the server takes and the person who
+    // just pressed Send is watching the composer; putting the send behind it would add a whole
+    // round trip to every message this app writes.
+    drainSends();
+
     const int64_t fetchStartedMs = NowMs();
     const uint64_t fetched = urnet_message_group_receive(s.group, s.ctx, &err);
     const std::string fetchError = TakeError(&err);
@@ -810,35 +981,11 @@ void RunSession() {
     }
     if (fetched != 0) urnet_release(fetched);
 
-    // THE WHOLE LOG, not just what this fetch answered — a reaction and a
-    // tombstone change a message that ALREADY arrived and are never in the
-    // fetch's own list, so a reader of the fetch alone never sees either.
-    urmsg::live::LiveGroup live;
-    live.groupIdHex = gidHex;
-    live.epoch = urnet_message_group_epoch(s.group);
-    live.open = urnet_message_group_is_open(s.group);
-    live.clientId = clientId;
-    live.serverClientId = kServerClientId;
-    live.platformUrl = platformUrl;
-    live.host = kHost;
-    live.statsJson = TakeString(urnet_message_group_stats(s.group));
-    CollectMessages(s.group, live.messages);
+    publishWorld(true);
 
-    // Log a changed log, and only a changed one: this loop runs every three
-    // seconds for the life of the process and an unconditional dump would bury
-    // the session it is evidence about.
-    if (static_cast<int64_t>(live.messages.size()) != lastPublishedCount) {
-      lastPublishedCount = static_cast<int64_t>(live.messages.size());
-      LogMessages(live);
-      urnw::LogInfo("live: group stats {}", live.statsJson);
-    }
-
-    // PUBLISH EVERY TIME, changed or not. The count is a poor change detector —
-    // a reaction landing on an existing message, or a tombstone, moves nothing —
-    // and the UI's own generation counter already drops a beat it has drawn.
-    urmsg::live::Publish(urmsg::live::BuildWorld(live));
-
-    ::Sleep(static_cast<DWORD>(kFetchPollMs));
+    // NOT ::Sleep. A send queued during the wait wakes this at once; nothing queued and it ticks on
+    // its own timer exactly as the sleep did.
+    WaitForSendOrPoll(kFetchPollMs);
   }
 }
 
@@ -863,6 +1010,11 @@ bool StartIfEnabled() {
     } catch (...) {
       urnw::LogError("live: session ended with a non-std exception");
     }
+    // EVERY WAY OUT OF RunSession ENDS HERE, including the exceptional ones, and there is nothing
+    // left that could make a send work — so the button must go dark. Written here rather than on
+    // each of RunSession's nine early returns because a tenth one added later would silently miss
+    // it, and the failure mode of missing it is an enabled Send whose clicks vanish.
+    g_canSend.store(false, std::memory_order_relaxed);
   });
 
   // DETACHED, AND NOT AS A SHORTCUT. This is called from the UI thread of a
@@ -871,6 +1023,29 @@ bool StartIfEnabled() {
   // would freeze the window for exactly that long. The worker owns its handles
   // and closes them itself, so there is nothing for anyone to wait on.
   worker.detach();
+  return true;
+}
+
+bool CanSend() { return g_canSend.load(std::memory_order_relaxed); }
+
+bool QueueSend(std::string utf8Body, std::string replacesLocalId) {
+  // REFUSED HERE RATHER THAN QUEUED AND REFUSED LATER, and the difference is what the caller can
+  // do about it: a false answer lets the composer keep the text the person typed. A queued send
+  // that the worker then refuses has already emptied the box.
+  if (utf8Body.empty()) return false;
+  if (!g_canSend.load(std::memory_order_relaxed)) return false;
+
+  Outbound out;
+  out.localId = std::to_string(g_nextLocalId.fetch_add(1));
+  out.body = std::move(utf8Body);
+  out.replaces = std::move(replacesLocalId);
+  {
+    std::lock_guard<std::mutex> lock(g_sendMutex);
+    g_sendQueue.push_back(std::move(out));
+  }
+  // OUTSIDE THE LOCK: the worker wakes, takes the same mutex, and would be woken only to block on
+  // the thread that woke it.
+  g_sendWake.notify_one();
   return true;
 }
 

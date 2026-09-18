@@ -128,6 +128,20 @@ struct MainWindow : MainWindowT<MainWindow> {
   // The UI-thread half: pick up the newest snapshot and redraw. Runs on this thread, always.
   void ApplyLiveWorld();
 
+  // THE COMPOSER'S VERB, and the ONLY place in this window that asks the mesh to send anything.
+  // Handed to MakeThread, and reached from the two [ Try again ] buttons through the same
+  // std::function. Answers TRUE when the worker has taken the octets — NOT when they arrived
+  // anywhere; the outcome comes back as a published world like everything else the mesh says.
+  //
+  // `replacesRowId` is the failed row a retry supersedes, empty for a fresh send. It is the
+  // thread's row id, which for an unsent message is "outbox-<n>" (Live\LiveWorld.cpp); the prefix
+  // is stripped here rather than in the view, because the view must not know what an outbox is.
+  //
+  // NEVER BLOCKS. urmsg::live::QueueSend hands the body to the live worker and returns; the ABI's
+  // send does a round trip to the message server and this is the UI thread of a single-threaded
+  // apartment, where a blocking call is a frozen window for exactly that long.
+  bool SendFromComposer(std::wstring text, std::wstring replacesRowId);
+
   std::shared_ptr<LiveWorldBridge> liveBridge_;
   urmsg::live::WorldPtr liveWorld_;
   // The generation this window has already drawn. A publish that lands while an earlier beat is

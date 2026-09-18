@@ -380,6 +380,15 @@ void MainWindow::ApplyLiveWorld() {
   // by MakeThread — so they are re-pointed by hand. Both are cheap and both are idempotent.
   if (DemoChip()) DemoChipText().Text(winrt::hstring{urmsg::ModeChipText(urmsg::RunMode::Live)});
   if (thread_.root) urmsg::views::SetThreadRunMode(thread_, urmsg::RunMode::Live);
+  // AND THE SEND BUTTON, on the same beat and for the same reason the caption is: the composer bar
+  // is built once and is not among the surfaces rebuilt below.
+  //
+  // urmsg::live::CanSend() AND NOT ActiveRunMode(), which is the narrower of the two and has to be.
+  // The latch above is "a live world is on screen" and that is a weaker statement than "a send
+  // would work": a group the server closes under a running app keeps its last published world on
+  // screen, and the mode stays Live for the life of the process by design. The button asks the
+  // worker, every beat, whether the group is open RIGHT NOW.
+  if (thread_.root) urmsg::views::SetThreadSendEnabled(thread_, urmsg::live::CanSend());
 
   // The three content views exist only under --demo (BuildDemoViews is demo-gated, and its own
   // comment says why). A live world with nothing built to draw it is not an error: the worker
@@ -436,6 +445,38 @@ void MainWindow::ApplyLiveWorld() {
   urnw::LogInfo("window: live world generation {} drawn: {} row(s) in conversation 0", generation,
                 liveWorld_->conversations.empty() ? size_t{0}
                                                   : liveWorld_->conversations.front().rows.size());
+}
+
+bool MainWindow::SendFromComposer(std::wstring text, std::wstring replacesRowId) {
+  if (text.empty()) return false;
+
+  // "outbox-<n>" -> "<n>". The view hands back the row id it drew, which is the only name it has
+  // for the failure; Live\LiveWorld.cpp is the one place that prefix is written and this is the one
+  // place it is read, so the two cannot drift apart without one of them being touched.
+  constexpr std::wstring_view kOutboxPrefix = L"outbox-";
+  std::wstring replacesLocalId;
+  if (replacesRowId.starts_with(kOutboxPrefix))
+    replacesLocalId = replacesRowId.substr(kOutboxPrefix.size());
+
+  // UTF-8, because that is what the protocol's TEXT tail is checked as: urmessage refuses a text
+  // tail that is not valid UTF-8 at the seal, so an ANSI narrowing here would be a send that fails
+  // for a reason nobody could read off the screen.
+  const std::string utf8 = urnw::Narrow(text);
+  const bool queued = urmsg::live::QueueSend(utf8, urnw::Narrow(replacesLocalId));
+
+  // The TEXT IS NOT LOGGED HERE. Live\LiveMesh.cpp logs the conversation under --live and states
+  // the narrowing that makes that acceptable; a second copy on this path would be one more place
+  // to forget, and the octet count is what says the composer handed over what it held.
+  if (queued) {
+    urnw::LogInfo("window: composer handed {} octet(s) to the live worker{}", utf8.size(),
+                  replacesLocalId.empty() ? "" : " as a retry");
+  } else {
+    urnw::LogWarn(
+        "window: the composer's send was REFUSED before it was queued ({} octets; live session can "
+        "send: {}). The text is still in the box.",
+        utf8.size(), urmsg::live::CanSend());
+  }
+  return queued;
 }
 
 int MainWindow::OpenConversationIndex() const {
@@ -578,7 +619,16 @@ void MainWindow::BuildDemoViews() {
       },
       [weak = get_weak()]() {
         if (auto self = weak.get()) self->ClearMessageSelection();
+      },
+      [weak = get_weak()](std::wstring text, std::wstring replacesRowId) -> bool {
+        auto self = weak.get();
+        if (!self) return false;
+        return self->SendFromComposer(std::move(text), std::move(replacesRowId));
       });
+  // The composer starts dark and is armed by ApplyLiveWorld. Said here EXPLICITLY rather than left
+  // to the member's initialiser: this is the statement that a thread built in a fabricated launch
+  // can send nothing, and it must not be reachable only through a path a live launch takes.
+  urmsg::views::SetThreadSendEnabled(thread_, false);
   // ThreadHost, NOT ThreadBody. ApplyBreakpoint gives exactly one of the two
   // thread surfaces to a run: under --demo it collapses ThreadPane outright
   // and shows ThreadHost, so anything appended to ThreadBody here would
