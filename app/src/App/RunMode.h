@@ -33,6 +33,16 @@
 // InspectRailFields.cpp's AttestationLabel and NetworkPageView.cpp's FormatKeyState. Both take a
 // RunMode the same way everything here does, and both are asserted in both modes where they live.
 //
+// NOR ARE THE CAPABILITY-KEYED NAMES, and the distinction is the one this file's own send clause
+// draws: a string chosen by whether a SESSION CAN ACT is a different kind of string from one chosen
+// by which world is on screen. The composer's Send names, the two [ Try again ] names and the
+// per-bubble Reply / React names (Views/ThreadLayout.h's BubbleActionName) all take the capability
+// (Views/ThreadView.h's CanRetrySend) rather than the mode, which is what keeps them true during a
+// --live launch whose mesh has not answered yet - the fabricated world is drawn, no session exists,
+// and "there is no live session" is the true sentence while ActiveRunMode() still says fabricated.
+// Their gate is Startup.cpp's `bubble actions` line, which evaluates both arms by passing the
+// capability explicitly, exactly as RunModeCopyDiagnostics passes the mode.
+//
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 

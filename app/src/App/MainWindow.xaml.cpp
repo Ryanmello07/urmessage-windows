@@ -447,7 +447,8 @@ void MainWindow::ApplyLiveWorld() {
                                                   : liveWorld_->conversations.front().rows.size());
 }
 
-bool MainWindow::SendFromComposer(std::wstring text, std::wstring replacesRowId) {
+bool MainWindow::SendFromComposer(std::wstring text, std::wstring replacesRowId,
+                                  std::wstring replyToRowId) {
   if (text.empty()) return false;
 
   // "outbox-<n>" -> "<n>". The view hands back the row id it drew, which is the only name it has
@@ -458,23 +459,48 @@ bool MainWindow::SendFromComposer(std::wstring text, std::wstring replacesRowId)
   if (replacesRowId.starts_with(kOutboxPrefix))
     replacesLocalId = replacesRowId.substr(kOutboxPrefix.size());
 
+  // THE PARENT IS THE ROW ID, UNTRANSLATED. Live\LiveWorld.cpp writes a record's row id as its
+  // message_id verbatim (64 lower-case hex), which is exactly the name the protocol quotes, so
+  // there is nothing to map; the worker decodes it to octets at the queue and refuses anything
+  // that is not that shape before the box empties. An outbox row can never be a parent - the view
+  // offers Reply on records only - so the prefix case above does not arise here.
+  //
   // UTF-8, because that is what the protocol's TEXT tail is checked as: urmessage refuses a text
   // tail that is not valid UTF-8 at the seal, so an ANSI narrowing here would be a send that fails
   // for a reason nobody could read off the screen.
   const std::string utf8 = urnw::Narrow(text);
-  const bool queued = urmsg::live::QueueSend(utf8, urnw::Narrow(replacesLocalId));
+  const bool queued = urmsg::live::QueueSend(utf8, urnw::Narrow(replacesLocalId),
+                                             urnw::Narrow(replyToRowId));
 
   // The TEXT IS NOT LOGGED HERE. Live\LiveMesh.cpp logs the conversation under --live and states
   // the narrowing that makes that acceptable; a second copy on this path would be one more place
   // to forget, and the octet count is what says the composer handed over what it held.
   if (queued) {
-    urnw::LogInfo("window: composer handed {} octet(s) to the live worker{}", utf8.size(),
-                  replacesLocalId.empty() ? "" : " as a retry");
+    urnw::LogInfo("window: composer handed {} octet(s) to the live worker{}{}", utf8.size(),
+                  replacesLocalId.empty() ? "" : " as a retry",
+                  replyToRowId.empty() ? "" : " as a reply to " + urnw::Narrow(replyToRowId));
   } else {
     urnw::LogWarn(
         "window: the composer's send was REFUSED before it was queued ({} octets; live session can "
         "send: {}). The text is still in the box.",
         utf8.size(), urmsg::live::CanSend());
+  }
+  return queued;
+}
+
+bool MainWindow::ReactFromBubble(std::wstring rowId, std::wstring emoji, bool remove) {
+  // The row id is the message_id (see SendFromComposer); the emoji crosses as UTF-8 because the
+  // ABI checks it as 1..64 octets of valid UTF-8 and folds nothing, so the octets queued here are
+  // the octets every member sees.
+  const std::string utf8Emoji = urnw::Narrow(emoji);
+  const bool queued = urmsg::live::QueueReaction(urnw::Narrow(rowId), utf8Emoji, remove);
+  if (queued) {
+    urnw::LogInfo("window: bubble handed a {} of {} ({} octets) on {} to the live worker",
+                  remove ? "unreact" : "react", utf8Emoji, utf8Emoji.size(), urnw::Narrow(rowId));
+  } else {
+    urnw::LogWarn("window: the bubble's {} was REFUSED before it was queued (live session can "
+                  "send: {})",
+                  remove ? "unreact" : "react", urmsg::live::CanSend());
   }
   return queued;
 }
@@ -620,10 +646,17 @@ void MainWindow::BuildDemoViews() {
       [weak = get_weak()]() {
         if (auto self = weak.get()) self->ClearMessageSelection();
       },
-      [weak = get_weak()](std::wstring text, std::wstring replacesRowId) -> bool {
+      [weak = get_weak()](std::wstring text, std::wstring replacesRowId,
+                          std::wstring replyToRowId) -> bool {
         auto self = weak.get();
         if (!self) return false;
-        return self->SendFromComposer(std::move(text), std::move(replacesRowId));
+        return self->SendFromComposer(std::move(text), std::move(replacesRowId),
+                                      std::move(replyToRowId));
+      },
+      [weak = get_weak()](std::wstring rowId, std::wstring emoji, bool remove) -> bool {
+        auto self = weak.get();
+        if (!self) return false;
+        return self->ReactFromBubble(std::move(rowId), std::move(emoji), remove);
       });
   // The composer starts dark and is armed by ApplyLiveWorld. Said here EXPLICITLY rather than left
   // to the member's initialiser: this is the statement that a thread built in a fabricated launch

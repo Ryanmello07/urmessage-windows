@@ -44,11 +44,22 @@ struct ThreadView {
 // the row it came from would leave the failure standing beside its own second attempt, which reads
 // as two messages where the person wrote one.
 //
-// The host MUST NOT BLOCK in it: this runs on the UI thread and the send path's ABI call does a
-// round trip to a server.
+// Its THIRD argument names the ROW THIS SEND IS A REPLY TO, or is empty for a plain text. The
+// composer fills it from its "replying to" state (a bubble's Reply button puts it there, Escape or
+// the strip's cancel takes it away), and the host turns the row id into the parent the protocol
+// names. A retry passes what the failed row carried, so a reply retried is still a reply.
+//
+// `onReact` IS THE OTHER VERB A BUBBLE HAS: put `emoji` on the row `rowId` names, or take it off
+// when `remove` is true. Same contract as onSend's answer - true means the host has queued it and
+// will report the outcome by redrawing the thread, false means nothing was queued - and the same
+// no-blocking rule.
+//
+// The host MUST NOT BLOCK in either: this runs on the UI thread and the send path's ABI call does
+// a round trip to a server.
 ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
                       std::function<void()> onDeselect,
-                      std::function<bool(std::wstring, std::wstring)> onSend);
+                      std::function<bool(std::wstring, std::wstring, std::wstring)> onSend,
+                      std::function<bool(std::wstring, std::wstring, bool)> onReact);
 void SetThreadConversation(ThreadView& v, urmsg::demo::Conversation const& c);
 void SetThreadSelectedMessage(ThreadView& v, std::wstring const& id);
 // Can the host send RIGHT NOW? The composer's Send button is live only when this is true AND the
@@ -100,7 +111,13 @@ bool ShouldPinToBottom(bool armed, double offset, double scrollableHeight);
 // that wired none, which is what makes every retry in a fabricated launch inert without any of
 // those surfaces having to know what mode the app is in.
 struct ThreadSendVerb {
-  std::function<bool(std::wstring text, std::wstring replacesRowId)> send;
+  std::function<bool(std::wstring text, std::wstring replacesRowId, std::wstring replyToRowId)> send;
+  // The reaction verb, reached from the bubble's picker the same way.
+  std::function<bool(std::wstring rowId, std::wstring emoji, bool remove)> react;
+  // Put the composer into its "replying to" state for `row`. Filled by MakeThread, because only
+  // the composer's own parts know where the strip is; a bubble's Reply button - built by the free
+  // function MakeBubbleRow, which has no parts - reaches it here. Null before MakeThread ran.
+  std::function<void(urmsg::demo::MessageRow const& row)> beginReply;
   bool enabled = false;
 };
 ThreadSendVerb const& SendVerb();

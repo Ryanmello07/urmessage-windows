@@ -36,6 +36,7 @@
 #include "Demo/ThreadLayout.h"
 #include "Views/ThreadLayout.h"
 #include "Views/ThreadView.h"  // ShouldPinToBottom, for the scroll-pin line below
+#include "Live/LiveWorld.h"    // BuildWorld, for the reply/reaction mapping gate below (pure)
 #include "Demo/DemoSwitches.h"
 #include "Demo/DemoStress.h"
 
@@ -496,6 +497,205 @@ std::wstring DemoScrollPinCheck() {
       ok ? L"PASS" : L"FAIL", firstPin, atFoot, nearFoot, scrolledAway);
 }
 
+// ---- reply and react: the names, the picker and the mapping ----------------
+//
+// Four lines, all evaluable without an apartment and without a session:
+//   * the two per-bubble action names, BOTH ARMS BY PASSING THE CAPABILITY, so a launch that can
+//     reach neither still gates both - the same arrangement RunModeCopyDiagnostics uses for the
+//     mode;
+//   * the picker's closed set against the ABI's own rule (1..64 octets of UTF-8, and distinct);
+//   * the chip-word table over its closed set, with the one property that matters printed: a
+//     reaction that is not Sent never carries the standing word;
+//   * the live mapping over a locally built adversarial group - a standing reaction, a refused
+//     react, a pending unreact and a pending reply - asserting that nothing unsealed renders as
+//     standing and that a pending reply names its parent the way a sealed one does.
+//
+// Every non-ASCII character is printed as <U+XXXX> for the reason RunMode.cpp gives: the output
+// crosses a redirected handle into a shell that decodes ANSI by default.
+std::wstring EscapeNonAscii(std::wstring const& s) {
+  std::wstring out;
+  for (wchar_t c : s) {
+    if (c < 0x20 || 0x7E < c)
+      out += std::format(L"<U+{:04X}>", static_cast<unsigned int>(c));
+    else
+      out.push_back(c);
+  }
+  return out;
+}
+
+std::vector<std::wstring> ReplyReactDiagnostics() {
+  using namespace urmsg::views;
+  std::vector<std::wstring> out;
+
+  // 1. the action names
+  {
+    constexpr std::wstring_view kDenials[] = {L"no live session", L"not available", L"cannot"};
+    auto denies = [&](std::wstring const& s) {
+      for (auto const& d : kDenials)
+        if (s.find(d) != std::wstring::npos) return true;
+      return false;
+    };
+    size_t ok = 0;
+    for (BubbleAction a : {BubbleAction::Reply, BubbleAction::React}) {
+      const std::wstring on = BubbleActionName(a, true);
+      const std::wstring off = BubbleActionName(a, false);
+      if (!on.empty() && !off.empty() && on != off && !denies(on) &&
+          off.find(L"no live session") != std::wstring::npos)
+        ++ok;
+    }
+    out.push_back(std::format(
+        L"  bubble actions   : {}  {}/2 names have a live arm that denies nothing and a dark arm "
+        L"that names the missing session -> reply \"{}\" | \"{}\"; react \"{}\" | \"{}\"   "
+        L"[query: both arms non-empty and different; live arm contains none of \"no live "
+        L"session\", \"not available\", \"cannot\"; dark arm contains \"no live session\"]",
+        Verdict(ok == 2), ok, BubbleActionName(BubbleAction::Reply, true),
+        BubbleActionName(BubbleAction::Reply, false), BubbleActionName(BubbleAction::React, true),
+        BubbleActionName(BubbleAction::React, false)));
+  }
+
+  // 2. the picker
+  {
+    size_t inRange = 0;
+    std::wstring listing;
+    std::vector<std::wstring> seen;
+    bool distinct = true;
+    for (size_t i = 0; i < kReactionPickerCount; ++i) {
+      const size_t octets = ReactionPickerOctets(i);
+      if (1 <= octets && octets <= 64) ++inRange;
+      const std::wstring e = kReactionPicker[i];
+      for (auto const& s : seen)
+        if (s == e) distinct = false;
+      seen.push_back(e);
+      if (!listing.empty()) listing += L", ";
+      listing += std::format(L"{} ({} octets)", EscapeNonAscii(e), octets);
+    }
+    const bool sized = 6 <= kReactionPickerCount && kReactionPickerCount <= 8;
+    out.push_back(std::format(
+        L"  reaction picker  : {}  {} entries, {} within the ABI's 1..64 UTF-8 octets, distinct "
+        L"{} -> {}   [query: 6 <= count <= 8; every entry narrows to 1..64 octets; no two equal]",
+        Verdict(sized && inRange == kReactionPickerCount && distinct), kReactionPickerCount,
+        inRange, distinct ? L"yes" : L"NO", listing));
+  }
+
+  // 3. the chip words over the closed set
+  {
+    using urmsg::demo::DeliveryState;
+    using urmsg::demo::MessageReaction;
+    auto make = [](bool mine, DeliveryState s, bool removing) {
+      MessageReaction r;
+      r.emoji = L"x";
+      r.mine = mine;
+      r.state = s;
+      r.removing = removing;
+      return r;
+    };
+    const std::wstring yours = ReactionChipWord(make(true, DeliveryState::Sent, false));
+    const std::wstring theirs = ReactionChipWord(make(false, DeliveryState::Sent, false));
+    const std::wstring sending = ReactionChipWord(make(true, DeliveryState::Pending, false));
+    const std::wstring removing = ReactionChipWord(make(true, DeliveryState::Pending, true));
+    const std::wstring notSent = ReactionChipWord(make(true, DeliveryState::Failed, false));
+    const std::wstring notRemoved = ReactionChipWord(make(true, DeliveryState::Failed, true));
+    // THE PROPERTY: the standing word appears on a Sent reaction of yours and on NOTHING that is
+    // not Sent - a refused or in-flight attempt must never read as standing.
+    const bool ok = yours == L"you" && theirs.empty() && sending != yours && removing != yours &&
+                    notSent != yours && notRemoved != yours && !sending.empty() &&
+                    !removing.empty() && !notSent.empty() && !notRemoved.empty() &&
+                    sending != removing && notSent != notRemoved;
+    out.push_back(std::format(
+        L"  reaction words   : {}  yours \"{}\" | theirs \"{}\" | sending \"{}\" | removing "
+        L"\"{}\" | not sent \"{}\" | not removed \"{}\"   [query: the standing word is on the "
+        L"Sent+mine case only; every non-Sent case has its own non-empty word]",
+        Verdict(ok), yours, theirs, sending, removing, notSent, notRemoved));
+  }
+
+  // 4. the live mapping, over an adversarial group built here
+  {
+    using namespace urmsg::live;
+    LiveGroup g;
+    g.groupIdHex = "00";
+    g.epoch = 1;
+    g.open = true;
+    LiveMessage m;
+    m.recordId = 5;
+    m.messageId = std::string(64, 'a');
+    m.senderHandle = std::string(32, 'b');
+    m.mine = false;
+    m.sentAtMs = 1789754263488;
+    m.kind = 0x01;  // URNET_MESSAGE_KIND_TEXT, by value: this TU does not include the ABI header
+    m.body = "a line from the peer";
+    m.bodyLen = static_cast<int32_t>(m.body.size());
+    m.reactions.push_back({"\xF0\x9F\x91\x8D", false});   // the peer's standing thumbs up
+    m.reactions.push_back({"\xF0\x9F\x8E\x89", true});    // this device's standing party popper
+    g.messages.push_back(m);
+    LiveReactionOutboxEntry refused;
+    refused.localId = "1";
+    refused.targetId = m.messageId;
+    refused.emoji = "\xE2\x9D\xA4\xEF\xB8\x8F";        // a heart the library refused
+    refused.failed = true;
+    refused.error = "refused for the test";
+    g.reactionOutbox.push_back(refused);
+    LiveReactionOutboxEntry removing;
+    removing.localId = "2";
+    removing.targetId = m.messageId;
+    removing.emoji = "\xF0\x9F\x8E\x89";                 // taking the party popper back, in flight
+    removing.remove = true;
+    g.reactionOutbox.push_back(removing);
+    LiveOutboxEntry reply;
+    reply.localId = "3";
+    reply.body = "a reply not yet sent";
+    reply.replyToId = m.messageId;
+    reply.attemptedAtMs = m.sentAtMs + 1000;
+    g.outbox.push_back(reply);
+
+    const urmsg::demo::World w = BuildWorld(g);
+    const urmsg::demo::MessageRow* target = nullptr;
+    const urmsg::demo::MessageRow* parentLine = nullptr;
+    const urmsg::demo::MessageRow* pendingReply = nullptr;
+    if (!w.conversations.empty()) {
+      auto const& rows = w.conversations.front().rows;
+      for (size_t i = 0; i < rows.size(); ++i) {
+        if (rows[i].id == urnw::Widen(m.messageId)) target = &rows[i];
+        if (rows[i].id == L"outbox-3-reply") parentLine = &rows[i];
+        if (rows[i].id == L"outbox-3") pendingReply = &rows[i];
+      }
+    }
+    size_t standing = 0, notStanding = 0, mineStanding = 0;
+    bool refusedCarriesReason = false, removingIsPending = false;
+    if (target) {
+      for (auto const& r : target->reactions) {
+        if (r.state == urmsg::demo::DeliveryState::Sent) {
+          ++standing;
+          if (r.mine) ++mineStanding;
+        } else {
+          ++notStanding;
+        }
+        if (r.state == urmsg::demo::DeliveryState::Failed && r.failureReason == L"refused for the test")
+          refusedCarriesReason = true;
+        if (r.removing && r.state == urmsg::demo::DeliveryState::Pending) removingIsPending = true;
+      }
+    }
+    const bool parentNamed = parentLine != nullptr &&
+                             parentLine->kind == urmsg::demo::RowKind::System &&
+                             parentLine->systemText.find(L"In reply to message aaaaaaaaaaaa") !=
+                                 std::wstring::npos;
+    const bool replyPending = pendingReply != nullptr &&
+                              pendingReply->state == urmsg::demo::DeliveryState::Pending;
+    const bool ok = target != nullptr && target->reactions.size() == 4 && standing == 2 &&
+                    mineStanding == 1 && notStanding == 2 && refusedCarriesReason &&
+                    removingIsPending && parentNamed && replyPending;
+    out.push_back(std::format(
+        L"  live reactions   : {}  target row carries {} reactions: {} standing ({} yours), {} not "
+        L"standing; refused react carries the library's reason {}; in-flight unreact is Pending "
+        L"and the record it takes back still stands {}; pending reply draws its parent line {} "
+        L"and is Pending {}   [query: BuildWorld over 1 message with 2 standing reactions + 1 "
+        L"refused react + 1 pending unreact + 1 pending reply; nothing unsealed may be Sent]",
+        Verdict(ok), target ? target->reactions.size() : 0, standing, mineStanding, notStanding,
+        refusedCarriesReason ? L"yes" : L"NO", removingIsPending ? L"yes" : L"NO",
+        parentNamed ? L"yes" : L"NO", replyPending ? L"yes" : L"NO"));
+  }
+  return out;
+}
+
 // ---- the status strip's pure rules (design §6.5) ----------------------------
 //
 // ONE line, per the d7 audit's S1 override: the 560 content-dip collapse rule
@@ -648,6 +848,12 @@ std::vector<std::wstring> CollectDiagnostics() {
   // the app say right now" would have gated exactly half the copy and would have gated
   // the half that was already correct.
   for (auto& line : urmsg::RunModeCopyDiagnostics()) lines.push_back(std::move(line));
+  // The reply and reaction affordances: their names in both arms, the picker against the ABI's
+  // rule, the chip words, and the live mapping over an adversarial group. Beside the copy gate
+  // because the action names are copy of the same kind - true by which arm is chosen - and
+  // because "a reaction that has not been sealed is not sent" is the honesty rule again, one
+  // affordance further along.
+  for (auto& line : ReplyReactDiagnostics()) lines.push_back(std::move(line));
   {
     using namespace urmsg::demo;
     World const& w = GetWorld();

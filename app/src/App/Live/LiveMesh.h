@@ -86,6 +86,22 @@ bool CanSend();
 // `replacesLocalId` NAMES A FAILED OUTBOX ENTRY THIS SEND IS A RETRY OF, or is empty for a fresh
 // one. A retry that queued a new entry without naming the old one would leave the failed row
 // standing beside its own retry, which reads as two messages where the person wrote one.
-bool QueueSend(std::string utf8Body, std::string replacesLocalId = {});
+//
+// `replyToMessageIdHex` NAMES THE PARENT WHEN THIS IS A REPLY - the 64 lower-case hex characters
+// urnet_message_list_info hands over as message_id - and is empty for a plain text. It is decoded
+// to the 32 octets the ABI takes HERE, at the queue, so that a name that does not decode is refused
+// with the text still in the box rather than refused by the worker after the box has emptied. The
+// worker then calls urnet_message_group_send_reply instead of _send; nothing else differs.
+bool QueueSend(std::string utf8Body, std::string replacesLocalId = {},
+               std::string replyToMessageIdHex = {});
+
+// PUT A REACTION ON A MESSAGE, OR TAKE ONE OFF, on the worker. `targetMessageIdHex` is the
+// message_id of the line it is about, `utf8Emoji` is the RAW spelling to seal (the ABI checks it
+// as 1..64 octets of valid UTF-8 and folds nothing, so the spelling here is the spelling every
+// member sees and the spelling a later unreact must repeat exactly), and `remove` chooses
+// urnet_message_group_unreact over _react. Answers false, having queued nothing, when CanSend() is
+// false, the emoji is empty, or the id does not decode. The outcome arrives as a published world:
+// the reaction standing on the target row, or a Failed entry there carrying the library's reason.
+bool QueueReaction(std::string targetMessageIdHex, std::string utf8Emoji, bool remove);
 
 }  // namespace urmsg::live

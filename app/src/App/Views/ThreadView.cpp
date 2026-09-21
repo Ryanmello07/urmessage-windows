@@ -329,6 +329,12 @@ ThreadSendVerb& MutableSendVerb() {
   return verb;
 }
 
+// = App.xaml's UrBorderStrongBrush (#38FFFFFF). Written as a literal rather
+// than derived from kText, which would give #38F8F8F8 — near enough to look
+// right and wrong enough to be a second edge token. Spent by the composer's
+// focus ring, the reply strip's rule, and the outline on a reaction of yours.
+constexpr winrt::Windows::UI::Color kBorderStrong{0x38, 0xFF, 0xFF, 0xFF};
+
 FrameworkElement MakeDeliveryCluster(demo::MessageRow const& row) {
   const DeliveryBadge badge = BadgeFor(row.state);
   Media::Brush brush = badge.danger ? urnw::colors::DangerBrush()
@@ -442,13 +448,276 @@ FrameworkElement MakeDeliveryCluster(demo::MessageRow const& row) {
       // Dark the moment it is taken, so a second click cannot queue the same message twice while
       // the first attempt is still inside the ABI. The row is replaced by the host's next publish
       // either way — as the record, or as a fresh failure — so nothing has to turn it back on.
-      if (verb.send(body, id)) {
+      // NO PARENT IS NAMED HERE AND THE RETRY OF A REPLY IS STILL A REPLY: the failed row this id
+      // names still carries its parent on the worker, and a retry that names the row inherits it
+      // (Live/LiveMesh.cpp's drain). MessageRow has no reply-to slot to read one from, and a
+      // second copy of the parent in the view would be a second thing to keep in step.
+      if (verb.send(body, id, std::wstring{})) {
         if (auto button = sender.try_as<Button>()) button.IsEnabled(false);
       }
     });
   }
   column.Children().Append(retry);
   return column;
+}
+
+// ---- the two per-bubble actions: reply and react ---------------------------
+//
+// HOVER-REVEALED, THE WAY THE NETWORK PAGE'S REMOVE-DEVICE BUTTON IS (design d5 §3.6): the pair
+// rests at Opacity 0 and appears while the pointer is over the bubble row, while either button has
+// keyboard focus, or while the picker is open. OPACITY, never Visibility - a control that vanished
+// from the UIA tree when the pointer left would be unreachable to the harness that drives this
+// app and to a screen reader, and both find it by the automation name, which never changes with
+// the reveal.
+//
+// WHERE THEY SIT: beside the bubble, on its open side - to the right of an incoming bubble, to the
+// left of an outgoing one - so they belong to the bubble the eye is on and never to the row's far
+// edge. The delivery cluster and the reaction strip below the bubble keep their own alignment and
+// are not moved by the pair.
+struct ActionReveal {
+  bool hover = false;
+  bool focus = false;
+  bool open = false;  // the picker flyout is showing
+};
+
+void SetActionsRevealed(FrameworkElement const& strip, bool shown) {
+  if (!strip) return;
+  const double target = shown ? 1.0 : 0.0;
+  if (!urnw::motion::ShouldAnimate()) {
+    strip.Opacity(target);
+    return;
+  }
+  // In over kFastMs on the standard curve; out one step faster on the exit curve — UrMotion's
+  // exits-faster rule. Resumes from the current opacity so a pointer flicking across the row edge
+  // never pops the pair.
+  const bool entrance = shown;
+  auto fade = urnw::motion::MakeSplineDouble(
+      strip.Opacity(), target, entrance ? urnw::motion::kFastMs : urnw::motion::kMicroMs, 0,
+      entrance ? urnw::motion::kStandardP1 : urnw::motion::kExitP1,
+      entrance ? urnw::motion::kStandardP2 : urnw::motion::kExitP2);
+  anim::Storyboard::SetTarget(fade, strip);
+  anim::Storyboard::SetTargetProperty(fade, L"Opacity");
+  anim::Storyboard board;
+  board.Children().Append(fade);
+  board.Begin();
+}
+
+// One icon button of the pair. Same construction as the composer's MakeInertIconButton, with the
+// one difference that IsEnabled is an argument: this button is live where there is a session to
+// act into and dark where there is not, which is design §9.1 unchanged (a disabled control is
+// drawn at 0.38 and never takes focus) rather than relaxed.
+Button MakeBubbleActionButton(wchar_t const* glyph, BubbleAction action, bool canAct) {
+  Button b;
+  FontIcon g;
+  g.FontFamily(IconFont());
+  g.Glyph(glyph);
+  g.FontSize(14);
+  b.Content(g);
+  b.Background(nullptr);
+  b.BorderThickness(ThicknessHelper::FromUniformLength(0));
+  b.Padding(ThicknessHelper::FromUniformLength(5));
+  b.MinWidth(0);
+  b.MinHeight(0);
+  b.CornerRadius(CornerRadiusHelper::FromUniformRadius(6));
+  b.Foreground(urnw::colors::MutedBrush());
+  b.IsEnabled(canAct);
+  // A Button whose Content is an element gets NO automatic name. Both arms come from the pure
+  // table in Views/ThreadLayout.h, where --diagnose reads them.
+  Automation::AutomationProperties::SetName(b, winrt::hstring{BubbleActionName(action, canAct)});
+  return b;
+}
+
+// A standing reaction this device holds for `emoji`, and whether the newest attempt with it was
+// refused - the two facts a picker button's name and verb are chosen from.
+struct ReactionStanding {
+  bool standing = false;
+  bool lastFailed = false;
+};
+
+ReactionStanding StandingFor(demo::MessageRow const& row, std::wstring const& emoji) {
+  ReactionStanding out;
+  for (auto const& r : row.reactions) {
+    if (r.emoji != emoji || !r.mine) continue;
+    if (r.state == demo::DeliveryState::Sent) out.standing = true;
+    if (r.state == demo::DeliveryState::Failed) out.lastFailed = true;
+  }
+  return out;
+}
+
+// The emoji glyph itself. Segoe UI Emoji by name rather than through the body face's fallback
+// chain: the fallback happens to land there today, and a chip whose whole content is one emoji
+// should not depend on which face the runtime tries first.
+TextBlock MakeEmojiText(std::wstring const& emoji, double size) {
+  TextBlock t;
+  t.Text(winrt::hstring{emoji});
+  t.FontFamily(Media::FontFamily(L"Segoe UI Emoji"));
+  t.FontSize(size);
+  t.VerticalAlignment(VerticalAlignment::Center);
+  return t;
+}
+
+// THE PICKER: the closed set in Views/ThreadLayout.h (kReactionPicker), one button each, in a
+// Flyout anchored to the React button. Each button's NAME and VERB are chosen from the row's own
+// reactions: an emoji this device already stands on offers to take it back and calls unreact; any
+// other offers to add it and calls react. A refused attempt is named as such, so the button a
+// person is about to press says it is a retry.
+//
+// The verb goes through SendVerb().react - the one home of the reaction verb - and the flyout is
+// hidden the moment the host takes the octets; the outcome arrives as a redrawn thread, never as a
+// return value here.
+Controls::Flyout MakeReactionPicker(demo::MessageRow const& row) {
+  Controls::Flyout flyout;
+  flyout.Placement(Primitives::FlyoutPlacementMode::Top);
+
+  StackPanel tray;
+  tray.Orientation(Orientation::Horizontal);
+  tray.Spacing(2);
+  Automation::AutomationProperties::SetName(tray, L"React: pick an emoji");
+
+  for (std::size_t i = 0; i < kReactionPickerCount; ++i) {
+    const std::wstring emoji = kReactionPicker[i];
+    const ReactionStanding s = StandingFor(row, emoji);
+
+    Button b;
+    b.Background(s.standing ? BrushByKey(L"UrCardHoverBrush", urnw::colors::kCardHover)
+                            : Media::Brush{nullptr});
+    // The one you stand on is OUTLINED (a shape) and CHECKED (a second shape) and NAMED "Remove
+    // your ..." (a word) - three channels, never a fill alone, and never the accent, which is the
+    // send button and the selection outline only.
+    b.BorderBrush(s.standing ? urnw::colors::MakeBrush(kBorderStrong)
+                             : urnw::colors::MakeBrush({0, 0, 0, 0}));
+    b.BorderThickness(ThicknessHelper::FromUniformLength(1));
+    b.CornerRadius(CornerRadiusHelper::FromUniformRadius(8));
+    b.Padding(ThicknessHelper::FromLengths(8, 4, 8, 4));
+    b.MinWidth(0);
+    b.MinHeight(0);
+
+    StackPanel face;
+    face.Spacing(1);
+    face.HorizontalAlignment(HorizontalAlignment::Center);
+    auto glyph = MakeEmojiText(emoji, 20);
+    glyph.HorizontalAlignment(HorizontalAlignment::Center);
+    MarkRaw(glyph);
+    face.Children().Append(glyph);
+    // The check slot is ALWAYS laid out so the six buttons keep one height; only the standing
+    // one's is visible. Opacity, not Visibility, for the same reason as the reveal above.
+    FontIcon check;
+    check.FontFamily(IconFont());
+    check.Glyph(L"\uE73E");  // Segoe Fluent "CheckMark"
+    check.FontSize(9);
+    check.Foreground(urnw::colors::TextBrush());
+    check.HorizontalAlignment(HorizontalAlignment::Center);
+    check.Opacity(s.standing ? 1.0 : 0.0);
+    MarkRaw(check);
+    face.Children().Append(check);
+    b.Content(face);
+
+    Automation::AutomationProperties::SetName(
+        b, winrt::hstring{ReactionPickerItemName(emoji, s.standing, s.lastFailed)});
+    b.Click([rowId = row.id, emoji, remove = s.standing, weakFlyout = winrt::make_weak(flyout)](
+                winrt::Windows::Foundation::IInspectable const& sender, auto const&) {
+      auto const& verb = SendVerb();
+      if (!verb.enabled || !verb.react) return;
+      if (verb.react(rowId, emoji, remove)) {
+        // Dark once taken, so a second click cannot queue the same attempt twice while the first
+        // is inside the ABI; the whole picker is rebuilt by the host's next publish anyway.
+        if (auto button = sender.try_as<Button>()) button.IsEnabled(false);
+        if (auto f = weakFlyout.get()) f.Hide();
+      }
+    });
+    tray.Children().Append(b);
+  }
+  flyout.Content(tray);
+  return flyout;
+}
+
+// THE REACTION STRIP under a bubble: one chip per entry of MessageRow::reactions, in the order the
+// device learned them and RAW (the ABI folds nothing). Nothing here is grouped or counted, because
+// "two 👍" from two devices is two records and a count would be this app's arithmetic over them.
+//
+// EACH CHIP CARRIES ITS STATE ON THREE CHANNELS, the same rule the delivery cluster follows:
+//   * yours, standing    -> outlined (shape) + "you" (word); the fill lifts one step (colour)
+//   * theirs, standing   -> the emoji alone: the record is the whole statement
+//   * sending / removing -> a clock (shape) + the word, muted
+//   * not sent / removed -> an alert (shape) + the word, in the danger colour, with the library's
+//                           own reason in the chip's name and tooltip
+// Sent is the ceiling for a reaction exactly as it is for a message, and nothing here can draw a
+// delivery tick because nothing reports one. Answers null when the row carries no reactions, so
+// the caller appends nothing rather than an empty panel that would still take its margin.
+FrameworkElement MakeReactionStrip(demo::MessageRow const& row, bool group) {
+  if (row.reactions.empty()) return nullptr;
+
+  StackPanel strip;
+  strip.Orientation(Orientation::Horizontal);
+  strip.Spacing(4);
+  strip.HorizontalAlignment(row.outgoing ? HorizontalAlignment::Right
+                                         : HorizontalAlignment::Left);
+  // Under the bubble's own edge: the incoming gutter is reserved on a GROUP's incoming rows only
+  // (MakeBubbleRow's wantsGutter), and the outgoing side keeps the cluster's 2 dip inset.
+  const double gutter = (group && !row.outgoing) ? kThreadGutterDip : 0.0;
+  strip.Margin(ThicknessHelper::FromLengths(gutter, 3, 2, 0));
+
+  for (auto const& r : row.reactions) {
+    const wchar_t* word = ReactionChipWord(r);
+    const bool standingMine = r.mine && r.state == demo::DeliveryState::Sent;
+    const bool failed = r.state == demo::DeliveryState::Failed;
+    const bool pending = r.state == demo::DeliveryState::Pending;
+
+    Border chip;
+    chip.CornerRadius(CornerRadiusHelper::FromUniformRadius(10));
+    chip.Padding(ThicknessHelper::FromLengths(7, 2, 8, 2));
+    chip.Background(standingMine ? BrushByKey(L"UrCardHoverBrush", urnw::colors::kCardHover)
+                                 : BrushByKey(L"UrCardBrush", urnw::colors::kCard));
+    chip.BorderThickness(ThicknessHelper::FromUniformLength(1));
+    chip.BorderBrush(standingMine ? urnw::colors::MakeBrush(kBorderStrong)
+                                  : urnw::colors::MakeBrush({0, 0, 0, 0}));
+
+    StackPanel inner;
+    inner.Orientation(Orientation::Horizontal);
+    inner.Spacing(4);
+    auto glyph = MakeEmojiText(r.emoji, 13);
+    inner.Children().Append(glyph);
+
+    // The badge glyph is the delivery table's own (BadgeFor): the same clock and the same alert a
+    // message row shows, so a reader learns one vocabulary.
+    if (pending || failed) {
+      const DeliveryBadge badge = BadgeFor(r.state);
+      FontIcon state;
+      state.FontFamily(IconFont());
+      state.Glyph(winrt::hstring{badge.glyph});
+      state.FontSize(11);
+      state.Foreground(failed ? urnw::colors::DangerBrush() : urnw::colors::MutedBrush());
+      state.VerticalAlignment(VerticalAlignment::Center);
+      MarkRaw(state);
+      inner.Children().Append(state);
+    }
+    if (word[0] != L'\0') {
+      TextBlock label;
+      label.Text(winrt::hstring{word});
+      if (auto st = StyleByKey(L"UrCaptionTextStyle")) label.Style(st);
+      label.FontSize(11);
+      label.Foreground(failed ? urnw::colors::DangerBrush()
+                              : (pending ? urnw::colors::MutedBrush() : urnw::colors::TextBrush()));
+      label.VerticalAlignment(VerticalAlignment::Center);
+      MarkRaw(label);
+      inner.Children().Append(label);
+    }
+    chip.Child(inner);
+
+    // The whole sentence on the emoji TextBlock, which is the chip's one element in the UIA tree
+    // (a Border has no automation peer). The reason travels here and in the tooltip, never as a
+    // second visible line: a chip is a chip.
+    std::wstring spoken = r.emoji + L" reaction";
+    if (standingMine) spoken += L", yours";
+    else if (pending) spoken += r.removing ? L", removing yours" : L", sending";
+    else if (failed) spoken += (r.removing ? L", yours, not removed: " : L", not sent: ") + r.failureReason;
+    Automation::AutomationProperties::SetName(glyph, winrt::hstring{spoken});
+    if (failed && !r.failureReason.empty()) {
+      Controls::ToolTipService::SetToolTip(chip, winrt::box_value(winrt::hstring{r.failureReason}));
+    }
+    strip.Children().Append(chip);
+  }
+  return strip;
 }
 
 // ---- the cluster as a thing that can be TAKEN AWAY AGAIN (T6) ------------
@@ -631,8 +900,71 @@ BubbleRow MakeBubbleRow(demo::MessageRow const& row, bool group, bool showSender
     Grid::SetColumn(ident, 0);
     gutterRow.Children().Append(ident);
   }
-  Grid::SetColumn(bubble, 1);
-  gutterRow.Children().Append(bubble);
+  // ---- the actions beside the bubble ------------------------------------
+  // ONLY ON A ROW THAT IS A RECORD. A Pending or Failed row is this device's own outbox entry
+  // (Live/LiveWorld.cpp): the server has never heard of it, so it has no message_id for a reply
+  // or a reaction to name, and offering either - even dark - would be a control pointing at
+  // nothing. The fabricated fixture's Pending and Failed rows fall under the same rule.
+  const bool targetable = row.state != demo::DeliveryState::Pending &&
+                          row.state != demo::DeliveryState::Failed;
+  const bool canAct = targetable && CanRetrySend();
+
+  StackPanel pair;
+  pair.Orientation(Orientation::Horizontal);
+  pair.Spacing(2);
+  pair.HorizontalAlignment(row.outgoing ? HorizontalAlignment::Right : HorizontalAlignment::Left);
+  // A TRANSPARENT brush, not none: a panel with no background is not hit-testable in its own gaps,
+  // so the pointer crossing the 2 dip between bubble and buttons would leave and re-enter the pair
+  // and the reveal would blink. Transparent hit-tests and paints nothing.
+  pair.Background(urnw::colors::MakeBrush({0, 0, 0, 0}));
+
+  StackPanel actions{nullptr};
+  if (targetable) {
+    actions = StackPanel();
+    actions.Orientation(Orientation::Horizontal);
+    actions.Spacing(0);
+    actions.VerticalAlignment(VerticalAlignment::Bottom);
+    actions.Margin(ThicknessHelper::FromLengths(0, 0, 0, 2));
+    actions.Opacity(0.0);
+
+    auto reply = MakeBubbleActionButton(L"\uE97A", BubbleAction::Reply, canAct);  // "Reply"
+    auto react = MakeBubbleActionButton(L"\uE76E", BubbleAction::React, canAct);  // "Emoji2"
+    auto reveal = std::make_shared<ActionReveal>();
+    auto apply = [reveal, actions] {
+      SetActionsRevealed(actions, reveal->hover || reveal->focus || reveal->open);
+    };
+    pair.PointerEntered([reveal, apply](auto const&, auto const&) { reveal->hover = true; apply(); });
+    pair.PointerExited([reveal, apply](auto const&, auto const&) { reveal->hover = false; apply(); });
+    for (auto const& b : {reply, react}) {
+      b.GotFocus([reveal, apply](auto const&, auto const&) { reveal->focus = true; apply(); });
+      b.LostFocus([reveal, apply](auto const&, auto const&) { reveal->focus = false; apply(); });
+    }
+    if (canAct) {
+      // Reply puts the composer into its "replying to" state; the send itself happens from the
+      // composer, with the parent this row names. Through the verb's home (ThreadView.h), because
+      // this free function has no parts pointer to reach the composer with.
+      reply.Click([rowCopy = row](auto const&, auto const&) {
+        auto const& verb = SendVerb();
+        if (verb.beginReply) verb.beginReply(rowCopy);
+      });
+      auto picker = MakeReactionPicker(row);
+      picker.Opened([reveal, apply](auto const&, auto const&) { reveal->open = true; apply(); });
+      picker.Closed([reveal, apply](auto const&, auto const&) { reveal->open = false; apply(); });
+      react.Flyout(picker);
+    }
+    actions.Children().Append(reply);
+    actions.Children().Append(react);
+  }
+
+  if (row.outgoing) {
+    if (actions) pair.Children().Append(actions);
+    pair.Children().Append(bubble);
+  } else {
+    pair.Children().Append(bubble);
+    if (actions) pair.Children().Append(actions);
+  }
+  Grid::SetColumn(pair, 1);
+  gutterRow.Children().Append(pair);
 
   StackPanel rowRoot;
   rowRoot.Spacing(0);
@@ -660,6 +992,10 @@ BubbleRow MakeBubbleRow(demo::MessageRow const& row, bool group, bool showSender
     rowRoot.Children().Append(name);
   }
   rowRoot.Children().Append(gutterRow);
+  // The reactions standing on this row - and this device's attempts at one - under the bubble and
+  // BEFORE the cluster, so the delivery reading stays the row's last word. Null when there are
+  // none, and nothing is appended then.
+  if (auto reactions = MakeReactionStrip(row, group)) rowRoot.Children().Append(reactions);
   // ONE cluster, or none. The CALLER decides, with CarriesDeliveryGlyph()
   // (Demo/ThreadLayout.h) - never with ThreadRowPlan::endsOutgoingRun, which is
   // direction-only and is FALSE on the shipped world's mid-run Failed row.
@@ -691,7 +1027,17 @@ struct ThreadParts {
   // The composer's verb. Null in a host that wired none, and the Send button is then dark whatever
   // the box holds. MutableSendVerb() holds the SAME function, for the two retry buttons that are
   // built where no parts pointer reaches; this copy is what the composer itself spends.
-  std::function<bool(std::wstring, std::wstring)> onSend;
+  std::function<bool(std::wstring, std::wstring, std::wstring)> onSend;
+  // ---- the "replying to" state (design: reply) ----------------------------
+  // The row the next send answers, or empty. Written by BeginComposerReply (a bubble's Reply
+  // button, through SendVerb().beginReply) and cleared by ClearComposerReply (the strip's cancel,
+  // Escape in the box, or a send the host took). It lives on the composer, not on the thread's
+  // rows, so a live publish that rebuilds every bubble leaves it standing.
+  std::wstring replyToId;
+  FrameworkElement replyStrip{nullptr};    // the whole strip; Collapsed when not replying
+  TextBlock replyWho{nullptr};             // "Replying to <sender>"
+  TextBlock replyLine{nullptr};            // the parent's first line
+  Border replyIdenticonHost{nullptr};      // holds the parent sender's identicon
   std::vector<ThreadBubble> bubbles;  // the canonical list; ThreadView::bubbles mirrors it
   double columnWidth = 0.0;
 
@@ -1247,10 +1593,8 @@ FrameworkElement MakeEarlierMarker(std::shared_ptr<ThreadParts> const& parts) {
 }
 
 // ---- the composer (T6, design §9.1) --------------------------------------
-// = App.xaml's UrBorderStrongBrush (#38FFFFFF). Written as a literal rather
-// than derived from kText, which would give #38F8F8F8 — near enough to look
-// right and wrong enough to be a second edge token.
-constexpr winrt::Windows::UI::Color kBorderStrong{0x38, 0xFF, 0xFF, 0xFF};
+// kBorderStrong used to be defined here; it moved up beside MutableSendVerb when the bubble's
+// reaction chips and picker started spending the same edge token.
 
 // Entrance kFastMs on the standard curve, exit one step faster on the exit
 // curve — UrMotion's own rule ("exits run one step faster than entrances"), no
@@ -1315,15 +1659,18 @@ void UpdateComposerSend(std::shared_ptr<ThreadParts> const& parts) {
   const bool live = sessionCanSend && hasText;
 
   parts->composerSend.IsEnabled(live);
+  // "Send reply" while the strip is up: what the button does has changed, and the name is the
+  // channel that says so to a reader who cannot see the strip.
+  const bool replying = !parts->replyToId.empty();
   Automation::AutomationProperties::SetName(
       parts->composerSend,
       winrt::hstring{!sessionCanSend ? L"Send: there is no live session to send into"
-                     : hasText       ? L"Send"
+                     : hasText       ? (replying ? L"Send reply" : L"Send")
                                      : L"Send: type a message first"});
   Automation::AutomationProperties::SetName(
       parts->composerBox,
       winrt::hstring{sessionCanSend
-                         ? L"Message"
+                         ? (replying ? L"Reply" : L"Message")
                          : L"Message: this launch has no live session, so nothing is sent"});
 
   // The disabled wash (design d2 §3's enable-motion bullet) is only ever SEEN while the button is
@@ -1345,15 +1692,54 @@ void UpdateComposerSend(std::shared_ptr<ThreadParts> const& parts) {
   }
 }
 
+// Leave the "replying to" state. Idempotent; safe before the strip exists.
+void ClearComposerReply(std::shared_ptr<ThreadParts> const& parts) {
+  if (!parts) return;
+  parts->replyToId.clear();
+  if (parts->replyStrip) parts->replyStrip.Visibility(Visibility::Collapsed);
+  UpdateComposerSend(parts);
+}
+
+// Enter the "replying to" state for `row`: the strip shows whose message and its first line, and
+// the box takes focus so the reply can be typed at once. The SENDER is what the rail's own Sender
+// field would say - "You" on an outgoing row, else the row's senderDisplayName, which on a live
+// world is the one placeholder ("unavailable": the protocol carries no names) and on the fixture
+// is a fixture name. The identicon beside it is drawn from the real sender handle, so the strip
+// still shows WHICH sender even where it cannot show a name.
+void BeginComposerReply(std::shared_ptr<ThreadParts> const& parts, demo::MessageRow const& row) {
+  if (!parts || !parts->replyStrip || !parts->composerBox) return;
+  if (row.kind != demo::RowKind::Message || row.id.empty()) return;
+  parts->replyToId = row.id;
+
+  const std::wstring who = row.outgoing ? std::wstring(L"You") : row.inspect.senderDisplayName;
+  parts->replyWho.Text(winrt::hstring{L"Replying to " + who});
+  // The first line only, and NoWrap with an ellipsis: a strip is a pointer at a message, not a
+  // second copy of it. The full text is one scroll away in the bubble it names.
+  std::wstring line = row.body;
+  const size_t cut = line.find_first_of(L"\r\n");
+  if (cut != std::wstring::npos) line.erase(cut);
+  parts->replyLine.Text(winrt::hstring{line});
+  parts->replyIdenticonHost.Child(urmsg::MakeIdenticon(row.senderKey, 16));
+  Automation::AutomationProperties::SetName(
+      parts->replyStrip, winrt::hstring{L"Replying to " + who + L": " + line});
+  parts->replyStrip.Visibility(Visibility::Visible);
+  UpdateComposerSend(parts);
+  parts->composerBox.Focus(FocusState::Programmatic);
+}
+
 // Take what the box holds and hand it to the host. The box is cleared ONLY on a true answer: a
 // host that refused has queued nothing, and throwing the text away then would lose a message to a
-// race between the enablement check and the click.
+// race between the enablement check and the click. The reply state goes with the text, and for
+// the same reason only then: a refused reply is still a reply waiting to be sent.
 void SubmitComposer(std::shared_ptr<ThreadParts> const& parts) {
   if (!parts || !parts->composerBox || !parts->onSend) return;
   if (!parts->sendEnabled) return;
   const std::wstring text{parts->composerBox.Text()};
   if (text.empty()) return;
-  if (parts->onSend(text, std::wstring{})) parts->composerBox.Text(L"");
+  if (parts->onSend(text, std::wstring{}, parts->replyToId)) {
+    parts->composerBox.Text(L"");
+    ClearComposerReply(parts);
+  }
   UpdateComposerSend(parts);
 }
 
@@ -1374,6 +1760,91 @@ FrameworkElement MakeComposer(std::shared_ptr<ThreadParts> const& parts) {
 
   StackPanel column;
   column.Spacing(6);
+
+  // ---- the "replying to" strip (design: reply) ------------------------------
+  // A compact quoted strip ABOVE the well: a 2 dip rule on its leading edge (a shape, the same
+  // idiom the key-change record and the rail's failure block use, in the border-strong edge token
+  // rather than the accent, which is the send button and the selection outline only), the
+  // sender's identicon, "Replying to <sender>" over the parent's first line, and a cancel. Built
+  // Collapsed; BeginComposerReply shows it and ClearComposerReply hides it. It is NOT a quote of
+  // the parent's text travelling anywhere - the protocol carries the parent's NAME and never its
+  // text (urnetwork_message.h) - it is this composer showing the reader which line the reply
+  // will name.
+  Border replyStrip;
+  replyStrip.Background(BrushByKey(L"UrCardBrush", urnw::colors::kCard));
+  replyStrip.CornerRadius(CornerRadiusHelper::FromUniformRadius(12));
+  replyStrip.Padding(ThicknessHelper::FromLengths(10, 6, 6, 6));
+  replyStrip.Visibility(Visibility::Collapsed);
+  {
+    Grid g;
+    g.ColumnSpacing(8);
+    for (int i = 0; i < 4; ++i) {
+      ColumnDefinition c;
+      c.Width(i == 2 ? GridLengthHelper::FromValueAndType(1, GridUnitType::Star)
+                     : GridLengthHelper::Auto());
+      g.ColumnDefinitions().Append(c);
+    }
+    Border rule;
+    rule.Width(2);
+    rule.Background(urnw::colors::MakeBrush(kBorderStrong));
+    rule.VerticalAlignment(VerticalAlignment::Stretch);
+    rule.CornerRadius(CornerRadiusHelper::FromUniformRadius(1));
+    MarkRaw(rule);
+    Grid::SetColumn(rule, 0);
+    g.Children().Append(rule);
+
+    Border identiconHost;
+    identiconHost.VerticalAlignment(VerticalAlignment::Center);
+    MarkRaw(identiconHost);
+    Grid::SetColumn(identiconHost, 1);
+    g.Children().Append(identiconHost);
+
+    StackPanel text;
+    text.Spacing(1);
+    text.VerticalAlignment(VerticalAlignment::Center);
+    TextBlock who;
+    if (auto st = StyleByKey(L"UrCaptionTextStyle")) who.Style(st);
+    who.FontSize(11);
+    who.Foreground(urnw::colors::MutedBrush());
+    who.TextTrimming(TextTrimming::CharacterEllipsis);
+    who.TextWrapping(TextWrapping::NoWrap);
+    MarkRaw(who);
+    text.Children().Append(who);
+    TextBlock line;
+    if (auto st = StyleByKey(L"UrBodyTextStyle")) line.Style(st);
+    line.FontSize(13);
+    line.TextTrimming(TextTrimming::CharacterEllipsis);
+    line.TextWrapping(TextWrapping::NoWrap);
+    MarkRaw(line);
+    text.Children().Append(line);
+    Grid::SetColumn(text, 2);
+    g.Children().Append(text);
+
+    // The cancel: an X, named for what it does. Escape in the box is the keyboard's way.
+    Button cancel;
+    FontIcon x;
+    x.FontFamily(IconFont());
+    x.Glyph(L"\uE711");  // Segoe Fluent "Cancel"
+    x.FontSize(12);
+    cancel.Content(x);
+    cancel.Background(nullptr);
+    cancel.BorderThickness(ThicknessHelper::FromUniformLength(0));
+    cancel.Padding(ThicknessHelper::FromUniformLength(6));
+    cancel.MinWidth(0);
+    cancel.MinHeight(0);
+    cancel.VerticalAlignment(VerticalAlignment::Center);
+    Automation::AutomationProperties::SetName(cancel, L"Cancel reply");
+    cancel.Click([parts](auto const&, auto const&) { ClearComposerReply(parts); });
+    Grid::SetColumn(cancel, 3);
+    g.Children().Append(cancel);
+
+    replyStrip.Child(g);
+    parts->replyStrip = replyStrip;
+    parts->replyWho = who;
+    parts->replyLine = line;
+    parts->replyIdenticonHost = identiconHost;
+  }
+  column.Children().Append(replyStrip);
 
   // The WELL (design d2 §3): one card surface holding the controls, with the
   // focus channel as a 1px overlay on its edge — the overlay pattern borrowed
@@ -1481,6 +1952,14 @@ FrameworkElement MakeComposer(std::shared_ptr<ThreadParts> const& parts) {
   // insert; the box is single-line by construction.
   box.KeyDown([parts](winrt::Windows::Foundation::IInspectable const&,
                       Input::KeyRoutedEventArgs const& e) {
+    // ESCAPE LEAVES THE REPLY STATE and keeps the text: the person changed their mind about WHAT
+    // the message answers, not about the message. Only handled while replying, so Escape in a
+    // plain composer still means whatever the shell makes of it.
+    if (e.Key() == winrt::Windows::System::VirtualKey::Escape && !parts->replyToId.empty()) {
+      e.Handled(true);
+      ClearComposerReply(parts);
+      return;
+    }
     if (e.Key() != winrt::Windows::System::VirtualKey::Enter) return;
     // Handled either way: a dark composer must not let Enter bubble up to whatever a parent would
     // do with it, which would make the key mean two different things in two sessions.
@@ -1655,15 +2134,24 @@ bool CanRetrySend() {
 
 ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
                       std::function<void()> onDeselect,
-                      std::function<bool(std::wstring, std::wstring)> onSend) {
+                      std::function<bool(std::wstring, std::wstring, std::wstring)> onSend,
+                      std::function<bool(std::wstring, std::wstring, bool)> onReact) {
   ThreadView v;
   auto parts = std::make_shared<ThreadParts>();
   parts->onSelect = std::move(onSelectMessage);
   parts->onDeselect = std::move(onDeselect);
   parts->onSend = std::move(onSend);
   // The SAME function, in the one place the surfaces that are not the composer can reach it
-  // (ThreadView.h). Not a second verb: a retry and a send are one call to one host.
+  // (ThreadView.h). Not a second verb: a retry and a send are one call to one host. The reaction
+  // verb and the reply-state entry live beside it for the same reason: a bubble's two action
+  // buttons are built by MakeBubbleRow, which has no parts to reach the composer with. `parts` is
+  // captured by value into a process-lifetime function, which is the lifetime Registry() already
+  // gives it.
   MutableSendVerb().send = parts->onSend;
+  MutableSendVerb().react = std::move(onReact);
+  MutableSendVerb().beginReply = [parts](demo::MessageRow const& row) {
+    BeginComposerReply(parts, row);
+  };
 
   Grid root;
   root.Background(BrushByKey(L"UrBackgroundBrush", urnw::colors::kBackground));
@@ -1733,6 +2221,19 @@ ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
   scroller.SizeChanged([parts](auto const&, SizeChangedEventArgs const& e) {
     parts->columnWidth = e.NewSize().Width;
     ApplyColumnWidth(parts);
+    // THE VIEWPORT MOVING IS THE OTHER WAY THE FOOT CAN SLIP: the composer's "replying to" strip
+    // appearing shortens this scroller by its own height, which grows the scrollable extent under
+    // a stationary offset - the same shape as a row arriving, which the stack's SizeChanged below
+    // already handles - and the newest bubble was measured half under the strip (the first
+    // capture of the reply state). Same decision, same guard: only a reader ALREADY at the foot
+    // is kept there, so a reader deep in history is not yanked by opening a reply. Armed only,
+    // because the unarmed first pin belongs to the stack handler, which sees the first real
+    // extent.
+    if (parts->pinArmed &&
+        ShouldPinToBottom(true, parts->scroller.VerticalOffset(), parts->pinExtent)) {
+      parts->pinExtent = parts->scroller.ScrollableHeight();
+      parts->scroller.ChangeView(nullptr, parts->scroller.ScrollableHeight(), nullptr, true);
+    }
   });
 
   // A thread opens at its NEWEST row, and SetThreadConversation alone cannot

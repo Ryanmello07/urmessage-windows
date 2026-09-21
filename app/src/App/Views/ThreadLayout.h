@@ -491,4 +491,59 @@ HydrateBeatPlan PlanHydrateBeat(std::size_t cursor, std::size_t target,
 // so the fill is DONE rather than owed a negative-size beat.
 bool HydrateFillActive(std::size_t cursor, std::size_t target);
 
+// ---- the two per-bubble actions: reply and react ----------------------------
+// What a bubble's hover-revealed action buttons SAY, as data, so --diagnose can
+// check both arms of each name from a launch that can reach neither. The
+// names are keyed off the CAPABILITY (ThreadView.h's CanRetrySend - a live
+// session with an open group), exactly as the [ Try again ] pair is, and not
+// off the run mode: a --live launch whose mesh has not answered yet draws the
+// fabricated world with no session, and "no live session" is the true sentence
+// there while the mode latch still says fabricated. The disabled arm names the
+// missing SESSION and never the build, because this build can do both.
+enum class BubbleAction { Reply, React };
+
+// The automation name for `action` when the button can act (`canAct`) or not.
+// Never empty; the two arms differ; the disabled arm carries "no live session".
+wchar_t const* BubbleActionName(BubbleAction action, bool canAct);
+
+// THE PICKER, as the closed set it is. The protocol accepts any valid UTF-8 of
+// 1..64 octets and folds nothing - two spellings of one emoji are two
+// reactions - so what the picker offers is a UI decision and this is it: six
+// single-grapheme, single-spelling marks that cover the six sentiments a quick
+// reaction is for (approve, love, laugh, surprise, sad, celebrate), each a
+// single code point plus at most a VS16, none with a skin tone or a ZWJ
+// sequence. A fixed spelling is what makes an unreact from this picker cancel
+// exactly the react it made. 👍 and 🎉 are also what sdk/livepeer seals, so this
+// app's own reaction lands beside the peer's on the same line and the two are
+// told apart by `mine` alone. Wide strings, because the view is wchar_t;
+// ReactionPickerOctets says what each one costs the ABI.
+inline constexpr std::size_t kReactionPickerCount = 6;
+inline constexpr wchar_t const* kReactionPicker[kReactionPickerCount] = {
+    L"\U0001F44D",        // thumbs up
+    L"\u2764\uFE0F",      // red heart (heavy black heart + VS16, the emoji presentation)
+    L"\U0001F602",        // face with tears of joy
+    L"\U0001F62E",        // face with open mouth
+    L"\U0001F622",        // crying face
+    L"\U0001F389",        // party popper
+};
+
+// The UTF-8 octet count of one picker entry - what urnet_message_group_react
+// checks against its 1..64 rule. 0 when the entry is empty or fails to encode.
+std::size_t ReactionPickerOctets(std::size_t index);
+
+// What a reaction chip's WORD is - the non-colour channel beside the emoji,
+// the same rule the delivery cluster follows. Standing and mine -> "you";
+// standing and not mine -> "" (the emoji alone is the whole statement); an
+// attempt in flight -> "Sending" / "Removing"; a refused attempt -> "Not sent"
+// / "Not removed". Total over the closed set; pure, so --diagnose walks it.
+wchar_t const* ReactionChipWord(demo::MessageReaction const& r);
+
+// What one picker button is called for a given row. `standing` is whether
+// this device's reaction with that emoji is a record it holds (mine and Sent);
+// `lastFailed` whether the newest attempt with that emoji was refused. The
+// verb the button performs follows `standing` alone: standing -> unreact,
+// otherwise react - a failed react retried is a react, and a failed unreact
+// retried is an unreact, because the standing state is the library's truth.
+std::wstring ReactionPickerItemName(std::wstring const& emoji, bool standing, bool lastFailed);
+
 }  // namespace urmsg::views

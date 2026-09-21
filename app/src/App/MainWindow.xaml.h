@@ -140,7 +140,11 @@ struct MainWindow : MainWindowT<MainWindow> {
   // NEVER BLOCKS. urmsg::live::QueueSend hands the body to the live worker and returns; the ABI's
   // send does a round trip to the message server and this is the UI thread of a single-threaded
   // apartment, where a blocking call is a frozen window for exactly that long.
-  bool SendFromComposer(std::wstring text, std::wstring replacesRowId);
+  bool SendFromComposer(std::wstring text, std::wstring replacesRowId, std::wstring replyToRowId);
+  // The other bubble verb: put `emoji` on the row, or take it off. Same shape and the same
+  // no-blocking rule; the outcome is a redrawn thread. In a live world the row id IS the record's
+  // message_id, which is what urnet_message_group_react / _unreact name.
+  bool ReactFromBubble(std::wstring rowId, std::wstring emoji, bool remove);
 
   std::shared_ptr<LiveWorldBridge> liveBridge_;
   urmsg::live::WorldPtr liveWorld_;

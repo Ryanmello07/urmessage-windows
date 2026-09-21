@@ -6,20 +6,24 @@
 // NO PCH, NO winrt, NO XAML — this is built on the live worker thread. App.vcxproj marks it
 // PrecompiledHeader=NotUsing for the same reason Live\LiveMesh.cpp is marked.
 //
-// WHY THE World STRUCT IS NOT EXTENDED, which explains three of the decisions below. Startup.cpp's
-// assertion I10 hashes EVERY BYTE of the fabricated world against a fixed fingerprint
-// (kExpectedWorldFingerprint, 0x97B1C149D13010C3) and runs on EVERY launch, with CI reading the
-// output for the token FAIL. Adding a field to MessageRow — a `deleted` bit, a reactions vector, a
-// reply-to id — moves those bytes and turns that gate red for every launch, live or not. So every
-// real thing the protocol carries that the struct has no slot for is rendered through a slot it
-// DOES have, using a component that already exists:
+// WHY THE World STRUCT IS EXTENDED BY EXACTLY ONE SLOT, which explains the decisions below. The
+// first version of this file said the struct could not grow at all, on the belief that Startup.cpp's
+// assertion I10 hashes every byte of the fabricated world. It does not: WorldFingerprint
+// (Startup.cpp) mixes NAMED FIELDS, so a new field the fixture never writes leaves
+// 0x97B1C149D13010C3 exactly where it was - and that was measured, not assumed, by adding
+// MessageRow::reactions and reading the fingerprint line on the next launch. The slot exists
+// because a reaction needs a STATE (standing / sending / not sent) and a `mine` bit that the picker
+// and the strip both read, and neither can be carried in a line of text without the view parsing
+// its own output. Everything else the protocol carries that the struct has no slot for is still
+// rendered through a slot it DOES have, using a component that already exists:
 //
 //   * a DELETED message      -> a System line saying it was deleted by its sender
 //   * a GAP                  -> a System line naming the reason (the ABI's "closed placeholder")
 //   * a REPLY's parent link  -> a System line above the bubble naming the parent
-//   * the REACTIONS standing -> a System line below the bubble listing them
+//   * the REACTIONS standing -> MessageRow::reactions, drawn as a strip under the bubble
 //
-// None of those is invented: each states something the record actually carries.
+// None of those is invented: each states something the record actually carries, or - for the
+// Pending and Failed reactions - something this device did and what the library answered.
 
 #include "Live/LiveWorld.h"
 
@@ -73,6 +77,15 @@ uint64_t Digest(urmsg::demo::World const& world) {
       h ^= static_cast<uint64_t>(row.kind) * 31 + static_cast<uint64_t>(row.outgoing) * 7 +
            static_cast<uint64_t>(row.state);
       h *= 1099511628211ull;
+      // A reaction landing, leaving, being attempted or being refused moves no row id and no body,
+      // so it has to be mixed on its own or the world that carries it is "unchanged".
+      for (auto const& r : row.reactions) {
+        Mix(h, r.emoji);
+        Mix(h, r.failureReason);
+        h ^= static_cast<uint64_t>(r.mine) * 3 + static_cast<uint64_t>(r.state) * 5 +
+             static_cast<uint64_t>(r.removing) * 11;
+        h *= 1099511628211ull;
+      }
     }
   }
   h ^= world.currentEpoch;
@@ -302,19 +315,35 @@ urmsg::demo::World BuildWorld(LiveGroup const& group) {
     row.inspect.receivedAtLabel = kUnavailable;
     row.inspect.deliveredTo.clear();
     row.inspect.readBy.clear();
-    conv.rows.push_back(std::move(row));
 
-    // THE REACTIONS STANDING ON IT, below the bubble. They are real records from real senders and
-    // there is no slot on MessageRow for them; a System line states what stands rather than
-    // dropping it.
-    if (!m.reactions.empty()) {
-      std::wstring list;
-      for (auto const& r : m.reactions) {
-        if (!list.empty()) list += L"  ";
-        list += urnw::Widen(r.emoji);
-      }
-      conv.rows.push_back(MakeSystemRow(wideId + L"-reactions", L"Reactions: " + list));
+    // THE REACTIONS STANDING ON IT. Real records from real senders, in the order this device
+    // learned them and RAW (the ABI folds nothing, so two spellings are two entries). Every one
+    // of these is state Sent, which for a reaction means exactly what it means for a message: a
+    // record this device holds. `mine` is the ABI's own bit.
+    for (auto const& r : m.reactions) {
+      urmsg::demo::MessageReaction one;
+      one.emoji = urnw::Widen(r.emoji);
+      one.mine = r.mine;
+      one.state = urmsg::demo::DeliveryState::Sent;
+      row.reactions.push_back(std::move(one));
     }
+    // AND WHAT THIS DEVICE IS STILL TRYING TO DO TO IT. An attempt is drawn on the row it names,
+    // as a reaction that is NOT standing: Pending while the call is inside the library, Failed
+    // with the library's own sentence when it refused. A refused react therefore never looks like
+    // a reaction, and a refused unreact never looks like the reaction went away - the standing
+    // record from the loop above is still drawn beside the failed attempt to remove it.
+    for (auto const& out : group.reactionOutbox) {
+      if (out.targetId != m.messageId) continue;
+      urmsg::demo::MessageReaction one;
+      one.emoji = urnw::Widen(out.emoji);
+      one.mine = true;
+      one.state = out.failed ? urmsg::demo::DeliveryState::Failed
+                             : urmsg::demo::DeliveryState::Pending;
+      one.removing = out.remove;
+      one.failureReason = out.failed ? urnw::Widen(out.error) : std::wstring();
+      row.reactions.push_back(std::move(one));
+    }
+    conv.rows.push_back(std::move(row));
 
     if (m.sentAtMs >= newestMs) {
       newestMs = m.sentAtMs;
@@ -345,6 +374,15 @@ urmsg::demo::World BuildWorld(LiveGroup const& group) {
       sep.body = FormatDay(out.attemptedAtMs);
       sep.state = urmsg::demo::DeliveryState::Sent;
       conv.rows.push_back(std::move(sep));
+    }
+
+    // A PENDING OR FAILED REPLY NAMES ITS PARENT EXACTLY AS A SEALED ONE DOES: the same line, from
+    // the same fact (the id the composer captured), so the row does not change shape when the
+    // record replaces it a beat later.
+    if (!out.replyToId.empty()) {
+      conv.rows.push_back(MakeSystemRow(
+          L"outbox-" + urnw::Widen(out.localId) + L"-reply",
+          std::format(L"In reply to message {}…", ShortId(out.replyToId))));
     }
 
     urmsg::demo::MessageRow row;

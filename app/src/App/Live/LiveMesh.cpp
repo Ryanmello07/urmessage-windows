@@ -381,10 +381,20 @@ int64_t WallClockMs() {
 // a send dropped into that sleep would sit there for up to 3 s with the sender watching an empty
 // composer. The loop therefore WAITS on this instead of sleeping, so a click wakes it at once and a
 // quiet loop still ticks on its own timer.
+// FOUR VERBS, ONE QUEUE. Text and reply become rows of the outbox; react and unreact become
+// entries of the reaction outbox on their target. They share the queue because they share the
+// constraint that put the queue here: each one is a round trip inside a single ABI call, and only
+// the worker may hold the group handle.
+enum class OutboundKind { Text, Reply, ReactAdd, ReactRemove };
+
 struct Outbound {
+  OutboundKind kind = OutboundKind::Text;
   std::string localId;      // this session's name for the attempt
-  std::string body;         // utf-8 octets, exactly as the composer held them
-  std::string replaces;     // a failed entry this one supersedes, or empty
+  std::string body;         // utf-8 octets, exactly as the composer held them (Text, Reply)
+  std::string replaces;     // a failed entry this one supersedes, or empty (Text, Reply)
+  std::string targetHex;    // the message named: the parent (Reply) or the target (React*)
+  std::vector<uint8_t> target;  // the same 32 octets, decoded once at the queue
+  std::string emoji;        // RAW utf-8 (React*)
 };
 
 std::mutex g_sendMutex;
@@ -408,6 +418,29 @@ std::deque<Outbound> TakeSendQueue() {
 void WaitForSendOrPoll(int64_t ms) {
   std::unique_lock<std::mutex> lock(g_sendMutex);
   g_sendWake.wait_for(lock, std::chrono::milliseconds(ms), [] { return !g_sendQueue.empty(); });
+}
+
+// The reference is cgo/ctest/message_abi_test.c's hex_to_id: exactly 64 hex characters in, 32
+// octets out, and any other width or any non-hex character is a refusal rather than a best effort.
+// A message_id comes BACK from the ABI as this hex and goes IN as counted octets; this is the one
+// place in the app that turns the one into the other.
+bool FromHexId(const std::string& hex, std::vector<uint8_t>& out) {
+  constexpr size_t kIdOctets = 32;
+  if (hex.size() != kIdOctets * 2) return false;
+  auto nibble = [](char c) -> int {
+    if ('0' <= c && c <= '9') return c - '0';
+    if ('a' <= c && c <= 'f') return c - 'a' + 10;
+    if ('A' <= c && c <= 'F') return c - 'A' + 10;
+    return -1;
+  };
+  out.assign(kIdOctets, 0);
+  for (size_t at = 0; at < kIdOctets; ++at) {
+    const int high = nibble(hex[at * 2]);
+    const int low = nibble(hex[at * 2 + 1]);
+    if (high < 0 || low < 0) return false;
+    out[at] = static_cast<uint8_t>((high << 4) | low);
+  }
+  return true;
 }
 
 std::string ToHex(const uint8_t* data, int32_t len) {
@@ -851,6 +884,8 @@ void RunSession() {
   // published world, so this vector needs no lock. See LiveWorld.h for why a row that is not a
   // record is still not a fabrication.
   std::vector<urmsg::live::LiveOutboxEntry> outbox;
+  // And the reactions and un-reactions it has tried. Same ownership, same reason.
+  std::vector<urmsg::live::LiveReactionOutboxEntry> reactionOutbox;
 
   // Build the world off the group AS IT STANDS and hand it to the UI. Every publish below goes
   // through here, so the log and the outbox can never be drawn from two different moments — a send
@@ -869,6 +904,7 @@ void RunSession() {
     live.host = kHost;
     live.statsJson = TakeString(urnet_message_group_stats(s.group));
     live.outbox = outbox;
+    live.reactionOutbox = reactionOutbox;
     CollectMessages(s.group, live.messages);
 
     // THE SEND BUTTON'S ONE GATE, re-read off the library every time rather than latched when the
@@ -904,10 +940,47 @@ void RunSession() {
     std::deque<Outbound> queued = TakeSendQueue();
     if (queued.empty()) return;
 
-    for (auto const& out : queued) {
+    for (auto& out : queued) {
+      const bool isReaction =
+          out.kind == OutboundKind::ReactAdd || out.kind == OutboundKind::ReactRemove;
+      if (isReaction) {
+        // ONE ATTEMPT PER (target, emoji) ON SCREEN. A second tap on an emoji whose last attempt
+        // failed is that attempt again, not a second reaction beside the first failure - so the
+        // failed entry it supersedes goes in the same beat, exactly as a text retry replaces its
+        // failed row.
+        reactionOutbox.erase(
+            std::remove_if(reactionOutbox.begin(), reactionOutbox.end(),
+                           [&](urmsg::live::LiveReactionOutboxEntry const& e) {
+                             return e.failed && e.targetId == out.targetHex && e.emoji == out.emoji;
+                           }),
+            reactionOutbox.end());
+        urmsg::live::LiveReactionOutboxEntry entry;
+        entry.localId = out.localId;
+        entry.targetId = out.targetHex;
+        entry.emoji = out.emoji;
+        entry.remove = out.kind == OutboundKind::ReactRemove;
+        entry.attemptedAtMs = WallClockMs();
+        reactionOutbox.push_back(std::move(entry));
+        continue;
+      }
       // A RETRY SUPERSEDES THE ENTRY IT CAME FROM rather than joining it. Without this the failed
       // row stays on screen beside the second attempt and one message reads as two.
+      //
+      // AND IT INHERITS THE PARENT. The two [ Try again ] buttons name the row and nothing else -
+      // MessageRow has no reply-to slot - so a retry of a failed REPLY arrives here as a plain
+      // text naming the failed entry, and the entry is the one place that still knows which line
+      // it answered. Taken from there, before the entry goes, so the retry seals as the same
+      // reply rather than as a text that happens to have the same words.
       if (!out.replaces.empty()) {
+        auto old = std::find_if(outbox.begin(), outbox.end(),
+                                [&](urmsg::live::LiveOutboxEntry const& e) {
+                                  return e.localId == out.replaces;
+                                });
+        if (old != outbox.end() && out.targetHex.empty() && !old->replyToId.empty() &&
+            FromHexId(old->replyToId, out.target)) {
+          out.kind = OutboundKind::Reply;
+          out.targetHex = old->replyToId;
+        }
         outbox.erase(std::remove_if(outbox.begin(), outbox.end(),
                                     [&](urmsg::live::LiveOutboxEntry const& e) {
                                       return e.localId == out.replaces;
@@ -917,6 +990,7 @@ void RunSession() {
       urmsg::live::LiveOutboxEntry entry;
       entry.localId = out.localId;
       entry.body = out.body;
+      entry.replyToId = out.targetHex;
       entry.attemptedAtMs = WallClockMs();
       outbox.push_back(std::move(entry));
     }
@@ -925,26 +999,89 @@ void RunSession() {
     for (auto const& out : queued) {
       char* sendErr = nullptr;
       const int64_t startedMs = NowMs();
-      // COUNTED OCTETS, NOT A char*. The body is whatever was typed and a UTF-8 encoding of it can
-      // hold a 0x00 nowhere except by a caller putting one there — but the ABI's rule for every
-      // binary value going in is a pointer and a length (cgo/ctest/message_abi_test.c's 21-octet
-      // body is two NULs and two multi-byte sequences precisely to hold this), and a length is what
-      // is passed here so that the rule is kept rather than relied on.
-      const std::string info = TakeString(urnet_message_group_send(
-          s.group, s.ctx, reinterpret_cast<const uint8_t*>(out.body.data()),
-          static_cast<int32_t>(out.body.size()), &sendErr));
+      std::string info;
+      const char* verb = "send";
+      switch (out.kind) {
+        case OutboundKind::Text:
+          // COUNTED OCTETS, NOT A char*. The body is whatever was typed and a UTF-8 encoding of it
+          // can hold a 0x00 nowhere except by a caller putting one there — but the ABI's rule for
+          // every binary value going in is a pointer and a length (cgo/ctest/message_abi_test.c's
+          // 21-octet body is two NULs and two multi-byte sequences precisely to hold this), and a
+          // length is what is passed here so that the rule is kept rather than relied on.
+          info = TakeString(urnet_message_group_send(
+              s.group, s.ctx, reinterpret_cast<const uint8_t*>(out.body.data()),
+              static_cast<int32_t>(out.body.size()), &sendErr));
+          break;
+        case OutboundKind::Reply:
+          // The parent as 32 counted octets, decoded at the queue. The library does not require
+          // the parent to be present - it may have been deleted or pruned - so a reply to a line
+          // that has since vanished is sealed all the same, and the far side names what it cannot
+          // show exactly as this side does.
+          verb = "send_reply";
+          info = TakeString(urnet_message_group_send_reply(
+              s.group, s.ctx, out.target.data(), static_cast<int32_t>(out.target.size()),
+              reinterpret_cast<const uint8_t*>(out.body.data()),
+              static_cast<int32_t>(out.body.size()), &sendErr));
+          break;
+        case OutboundKind::ReactAdd:
+          // The emoji IS a NUL-terminated char* here, and that is the ABI's own rule for this one
+          // argument (urnetwork_message.h: "the emoji is a NUL-terminated utf-8 string"), unlike
+          // every binary value above. It is checked as 1..64 octets of valid UTF-8 before anything
+          // is sealed, and refused by name otherwise.
+          verb = "react";
+          info = TakeString(urnet_message_group_react(s.group, s.ctx, out.target.data(),
+                                                      static_cast<int32_t>(out.target.size()),
+                                                      out.emoji.c_str(), &sendErr));
+          break;
+        case OutboundKind::ReactRemove:
+          verb = "unreact";
+          info = TakeString(urnet_message_group_unreact(s.group, s.ctx, out.target.data(),
+                                                        static_cast<int32_t>(out.target.size()),
+                                                        out.emoji.c_str(), &sendErr));
+          break;
+      }
       const std::string failure = TakeError(&sendErr);
       const int64_t tookMs = NowMs() - startedMs;
+
+      if (out.kind == OutboundKind::ReactAdd || out.kind == OutboundKind::ReactRemove) {
+        auto at = std::find_if(reactionOutbox.begin(), reactionOutbox.end(),
+                               [&](urmsg::live::LiveReactionOutboxEntry const& e) {
+                                 return e.localId == out.localId;
+                               });
+        if (!info.empty()) {
+          // WHAT COMES BACK IS NOT A LINE: the record id and message_id of the reaction record
+          // itself, which changes the TARGET and adds nothing to the conversation. The entry is
+          // dropped, and the change is read off the target on the publish that follows.
+          urnw::LogInfo("live: *** {} *** {} on message {} in {} ms: {}",
+                        out.kind == OutboundKind::ReactAdd ? "REACTED" : "UNREACTED", out.emoji,
+                        out.targetHex, tookMs, info);
+          if (at != reactionOutbox.end()) reactionOutbox.erase(at);
+        } else {
+          urnw::LogError("live: {} {} on message {} was REFUSED after {} ms: {}", verb, out.emoji,
+                         out.targetHex, tookMs, failure.empty() ? "no reason given" : failure);
+          if (at != reactionOutbox.end()) {
+            at->failed = true;
+            at->error = failure.empty()
+                            ? std::string("the library refused the ") + verb + " and gave no reason"
+                            : failure;
+          }
+        }
+        publishWorld(false);
+        continue;
+      }
 
       auto at = std::find_if(
           outbox.begin(), outbox.end(),
           [&](urmsg::live::LiveOutboxEntry const& e) { return e.localId == out.localId; });
       if (!info.empty()) {
-        // The info json carries the record id, the message_id and body_len — and no body.
-        urnw::LogInfo("live: *** SENT *** {} octets in {} ms: {}", out.body.size(), tookMs, info);
+        // The info json carries the record id, the message_id and body_len — and no body. On a
+        // reply it also carries reply_to_id, which is the parent this side named; the far side
+        // prints the same id, and the two agreeing is the whole proof.
+        urnw::LogInfo("live: *** SENT *** {} octets via {} in {} ms: {}", out.body.size(), verb,
+                      tookMs, info);
         if (at != outbox.end()) outbox.erase(at);
       } else {
-        urnw::LogError("live: send of {} octets was REFUSED after {} ms: {}", out.body.size(),
+        urnw::LogError("live: {} of {} octets was REFUSED after {} ms: {}", verb, out.body.size(),
                        tookMs, failure.empty() ? "no reason given" : failure);
         if (at != outbox.end()) {
           at->failed = true;
@@ -1028,7 +1165,22 @@ bool StartIfEnabled() {
 
 bool CanSend() { return g_canSend.load(std::memory_order_relaxed); }
 
-bool QueueSend(std::string utf8Body, std::string replacesLocalId) {
+namespace {
+
+// The one enqueue. Everything the two public verbs check has been checked by the time this runs.
+void Enqueue(Outbound out) {
+  {
+    std::lock_guard<std::mutex> lock(g_sendMutex);
+    g_sendQueue.push_back(std::move(out));
+  }
+  // OUTSIDE THE LOCK: the worker wakes, takes the same mutex, and would be woken only to block on
+  // the thread that woke it.
+  g_sendWake.notify_one();
+}
+
+}  // namespace
+
+bool QueueSend(std::string utf8Body, std::string replacesLocalId, std::string replyToMessageIdHex) {
   // REFUSED HERE RATHER THAN QUEUED AND REFUSED LATER, and the difference is what the caller can
   // do about it: a false answer lets the composer keep the text the person typed. A queued send
   // that the worker then refuses has already emptied the box.
@@ -1039,13 +1191,40 @@ bool QueueSend(std::string utf8Body, std::string replacesLocalId) {
   out.localId = std::to_string(g_nextLocalId.fetch_add(1));
   out.body = std::move(utf8Body);
   out.replaces = std::move(replacesLocalId);
-  {
-    std::lock_guard<std::mutex> lock(g_sendMutex);
-    g_sendQueue.push_back(std::move(out));
+  if (!replyToMessageIdHex.empty()) {
+    // A parent that does not decode is refused BEFORE the box empties, for the reason above. It
+    // cannot happen from the thread view, which only ever offers Reply on a row whose id came off
+    // urnet_message_list_info - but a caller that hands over anything else gets a false, not a
+    // send_reply that the library refuses by name a beat later.
+    if (!FromHexId(replyToMessageIdHex, out.target)) {
+      urnw::LogWarn("live: a reply named a parent that is not a 64-hex message_id ({} chars); "
+                    "refused before it was queued",
+                    replyToMessageIdHex.size());
+      return false;
+    }
+    out.kind = OutboundKind::Reply;
+    out.targetHex = std::move(replyToMessageIdHex);
   }
-  // OUTSIDE THE LOCK: the worker wakes, takes the same mutex, and would be woken only to block on
-  // the thread that woke it.
-  g_sendWake.notify_one();
+  Enqueue(std::move(out));
+  return true;
+}
+
+bool QueueReaction(std::string targetMessageIdHex, std::string utf8Emoji, bool remove) {
+  if (utf8Emoji.empty()) return false;
+  if (!g_canSend.load(std::memory_order_relaxed)) return false;
+
+  Outbound out;
+  out.kind = remove ? OutboundKind::ReactRemove : OutboundKind::ReactAdd;
+  out.localId = std::to_string(g_nextLocalId.fetch_add(1));
+  if (!FromHexId(targetMessageIdHex, out.target)) {
+    urnw::LogWarn("live: a reaction named a target that is not a 64-hex message_id ({} chars); "
+                  "refused before it was queued",
+                  targetMessageIdHex.size());
+    return false;
+  }
+  out.targetHex = std::move(targetMessageIdHex);
+  out.emoji = std::move(utf8Emoji);
+  Enqueue(std::move(out));
   return true;
 }
 

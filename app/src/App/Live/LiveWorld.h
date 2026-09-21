@@ -87,9 +87,33 @@ struct LiveMessage {
 struct LiveOutboxEntry {
   std::string localId;      // stable for this session; the thread's row id is "outbox-" + this
   std::string body;         // utf-8, byte for byte what the composer held
+  // The parent's message_id (64 hex) when this is a REPLY, "" for a plain text. It is what the
+  // worker hands to urnet_message_group_send_reply, and it is what draws the parent line above the
+  // pending row - the same line a far-side reply gets, because it is the same fact.
+  std::string replyToId;
   int64_t attemptedAtMs = 0;  // wall clock at the attempt — the row's time label, not a guess
   bool failed = false;      // false while the ABI call is still in flight
   std::string error;        // the ABI's own out_error, verbatim; non-empty only when failed
+};
+
+// A REACTION THIS DEVICE IS TRYING TO PUT ON A MESSAGE, OR TAKE OFF ONE, that the server has not
+// yet taken or has refused. The same argument as the entry above: a refused react leaves no record
+// and moves no counter, so without this a person who tapped an emoji and saw nothing appear would
+// have no way to learn the library refused it. It renders ON THE TARGET, as one entry of that
+// row's reactions with state Pending or Failed - never as a standing reaction, which is what a
+// record this device holds looks like and what a refused call is not.
+//
+// An entry is dropped in the same beat its call succeeds: the standing reaction is then in the
+// group's own log (the library applies this device's own reaction on submit), so one tap is never
+// two chips.
+struct LiveReactionOutboxEntry {
+  std::string localId;
+  std::string targetId;     // the message_id (64 hex) the reaction is about
+  std::string emoji;        // utf-8, RAW, exactly the spelling the picker sealed
+  bool remove = false;      // true for an un-reaction
+  int64_t attemptedAtMs = 0;
+  bool failed = false;
+  std::string error;
 };
 
 // Everything one live session knows about itself. All of it is observed; none of it is invented.
@@ -105,6 +129,9 @@ struct LiveGroup {
   std::vector<LiveMessage> messages;
   // What this device tried to send and the server has not (or will not) take. Ordered by attempt.
   std::vector<LiveOutboxEntry> outbox;
+  // Likewise for reactions and un-reactions; each one lands on its target row rather than at the
+  // foot, because a reaction is a change to a line and not a line.
+  std::vector<LiveReactionOutboxEntry> reactionOutbox;
 };
 
 // ── the one placeholder ───────────────────────────────────────────────────────

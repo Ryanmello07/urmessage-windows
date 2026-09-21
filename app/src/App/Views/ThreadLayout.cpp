@@ -16,12 +16,58 @@
 // winrt::init_apartment().
 #include "UrMotion.h"
 
+#include "Strings.h"  // urnw::Narrow, for ReactionPickerOctets (Win32 only, no winrt)
+
 namespace urmsg::views {
 namespace {
 
 bool IsMessage(demo::MessageRow const& r) { return r.kind == demo::RowKind::Message; }
 
 }  // namespace
+
+// ---- the two per-bubble actions ------------------------------------------
+
+wchar_t const* BubbleActionName(BubbleAction action, bool canAct) {
+  // The disabled arms follow the [ Try again ] pair's wording ("there is no live
+  // session to ...") so a screen reader hears the same fact from every dark
+  // control on the surface. They name the SESSION and never the build.
+  switch (action) {
+    case BubbleAction::Reply:
+      return canAct ? L"Reply to this message"
+                    : L"Reply: there is no live session to send a reply into";
+    case BubbleAction::React:
+      return canAct ? L"React to this message"
+                    : L"React: there is no live session to send a reaction into";
+  }
+  return canAct ? L"Act on this message" : L"There is no live session to act into";
+}
+
+std::size_t ReactionPickerOctets(std::size_t index) {
+  if (kReactionPickerCount <= index) return 0;
+  return urnw::Narrow(kReactionPicker[index]).size();
+}
+
+wchar_t const* ReactionChipWord(demo::MessageReaction const& r) {
+  switch (r.state) {
+    case demo::DeliveryState::Pending:
+      return r.removing ? L"Removing" : L"Sending";
+    case demo::DeliveryState::Failed:
+      return r.removing ? L"Not removed" : L"Not sent";
+    default:
+      // Sent is the ceiling and the only standing state; Delivered, Read and
+      // Expired are never written on a reaction (DemoWorld.h) and fall here
+      // rather than inventing a word for a state nothing reports.
+      return r.mine ? L"you" : L"";
+  }
+}
+
+std::wstring ReactionPickerItemName(std::wstring const& emoji, bool standing, bool lastFailed) {
+  if (standing) {
+    return lastFailed ? L"Remove your " + emoji + L" reaction (the last attempt was not sent)"
+                      : L"Remove your " + emoji + L" reaction";
+  }
+  return lastFailed ? L"React " + emoji + L" (the last attempt was not sent)" : L"React " + emoji;
+}
 
 // The corner table of design d2 §1. The tightened corner is always on the
 // edge facing the adjacent same-speaker bubble — the spine, left for

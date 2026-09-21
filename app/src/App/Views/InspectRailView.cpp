@@ -648,7 +648,9 @@ void AppendFailureBlock(UIElementCollection const& body, std::wstring const& rea
       // Dark once taken, so two clicks cannot queue one message twice while the
       // first attempt is inside the ABI. The rail is re-populated by the host's
       // next publish either way.
-      if (verb.send(messageBody, rowId)) {
+      // No parent named: a retry of a failed REPLY inherits its parent from the failed entry it
+      // names, on the worker (Live/LiveMesh.cpp), exactly as the thread's own retry does.
+      if (verb.send(messageBody, rowId, std::wstring{})) {
         if (auto button = sender.try_as<Button>()) button.IsEnabled(false);
       }
     });

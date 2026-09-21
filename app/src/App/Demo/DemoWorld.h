@@ -64,6 +64,25 @@ struct MessageInspect {
   std::vector<DeviceRef> readBy;
 };
 
+// A REACTION STANDING ON A MESSAGE, or this device's own attempt to put one there or take one
+// away. The fabricated fixture carries none (DemoWorld.cpp writes no reactions, and the I10
+// fingerprint in Startup.cpp mixes named fields rather than struct bytes, so this slot's presence
+// moves nothing there); a protocol-backed world (App\Live\LiveWorld.cpp) fills it from the
+// records this device opened plus its own outbox.
+//
+// `state` REUSES DeliveryState AND IS DELIBERATELY NARROWER THAN IT: Sent means a record this
+// device holds - the reaction STANDS - and is the ceiling, exactly as it is for a message row;
+// Pending means this device's own react/unreact call has not returned; Failed means it returned a
+// refusal, carried verbatim in failureReason. Delivered and Read are never written here, because
+// nothing in the protocol reports either for a reaction any more than for a message.
+struct MessageReaction {
+  std::wstring emoji;               // RAW: two spellings of one emoji are two reactions
+  bool mine = false;                // this device sealed it (or is trying to)
+  DeliveryState state = DeliveryState::Sent;
+  bool removing = false;            // the attempt is an UN-reaction; meaningful when state != Sent
+  std::wstring failureReason;       // non-empty only when state == Failed
+};
+
 struct MessageRow {
   RowKind kind;
   std::wstring id;
@@ -77,6 +96,7 @@ struct MessageRow {
   std::wstring systemText;              // used only when kind == System
   bool permanentRecord;                 // key-change record: non-dismissible
   MessageInspect inspect;
+  std::vector<MessageReaction> reactions;  // empty in the fixture; see MessageReaction
 };
 
 struct Conversation {
