@@ -1084,6 +1084,12 @@ struct ThreadParts {
   // other mode-dependent surface in the app is rebuilt on that beat rather than
   // re-pointed. This one is not rebuilt, so it needs the handle.
   TextBlock composerNote{nullptr};
+  // WHICH WORLD THE CAPTION IS WRITTEN FOR. Held because the caption's text is now a function of
+  // TWO things — the mode and the role (item 242 R4) — and the two arrive on different beats:
+  // SetThreadRunMode brings the mode, SetThreadSendEnabled brings the role. Keeping the mode here
+  // lets UpdateComposerSend stay the ONE writer of composerNote.Text, which is what stops the two
+  // beats from racing over one TextBlock the way the pill's brushes once did.
+  urmsg::RunMode noteMode = urmsg::RunMode::Fabricated;
   // The composer's two interactive elements, held for the SAME reason the caption is: the bar is
   // built ONCE and the window re-points it when the live world lands. `sendEnabled` is the host's
   // answer to "can this session send at all" (SetThreadSendEnabled); whether the BUTTON is live
@@ -1094,6 +1100,12 @@ struct ThreadParts {
   Media::SolidColorBrush composerSendWash{nullptr};
   FontIcon composerSendGlyph{nullptr};
   bool sendEnabled = false;
+  // THE ROLE HALF (item 242 R4), and deliberately a SECOND flag rather than a narrowing of the one
+  // above: `sendEnabled` is the SESSION's answer and this is the conversation's. TRUE by default,
+  // which is the same reading the library takes for an identity the group's policy does not name
+  // (ruling 20 — an unnamed member is a MEMBER) and for a conversation whose role could not be read
+  // at all. Only the word "observer" takes it away.
+  bool mayRoleSend = true;
   // The no-selection empty state (one centred muted line under the identicon
   // lattice), built Visible and collapsed by the first SetThreadConversation.
   FrameworkElement emptyState{nullptr};
@@ -1418,6 +1430,119 @@ FrameworkElement MakeKeyChangeRecord(winrt::hstring const& text) {
   return root;
 }
 
+// ---- Spec C §5.6 + §5.1: a message from an OBSERVER, hidden (item 242 R4) ---
+//
+// COLLAPSED BY DEFAULT, EXPANDABLE TO THE CONTENT WITH A WARNING, and the
+// record is STILL HERE: `body` is the real body and it is one click away. That
+// is ruling 16 — hide, not drop — and the reason for it is that a row dropped
+// is indistinguishable from a record that never arrived, which is the single
+// thing this build's whole gap design exists to refuse.
+//
+// IT MUST NOT READ LIKE A GAP AND IT DOES NOT, in three ways a reader can see:
+// a gap line (Live/LiveWorld.cpp) says the app COULD NOT SHOW something and
+// offers nothing to press; this one says a message was HIDDEN and carries a
+// disclosure control that produces the text. The gap's row has no eye glyph and
+// no expansion, because there is nothing behind it. And where the key-change
+// record shouts in UrDangerBrush because it is an alert, this one is MUTED
+// because it is not: nothing went wrong, a rule was applied.
+FrameworkElement MakeHiddenObserverRecord(winrt::hstring const& body) {
+  StackPanel root;
+  root.HorizontalAlignment(HorizontalAlignment::Center);
+  root.MaxWidth(480);
+  root.Spacing(6);
+  root.Margin(ThicknessHelper::FromLengths(0, 10, 0, 10));
+
+  // The collapsed line and its control, side by side and centred: the line is
+  // Spec C §5.1's own sentence and the control is the only affordance.
+  StackPanel head;
+  head.Orientation(Orientation::Horizontal);
+  head.Spacing(8);
+  head.HorizontalAlignment(HorizontalAlignment::Center);
+
+  FontIcon eye;
+  eye.FontFamily(IconFont());
+  eye.Glyph(L"\uED1A");  // Segoe Fluent "Hide" — an eye with a stroke through it
+  eye.FontSize(14);
+  eye.Foreground(urnw::colors::MutedBrush());
+  eye.VerticalAlignment(VerticalAlignment::Center);
+  MarkRaw(eye);  // decoration beside a line that already carries the words
+  head.Children().Append(eye);
+
+  TextBlock line;
+  line.Text(winrt::hstring{kHiddenObserverLine});
+  // UrCaptionTextStyle for the same reason MakeSystemLine takes it: the style is
+  // what pins the BODY face to this line from the app's own resources.
+  if (auto st = StyleByKey(L"UrCaptionTextStyle")) line.Style(st);
+  line.FontSize(12);
+  line.Foreground(urnw::colors::MutedBrush());
+  line.TextWrapping(TextWrapping::Wrap);
+  line.VerticalAlignment(VerticalAlignment::Center);
+  // The ROOT carries these words in its automation name; leaving the TextBlock
+  // in the tree as well would announce the row twice.
+  MarkRaw(line);
+  head.Children().Append(line);
+
+  Button toggle;
+  toggle.Content(winrt::box_value(winrt::hstring{L"Show"}));
+  toggle.FontSize(12);
+  toggle.Padding(ThicknessHelper::FromLengths(10, 3, 10, 3));
+  toggle.MinHeight(26);
+  toggle.VerticalAlignment(VerticalAlignment::Center);
+  Automation::AutomationProperties::SetName(
+      toggle, winrt::hstring{HiddenObserverToggleName(/*expanded=*/false)});
+  head.Children().Append(toggle);
+  root.Children().Append(head);
+
+  // THE EXPANSION: the warning, then the content. Built now and COLLAPSED, so
+  // the toggle is a visibility flip rather than a build — the row keeps one
+  // identity across presses, and nothing has to re-derive the body.
+  StackPanel reveal;
+  reveal.Spacing(6);
+  reveal.Visibility(Visibility::Collapsed);
+  reveal.Margin(ThicknessHelper::FromLengths(22, 0, 0, 0));
+
+  TextBlock warning;
+  warning.Text(winrt::hstring{kHiddenObserverWarning});
+  if (auto st = StyleByKey(L"UrCaptionTextStyle")) warning.Style(st);
+  warning.FontSize(12);
+  warning.Foreground(urnw::colors::MutedBrush());
+  warning.TextWrapping(TextWrapping::Wrap);
+  reveal.Children().Append(warning);
+
+  // The content in a plain well rather than a bubble: a bubble is what this
+  // surface gives a message the group accepted, and drawing one here would undo
+  // the collapse the moment it opened.
+  Border well;
+  well.CornerRadius(CornerRadiusHelper::FromUniformRadius(12));
+  well.BorderThickness(ThicknessHelper::FromUniformLength(1));
+  well.BorderBrush(urnw::colors::BorderBrush());
+  well.Padding(ThicknessHelper::FromLengths(12, 8, 12, 8));
+  TextBlock content;
+  content.Text(body);
+  if (auto st = StyleByKey(L"UrBodyTextStyle")) content.Style(st);
+  content.TextWrapping(TextWrapping::Wrap);
+  content.Foreground(urnw::colors::TextBrush());
+  well.Child(content);
+  reveal.Children().Append(well);
+  root.Children().Append(reveal);
+
+  toggle.Click([reveal, toggle](auto const&, auto const&) {
+    const bool expanded = reveal.Visibility() == Visibility::Collapsed;
+    reveal.Visibility(expanded ? Visibility::Visible : Visibility::Collapsed);
+    toggle.Content(winrt::box_value(winrt::hstring{expanded ? L"Hide" : L"Show"}));
+    Automation::AutomationProperties::SetName(
+        toggle, winrt::hstring{HiddenObserverToggleName(expanded)});
+  });
+
+  // The row announces the COLLAPSED sentence and says the content is reachable.
+  // It does NOT read the body out: a reader who has not asked for it is in the
+  // same position as one looking at the collapsed row.
+  Automation::AutomationProperties::SetName(
+      root, winrt::hstring{std::wstring(kHiddenObserverLine) +
+                           L" The message is still here and can be shown."});
+  return root;
+}
+
 // ---- the typing indicator (T6, design §7) --------------------------------
 // Three pulsing dots AND a word. The word is not decoration: with "Show
 // animations in Windows" off the dots do not move at all, and three motionless
@@ -1638,16 +1763,32 @@ Button MakeInertIconButton(wchar_t const* glyph, wchar_t const* name) {
 
 // ── the composer's one decision, in one place ────────────────────────────────
 //
-// THREE CLAUSES, AND EACH ONE ANSWERS A DIFFERENT QUESTION:
+// FOUR CLAUSES, AND EACH ONE ANSWERS A DIFFERENT QUESTION:
 //   sendEnabled — can this SESSION send at all? (the host's answer: live, connected, group open)
+//   mayRoleSend — does this device's ROLE in THIS conversation permit it? (item 242 R4: the
+//                 conversation's myRole, which both worlds carry — urnet_message_group_my_role in
+//                 the live one, the fixture in the other. NO NEW ABI.)
 //   onSend      — was this thread built by a host that can send anything? (a fabricated launch
 //                 still wires one, and its sendEnabled stays false)
 //   text        — is there anything to send? An empty box has nothing, and a button that would
 //                 seal zero octets is the enabled-but-pointless control §9.1 is about.
 //
-// The AUTOMATION NAMES are a set of three, not an enabled/disabled pair, because the two ways of
-// being dark are different facts and a screen reader user cannot see which one applies. This app
-// has paid twice for a control that reaches a screen reader as "button" and nothing else.
+// THE SESSION FACT AND THE ROLE FACT ARE SEPARATE AND STAY SEPARATE. urmsg::live::CanSend() is
+// unchanged by R4 and still answers only "is there an open group to send into"; the role is a
+// second predicate beside it. They fail for different reasons, they are fixed by different people,
+// and the reader has to be told WHICH one applies — so the three states are picked by the pure
+// ComposerStateFor (Views/ThreadLayout.h), session first, and the two no-session strings below are
+// exactly the ones that shipped. An observer's session is PROVABLY LIVE (the role could only be
+// read off an open group), so borrowing "there is no live session" for that arm would be R3's
+// pending-arm defect again: a true-sounding sentence read out at the one moment it is false.
+//
+// The AUTOMATION NAMES are a set of THREE, not an enabled/disabled pair, because the ways of being
+// dark are different facts and a screen reader user cannot see which one applies. This app has
+// paid twice for a control that reaches a screen reader as "button" and nothing else.
+//
+// AND THE OBSERVER REASON IS SEEN AS WELL AS SPOKEN: Spec C §5.6 says the composer is disabled
+// WITH THE REASON, and a reason only a screen reader gets is not one, so the box's PLACEHOLDER
+// carries the same sentence and the box itself goes dead.
 //
 // IT IS ALSO THE ONE WRITER OF THE PILL'S BRUSHES, which used to be a TextChanged lambda of its
 // own. Two writers of one SolidColorBrush.Color, one keyed off the text and one off the session,
@@ -1655,23 +1796,26 @@ Button MakeInertIconButton(wchar_t const* glyph, wchar_t const* name) {
 void UpdateComposerSend(std::shared_ptr<ThreadParts> const& parts) {
   if (!parts || !parts->composerSend || !parts->composerBox) return;
   const bool sessionCanSend = parts->sendEnabled && parts->onSend != nullptr;
+  const ComposerState state = ComposerStateFor(sessionCanSend, parts->mayRoleSend);
   const bool hasText = !parts->composerBox.Text().empty();
-  const bool live = sessionCanSend && hasText;
+  const bool live = state == ComposerState::MaySend && hasText;
 
   parts->composerSend.IsEnabled(live);
   // "Send reply" while the strip is up: what the button does has changed, and the name is the
   // channel that says so to a reader who cannot see the strip.
   const bool replying = !parts->replyToId.empty();
   Automation::AutomationProperties::SetName(
-      parts->composerSend,
-      winrt::hstring{!sessionCanSend ? L"Send: there is no live session to send into"
-                     : hasText       ? (replying ? L"Send reply" : L"Send")
-                                     : L"Send: type a message first"});
-  Automation::AutomationProperties::SetName(
-      parts->composerBox,
-      winrt::hstring{sessionCanSend
-                         ? (replying ? L"Reply" : L"Message")
-                         : L"Message: this launch has no live session, so nothing is sent"});
+      parts->composerSend, winrt::hstring{ComposerSendName(state, hasText, replying)});
+  Automation::AutomationProperties::SetName(parts->composerBox,
+                                            winrt::hstring{ComposerBoxName(state, replying)});
+  parts->composerBox.PlaceholderText(winrt::hstring{ComposerBoxPlaceholder(state)});
+  parts->composerBox.IsEnabled(ComposerBoxEnabled(state));
+  // THE CAPTION, from here and nowhere else: it is a function of the mode AND the role, and the
+  // two arrive on different beats. RunMode.h carries why the fabricated arm does not branch on the
+  // role and why the live observer arm may not borrow a session denial.
+  if (parts->composerNote)
+    parts->composerNote.Text(
+        winrt::hstring{urmsg::ComposerNote(parts->noteMode, parts->mayRoleSend)});
 
   // The disabled wash (design d2 §3's enable-motion bullet) is only ever SEEN while the button is
   // dark, and it still distinguishes the two dark states: transparent on an empty box — the bare
@@ -1734,6 +1878,13 @@ void BeginComposerReply(std::shared_ptr<ThreadParts> const& parts, demo::Message
 void SubmitComposer(std::shared_ptr<ThreadParts> const& parts) {
   if (!parts || !parts->composerBox || !parts->onSend) return;
   if (!parts->sendEnabled) return;
+  // AND THE ROLE (item 242 R4), at the door rather than only on the button's enablement. The
+  // button is dark and the box is dead in that state, so this cannot be reached through either —
+  // it is here because "this app does not seal an application record for a group it holds OBSERVER
+  // in" is a property of the SEND PATH, and a property that lives only in a control's IsEnabled is
+  // one keyboard shortcut or one refactor away from not holding. The sdk refuses it too
+  // (ErrObserverMayNotSend); neither refusal is the other's excuse.
+  if (!parts->mayRoleSend) return;
   const std::wstring text{parts->composerBox.Text()};
   if (text.empty()) return;
   if (parts->onSend(text, std::wstring{}, parts->replyToId)) {
@@ -2093,7 +2244,10 @@ FrameworkElement MakeComposer(std::shared_ptr<ThreadParts> const& parts) {
   // framing exists to prevent (the rail's own note took Wrap for this reason,
   // InspectRailView.cpp). It costs nothing: the composer bar is Auto-height.
   TextBlock note;
-  note.Text(winrt::hstring{urmsg::ComposerNote(urmsg::ActiveRunMode())});
+  // The START POSE only. UpdateComposerSend is the one writer from here on, and it runs at the
+  // bottom of this function; parts->noteMode carries the mode it writes for.
+  parts->noteMode = urmsg::ActiveRunMode();
+  note.Text(winrt::hstring{urmsg::ComposerNote(parts->noteMode, parts->mayRoleSend)});
   note.TextWrapping(TextWrapping::Wrap);
   note.TextTrimming(TextTrimming::None);
   if (auto st = StyleByKey(L"UrCaptionTextStyle")) note.Style(st);
@@ -2368,6 +2522,13 @@ BuiltRow BuildPlanRow(std::shared_ptr<ThreadParts> const& parts,
       break;
     case ThreadRowShape::SystemPermanentRecord:
       out.root = MakeKeyChangeRecord(winrt::hstring{row.systemText});
+      break;
+    case ThreadRowShape::HiddenObserverRecord:
+      // row.BODY, not row.systemText: this IS the message, kept whole (ruling
+      // 16). It gets no clusterHost and no bubble, so every surface that walks
+      // parts->rows treats it as a run breaker — the same answer PlanThreadRows
+      // gives the three run predicates.
+      out.root = MakeHiddenObserverRecord(winrt::hstring{row.body});
       break;
     case ThreadRowShape::IncomingBubble:
     case ThreadRowShape::OutgoingBubble: {
@@ -3428,17 +3589,30 @@ void SetThreadSelectedMessage(ThreadView& v, std::wstring const& id) {
 void SetThreadRunMode(ThreadView& v, urmsg::RunMode mode) {
   auto parts = Find(v.root);
   if (!parts || !parts->composerNote) return;
-  parts->composerNote.Text(winrt::hstring{urmsg::ComposerNote(mode)});
+  // Record it and let the ONE writer write: since item 242 R4 the caption is a function of the
+  // mode AND the role, and they land on different beats. Writing the text here as well would be
+  // the two-writers-of-one-property defect the pill's brushes already taught this file.
+  parts->noteMode = mode;
+  UpdateComposerSend(parts);
 }
 
-// The host's answer to "can this session send at all". Idempotent, safe before any world exists,
-// and it writes BOTH the composer's state and the one the two [ Try again ] buttons read — those
-// are built row by row as the thread redraws, so they read the flag rather than being visited.
-void SetThreadSendEnabled(ThreadView& v, bool enabled) {
+// The host's answer to the composer's TWO questions. Idempotent, safe before any world exists.
+//
+// `enabled` is the SESSION fact (urmsg::live::CanSend()) and it writes BOTH the composer's state
+// and the one the two [ Try again ] buttons read — those are built row by row as the thread
+// redraws, so they read the flag rather than being visited.
+//
+// `mayRoleSend` is the ROLE fact (item 242 R4): false only where the open conversation's myRole is
+// "observer". IT IS DELIBERATELY NOT FOLDED INTO `enabled`. The retry buttons and the bubble
+// actions keep taking the SESSION answer alone, because their dark arm names the missing session
+// and that sentence has to stay true; and a fold would make the composer unable to say which of the
+// two facts is the one stopping it — which is the whole point of R4's third string.
+void SetThreadSendEnabled(ThreadView& v, bool enabled, bool mayRoleSend) {
   MutableSendVerb().enabled = enabled;
   auto parts = Find(v.root);
   if (!parts) return;
   parts->sendEnabled = enabled;
+  parts->mayRoleSend = mayRoleSend;
   UpdateComposerSend(parts);
 }
 
@@ -3582,11 +3756,18 @@ void AppendThreadRow(ThreadView& v, demo::MessageRow const& row) {
   // outgoing row lands under c0's 12:11 Pending bubble, a Last that becomes
   // a Middle. bubbles.back() IS prev's bubble exactly when prev is a Message
   // row (bubbles records message rows only, in order).
-  if (prev && prev->kind == demo::RowKind::Message && !parts->bubbles.empty()) {
+  if (prev && prev->kind == demo::RowKind::Message && !IsHiddenObserverRow(*prev) &&
+      !parts->bubbles.empty()) {
     demo::MessageRow const* prevPrev =
         (2 <= parts->rows.size()) ? &parts->rows[parts->rows.size() - 2].row : nullptr;
+    if (prevPrev && IsHiddenObserverRow(*prevPrev)) prevPrev = nullptr;
     double corners[4];
-    BubbleCornerDip(RunPosFor(prevPrev, *prev, &row), prev->outgoing, corners);
+    // nullptr when the ARRIVING row collapses: a hidden observer row draws no
+    // bubble, so the row above it is still the end of its own run and must keep
+    // its round corner. PlanThreadRows makes the identical substitution, which
+    // is what keeps a rebuild and an append drawing the same corners.
+    demo::MessageRow const* below = IsHiddenObserverRow(row) ? nullptr : &row;
+    BubbleCornerDip(RunPosFor(prevPrev, *prev, below), prev->outgoing, corners);
     parts->bubbles.back().root.CornerRadius(CornerRadiusFromCorners(corners));
   }
 
@@ -3606,6 +3787,14 @@ void AppendThreadRow(ThreadView& v, demo::MessageRow const& row) {
                                   : MakeSystemLine(winrt::hstring{row.systemText});
       break;
     case demo::RowKind::Message: {
+      // AN ARRIVING OBSERVER'S MESSAGE COLLAPSES EXACTLY AS A REBUILT ONE DOES
+      // (item 242 R4). Same predicate, same builder, no bubble and no cluster —
+      // the incremental-equals-rebuild property this surface is gated on, stated
+      // here rather than left to a second reading of the role.
+      if (IsHiddenObserverRow(row)) {
+        added = MakeHiddenObserverRecord(winrt::hstring{row.body});
+        break;
+      }
       // THE RULE, not a guess. An earlier version hard-coded false here on the
       // grounds that "an arriving message has no conversation around it" — but
       // it does: `prev` is the row this function just re-decided the cluster

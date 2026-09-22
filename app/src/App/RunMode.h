@@ -91,10 +91,20 @@ std::wstring LockHeaderNote(RunMode mode);
 // IT HAS NOW BEEN WRONG IN BOTH DIRECTIONS, one release apart, which is why it has a gate of its
 // own. First the fabricated wording was printed under real messages (a denial of the crypto that
 // had run); then the live wording said "sending is not wired up yet" under a button that was about
-// to be wired (a denial of a capability). RunModeCopyDiagnostics' SEND CLAUSE asserts the thing
-// that actually tracks the capability: the fabricated arm must deny the send path, the live arm
-// must not, and the phrases it looks for are printed beside the verdict.
-std::wstring ComposerNote(RunMode mode);
+// to be wired (a denial of a capability).
+//
+// `maySend` IS THE ROLE (item 242 R4) and it is a THIRD state rather than a second mode: a live
+// session this device may only READ. Its wording is Spec C §5.6's own sentence, verbatim and with
+// NO caveat (ruling 22 — the caveat is about other people's clients and belongs where the group is
+// configured), and the fabricated arm deliberately does not branch on it, because what stops a
+// send in the demo is not the role.
+//
+// RunModeCopyDiagnostics' SEND CLAUSE is asserted PER STATE since R4, not as one boolean over two
+// strings: the fabricated arms must deny the send path, live+may-send must not, and live+observer
+// must deny it WITHOUT denying the session. The old single-boolean form broke by construction the
+// day a live composer could honestly deny sending; the phrases the clause looks for are printed
+// beside the verdict, per state.
+std::wstring ComposerNote(RunMode mode, bool maySend);
 
 // The Network page's relay-path caption (chrome voice, letterspaced uppercase) and the status
 // strip drawer's automation name for the same three nodes. In live mode those nodes are
@@ -138,8 +148,11 @@ std::wstring DisclosureBody(RunMode mode);
 //
 // THREE CLAUSES BEYOND THE PAIRS, each one a property the pair test cannot see:
 //   * the DUMP line, whose two arms deliberately share a prefix;
-//   * the SEND clause - the fabricated composer note must deny the send path and the live one must
-//     not, because this build can send and only one of its two modes does;
+//   * the SEND clause, asserted PER STATE since item 242 R4 - both fabricated arms must deny the
+//     send path; live+may-send must not, because this build can send; live+observer must deny it
+//     AND must not deny the SESSION, an observer's session being provably live. The old
+//     single-boolean form ("the live arm must deny none of it") broke by construction the day a
+//     live composer could honestly deny sending, which is the day R4 landed;
 //   * the ABSENCE clause - the live disclosure's "What is NOT here:" list, printed in full, must
 //     not name the send path among the things the app cannot do, nor the member list or the
 //     roles, which the app reads off the group since item 242 R3.

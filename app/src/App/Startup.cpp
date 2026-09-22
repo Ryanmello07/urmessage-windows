@@ -231,6 +231,11 @@ uint64_t WorldFingerprint(urmsg::demo::World const& w) {
       MixStr(h, r.timeLabel); MixU64(h, r.outgoing ? 1u : 0u);
       MixU64(h, static_cast<uint64_t>(r.state)); MixStr(h, r.failureReason);
       MixStr(h, r.systemText); MixU64(h, r.permanentRecord ? 1u : 0u);
+      // The role the row's sender held at its sealing epoch (item 242 R4). It
+      // decides whether the row draws as a bubble or collapses to Spec C
+      // section 5.1's hidden-observer line, so a drift in it is a drift in what
+      // the thread SHOWS and must move this fingerprint.
+      MixStr(h, r.senderRoleAtSend);
       auto const& n = r.inspect;
       MixU64(h, n.epoch); MixU64(h, n.senderLeafIndex);
       MixU64(h, static_cast<uint64_t>(n.retention)); MixStr(h, n.sizeBucket);
@@ -264,7 +269,20 @@ uint64_t WorldFingerprint(urmsg::demo::World const& w) {
 // conversation's myRole. The fixture's roles are fabricated by name in
 // DemoWorld.cpp (Mira owns Design team, the viewer owns URnetwork core), so
 // the world's BYTES changed and the constant moved with them, in one commit.
-constexpr uint64_t kExpectedWorldFingerprint = 0x8C52DBB3652A9BD3ull;
+//
+// -> 0x3323AD211AADAB9F with item 242 R4 (OBSERVER read-only). Five deliberate
+// changes to the fixture, all in one conversation: MessageRow gained
+// senderRoleAtSend and this hash mixes it; Elena Vasquez is c0's OBSERVER
+// rather than a member; her 12:02 line carries an explicit "member" as the
+// collapse rule's positive control; and a new 12:05 line carries "observer" and
+// is the row that collapses; and a fifth, role-less line of hers at 12:07 sits
+// directly under it as the RUN-BREAK CONTROL — without an incoming row by the
+// same sender there, the substitution that makes a collapsed row break a run
+// changed no pixel and a mutant that deleted it survived every gate. Inserted
+// BEFORE c0's last two rows so
+// kInspectTargetRowId still names an outgoing Read row (c0-r12) and c0's
+// preview is still its last line.
+constexpr uint64_t kExpectedWorldFingerprint = 0x3323AD211AADAB9Full;
 
 std::wstring Verdict(bool ok) { return ok ? L"PASS" : L"FAIL"; }
 
@@ -710,6 +728,200 @@ std::vector<std::wstring> ReplyReactDiagnostics() {
 }
 
 
+// ---- OBSERVER read-only: the composer's three states and the hidden row (item 242 R4) ---------
+//
+// Same terms as everything above it: every function asked here is pure (Views/ThreadLayout.h,
+// Views/RosterRules.h), no world is mutated, no XAML is touched, and every line prints PASS/FAIL,
+// the QUERY it asked, and the complement it looked at.
+//
+// THE THREE PROPERTIES, STATED BEFORE THE STRINGS WERE WRITTEN (this app has burned twice on
+// gates written after the copy, which is how a check ends up agreeing with whatever is there):
+//
+//   1. COMPOSER. The three states are distinct, the SESSION denial appears in the no-session arm
+//      ONLY, the observer arm carries Spec C section 5.6 line 511 CHARACTER FOR CHARACTER in all
+//      three of its channels (button name, box name, placeholder) and denies no session, and the
+//      may-send arm denies nothing at all. The box is dead in exactly the observer arm.
+//   2. HIDDEN ROW. Over the fabricated world: a row collapses IF AND ONLY IF its senderRoleAtSend
+//      is "observer"; the collapsed copy is Spec C line 377 character for character; the row is a
+//      MESSAGE row whose BODY IS STILL THERE (hide, not drop); it is not a gap, not a system row
+//      and not a reason; and the expansion's warning is non-empty and differs from the line. Both
+//      sets are printed and both must be NON-EMPTY, or the case passes vacuously.
+//   3. THE CAVEAT'S PLACEMENT (ruling 22). The caveat is Spec C line 513 verbatim, it is NOT in
+//      the composer's sentence, and the composer's sentence is NOT in the caveat: the two say
+//      different things about different people's software and neither may borrow the other.
+std::vector<std::wstring> ObserverDiagnostics() {
+  using namespace urmsg::views;
+  namespace demo = urmsg::demo;
+  std::vector<std::wstring> out;
+
+  // SPEC C'S OWN SENTENCES, TRANSCRIBED HERE, IN THIS FILE, FROM THE SPEC — not read out of
+  // Views/ThreadLayout.h. That distinction is the difference between a gate and a mirror: a check
+  // that compares the app's constant against the app's constant passes on every rewording of it,
+  // and "character for character" would then be a claim about nothing. These three literals are
+  // the INDEPENDENT copy, so a paraphrase anywhere in the app fails the launch and has to be a
+  // deliberate edit HERE, naming the spec line it moved.
+  //   docs/specs/2026-08-12-spec-c-windows-client-ui.md:511 — the composer's reason
+  //   docs/specs/2026-08-12-spec-c-windows-client-ui.md:377 — the collapsed system row
+  //   docs/specs/2026-08-12-spec-c-windows-client-ui.md:513 — the roster row's caveat
+  // U+2014 EM DASH as an escape, the house non-ASCII rule (the spec's line carries the glyph).
+  constexpr wchar_t kSpecC511[] = L"You can read this group but not send to it.";
+  constexpr wchar_t kSpecC377[] = L"A message from an observer was hidden.";
+  constexpr wchar_t kSpecC513[] =
+      L"Observers are asked not to send. Someone who modifies their app can still send, and this "
+      L"version of URmessage cannot stop it at the server \u2014 it can only hide the result.";
+
+  // 1. the composer's three states
+  {
+    constexpr std::wstring_view kSessionDenial = L"no live session";
+    auto name = [](ComposerState s, bool hasText) {
+      return ComposerSendName(s, hasText, /*replying=*/false);
+    };
+    const std::wstring darkSend = name(ComposerState::NoSession, true);
+    const std::wstring obsSend = name(ComposerState::ObserverOnly, true);
+    const std::wstring liveSend = name(ComposerState::MaySend, true);
+    const std::wstring liveEmpty = name(ComposerState::MaySend, false);
+    const std::wstring darkBox = ComposerBoxName(ComposerState::NoSession, false);
+    const std::wstring obsBox = ComposerBoxName(ComposerState::ObserverOnly, false);
+    const std::wstring liveBox = ComposerBoxName(ComposerState::MaySend, false);
+    const std::wstring obsHint = ComposerBoxPlaceholder(ComposerState::ObserverOnly);
+    const std::wstring liveHint = ComposerBoxPlaceholder(ComposerState::MaySend);
+    // THE SPEC'S TEXT, not the app's constant — see the transcription note above.
+    const std::wstring reason = kSpecC511;
+
+    // The state machine itself, over the whole 2x2: session first, always.
+    const bool machine = ComposerStateFor(false, true) == ComposerState::NoSession &&
+                         ComposerStateFor(false, false) == ComposerState::NoSession &&
+                         ComposerStateFor(true, false) == ComposerState::ObserverOnly &&
+                         ComposerStateFor(true, true) == ComposerState::MaySend;
+    // The SESSION denial is in the dark arm and NOWHERE else. An observer's session is provably
+    // live - the role could only have been read off an open group - so this is the one sentence
+    // that arm must never borrow, and it is the defect R3 shipped on a different control.
+    const bool denialPlaced = darkSend.find(kSessionDenial) != std::wstring::npos &&
+                              darkBox.find(kSessionDenial) != std::wstring::npos &&
+                              obsSend.find(kSessionDenial) == std::wstring::npos &&
+                              obsBox.find(kSessionDenial) == std::wstring::npos &&
+                              obsHint.find(kSessionDenial) == std::wstring::npos &&
+                              liveSend.find(kSessionDenial) == std::wstring::npos &&
+                              liveBox.find(kSessionDenial) == std::wstring::npos;
+    // Spec C's sentence, character for character, in all three channels of the observer arm.
+    const bool reasonSpoken = obsSend == reason && obsBox.find(reason) != std::wstring::npos &&
+                              obsHint == reason;
+    // Three distinct arms, and the box dead in exactly one of them.
+    const bool distinct = darkSend != obsSend && obsSend != liveSend && darkSend != liveSend &&
+                          darkBox != obsBox && obsBox != liveBox && liveSend != liveEmpty;
+    const bool boxState = ComposerBoxEnabled(ComposerState::NoSession) &&
+                          !ComposerBoxEnabled(ComposerState::ObserverOnly) &&
+                          ComposerBoxEnabled(ComposerState::MaySend);
+    const bool ok = machine && denialPlaced && reasonSpoken && distinct && boxState;
+    out.push_back(std::format(
+        L"  composer states  : {}  no session \"{}\" / box \"{}\" | observer \"{}\" / box \"{}\" / "
+        L"placeholder \"{}\" | may send \"{}\" (empty box \"{}\") / box \"{}\"; box dead in the "
+        L"observer arm only {}   [query: ComposerStateFor is session-first over the whole 2x2; the "
+        L"words \"no live session\" appear in the no-session arm and in NEITHER other arm, because "
+        L"an observer's session is provably live; the observer arm's button name, box name and "
+        L"placeholder all carry Spec C section 5.6 line 511 character for character; the three "
+        L"arms are pairwise distinct; ComposerBoxEnabled is false in exactly the observer arm]",
+        Verdict(ok), EscapeNonAscii(darkSend), EscapeNonAscii(darkBox), EscapeNonAscii(obsSend),
+        EscapeNonAscii(obsBox), EscapeNonAscii(obsHint), EscapeNonAscii(liveSend),
+        EscapeNonAscii(liveEmpty), EscapeNonAscii(liveBox), boxState ? L"yes" : L"NO"));
+  }
+
+  // 2. the hidden row, over the fabricated world, with BOTH sets printed
+  {
+    demo::World const& w = demo::GetWorld();
+    std::wstring collapsed;   // rows whose plan says HiddenObserverRecord
+    std::wstring carriesRole; // rows carrying a non-observer role: the positive control
+    size_t collapsedCount = 0, controlCount = 0, mismatched = 0, bodyLost = 0, notAMessage = 0;
+    for (auto const& c : w.conversations) {
+      const auto plan = PlanThreadRows(c);
+      for (auto const& p : plan) {
+        demo::MessageRow const& r = c.rows[p.rowIndex];
+        const bool hidden = p.shape == ThreadRowShape::HiddenObserverRecord;
+        const bool isObserver = r.senderRoleAtSend == demo::kRoleObserver;
+        // THE IF AND ONLY IF, per row. A shape that fired on anything else, or failed to fire on
+        // an observer's row, lands here whichever direction it went.
+        if (hidden != (isObserver && r.kind == demo::RowKind::Message)) ++mismatched;
+        if (hidden) {
+          ++collapsedCount;
+          // HIDE, NOT DROP: the record is still a Message row and its body is still here.
+          if (r.kind != demo::RowKind::Message) ++notAMessage;
+          if (r.body.empty()) ++bodyLost;
+          if (!collapsed.empty()) collapsed += L", ";
+          collapsed += std::format(L"{} \"{}\"", r.id, r.body);
+        } else if (!r.senderRoleAtSend.empty()) {
+          ++controlCount;
+          if (!carriesRole.empty()) carriesRole += L", ";
+          carriesRole += std::format(L"{} {}", r.id, r.senderRoleAtSend);
+        }
+      }
+    }
+    const std::wstring line = kHiddenObserverLine;
+    const std::wstring warn = kHiddenObserverWarning;
+    const std::wstring showName = HiddenObserverToggleName(false);
+    const std::wstring hideName = HiddenObserverToggleName(true);
+    // Spec C section 5.1's row, against this file's own transcription of it.
+    const bool copyVerbatim = (line == kSpecC377);
+    // EXPANDABILITY, as far as a pure gate can reach it: the toggle has two distinct non-empty
+    // names and the warning is real copy that is not the collapsed line repeated. The PIXELS are
+    // the screenshot's job; what is checkable here is that the row has a second state to go to and
+    // something to say when it gets there.
+    const bool expandable = !showName.empty() && !hideName.empty() && showName != hideName &&
+                            !warn.empty() && warn != line;
+    // NEITHER SET MAY BE EMPTY. An empty collapsed set means the fixture lost its observer row and
+    // this gate would pass over nothing; an empty control set means nothing proves the rule is
+    // about the ROLE rather than about carrying one at all.
+    const bool ok = mismatched == 0 && bodyLost == 0 && notAMessage == 0 && collapsedCount >= 1 &&
+                    controlCount >= 1 && expandable && copyVerbatim;
+    out.push_back(std::format(
+        L"  hidden observer  : {}  collapsed [{}] || NOT collapsed but role-carrying [{}]; "
+        L"mismatches {}, bodies lost {}, non-message rows {}; copy \"{}\"; toggle \"{}\" / \"{}\"; "
+        L"warning \"{}\"   [query: over every conversation of the fabricated world, "
+        L"PlanThreadRows says HiddenObserverRecord IF AND ONLY IF the row is a Message row whose "
+        L"senderRoleAtSend is \"observer\"; every collapsed row is still a Message row with a "
+        L"non-empty body (hide, not drop); both sets non-empty; the collapsed copy equals this "
+        L"file's own transcription of spec C section 5.1 line 377; the toggle has two distinct "
+        L"non-empty names and the warning is non-empty and differs from the collapsed line]",
+        Verdict(ok), collapsed.empty() ? std::wstring(L"none") : collapsed,
+        carriesRole.empty() ? std::wstring(L"none") : carriesRole, mismatched, bodyLost,
+        notAMessage, EscapeNonAscii(line), EscapeNonAscii(showName), EscapeNonAscii(hideName),
+        EscapeNonAscii(warn)));
+  }
+
+  // 3. the two observer sentences, and the rule that keeps them apart (ruling 22)
+  {
+    const std::wstring reason = kObserverComposerReason;
+    const std::wstring caveat = kObserverSettingsCaveat;
+    // Both against this file's own transcription of spec C, for the reason at the top.
+    const bool verbatim = (reason == kSpecC511) && (caveat == kSpecC513);
+    // The composer sentence says what THIS app does and stops. The caveat says what it cannot do
+    // about OTHER people's clients. Neither may contain the other: a composer that carried the
+    // caveat would undercut its own refusal above the box, and a caveat that carried the composer
+    // sentence would be this app claiming a server-side gate on somebody else's row.
+    const bool apart = !reason.empty() && !caveat.empty() &&
+                       caveat.find(reason) == std::wstring::npos &&
+                       reason.find(caveat) == std::wstring::npos &&
+                       reason.find(L"modif") == std::wstring::npos &&
+                       reason.find(L"server") == std::wstring::npos &&
+                       caveat.find(L"cannot stop it at the server") != std::wstring::npos;
+    // And the caveat reaches a surface: the rail puts it on an observer's row and on no other, so
+    // the fixture must actually have one for the screenshot to be of anything.
+    size_t observers = 0, others = 0;
+    for (auto const& c : demo::GetWorld().conversations)
+      for (auto const& m : c.members) (m.role == demo::kRoleObserver ? observers : others) += 1;
+    const bool ok = apart && verbatim && observers >= 1 && others >= 1;
+    out.push_back(std::format(
+        L"  observer caveat  : {}  composer \"{}\" | roster row \"{}\"; the fabricated world has "
+        L"{} observer member row(s) and {} other member row(s)   [query: both sentences equal this "
+        L"file's own transcription of spec C section 5.6 lines 511 and 513; NEITHER contains the "
+        L"other; the composer sentence names no modified client and no server (ruling 22 puts the "
+        L"caveat where the group is configured); the caveat names the server it cannot stop; and "
+        L"at least one member row of each kind exists, so the rail's observer-only placement is "
+        L"not vacuous]",
+        Verdict(ok), EscapeNonAscii(reason), EscapeNonAscii(caveat), observers, others));
+  }
+  return out;
+}
+
 // ---- the roster: role words, control sets, outcome notes, the live mapping (item 242 R3) ------
 //
 // Same terms as ReplyReactDiagnostics: every function asked here is pure (Views/RosterRules.h,
@@ -828,17 +1040,32 @@ std::vector<std::wstring> RosterDiagnostics() {
         labelsOk ? L"yes" : L"NO", table));
   }
 
-  // 3. the control names in ALL THREE arms, on the capability, like the bubble actions - and in
-  //    NO arm a claim of what the role enforces. The first cut of the observer control said
-  //    "who can read but not send", passed this check (it forbade session denials, not
-  //    enforcement claims) and shipped a gate the build does not have: no send path reads the
-  //    role until item 242's R4. The second cut had two arms, so the PENDING control - dark
-  //    because the app is inside the library right then - announced "there is no live session",
-  //    denying a session at the one moment it is provably live. Both escapes were wordings this
-  //    check allowed, so it now names the state each arm belongs to and holds the Pending arm to
-  //    NOT denying the session. Like RunMode's kSendDenials this is an admitted blacklist, kept
-  //    worth having by WHEN it runs (every launch, against the compiled string) and by printing
-  //    which words each arm carries rather than a bare verdict. Add to it with a new wording.
+  // 3. the control names in ALL THREE arms, on the capability, like the bubble actions - and the
+  //    ENFORCEMENT CLAIM in EXACTLY ONE CELL of the twelve.
+  //
+  //    THE HISTORY THIS CLAUSE IS MADE OF. The first cut of the observer control said "who can
+  //    read but not send", passed this check (it forbade session denials, not enforcement claims)
+  //    and shipped a gate the build did not have: no send path read the role. The second cut had
+  //    two arms, so the PENDING control - dark because the app is inside the library right then -
+  //    announced "there is no live session", denying a session at the one moment it is provably
+  //    live. Both escapes were wordings this check allowed.
+  //
+  //    ITEM 242 R4 INVERTS THE ENFORCEMENT LIST RATHER THAN RELAXING IT, and the difference is the
+  //    whole point. R4 built the gate: the composer and the sdk both refuse an observer's send, so
+  //    "who can read this group but not send to it" is now TRUE and the Make-observer control must
+  //    SAY it - a control that changed someone's role without naming what the role does would be
+  //    the same omission from the other side. Deleting the word list would have been the
+  //    relaxation, and it would have left nothing watching the eleven cells where such a claim is
+  //    still false. So the property is now a POSITION: the claim belongs to the (Make observer,
+  //    LIVE) cell and to no other. The pending and dark arms are about the CONTROL's state - it is
+  //    waiting, there is no session - and a sentence about what the group enforces, read out
+  //    there, is the R3 mistiming defect wearing the other mode's clothes.
+  //
+  //    The other three live arms are held to NONE as well, which is stricter than "allowed
+  //    anywhere live": a true claim on Make member ("who can read and send") would fail this and
+  //    be a deliberate one-line edit naming that cell, which is exactly how this list is meant to
+  //    grow. Like RunMode's kSendDenials it is an admitted blacklist, kept worth having by WHEN it
+  //    runs (every launch, against the compiled string) and by PRINTING the whole 4x3 grid.
   {
     constexpr std::wstring_view kDenials[] = {L"no live session", L"not available", L"cannot"};
     constexpr std::wstring_view kEnforcementClaims[] = {L"not send", L"read but", L"read-only",
@@ -867,10 +1094,14 @@ std::vector<std::wstring> RosterDiagnostics() {
       const std::wstring onClaims = claimsIn(on);
       const std::wstring waitClaims = claimsIn(waiting);
       const std::wstring offClaims = claimsIn(off);
+      // THE INVERSION, per verb: Make observer's LIVE arm must carry a claim; every other cell of
+      // the twelve must carry none.
+      const bool wantsClaim = (v == RoleVerb::MakeObserver);
+      const bool claimOk = (wantsClaim == !onClaims.empty()) && waitClaims.empty() &&
+                           offClaims.empty();
       if (!on.empty() && !waiting.empty() && !off.empty() && on != off && on != waiting &&
           waiting != off && !denies(on) && !denies(waiting) &&
-          off.find(L"no live session") != std::wstring::npos && onClaims.empty() &&
-          waitClaims.empty() && offClaims.empty())
+          off.find(L"no live session") != std::wstring::npos && claimOk)
         ++ok;
       if (!listing.empty()) listing += L"; ";
       listing += std::format(L"live \"{}\" [claims: {}] | pending \"{}\" [claims: {}] | dark "
@@ -880,14 +1111,15 @@ std::vector<std::wstring> RosterDiagnostics() {
                              offClaims.empty() ? L"none" : offClaims);
     }
     out.push_back(std::format(
-        L"  roster names     : {}  {}/4 controls have a live arm that denies nothing, a pending "
-        L"arm that denies nothing either, a dark arm that names the missing session, and no "
-        L"enforcement claim in any -> {}   [query: three distinct non-empty arms; NEITHER the "
-        L"live nor the pending arm contains \"no live session\", \"not available\", \"cannot\" - "
-        L"the pending arm is read out while the app is inside the library, so a session denial "
-        L"there is false; dark arm contains \"no live session\"; no arm contains \"not send\", "
-        L"\"read but\", \"read-only\", \"read only\", \"can read\" - no send path reads the role "
-        L"before R4]",
+        L"  roster names     : {}  {}/4 controls have three distinct arms, a live and a pending "
+        L"arm that deny no session, a dark arm that names the missing one, and an enforcement "
+        L"claim in EXACTLY the (Make observer, live) cell -> {}   [query: three distinct non-empty "
+        L"arms; NEITHER the live nor the pending arm contains \"no live session\", \"not "
+        L"available\", \"cannot\" - the pending arm is read out while the app is inside the "
+        L"library, so a session denial there is false; dark arm contains \"no live session\"; of "
+        L"the words \"not send\", \"read but\", \"read-only\", \"read only\", \"can read\", the "
+        L"Make-observer LIVE arm must carry at least one - item 242 R4 built the gate, so the "
+        L"control must say what the role does - and the other eleven cells must carry none]",
         Verdict(ok == 4), ok, listing));
   }
 
@@ -1194,6 +1426,11 @@ std::vector<std::wstring> CollectDiagnostics() {
   // both arms, the outcome notes, and the live mapping over a roster built here. Beside the
   // reply/react lines because it is the same shape of gate one surface further along.
   for (auto& line : RosterDiagnostics()) lines.push_back(std::move(line));
+  // OBSERVER read-only (item 242 R4): the composer's three states, the hidden row over the whole
+  // fabricated world with both sets printed, and the two observer sentences held apart. Beside the
+  // roster because it is the same surface one rule further along - R3 put the roles on the screen,
+  // R4 is the first piece that changes what the APPLICATION RECORD path does with one.
+  for (auto& line : ObserverDiagnostics()) lines.push_back(std::move(line));
   {
     using namespace urmsg::demo;
     World const& w = GetWorld();
@@ -1319,6 +1556,19 @@ std::vector<std::wstring> CollectDiagnostics() {
     // 2. Sender header. The view rule must agree with DemoWorld's own
     //    run-continuation rule on EVERY message row: senderName is non-empty
     //    exactly when the bubble draws a name and an identicon.
+    //
+    //    THE ROW ABOVE IS NOT ALWAYS c.rows[i - 1] SINCE ITEM 242 R4. A collapsed
+    //    observer row draws no bubble, so the row under it starts a new run — and
+    //    this clause asked ShowsSenderHeader with the RAW neighbour, which made it
+    //    agree with a fixture that thought the same row was a continuation. It
+    //    passed while the bubble on screen carried an IDENTICON AND NO NAME: the
+    //    plan supplied the first and the data the second, and this was the one
+    //    check whose whole job is that they agree. It was the screenshot that
+    //    caught it. The substitution is recomputed here off the row's own word,
+    //    the way T4's is.
+    auto collapses = [](demo::MessageRow const& x) {
+      return x.kind == demo::RowKind::Message && x.senderRoleAtSend == demo::kRoleObserver;
+    };
     int msgRows = 0, headers = 0, disagree = 0;
     for (auto const& c : world.conversations) {
       const bool group = (c.kind == demo::ConversationKind::Group);
@@ -1326,7 +1576,8 @@ std::vector<std::wstring> CollectDiagnostics() {
         auto const& row = c.rows[i];
         if (row.kind != demo::RowKind::Message) continue;
         ++msgRows;
-        demo::MessageRow const* prev = (i > 0) ? &c.rows[i - 1] : nullptr;
+        demo::MessageRow const* prev =
+            (i > 0 && !collapses(c.rows[i - 1])) ? &c.rows[i - 1] : nullptr;
         const bool shows = views::ShowsSenderHeader(prev, row, group);
         if (shows) ++headers;
         if (shows != !row.senderName.empty()) ++disagree;
@@ -1571,6 +1822,12 @@ std::vector<std::wstring> CollectDiagnostics() {
         case urmsg::demo::RowKind::System:
           return r.permanentRecord ? Shape::SystemPermanentRecord : Shape::SystemLine;
         case urmsg::demo::RowKind::Message:
+          // Item 242 R4, and recomputed from the ROW rather than asked of the
+          // planner's own predicate: a mutant that made IsHiddenObserverRow
+          // answer true for everything would otherwise be agreed with rather
+          // than caught. The word is compared here, in this file.
+          if (r.senderRoleAtSend == urmsg::demo::kRoleObserver)
+            return Shape::HiddenObserverRecord;
           return r.outgoing ? Shape::OutgoingBubble : Shape::IncomingBubble;
       }
       return Shape::SystemLine;
@@ -1582,14 +1839,26 @@ std::vector<std::wstring> CollectDiagnostics() {
         case Shape::DaySeparator: return 2;
         case Shape::SystemLine: return 3;
         case Shape::SystemPermanentRecord: return 4;
+        case Shape::HiddenObserverRecord: return 5;
       }
       return 0;
     };
 
     std::size_t convs = 0, rows = 0, planned = 0, outOfOrder = 0, wrongShape = 0;
-    std::size_t seen[5] = {0, 0, 0, 0, 0};
+    std::size_t seen[6] = {0, 0, 0, 0, 0, 0};
     std::size_t system = 0, plain = 0, permanent = 0, emptyText = 0, mismatched = 0;
     std::size_t msgRows = 0, headerByRule = 0, headerByPlan = 0, headerDisagree = 0;
+    // THE THIRD OPINION, and the one that was not being asked. showSenderHeader is what the PLAN
+    // says; MessageRow::senderName is what the DATA carries; and a bubble draws the IDENTICON from
+    // the first and the NAME from the second. Demo/DemoWorld.cpp keeps its own run tracking
+    // (previousSender), which is a second statement of "starts a run" — and when the two
+    // disagreed across a collapsed observer row the bubble rendered an identicon with NO NAME,
+    // every gate on this surface passed, and only a screenshot showed it. T2 could not see it
+    // (it reads inspect.senderDisplayName, populated on every row) and the clause above could not
+    // (it compares the plan against the RULE, never against the bytes). They must be equal on
+    // every row: showSenderHeader <=> the row carries a name.
+    std::size_t nameDisagree = 0;
+    std::wstring firstNameDisagree = L"(none)";
 
     for (auto const& c : urmsg::demo::GetWorld().conversations) {
       ++convs;
@@ -1630,19 +1899,44 @@ std::vector<std::wstring> CollectDiagnostics() {
         // a FAIL on the line.
         if (r.kind == urmsg::demo::RowKind::Message) {
           ++msgRows;
+          // A COLLAPSED OBSERVER ROW IS NOT THE ROW ABOVE (item 242 R4): it draws
+          // no bubble, so the row under it starts a new run and gets its own name
+          // and identicon. Recomputed here off the row's own word, exactly as
+          // expectedShape is, so the planner is held to the rule rather than
+          // asked for it. The fixture carries the case one row under the
+          // collapsed line, or this substitution would be unobservable.
+          auto collapses = [](urmsg::demo::MessageRow const& x) {
+            return x.kind == urmsg::demo::RowKind::Message &&
+                   x.senderRoleAtSend == urmsg::demo::kRoleObserver;
+          };
           urmsg::demo::MessageRow const* prev =
-              (p.rowIndex > 0) ? &c.rows[p.rowIndex - 1] : nullptr;
+              (p.rowIndex > 0 && !collapses(c.rows[p.rowIndex - 1])) ? &c.rows[p.rowIndex - 1]
+                                                                     : nullptr;
+          // The collapsed row itself draws no header of its own and the plan has
+          // no opinion about it, the way it has none about a day separator — so
+          // it is not compared, rather than compared against a rule that does
+          // not apply to it.
+          if (collapses(r)) continue;
           const bool byRule = urmsg::views::ShowsSenderHeader(prev, r, group);
           if (byRule) ++headerByRule;
           if (p.showSenderHeader) ++headerByPlan;
           if (byRule != p.showSenderHeader) ++headerDisagree;
+          if (p.showSenderHeader != !r.senderName.empty()) {
+            ++nameDisagree;
+            if (firstNameDisagree == L"(none)")
+              firstNameDisagree = std::format(L"{} (plan {}, name \"{}\")", r.id,
+                                              p.showSenderHeader ? L"header" : L"no header",
+                                              r.senderName);
+          }
         }
       }
     }
-    // Every one of the five shapes must be worn by at least one row, or
-    // "0 wrong shapes" would be a claim about branches no row ever took.
+    // Every one of the SIX shapes must be worn by at least one row, or
+    // "0 wrong shapes" would be a claim about branches no row ever took. The
+    // sixth joined the set with item 242 R4 and the fixture grew a row to wear
+    // it in the same commit, which is exactly what this clause is for.
     std::size_t shapesUnused = 0;
-    for (std::size_t k = 0; k < 5; ++k)
+    for (std::size_t k = 0; k < 6; ++k)
       if (seen[k] == 0) ++shapesUnused;
 
     lines.push_back(std::format(
@@ -1652,9 +1946,9 @@ std::vector<std::wstring> CollectDiagnostics() {
         planned, rows, convs, outOfOrder));
     lines.push_back(std::format(
         L"  T4 row shapes        : {} — {} wrong of {} planned; in {} out {} "
-        L"day {} sys {} perm {}; {} of 5 shapes unused",
+        L"day {} sys {} perm {} hidden {}; {} of 6 shapes unused",
         (wrongShape == 0 && shapesUnused == 0 && 0 < planned) ? L"PASS" : L"FAIL",
-        wrongShape, planned, seen[0], seen[1], seen[2], seen[3], seen[4],
+        wrongShape, planned, seen[0], seen[1], seen[2], seen[3], seen[4], seen[5],
         shapesUnused));
     lines.push_back(std::format(
         L"  T4 system rows       : {} — {} system rows -> {} plain + {} permanent",
@@ -1667,10 +1961,11 @@ std::vector<std::wstring> CollectDiagnostics() {
         permanent, emptyText, mismatched, planned));
     lines.push_back(std::format(
         L"  T4 sender headers    : {} — rule {} vs plan {} over {} message rows, "
-        L"{} disagree",
-        (headerDisagree == 0 && 1 <= headerByRule && 1 <= headerByPlan) ? L"PASS"
-                                                                       : L"FAIL",
-        headerByRule, headerByPlan, msgRows, headerDisagree));
+        L"{} disagree; plan vs the NAME the row carries: {} disagree (first: {})",
+        (headerDisagree == 0 && nameDisagree == 0 && 1 <= headerByRule && 1 <= headerByPlan)
+            ? L"PASS"
+            : L"FAIL",
+        headerByRule, headerByPlan, msgRows, headerDisagree, nameDisagree, firstNameDisagree));
   }
 
 
@@ -2380,13 +2675,27 @@ std::vector<std::wstring> CollectDiagnostics() {
     auto expectedRunPos = [](urmsg::demo::MessageRow const* prev,
                              urmsg::demo::MessageRow const& cur,
                              urmsg::demo::MessageRow const* next) {
-      auto cont = [](urmsg::demo::MessageRow const& a, urmsg::demo::MessageRow const& b) {
+      // A COLLAPSED OBSERVER ROW IS NOT A BUBBLE AND BREAKS EVERY RUN (item 242
+      // R4), recomputed here off the row's own word rather than by asking the
+      // planner's predicate — a mutant that made IsHiddenObserverRow answer for
+      // every row would otherwise be agreed with instead of caught.
+      auto collapses = [](urmsg::demo::MessageRow const& r) {
+        return r.kind == urmsg::demo::RowKind::Message &&
+               r.senderRoleAtSend == urmsg::demo::kRoleObserver;
+      };
+      auto cont = [&collapses](urmsg::demo::MessageRow const& a,
+                               urmsg::demo::MessageRow const& b) {
         if (a.kind != urmsg::demo::RowKind::Message ||
             b.kind != urmsg::demo::RowKind::Message)
           return false;
+        if (collapses(a) || collapses(b)) return false;
         if (a.outgoing != b.outgoing) return false;
         return a.outgoing || a.senderKey == b.senderKey;
       };
+      // The collapsed row keeps the planner's default, exactly as a day
+      // separator does: it draws no corners, so its position in a run is not a
+      // thing the plan has an opinion about.
+      if (collapses(cur)) return RunPos::Single;
       const bool up = prev != nullptr && cont(*prev, cur);
       const bool down = next != nullptr && cont(cur, *next);
       if (!up) return down ? RunPos::First : RunPos::Single;
@@ -2414,11 +2723,16 @@ std::vector<std::wstring> CollectDiagnostics() {
         }
         // d2 §1's named rows, by id. Any message row not named here adds
         // nothing to the anchor count.
+        // c0's last outgoing pair moved down by TWO with item 242 R4: the
+        // collapsed observer row went in at c0-r22 and the run-break control
+        // under it at c0-r23, so the Failed/Pending First/Last pair the anchor
+        // names is now r24/r25. The ids are the anchor, so they move with the
+        // rows rather than the rule moving.
         RunPos anchor = RunPos::Single;
         bool isAnchor = true;
-        if (r.id == L"c0-r1" || r.id == L"c0-r22")
+        if (r.id == L"c0-r1" || r.id == L"c0-r24")
           anchor = RunPos::First;
-        else if (r.id == L"c0-r2" || r.id == L"c0-r23")
+        else if (r.id == L"c0-r2" || r.id == L"c0-r25")
           anchor = RunPos::Last;
         else if (r.id == L"c0-r3")
           anchor = RunPos::Single;
@@ -2483,7 +2797,7 @@ std::vector<std::wstring> CollectDiagnostics() {
         L"  T7 run geometry      : {} — corner table {}/8 cells (base 12, attached 4), "
         L"gaps 2/10 {}; {} message rows per-row vs rule ({} wrong): {} single {} first "
         L"{} middle {} last; named rows {}/5 found and correct (c0-r1/r2/r3 "
-        L"First/Last/Single, c0-r22/r23 First/Last); synthetic fixture {}/{} message rows "
+        L"First/Last/Single, c0-r24/r25 First/Last); synthetic fixture {}/{} message rows "
         L"(Middle in+out, sender break, system break, separator break, outgoing unifies "
         L"across keys)",
         (cornersOk == 8 && gapsOk && runWrong == 0 && 1 <= singles && 1 <= firsts &&
@@ -2645,22 +2959,29 @@ std::vector<std::wstring> CollectDiagnostics() {
       dd::World a = dd::GetWorld();
       const int added = dd::PrependStressHistory(a, 500);
       dd::Conversation const& c = a.conversations.front();
-      const std::size_t total = c.rows.size();  // 24 fixture + 500 synthetic
+      const std::size_t total = c.rows.size();  // 26 fixture + 500 synthetic
       const auto plan = dv::PlanThreadRows(c);
-      auto expectedShape = [](dd::MessageRow const& r) {
+      // Recomputed here, off the row's own word (item 242 R4): a collapsed
+      // observer row draws no bubble and breaks every run, so the neighbour a
+      // run predicate is asked about is nullptr exactly where one stands.
+      auto collapses = [](dd::MessageRow const& r) {
+        return r.kind == dd::RowKind::Message && r.senderRoleAtSend == dd::kRoleObserver;
+      };
+      auto expectedShape = [&collapses](dd::MessageRow const& r) {
         switch (r.kind) {
           case dd::RowKind::DaySeparator: return dv::ThreadRowShape::DaySeparator;
           case dd::RowKind::System:
             return r.permanentRecord ? dv::ThreadRowShape::SystemPermanentRecord
                                      : dv::ThreadRowShape::SystemLine;
           case dd::RowKind::Message:
+            if (collapses(r)) return dv::ThreadRowShape::HiddenObserverRecord;
             return r.outgoing ? dv::ThreadRowShape::OutgoingBubble
                               : dv::ThreadRowShape::IncomingBubble;
         }
         return dv::ThreadRowShape::SystemLine;
       };
 
-      bool seamOk = (added == 500 && total == 524 && plan.size() == total);
+      bool seamOk = (added == 500 && total == 526 && plan.size() == total);
       std::size_t slices = 0, rowsChecked = 0;
       // Walk the slides; at each step the window must slice the plan
       // EXACTLY: plan[window.start + k].rowIndex == window.start + k, in
@@ -2676,9 +2997,11 @@ std::vector<std::wstring> CollectDiagnostics() {
           // history: the seam row must render with the header/corners a full
           // rebuild gives it, which is exactly why the plan walks the whole
           // conversation and the window only slices it.
-          dd::MessageRow const* prev = (i > 0) ? &c.rows[i - 1] : nullptr;
-          dd::MessageRow const* next = (i + 1 < total) ? &c.rows[i + 1] : nullptr;
-          if (c.rows[i].kind == dd::RowKind::Message) {
+          dd::MessageRow const* prev = (i > 0 && !collapses(c.rows[i - 1])) ? &c.rows[i - 1]
+                                                                           : nullptr;
+          dd::MessageRow const* next =
+              (i + 1 < total && !collapses(c.rows[i + 1])) ? &c.rows[i + 1] : nullptr;
+          if (c.rows[i].kind == dd::RowKind::Message && !collapses(c.rows[i])) {
             if (p.showSenderHeader != dv::ShowsSenderHeader(prev, c.rows[i], true))
               seamOk = false;
             if (p.runPos != dv::RunPosFor(prev, c.rows[i], next)) seamOk = false;
@@ -2690,19 +3013,21 @@ std::vector<std::wstring> CollectDiagnostics() {
         if (16 < slices) break;        // loop guard, as above
       }
       // And the entering chunk of the ONE slide is the contiguous head slice:
-      // initial [24, 524), one slide up -> [0, 500): entering [0, 24).
+      // initial [26, 526), one slide up -> [0, 500): entering [0, 26). (24 ->
+      // 26 with item 242 R4: the fixture's collapsed observer row and the
+      // run-break control under it.)
       const ThreadWindow w0 = dv::InitialWindow(total);
       const ThreadWindow w1 = dv::SlideWindowUp(w0);
-      bool chunkOk = w0.start == 24 && w1.start == 0 && w1.end == 500;
+      bool chunkOk = w0.start == 26 && w1.start == 0 && w1.end == 500;
       for (std::size_t i = w1.start; i < w0.start && chunkOk; ++i)
         if (!dv::WindowCovers(w1, i) || dv::WindowCovers(w0, i)) chunkOk = false;
-      // The initial window [24,524) renders 500 rows; one slide up renders
+      // The initial window [26,526) renders 500 rows; one slide up renders
       // [0,500) — 500 more. 1000 rows checked across 2 slices.
       const bool ok = seamOk && slices == 2 && rowsChecked == 1000 && chunkOk;
       lines.push_back(std::format(
-          L"  T8 window seam       : {} — stressed 524-row world: {} slices walked, "
+          L"  T8 window seam       : {} — stressed 526-row world: {} slices walked, "
           L"{} rows match the full plan in order and shape (seam header/run-pos "
-          L"from full-history rules); one slide enters contiguous [0,24) {}",
+          L"from full-history rules); one slide enters contiguous [0,26) {}",
           ok ? L"PASS" : L"FAIL", slices, rowsChecked, chunkOk ? L"clean" : L"BROKEN"));
     }
 
@@ -3383,10 +3708,19 @@ std::vector<std::wstring> CollectDiagnostics() {
           if (p.rowIndex != at++ || c.rows.size() <= p.rowIndex) continue;
           ++planned;
           auto const& r = c.rows[p.rowIndex];
+          // Item 242 R4's collapsed row, recomputed off the word and not asked
+          // of the planner's predicate: it draws no bubble, so it is a run
+          // breaker in both directions and has no run position of its own.
+          auto collapses = [](urmsg::demo::MessageRow const& x) {
+            return x.kind == dd::RowKind::Message && x.senderRoleAtSend == dd::kRoleObserver;
+          };
           urmsg::demo::MessageRow const* prev =
-              (p.rowIndex > 0) ? &c.rows[p.rowIndex - 1] : nullptr;
+              (p.rowIndex > 0 && !collapses(c.rows[p.rowIndex - 1])) ? &c.rows[p.rowIndex - 1]
+                                                                     : nullptr;
           urmsg::demo::MessageRow const* next =
-              (p.rowIndex + 1 < c.rows.size()) ? &c.rows[p.rowIndex + 1] : nullptr;
+              (p.rowIndex + 1 < c.rows.size() && !collapses(c.rows[p.rowIndex + 1]))
+                  ? &c.rows[p.rowIndex + 1]
+                  : nullptr;
           const auto wantShape =
               r.kind == dd::RowKind::DaySeparator
                   ? urmsg::views::ThreadRowShape::DaySeparator
@@ -3394,10 +3728,11 @@ std::vector<std::wstring> CollectDiagnostics() {
                   ? (r.permanentRecord
                          ? urmsg::views::ThreadRowShape::SystemPermanentRecord
                          : urmsg::views::ThreadRowShape::SystemLine)
+              : collapses(r) ? urmsg::views::ThreadRowShape::HiddenObserverRecord
               : (r.outgoing ? urmsg::views::ThreadRowShape::OutgoingBubble
                             : urmsg::views::ThreadRowShape::IncomingBubble);
           if (p.shape != wantShape) ++wrongShape;
-          if (r.kind == dd::RowKind::Message) {
+          if (r.kind == dd::RowKind::Message && !collapses(r)) {
             if (urmsg::views::ShowsSenderHeader(prev, r, group) != p.showSenderHeader)
               ++headerDisagree;
             if (urmsg::views::RunPosFor(prev, r, next) != p.runPos) ++runWrong;

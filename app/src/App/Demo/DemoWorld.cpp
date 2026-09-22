@@ -102,6 +102,14 @@ struct RowSpec {
   DeliveryState state;       // meaningful only on an outgoing Message row
   const wchar_t* failure;    // non-empty ONLY when state == Failed
   bool permanent;            // the key-change record
+  // MessageRow::senderRoleAtSend (item 242 R4): the role this row's sender held
+  // at the epoch it was sealed at. DEFAULTED TO EMPTY, which is what the fixture
+  // says about almost every row and is the honest answer for a world with no
+  // protocol under it — "" is "no source carries one", and it is NOT "observer".
+  // Two rows set it on purpose (c0's 12:02 and 12:05 below): one "member" and
+  // one "observer", so the collapse rule has a positive control standing beside
+  // its subject in the same conversation.
+  const wchar_t* roleAtSend = L"";
 };
 
 MemberRef const* FindMember(Conversation const& c, std::wstring_view id) {
@@ -136,6 +144,7 @@ void AppendRows(Conversation& c, size_t conversationIndex,
     r.state = s.state;
     r.failureReason = s.failure;
     r.permanentRecord = s.permanent;
+    r.senderRoleAtSend = s.roleAtSend;
 
     if (s.kind == RowKind::DaySeparator) {
       day = s.body;
@@ -161,7 +170,18 @@ void AppendRows(Conversation& c, size_t conversationIndex,
       // rail must never say "unknown" for a message it is inspecting.
       const bool continuation = (!previousSender.empty() && previousSender == s.senderId);
       if (group && !s.outgoing && !continuation) r.senderName = senderDisplay;
-      previousSender = s.outgoing ? std::wstring() : std::wstring(s.senderId);
+      // A COLLAPSED OBSERVER ROW BREAKS THE RUN HERE TOO (item 242 R4), exactly
+      // as a separator and a system row do two branches up. This IS the rule the
+      // view keeps (Views/ThreadLayout.h's planner and Demo/ThreadLayout.h's
+      // StartsRun), stated where the fixture states runs — and without it the two
+      // disagreed, silently and only on screen: the row under the collapsed line
+      // got the identicon the PLAN asked for and no name, because the DATA still
+      // thought it was a continuation. No gate saw it; the screenshot did. T2
+      // reads inspect.senderDisplayName, which is populated on every row, and T4
+      // compares the plan against the rule rather than against the bytes.
+      previousSender = (s.outgoing || s.roleAtSend == std::wstring_view(kRoleObserver))
+                           ? std::wstring()
+                           : std::wstring(s.senderId);
     }
 
     MessageInspect& n = r.inspect;
@@ -264,7 +284,11 @@ World BuildWorld() {
        {L"m-tobias", L"Tobias Lind", kRoleAdmin},
        {L"m-saoirse", L"Saoirse Kelly", kRoleMember},
        {L"m-ravi", L"Ravi Menon", kRoleMember},
-       {L"m-elena", L"Elena Vasquez", kRoleMember}},
+       // ELENA IS THE FIXTURE'S OBSERVER (item 242 R4). She is here so three
+       // surfaces have a subject without the mesh: the rail's observer row and
+       // its Spec C section 5.6 caveat, the admin's one control over an observer
+       // (Make member), and the collapsed row her 12:05 line draws below.
+       {L"m-elena", L"Elena Vasquez", kRoleObserver}},
       L"Retrying the attachment.", L"12:11", 0, false, false,
       L"Kept until deleted", L"Media kept 30 days");
   AppendRows(c0, 0, w.myDevices, {
@@ -289,7 +313,37 @@ World BuildWorld() {
     {kMsg, L"", L"Rail mode swap is a crossfade now, not a slide.", L"11:41", true, kDeliv, L"", false},
     {kMsg, L"m-ravi", L"Slide implied navigation. Crossfade is right.", L"11:48", false, kSent, L"", false},
     {kMsg, L"", L"Pushing the branch in ten minutes.", L"11:55", true, kSent, L"", false},
-    {kMsg, L"m-elena", L"I'll review it after standup.", L"12:02", false, kSent, L"", false},
+    // THE POSITIVE CONTROL, and it stands one row above its subject on purpose:
+    // an explicit "member" at 12:02 renders as an ordinary bubble, so the
+    // collapse rule below is shown to be about the ROLE and not about the row
+    // carrying one at all.
+    {kMsg, L"m-elena", L"I'll review it after standup.", L"12:02", false, kSent, L"", false,
+            kRoleMember},
+    // THE HIDDEN ROW (item 242 R4 step 8; Spec C section 5.6 and section 5.1).
+    // Elena is an OBSERVER on the roster above and this line was sealed while
+    // she was one, so it renders COLLAPSED to "A message from an observer was
+    // hidden." with the body one expansion away. THE BODY IS REAL AND IS STILL
+    // HERE - that is ruling 16's "hide, not drop", and it is why this is a
+    // Message row rather than a System one. It is not a gap: a gap is a record
+    // this device could not open.
+    {kMsg, L"m-elena", L"Rail measurements are in the shared folder if anyone needs them.",
+            L"12:05", false, kSent, L"", false, kRoleObserver},
+    // THE RUN-BREAK CONTROL, and it is here because the rule was stated and not
+    // HELD. A collapsed row draws no bubble, so it breaks a run in both
+    // directions exactly as a system line does — but with 12:09 (outgoing)
+    // directly under 12:05 the substitution that implements that made NO
+    // difference to any row, and a mutant that deleted the upward half of it
+    // survived every gate. This row is the case that makes it observable: an
+    // INCOMING row by the SAME sender immediately under the collapsed one, which
+    // must start a new run (its own name and identicon) rather than read as a
+    // continuation across a line that says a message was hidden.
+    //
+    // It carries NO role, which is the fixture's ordinary state and is not
+    // "member": Elena is an OBSERVER on the roster now, so a line of hers whose
+    // sending role no source carries is exactly what a real log of a demoted
+    // member looks like.
+    {kMsg, L"m-elena", L"That folder is the one from the rail spec, not the old share.",
+            L"12:07", false, kSent, L"", false},
     {kMsg, L"", L"Attaching the rail measurements now.", L"12:09", true, kFail,
             L"The message server did not acknowledge this message.", false},
     {kMsg, L"", L"Retrying the attachment.", L"12:11", true, kPend, L"", false},

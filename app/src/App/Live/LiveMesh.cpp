@@ -594,6 +594,12 @@ void CollectMessages(uint64_t group, std::vector<urmsg::live::LiveMessage>& out)
       m.sentAtMs = j.value("sent_at_ms", int64_t{0});
       m.kind = static_cast<uint8_t>(j.value("kind", 0));
       m.gap = j.value("gap", std::string{});
+      // Item 242 R4. A DEFAULT OF "" AND NOT "member": absent means the library
+      // said nothing about this record's sender, and inventing a role there
+      // would be a claim. The thread's collapse rule asks for the exact word
+      // "observer", so "" asks for nothing — which is also what the ABI answers
+      // for a record that did not open.
+      m.senderRoleAtSend = j.value("sender_role_at_send", std::string{});
       m.replyToId = j.value("reply_to_id", std::string{});
       m.deleted = j.value("deleted", false);
       m.bodyLen = j.value("body_len", int32_t{0});

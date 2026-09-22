@@ -109,6 +109,12 @@ bool PairOk(Pair const& p) {
 constexpr std::wstring_view kSendDenials[] = {
     L"not wired",  L"nothing is sent", L"no message leaves",
     L"cannot send", L"not available",  L"does not send",
+    // Item 242 R4's wording. Spec C §5.6's observer sentence is a denial of the
+    // send path too — the first one this app has printed that is about the ROLE
+    // rather than about the build or the session — and a list that did not carry
+    // it would have let the live+observer arm pass with no denial in it at all,
+    // which is the same hole "not wired" sat in for a release.
+    L"not send to it",
 };
 
 // Which of them `text` carries, as a printable list. Empty means none.
@@ -173,10 +179,27 @@ std::wstring LockHeaderNote(RunMode mode) {
              : L"Demo model: fabricated data, no crypto in this build";
 }
 
-std::wstring ComposerNote(RunMode mode) {
+std::wstring ComposerNote(RunMode mode, bool maySend) {
   // U+2014 EM DASH, written as an escape and never as a pasted character (the house non-ASCII
   // rule: an editing pass that silently re-encodes a pasted glyph leaves no build error behind,
   // only a wrong byte in a string).
+  //
+  // ---- THE THIRD ARM (item 242 R4) ------------------------------------------------------------
+  // A LIVE SESSION THIS DEVICE MAY ONLY READ. It says Spec C §5.6's sentence VERBATIM and it says
+  // nothing else about the rule, because ruling 22 puts the caveat — "someone who modifies their
+  // app can still send … it can only hide the result" — where the group is CONFIGURED (the rail's
+  // observer row) and not above the box a person types in. The composer sentence is about THIS
+  // app's own behaviour, which after R4 is true unqualified: this client refuses all four sendable
+  // kinds for a group it holds OBSERVER in. The caveat is about other people's clients.
+  //
+  // IT MUST NOT DENY THE SESSION and the send clause below holds it to that: the role could only
+  // have been read off an open group, so "there is no live session" is the one false thing this
+  // arm could say. That is R3's pending-arm defect stated for a different control.
+  //
+  // THE FABRICATED ARM DOES NOT BRANCH ON THE ROLE, and that is a decision. What stops a send in
+  // the demo is that nothing is wired to a mesh, not the role — so a fabricated observer arm would
+  // name the wrong cause. The role still reaches the demo's composer through the BUTTON and the
+  // BOX (Views/ThreadLayout.h's three states), which is where the state belongs.
   //
   // The live form does NOT say "nothing is sent, and no message leaves this window". That sentence
   // is about isolation, and printing it under a thread whose newest line arrived from another
@@ -195,11 +218,13 @@ std::wstring ComposerNote(RunMode mode) {
   // are what the call does and what its answer reports, and it says plainly that nothing reports
   // delivery -- so the ceiling stays where Live/LiveWorld.cpp puts it (DeliveryState::Sent) and no
   // reader is invited to expect a tick this protocol cannot produce.
-  return mode == RunMode::Live
-             ? L"Live session \u2014 these messages are real, and so is the Send button: what you "
-               L"type is sealed on this device and submitted to the group. Nothing reports "
-               L"delivery, so a message you send stops at Sent."
-             : L"Demo model \u2014 nothing is sent, and no message leaves this window.";
+  if (mode != RunMode::Live) return L"Demo model \u2014 nothing is sent, and no message leaves this window.";
+  if (!maySend)
+    return L"Live session \u2014 these messages are real. You can read this group but not send "
+           L"to it.";
+  return L"Live session \u2014 these messages are real, and so is the Send button: what you "
+         L"type is sealed on this device and submitted to the group. Nothing reports "
+         L"delivery, so a message you send stops at Sent.";
 }
 
 std::wstring RelayPathGroupTitle(RunMode mode) {
@@ -297,7 +322,11 @@ std::vector<std::wstring> RunModeCopyDiagnostics() {
       {L"chip", ModeChipText(RunMode::Fabricated), ModeChipText(RunMode::Live)},
       {L"lock title", LockHeaderTitle(RunMode::Fabricated), LockHeaderTitle(RunMode::Live)},
       {L"lock note", LockHeaderNote(RunMode::Fabricated), LockHeaderNote(RunMode::Live)},
-      {L"composer", ComposerNote(RunMode::Fabricated), ComposerNote(RunMode::Live)},
+      {L"composer", ComposerNote(RunMode::Fabricated, true), ComposerNote(RunMode::Live, true)},
+      // The observer arm is a PAIR TOO, and it is gated as one: it is still a live string and a
+      // fabricated string and they must still name their own modes.
+      {L"composer (observer)", ComposerNote(RunMode::Fabricated, false),
+       ComposerNote(RunMode::Live, false)},
       {L"relay title", RelayPathGroupTitle(RunMode::Fabricated),
        RelayPathGroupTitle(RunMode::Live)},
       {L"drawer name", RelayDrawerName(RunMode::Fabricated), RelayDrawerName(RunMode::Live)},
@@ -333,8 +362,10 @@ std::vector<std::wstring> RunModeCopyDiagnostics() {
       L"live contains \"live\" and not \"demo\", case-insensitive]",
       ok == total ? L"PASS" : L"FAIL", ok, total, firstBad));
   lines.push_back(std::format(
-      L"  run mode composer: fabricated \"{}\" | live \"{}\"",
-      AsciiOnly(ComposerNote(RunMode::Fabricated)), AsciiOnly(ComposerNote(RunMode::Live))));
+      L"  run mode composer: fabricated \"{}\" | live \"{}\" | live+observer \"{}\"",
+      AsciiOnly(ComposerNote(RunMode::Fabricated, true)),
+      AsciiOnly(ComposerNote(RunMode::Live, true)),
+      AsciiOnly(ComposerNote(RunMode::Live, false))));
   lines.push_back(std::format(
       L"  run mode lock    : fabricated \"{}\" / \"{}\" | live \"{}\" / \"{}\"",
       AsciiOnly(LockHeaderTitle(RunMode::Fabricated)),
@@ -360,18 +391,46 @@ std::vector<std::wstring> RunModeCopyDiagnostics() {
   // fabricated launch gates the live copy. That property is what makes this gate worth running at
   // all: the run that would notice a stale live string by looking at it is the run that is least
   // likely to happen.
-  const std::wstring deniedByFabricated = DenialsIn(ComposerNote(RunMode::Fabricated));
-  const std::wstring deniedByLive = DenialsIn(ComposerNote(RunMode::Live));
-  const bool sendOk = !deniedByFabricated.empty() && deniedByLive.empty();
+  // THE CLAUSE IS PER STATE SINCE ITEM 242 R4, and the rewrite is the point rather than an
+  // accident of adding a parameter. The old form was one boolean over two strings -
+  // `!deniedByFabricated.empty() && deniedByLive.empty()` - and it BREAKS BY CONSTRUCTION the
+  // moment a live composer can legitimately deny sending, because an observer's live note MUST
+  // deny it. A gate that simply dropped the live half there would have stopped tracking the thing
+  // it was built for. So each of the three states is asserted on its own property:
+  //
+  //   fabricated (either role) - MUST deny: the demo sends nothing and never could.
+  //   live + may send          - MUST NOT deny: the button calls urnet_message_group_send.
+  //   live + observer          - MUST deny (this client will not seal an application record for a
+  //                              group it holds OBSERVER in) AND MUST NOT DENY THE SESSION. That
+  //                              third clause is R3's pending-arm rule reused verbatim and it is
+  //                              the one that catches the defect nobody looks for: an observer's
+  //                              session is PROVABLY LIVE, since the role could only have been read
+  //                              off an open group, so "there is no live session" is the one false
+  //                              sentence this arm could carry.
+  const std::wstring deniedByFabricated = DenialsIn(ComposerNote(RunMode::Fabricated, true));
+  const std::wstring deniedByFabObserver = DenialsIn(ComposerNote(RunMode::Fabricated, false));
+  const std::wstring deniedByLive = DenialsIn(ComposerNote(RunMode::Live, true));
+  const std::wstring deniedByLiveObserver = DenialsIn(ComposerNote(RunMode::Live, false));
+  const bool observerDeniesSession =
+      ContainsWord(ComposerNote(RunMode::Live, false), L"no live session");
+  const bool sendOk = !deniedByFabricated.empty() && !deniedByFabObserver.empty() &&
+                      deniedByLive.empty() && !deniedByLiveObserver.empty() &&
+                      !observerDeniesSession;
   lines.push_back(std::format(
-      L"  run mode send    : {}  this build CAN send in live mode (the composer's Send button "
-      L"calls urnet_message_group_send), so the live composer note must deny none of it and the "
-      L"fabricated one must deny some -> fabricated denies [{}] | live denies [{}]   [query: "
-      L"case-insensitive substring over \"not wired\", \"nothing is sent\", \"no message leaves\", "
-      L"\"cannot send\", \"not available\", \"does not send\"]",
+      L"  run mode send    : {}  per STATE, not per mode -> fabricated denies [{}] | "
+      L"fabricated+observer denies [{}] | live denies [{}] | live+observer denies [{}], and "
+      L"live+observer denies the SESSION: {}   [query: case-insensitive substring over \"not "
+      L"wired\", \"nothing is sent\", \"no message leaves\", \"cannot send\", \"not available\", "
+      L"\"does not send\", \"not send to it\". Both fabricated arms must be non-empty; live+may "
+      L"send must be empty (this build CAN send: the Send button calls urnet_message_group_send); "
+      L"live+observer must be non-empty AND must not contain \"no live session\", because an "
+      L"observer's session is provably live]",
       sendOk ? L"PASS" : L"FAIL",
       deniedByFabricated.empty() ? std::wstring(L"(none)") : deniedByFabricated,
-      deniedByLive.empty() ? std::wstring(L"(none)") : deniedByLive));
+      deniedByFabObserver.empty() ? std::wstring(L"(none)") : deniedByFabObserver,
+      deniedByLive.empty() ? std::wstring(L"(none)") : deniedByLive,
+      deniedByLiveObserver.empty() ? std::wstring(L"(none)") : deniedByLiveObserver,
+      observerDeniesSession ? L"YES (wrong)" : L"no"));
 
   // The disclosure's absence list is the SECOND string this commit made false, and it is checked as
   // a list rather than as a paragraph. THE LIST IS PRINTED IN FULL, which is the whole point: a

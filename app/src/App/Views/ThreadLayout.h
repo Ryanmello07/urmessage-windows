@@ -36,6 +36,15 @@ enum class ThreadRowShape {
   DaySeparator,
   SystemLine,             // centred, muted, NOT a bubble (design §6.2)
   SystemPermanentRecord,  // Spec C §7.4: 2px UrDangerBrush left rule, non-dismissible
+  // Spec C §5.6 + §5.1's "Observer message hidden" row (item 242 R4, ruling 16).
+  // HIDE, NOT DROP: the record OPENED, its body is intact and still in
+  // Conversation::rows, and this shape draws it COLLAPSED to §5.1's system line
+  // with the content one expansion away. It is NOT a gap and must not read like
+  // one — a gap is a record this device could not open, this one it could — and
+  // it is not an eighth GapReason: that set is closed at seven. A row dropped
+  // is indistinguishable from a record that never arrived, which is the one
+  // thing this build's whole gap design exists to refuse.
+  HiddenObserverRecord,
 };
 
 // ---- run-shape geometry (design d2 §1) -------------------------------------
@@ -505,6 +514,107 @@ enum class BubbleAction { Reply, React };
 // The automation name for `action` when the button can act (`canAct`) or not.
 // Never empty; the two arms differ; the disabled arm carries "no live session".
 wchar_t const* BubbleActionName(BubbleAction action, bool canAct);
+
+// ---- OBSERVER read-only: the four strings, and where each one is allowed ------
+// Item 242 R4. Every one of these is Spec C's own copy, quoted at the line it
+// comes from, and each is pinned character for character by --diagnose so a
+// tidy-up cannot paraphrase a sentence the spec fixed.
+//
+// RULING 22 IS WHY THERE ARE TWO OBSERVER SENTENCES AND NOT ONE. The COMPOSER
+// sentence is about THIS app's own behaviour, which after R4 is true
+// unqualified — this client will not seal an application record for a group it
+// holds OBSERVER in — so it carries NO caveat. The CAVEAT is about other
+// people's clients (OBSERVER is enforced in the client and by proposal rules,
+// never at the server: Spec C §5.6, §9.2, §11), and it belongs where the group
+// is CONFIGURED — the rail's roster, on an observer's row — and not above the
+// box a person types in.
+
+// Spec C §5.6, line 511, VERBATIM: the reason an observer's composer is
+// disabled. Shown three ways on that one control — the box's placeholder (seen),
+// the box's and the Send button's automation names (spoken) — because a reason a
+// reader cannot perceive is not a reason.
+inline constexpr wchar_t kObserverComposerReason[] =
+    L"You can read this group but not send to it.";
+
+// Spec C §5.1, line 377, VERBATIM: the collapsed row. One line ABOVE the gap
+// row in that table, and deliberately not one of its reasons.
+inline constexpr wchar_t kHiddenObserverLine[] = L"A message from an observer was hidden.";
+
+// Spec C §5.6 line 512 says "Expanding shows the content WITH A WARNING" and
+// does not write the warning; this is it. It says the two things the reader
+// needs and stops: who sent it, and why the app kept it instead of dropping it.
+// U+2014 EM DASH as an escape (the house non-ASCII rule).
+inline constexpr wchar_t kHiddenObserverWarning[] =
+    L"This was sent by an observer \u2014 someone this group does not let write to it. It is kept "
+    L"rather than dropped, because a dropped message looks exactly like one that never arrived.";
+
+// Spec C §5.6, line 513, VERBATIM: the caveat, on the roster's observer row.
+inline constexpr wchar_t kObserverSettingsCaveat[] =
+    L"Observers are asked not to send. Someone who modifies their app can still send, and this "
+    L"version of URmessage cannot stop it at the server \u2014 it can only hide the result.";
+
+// The disclosure control's two names. It is a TOGGLE over one row, so both arms
+// name the same thing and differ only in the verb.
+wchar_t const* HiddenObserverToggleName(bool expanded);
+
+// ---- the composer's THREE states (item 242 R4 step 6) -----------------------
+// TWO INDEPENDENT FACTS, KEPT INDEPENDENT, because they fail independently and
+// a reader has to be told WHICH one applies:
+//
+//   sessionCanSend — can this SESSION send at all? urmsg::live::CanSend(), the
+//                    worker's own answer, re-read off urnet_message_group_is_open
+//                    every poll. UNCHANGED by R4.
+//   mayRoleSend    — does this device's ROLE in THIS conversation permit it?
+//                    Conversation::myRole != "observer", which the app already
+//                    carries in both worlds (urnet_message_group_my_role since
+//                    item 242 R3 — R4 needs NO new ABI).
+//
+// THE ORDER IS SESSION FIRST AND THAT IS LOAD BEARING. A --live launch whose
+// mesh has not answered draws the FABRICATED world, whose conversations carry
+// fabricated roles; reading the role first would announce "You can read this
+// group but not send to it" about a group there is no session for. That is
+// exactly R3's pending-arm defect — a true-sounding sentence read out at the one
+// moment it does not describe — and Startup.cpp's `roster names` clause exists
+// because this app has now paid for it twice.
+//
+// An observer's session, by contrast, is PROVABLY LIVE: the role could only be
+// read off an open group. So the two existing no-session strings stay exactly as
+// they were and the observer arm must never borrow one.
+enum class ComposerState {
+  NoSession,    // no live session: nothing can be sent for a reason that is not the role
+  ObserverOnly, // a live session, and this device may not write to this group
+  MaySend,      // a live session and a role that permits sending
+};
+
+// Total over the two booleans. Session first; see above.
+ComposerState ComposerStateFor(bool sessionCanSend, bool mayRoleSend);
+
+// The Send button's automation name. `hasText` and `replying` refine only the
+// MaySend arm — an empty box and a reply strip are states OF a composer that can
+// send — and are ignored by the other two, whose reason does not depend on them.
+std::wstring ComposerSendName(ComposerState state, bool hasText, bool replying);
+
+// The message box's automation name, and its visible placeholder. The
+// placeholder is the SEEN half of the observer reason; the name is the spoken
+// half. Only the observer arm changes the placeholder from "Message".
+std::wstring ComposerBoxName(ComposerState state, bool replying);
+std::wstring ComposerBoxPlaceholder(ComposerState state);
+
+// Is the box itself dead? Spec C §5.6 says an observer's composer is DISABLED,
+// so the observer arm disables the box as well as the button. The no-session arm
+// leaves the box live on purpose: a person may type while the mesh is dialling,
+// and the text is still there when it answers.
+bool ComposerBoxEnabled(ComposerState state);
+
+// ---- the hidden row, as a decision ------------------------------------------
+// The ONE predicate behind ThreadRowShape::HiddenObserverRecord, so the planner,
+// the append path and --diagnose cannot disagree about which rows collapse.
+// A row qualifies when it is a MESSAGE row whose sender held OBSERVER AT THE
+// EPOCH IT WAS SEALED AT (demo::MessageRow::senderRoleAtSend, the ABI's
+// sender_role_at_send). NOT the roster's current role: a line written before a
+// demotion was written under the role its sender held THEN, and joining the row
+// to today's roster would relabel history at every role change.
+bool IsHiddenObserverRow(demo::MessageRow const& row);
 
 // THE PICKER, as the closed set it is. The protocol accepts any valid UTF-8 of
 // 1..64 octets and folds nothing - two spellings of one emoji are two

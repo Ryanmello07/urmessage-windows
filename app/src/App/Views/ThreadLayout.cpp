@@ -42,6 +42,74 @@ wchar_t const* BubbleActionName(BubbleAction action, bool canAct) {
   return canAct ? L"Act on this message" : L"There is no live session to act into";
 }
 
+// ---- OBSERVER read-only (item 242 R4) ---------------------------------------
+
+wchar_t const* HiddenObserverToggleName(bool expanded) {
+  // BOTH arms name the ROW, never the group's rule: the rule is in the warning
+  // the expansion shows, and a toggle that argued the policy every time it was
+  // focused would say it twice.
+  return expanded ? L"Hide this observer's message again"
+                  : L"Show the message this observer sent";
+}
+
+ComposerState ComposerStateFor(bool sessionCanSend, bool mayRoleSend) {
+  // SESSION FIRST. The header carries the argument; in one line, a fabricated
+  // world drawn during a --live dial has fabricated roles and a real absence of
+  // a session, and the absence is the true thing to say there.
+  if (!sessionCanSend) return ComposerState::NoSession;
+  if (!mayRoleSend) return ComposerState::ObserverOnly;
+  return ComposerState::MaySend;
+}
+
+std::wstring ComposerSendName(ComposerState state, bool hasText, bool replying) {
+  switch (state) {
+    case ComposerState::NoSession:
+      // UNCHANGED by R4, character for character.
+      return L"Send: there is no live session to send into";
+    case ComposerState::ObserverOnly:
+      // Spec C section 5.6's own sentence and NOTHING ELSE - no "Send:" prefix,
+      // because the sentence is already a complete statement and a prefix would
+      // make it a fragment of a second voice; and no caveat, because ruling 22
+      // puts that on the roster row where the group is configured.
+      return kObserverComposerReason;
+    case ComposerState::MaySend:
+      // UNCHANGED by R4. "Send reply" while the strip is up: what the button
+      // does has changed, and the name is the channel that says so to a reader
+      // who cannot see the strip.
+      return hasText ? (replying ? L"Send reply" : L"Send") : L"Send: type a message first";
+  }
+  return L"Send";
+}
+
+std::wstring ComposerBoxName(ComposerState state, bool replying) {
+  switch (state) {
+    case ComposerState::NoSession:
+      // UNCHANGED by R4.
+      return L"Message: this launch has no live session, so nothing is sent";
+    case ComposerState::ObserverOnly:
+      // The control is NAMED (a reader has to know which control is dead) and
+      // then Spec C's sentence follows, verbatim, as the reason.
+      return std::wstring(L"Message box, disabled. ") + kObserverComposerReason;
+    case ComposerState::MaySend:
+      return replying ? L"Reply" : L"Message";
+  }
+  return L"Message";
+}
+
+std::wstring ComposerBoxPlaceholder(ComposerState state) {
+  // The SEEN half of the observer reason. The other two arms keep the shipped
+  // placeholder: in the no-session state a person may still type, and the box
+  // must not start arguing about a role nothing has read.
+  return state == ComposerState::ObserverOnly ? std::wstring(kObserverComposerReason)
+                                              : std::wstring(L"Message");
+}
+
+bool ComposerBoxEnabled(ComposerState state) { return state != ComposerState::ObserverOnly; }
+
+bool IsHiddenObserverRow(demo::MessageRow const& row) {
+  return row.kind == demo::RowKind::Message && row.senderRoleAtSend == demo::kRoleObserver;
+}
+
 std::size_t ReactionPickerOctets(std::size_t index) {
   if (kReactionPickerCount <= index) return 0;
   return urnw::Narrow(kReactionPicker[index]).size();
@@ -162,8 +230,17 @@ std::vector<ThreadRowPlan> PlanThreadRows(demo::Conversation const& c) {
                                     : ThreadRowShape::SystemLine;
         break;
       case demo::RowKind::Message:
-        p.shape = r.outgoing ? ThreadRowShape::OutgoingBubble
-                             : ThreadRowShape::IncomingBubble;
+        // THE OBSERVER ROW IS TAKEN FIRST, and only on an INCOMING row's road:
+        // IsHiddenObserverRow is the one predicate (Views/ThreadLayout.h) and it
+        // reads senderRoleAtSend, the role its sender held AT THE SEALING EPOCH.
+        // The row keeps its kind, its id, its body and its place in the order -
+        // only its SHAPE changes - which is ruling 16's "hide, not drop" stated
+        // as the one line that implements it.
+        if (IsHiddenObserverRow(r))
+          p.shape = ThreadRowShape::HiddenObserverRecord;
+        else
+          p.shape = r.outgoing ? ThreadRowShape::OutgoingBubble
+                               : ThreadRowShape::IncomingBubble;
         break;
     }
     plan.push_back(p);
@@ -191,12 +268,24 @@ std::vector<ThreadRowPlan> PlanThreadRows(demo::Conversation const& c) {
     const std::size_t row = plan[i].rowIndex;
     demo::MessageRow const& r = c.rows[row];
     if (!IsMessage(r)) continue;
+    // A COLLAPSED OBSERVER ROW BREAKS EVERY RUN, IN BOTH DIRECTIONS, exactly as
+    // a system line does — it draws no bubble, no corners, no sender header and
+    // no delivery cluster, and a reader's eye does not carry a run across it.
+    // It is a Message row by KIND, so the three predicates below would otherwise
+    // treat it as one: hence this skip for the row itself, and the two
+    // IsHiddenObserverRow tests on its neighbours. Without them a run would
+    // visibly continue through a line that says a message was hidden.
+    if (plan[i].shape == ThreadRowShape::HiddenObserverRecord) continue;
 
     const bool endsRun = (i + 1 == plan.size()) || !IsMessage(c.rows[plan[i + 1].rowIndex]) ||
+                         IsHiddenObserverRow(c.rows[plan[i + 1].rowIndex]) ||
                          c.rows[plan[i + 1].rowIndex].outgoing != r.outgoing;
 
-    demo::MessageRow const* prev = (row > 0) ? &c.rows[row - 1] : nullptr;
-    demo::MessageRow const* next = (row + 1 < c.rows.size()) ? &c.rows[row + 1] : nullptr;
+    demo::MessageRow const* prev =
+        (row > 0 && !IsHiddenObserverRow(c.rows[row - 1])) ? &c.rows[row - 1] : nullptr;
+    demo::MessageRow const* next = (row + 1 < c.rows.size() && !IsHiddenObserverRow(c.rows[row + 1]))
+                                       ? &c.rows[row + 1]
+                                       : nullptr;
     plan[i].showSenderHeader =
         ShowsSenderHeader(prev, r, c.kind == demo::ConversationKind::Group);
     plan[i].endsOutgoingRun = endsRun && r.outgoing;
@@ -434,6 +523,11 @@ double EstimatedRowDip(ThreadRowShape shape) {
       return 36.0;
     case ThreadRowShape::SystemPermanentRecord:
       return 80.0;
+    case ThreadRowShape::HiddenObserverRecord:
+      // COLLAPSED is the state it is planned in — a centred line plus a
+      // disclosure button — so the estimate is the collapsed height. An
+      // expansion is a click after the open, long past the sizing this feeds.
+      return 64.0;
   }
   return 64.0;
 }

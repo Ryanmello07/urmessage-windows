@@ -17,7 +17,8 @@
 namespace urmsg::demo {
 namespace {
 
-constexpr DemoOptions kDefaults{false, DemoScreen::None, false, false, true, 0};
+constexpr DemoOptions kDefaults{false, DemoScreen::None, false, false, true, 0,
+                                DemoComposer::AsIs};
 
 // The ceiling for --demo-stress=N. The switch exists to find the thread's
 // knee, and 20000 rows (~200x the fixture's longest conversation) is far
@@ -85,6 +86,20 @@ constexpr void ApplyArg(DemoOptions& o, std::wstring_view arg) {
   // unrecognised argument must never be the thing that strips the mark from a
   // screenshot.
   if (body == L"demo-watermark=off") { o.enabled = true; o.watermark = false; return; }
+  // --demo-composer=<session|observer> (item 242 R4). Exactly two values, and
+  // an unrecognised one is NOT a demo switch - the --demo=nope carve-out, for
+  // the same reason: a typo must never light up the demo, and it must never
+  // silently leave the composer in a state nobody asked for.
+  if (body == L"demo-composer=session") {
+    o.enabled = true;
+    o.composer = DemoComposer::Session;
+    return;
+  }
+  if (body == L"demo-composer=observer") {
+    o.enabled = true;
+    o.composer = DemoComposer::Observer;
+    return;
+  }
 }
 
 constexpr DemoOptions ParseArgs(std::initializer_list<std::wstring_view> args) {
@@ -194,6 +209,46 @@ static_assert(ParseArgs({L"--demo=chats", L"--demo=network"}).screen ==
 static_assert(ParseArgs({L"--demo=thread", L"--demo-stress=500"}).screen ==
               DemoScreen::Thread);
 static_assert(ParseArgs({L"--demo=thread", L"--demo-stress=500"}).stressRows == 500);
+
+// --demo-composer (item 242 R4). Three rows for the three states the composer
+// can be put into, and the cross-field rows that say the switch touches ONE
+// field - a mutant that also armed autoplay, stripped the watermark or moved
+// the screen fails one of them.
+static_assert(ParseArgs({}).composer == DemoComposer::AsIs);
+static_assert(ParseArgs({L"--demo"}).composer == DemoComposer::AsIs);
+static_assert(ParseArgs({L"--demo-composer=session"}).composer == DemoComposer::Session);
+static_assert(ParseArgs({L"--demo-composer=session"}).enabled);
+static_assert(ParseArgs({L"--demo-composer=observer"}).composer == DemoComposer::Observer);
+static_assert(ParseArgs({L"--demo-composer=observer"}).enabled);
+static_assert(ParseArgs({L"-demo-composer=observer"}).composer == DemoComposer::Observer);
+static_assert(ParseArgs({L"/demo-composer=observer"}).composer == DemoComposer::Observer);
+static_assert(ParseArgs({L"demo-composer=observer"}).composer == DemoComposer::Observer);
+// An unknown value is NOT a demo switch and leaves the composer alone: the
+// --demo=nope carve-out, applied to a switch whose typo would otherwise draw a
+// composer state nobody asked for.
+static_assert(ParseArgs({L"--demo-composer=maybe"}).composer == DemoComposer::AsIs);
+static_assert(!ParseArgs({L"--demo-composer=maybe"}).enabled);
+static_assert(ParseArgs({L"--demo-composer="}).composer == DemoComposer::AsIs);
+static_assert(!ParseArgs({L"--demo-composer="}).enabled);
+static_assert(ParseArgs({L"--demo-composer=observer"}).screen == DemoScreen::None);
+static_assert(ParseArgs({L"--demo-composer=observer"}).watermark);
+static_assert(!ParseArgs({L"--demo-composer=observer"}).autoplay);
+static_assert(!ParseArgs({L"--demo-composer=observer"}).advanced);
+static_assert(ParseArgs({L"--demo-composer=observer"}).stressRows == 0);
+// Last one wins, the repeated-switch rule the screen rows already document.
+static_assert(ParseArgs({L"--demo-composer=observer", L"--demo-composer=session"}).composer ==
+              DemoComposer::Session);
+// …and it composes with a screen, which is how the screenshots below are taken.
+static_assert(ParseArgs({L"--demo=thread", L"--demo-composer=observer"}).screen ==
+              DemoScreen::Thread);
+static_assert(ParseArgs({L"--demo=thread", L"--demo-composer=observer"}).composer ==
+              DemoComposer::Observer);
+// No OTHER switch may move the composer.
+static_assert(ParseArgs({L"--demo-autoplay"}).composer == DemoComposer::AsIs);
+static_assert(ParseArgs({L"--demo-advanced"}).composer == DemoComposer::AsIs);
+static_assert(ParseArgs({L"--demo-watermark=off"}).composer == DemoComposer::AsIs);
+static_assert(ParseArgs({L"--demo-stress=500"}).composer == DemoComposer::AsIs);
+static_assert(ParseArgs({L"--demo=inspect"}).composer == DemoComposer::AsIs);
 
 // An unrecognised demo-* spelling is not a demo switch, same carve-out as
 // --demo=nope above: a typo must never light up the demo.

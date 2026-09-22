@@ -135,6 +135,25 @@ struct MessageRow {
   std::wstring failureReason;           // non-empty only when state == Failed
   std::wstring systemText;              // used only when kind == System
   bool permanentRecord;                 // key-change record: non-dismissible
+  // THE ROLE THIS ROW'S SENDER HELD AT THE EPOCH IT WAS SEALED AT — one of the
+  // four spellings above, or EMPTY where no source carries one (item 242 R4).
+  // The ABI's `sender_role_at_send` (urnetwork_message.h), which the library
+  // captures AT THE OPEN off the sending epoch's own group-context extension.
+  //
+  // IT IS A FACT ABOUT AN EPOCH AND NOT ABOUT NOW, which is the whole reason it
+  // is a field on the ROW rather than a lookup: Conversation::members carries
+  // the roles the group has TODAY, so joining a row to the roster on senderKey
+  // would relabel every line a demoted member ever wrote. A member demoted
+  // after writing keeps the role its earlier messages were written under.
+  //
+  // "observer" is the one value that asks for anything: Views/ThreadLayout.h's
+  // IsHiddenObserverRow collapses the row to Spec C section 5.1's system line
+  // with the CONTENT ONE EXPANSION AWAY. The row keeps its kind, its id and its
+  // body — hide, not drop (ruling 16) — because a row that vanished would be
+  // indistinguishable from a record that never arrived. EMPTY asks for nothing
+  // and is NOT "observer": a record that did not open carries no role, and the
+  // library's own reading of an unnamed identity is MEMBER (ruling 20).
+  std::wstring senderRoleAtSend;
   MessageInspect inspect;
   std::vector<MessageReaction> reactions;  // empty in the fixture; see MessageReaction
 };

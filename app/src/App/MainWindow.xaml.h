@@ -141,6 +141,15 @@ struct MainWindow : MainWindowT<MainWindow> {
   // send does a round trip to the message server and this is the UI thread of a single-threaded
   // apartment, where a blocking call is a frozen window for exactly that long.
   bool SendFromComposer(std::wstring text, std::wstring replacesRowId, std::wstring replyToRowId);
+  // THE COMPOSER'S TWO FACTS, assembled in ONE place (item 242 R4): the SESSION's answer
+  // (urmsg::live::CanSend) and the open conversation's ROLE. Every caller of
+  // views::SetThreadSendEnabled in this window goes through here, so the pair cannot be assembled
+  // two ways; called on a live publish, on a conversation switch, and nowhere else. Idempotent, and
+  // a no-op before the thread exists.
+  void ArmComposer();
+  // Does the open conversation's myRole permit writing to it? TRUE when nothing is open, which is
+  // the library's own reading of an identity the group's policy does not name (item 242 ruling 20).
+  bool OpenConversationMaySend() const;
   // The other bubble verb: put `emoji` on the row, or take it off. Same shape and the same
   // no-blocking rule; the outcome is a redrawn thread. In a live world the row id IS the record's
   // message_id, which is what urnet_message_group_react / _unreact name.

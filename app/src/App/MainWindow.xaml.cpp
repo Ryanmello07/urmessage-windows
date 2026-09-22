@@ -388,9 +388,14 @@ void MainWindow::ApplyLiveWorld() {
   // would work": a group the server closes under a running app keeps its last published world on
   // screen, and the mode stays Live for the life of the process by design. The button asks the
   // worker, every beat, whether the group is open RIGHT NOW.
-  if (thread_.root) urmsg::views::SetThreadSendEnabled(thread_, urmsg::live::CanSend());
+  ArmComposer();
   // AND THE ROSTER'S CONTROLS, by the same predicate and on the same beat (item 242 R3): a role
   // change is a commit into the same open group a send goes into.
+  //
+  // urmsg::live::CanSend() ALONE HERE, and not the composer's pair: the role verbs are COMMITS and
+  // an OBSERVER may still commit its own device add or remove (item 242 ruling 5). R4 gates the
+  // APPLICATION RECORD path, which is a different path with different rules, and folding the two
+  // would refuse a control the protocol allows.
   urmsg::views::SetInspectRailRosterEnabled(urmsg::live::CanSend());
 
   // The three content views exist only under --demo (BuildDemoViews is demo-gated, and its own
@@ -539,6 +544,48 @@ bool MainWindow::ReactFromBubble(std::wstring rowId, std::wstring emoji, bool re
                   remove ? "unreact" : "react", urmsg::live::CanSend());
   }
   return queued;
+}
+
+// THE COMPOSER'S TWO FACTS, ARMED TOGETHER AND FROM ONE PLACE (item 242 R4).
+//
+// Every caller of SetThreadSendEnabled goes through here, so the pair can never be assembled two
+// ways: the SESSION fact is the worker's own urmsg::live::CanSend(), and the ROLE fact is the OPEN
+// conversation's myRole — the same field the rail's control table reads, carried in both worlds
+// (urnet_message_group_my_role since item 242 R3; the fixture fabricates it). R4 needed no new ABI.
+//
+// NO OPEN CONVERSATION ANSWERS "may send". That is the same reading the library takes for an
+// identity the group's policy does not name — an unnamed member is a MEMBER, item 242 ruling 20 —
+// and it is the only safe direction for a default here: the alternative would put Spec C §5.6's
+// observer sentence over a thread whose role nothing has read, which is the false-denial defect
+// this app keeps paying for. A device that may not send is refused by the library either way.
+//
+// THE DEMO SWITCH IS APPLIED LAST AND IT IS THE ONLY THING HERE THAT IS NOT AN OBSERVATION.
+// --demo-composer fabricates the composer's INPUTS so a fabricated launch can draw the two states
+// that need a session; it is off by default, it changes nothing else, and Demo/DemoSwitches.h
+// carries what it may and may not be read as claiming.
+void MainWindow::ArmComposer() {
+  if (!thread_.root) return;
+  bool session = urmsg::live::CanSend();
+  bool mayRoleSend = OpenConversationMaySend();
+  switch (options_.composer) {
+    case urmsg::demo::DemoComposer::AsIs:
+      break;
+    case urmsg::demo::DemoComposer::Session:
+      session = true;
+      break;
+    case urmsg::demo::DemoComposer::Observer:
+      session = true;
+      mayRoleSend = false;
+      break;
+  }
+  urmsg::views::SetThreadSendEnabled(thread_, session, mayRoleSend);
+}
+
+bool MainWindow::OpenConversationMaySend() const {
+  const int index = OpenConversationIndex();
+  if (index < 0) return true;  // no conversation open: nothing has read a role. See above.
+  return ActiveWorld().conversations[static_cast<size_t>(index)].myRole !=
+         urmsg::demo::kRoleObserver;
 }
 
 int MainWindow::OpenConversationIndex() const {
@@ -697,7 +744,13 @@ void MainWindow::BuildDemoViews() {
   // The composer starts dark and is armed by ApplyLiveWorld. Said here EXPLICITLY rather than left
   // to the member's initialiser: this is the statement that a thread built in a fabricated launch
   // can send nothing, and it must not be reachable only through a path a live launch takes.
-  urmsg::views::SetThreadSendEnabled(thread_, false);
+  //
+  // THE ROLE HALF IS TRUE, not false (item 242 R4): "no session" and "your role may not" are
+  // different facts and the second one is not known here. Saying false would put Spec C §5.6's
+  // observer sentence on a composer that is dark for the other reason entirely — and
+  // ComposerStateFor takes the session first, so it would not even be reached. True is what
+  // "nothing has read a role" means.
+  urmsg::views::SetThreadSendEnabled(thread_, false, true);
   // ThreadHost, NOT ThreadBody. ApplyBreakpoint gives exactly one of the two
   // thread surfaces to a run: under --demo it collapses ThreadPane outright
   // and shows ThreadHost, so anything appended to ThreadBody here would
@@ -764,6 +817,10 @@ void MainWindow::SelectConversation(int index) {
   urmsg::views::SetConversationSelected(list_, index);
   urmsg::views::SetThreadConversation(thread_, conversation);
   urmsg::views::SetInspectRailConversation(rail_, conversation);
+  // AND THE COMPOSER, because the ROLE half of its state is a fact about THIS conversation (item
+  // 242 R4): a group this device may only read and one it may write to are two different composers,
+  // and switching between them is the one moment neither a live publish nor a rebuild covers.
+  ArmComposer();
   urnw::LogInfo("window: conversation -> {} (index {})",
                 urnw::Narrow(openConversationId_), index);
 }

@@ -25,6 +25,7 @@
 #include "UrMotion.h"
 #include "Views/InspectRailFields.h"
 #include "Views/RosterRules.h"  // the roster's words, control sets and notes - pure, gated
+#include "Views/ThreadLayout.h"  // kObserverSettingsCaveat (item 242 R4, ruling 22) - pure, gated
 #include "Views/ThreadView.h"  // views::SendVerb / CanRetrySend — the app's ONE send verb
 
 // ---- ONE key/value call site in this file, enforced by the build (R3) ------
@@ -1009,11 +1010,35 @@ std::vector<Border> BuildRoleControlRows(demo::MemberRef const& member,
 }
 
 // Everything an expanded member shows, in order: its devices, its detail, its
-// controls and their note.
+// controls and their note — and, on an OBSERVER's row, Spec C §5.6's caveat.
+//
+// THE CAVEAT IS HERE AND NOT ON THE COMPOSER, and that placement is item 242
+// ruling 22 rather than a layout preference. The COMPOSER sentence ("You can
+// read this group but not send to it.") is about THIS app's own behaviour, which
+// after R4 is true unqualified — this client will not seal an application record
+// for a group it holds OBSERVER in — so it carries no qualifier. THE CAVEAT is
+// about OTHER PEOPLE'S clients: OBSERVER is enforced in the client and by
+// proposal rules and never at the server (Spec C §5.6, §9.2, §11), so someone
+// running a modified build can still put a record on the wire and this version
+// can only HIDE the result. That is a fact about the group's configuration, and
+// it belongs where the group is configured — this card, on the row of the person
+// it is about — and not above the box a person types in.
+//
+// ON THE OBSERVER'S ROW AND NOWHERE ELSE: a caveat repeated on every member
+// would be a paragraph nobody reads, and on nobody's row it would be a claim
+// with no limit stated anywhere in the app.
 std::vector<Border> BuildMemberSubRows(demo::MemberRef const& member, std::wstring const& myRole) {
   std::vector<Border> rows = BuildDeviceSubRows(member);
   for (auto const& row : BuildDetailSubRows(member)) rows.push_back(row);
   for (auto const& row : BuildRoleControlRows(member, myRole)) rows.push_back(row);
+  if (member.role == demo::kRoleObserver) {
+    // Muted, not danger: nothing has gone wrong. It is a limit of the build,
+    // stated where the limit applies.
+    auto line = MakeRailNote(std::wstring(kObserverSettingsCaveat), /*danger=*/false);
+    line.Margin(ThicknessHelper::FromLengths(26, 0, 0, 0));
+    TagSubRow(line, member.id);
+    rows.push_back(line);
+  }
   return rows;
 }
 

@@ -81,14 +81,26 @@ std::wstring RoleControlName(RoleVerb verb, RoleControlState state) {
   // words are read out. Someone who cannot see the row was told the opposite of what was
   // happening. The Pending arm names the wait and says the note carries the answer.
   //
-  // THE Live ARMS name the VERB and nothing the role would then enforce. "Make this member an
-  // observer, who can read but not send" was the wording once, and it claimed a gate this build
-  // does not have: nothing in the sdk's send path or the app's composer reads the role (the
-  // ledger's item 242 orders "R4 OBSERVER read-only" after R3, and Spec C section 5.6's own
-  // observer sentence is "Observers are asked not to send ... this version of URmessage cannot
-  // stop it at the server"). A screen-reader user hearing "cannot send" would have been told the
-  // group enforces something it does not. The clause returns with R4, when the composer and the
-  // sdk gate on the role; --diagnose's `roster names` forbids the enforcement words until then.
+  // THE Live ARMS name the VERB, and exactly ONE of them also names what the role then enforces.
+  //
+  // "Make this member an observer, who can read but not send" was the wording before R3 shipped,
+  // and it claimed a gate the build did not have: nothing in the sdk's send path or the app's
+  // composer read the role, so a screen-reader user hearing "cannot send" was told the group
+  // enforced something it did not. R3 took the clause out and --diagnose forbade the words.
+  //
+  // ITEM 242 R4 BUILT THE GATE, so the clause comes back on that one control - and only on that
+  // one control's LIVE arm. The sdk refuses all four sendable kinds for a group it holds OBSERVER
+  // in (ErrObserverMayNotSend), and this app's composer is disabled with Spec C section 5.6's own
+  // sentence, so the wording below is now true of what pressing the button does. `roster names` in
+  // --diagnose was INVERTED rather than relaxed: the enforcement words are REQUIRED here and still
+  // forbidden in the other eleven cells of the 4x3 grid, because the pending and dark arms are
+  // about the CONTROL's state and a sentence about the group read out there would be R3's
+  // mistiming defect again.
+  //
+  // THE CAVEAT IS NOT HERE (ruling 22). "Someone who modifies their app can still send ... it can
+  // only hide the result" is about other people's clients and lives on the observer's own row in
+  // the rail (Views/InspectRailView.cpp), where the group is configured. An automation name is
+  // read out on every focus; a two-sentence policy in one would be read out with it.
   const wchar_t* live = L"Change this member's role";
   const wchar_t* waiting = L"Change this member's role: waiting for the group to answer the last "
                            L"change to this member";
@@ -105,7 +117,7 @@ std::wstring RoleControlName(RoleVerb verb, RoleControlState state) {
       dark = L"Make member: there is no live session to change roles in";
       break;
     case RoleVerb::MakeObserver:
-      live = L"Make this member an observer";
+      live = L"Make this member an observer, who can read this group but not send to it";
       waiting = L"Make observer: waiting for the group to answer the last change to this member";
       dark = L"Make observer: there is no live session to change roles in";
       break;

@@ -77,6 +77,12 @@ uint64_t Digest(urmsg::demo::World const& world) {
       Mix(h, row.body);
       Mix(h, row.systemText);
       Mix(h, row.timeLabel);
+      // The sending-epoch role (item 242 R4). It decides whether the row draws as a bubble or
+      // collapses, and it can change with no row id and no body moving — a record whose epoch this
+      // device only obtains on a later fetch opens then, carrying a role it did not carry before —
+      // so without this the world that carries the change reads as "unchanged" and the thread
+      // never redraws it.
+      Mix(h, row.senderRoleAtSend);
       h ^= static_cast<uint64_t>(row.kind) * 31 + static_cast<uint64_t>(row.outgoing) * 7 +
            static_cast<uint64_t>(row.state);
       h *= 1099511628211ull;
@@ -355,6 +361,11 @@ urmsg::demo::World BuildWorld(LiveGroup const& group) {
     row.state = urmsg::demo::DeliveryState::Sent;
     row.failureReason.clear();
     row.permanentRecord = false;
+    // REAL, and copied rather than derived (item 242 R4): the role the sender held AT THIS
+    // RECORD'S EPOCH, which the library captured at the open. A row carrying "observer" collapses
+    // to Spec C section 5.1's hidden line with its body one expansion away — the body below is
+    // written exactly as it would be for any other record, because the record is not dropped.
+    row.senderRoleAtSend = urnw::Widen(m.senderRoleAtSend);
 
     row.inspect.epoch = group.epoch;                             // real
     row.inspect.senderLeafIndex = urmsg::demo::kUnknownUint32;   // unavailable

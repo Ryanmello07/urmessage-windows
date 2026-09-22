@@ -74,6 +74,16 @@ struct LiveMessage {
   // under rather than what it is.
   std::string gap;
   std::string replyToId;  // the parent's message_id on a REPLY, "" everywhere else
+  // THE ROLE THIS RECORD'S SENDER HELD AT THE EPOCH IT WAS SEALED AT, off the ABI's
+  // `sender_role_at_send` (item 242 R4): "owner" | "admin" | "member" | "observer", and "" on a
+  // record that did not open — a gap carries no role, because a device that cannot obtain an epoch
+  // cannot say who held which role in it.
+  //
+  // IT IS A FACT ABOUT AN EPOCH AND NOT ABOUT NOW. urnet_message_group_members answers the roles
+  // the group has TODAY; joining a row to that roster on sender_handle would relabel history at
+  // every role change. The library captures this AT THE OPEN, off the sending epoch's own
+  // transcript-covered group-context extension, which is the only place the answer exists.
+  std::string senderRoleAtSend;
   bool deleted = false;
   int32_t bodyLen = 0;
   std::string body;  // octets, byte for byte off the ABI. Not validated as text by the protocol.
