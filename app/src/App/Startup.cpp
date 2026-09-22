@@ -828,13 +828,30 @@ std::vector<std::wstring> RosterDiagnostics() {
         labelsOk ? L"yes" : L"NO", table));
   }
 
-  // 3. the control names in both arms, on the capability, like the bubble actions.
+  // 3. the control names in both arms, on the capability, like the bubble actions - and in
+  //    NEITHER arm a claim of what the role enforces. The first cut of the observer control said
+  //    "who can read but not send", passed this check (it forbade session denials, not
+  //    enforcement claims) and shipped a gate the build does not have: no send path reads the
+  //    role until item 242's R4. Like RunMode's kSendDenials this is an admitted blacklist, kept
+  //    worth having by WHEN it runs (every launch, against the compiled string) and by printing
+  //    which words each arm carries rather than a bare verdict. Add to it with a new wording.
   {
     constexpr std::wstring_view kDenials[] = {L"no live session", L"not available", L"cannot"};
+    constexpr std::wstring_view kEnforcementClaims[] = {L"not send", L"read but", L"read-only",
+                                                        L"read only", L"can read"};
     auto denies = [&](std::wstring const& s) {
       for (auto const& d : kDenials)
         if (s.find(d) != std::wstring::npos) return true;
       return false;
+    };
+    auto claimsIn = [&](std::wstring const& s) {
+      std::wstring found;
+      for (auto const& c : kEnforcementClaims) {
+        if (s.find(c) == std::wstring::npos) continue;
+        if (!found.empty()) found += L", ";
+        found += c;
+      }
+      return found;
     };
     size_t ok = 0;
     std::wstring listing;
@@ -842,17 +859,24 @@ std::vector<std::wstring> RosterDiagnostics() {
                        RoleVerb::TransferOwnership}) {
       const std::wstring on = RoleControlName(v, true);
       const std::wstring off = RoleControlName(v, false);
+      const std::wstring onClaims = claimsIn(on);
+      const std::wstring offClaims = claimsIn(off);
       if (!on.empty() && !off.empty() && on != off && !denies(on) &&
-          off.find(L"no live session") != std::wstring::npos)
+          off.find(L"no live session") != std::wstring::npos && onClaims.empty() &&
+          offClaims.empty())
         ++ok;
       if (!listing.empty()) listing += L"; ";
-      listing += std::format(L"\"{}\" | \"{}\"", on, off);
+      listing += std::format(L"\"{}\" [claims: {}] | \"{}\" [claims: {}]", on,
+                             onClaims.empty() ? L"none" : onClaims, off,
+                             offClaims.empty() ? L"none" : offClaims);
     }
     out.push_back(std::format(
-        L"  roster names     : {}  {}/4 controls have a live arm that denies nothing and a dark "
-        L"arm that names the missing session -> {}   [query: both arms non-empty and different; "
-        L"live arm contains none of \"no live session\", \"not available\", \"cannot\"; dark arm "
-        L"contains \"no live session\"]",
+        L"  roster names     : {}  {}/4 controls have a live arm that denies nothing, a dark "
+        L"arm that names the missing session, and no enforcement claim in either -> {}   "
+        L"[query: both arms non-empty and different; live arm contains none of \"no live "
+        L"session\", \"not available\", \"cannot\"; dark arm contains \"no live session\"; "
+        L"neither arm contains \"not send\", \"read but\", \"read-only\", \"read only\", "
+        L"\"can read\" - no send path reads the role before R4]",
         Verdict(ok == 4), ok, listing));
   }
 

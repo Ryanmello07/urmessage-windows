@@ -78,7 +78,10 @@ std::wstring RoleControlLabel(RoleVerb verb);
 // exactly as the bubble actions and the [ Try again ] pair are: a --live launch
 // whose mesh has not answered yet draws the fabricated world with no session,
 // and "no live session" is the true sentence there. Never empty; the two arms
-// differ; the dark arm carries "no live session".
+// differ; the dark arm carries "no live session". Neither arm claims what a
+// role ENFORCES: until item 242's R4 lands, no send path reads the role, so
+// "who can read but not send" on the observer control would name a gate this
+// build does not have (the .cpp says where that is written down).
 std::wstring RoleControlName(RoleVerb verb, bool canAct);
 
 // The transfer confirmation's copy. Ownership is the one change here with no

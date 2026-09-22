@@ -72,6 +72,15 @@ std::wstring RoleControlName(RoleVerb verb, bool canAct) {
   // The dark arms follow the [ Try again ] pair's wording ("there is no live session to ...") so
   // a screen reader hears the same fact from every dark control on the surface. They name the
   // SESSION and never the build: this build can change roles, and does, one session away.
+  //
+  // The live arms name the VERB and nothing the role would then enforce. "Make this member an
+  // observer, who can read but not send" was the wording once, and it claimed a gate this build
+  // does not have: nothing in the sdk's send path or the app's composer reads the role (the
+  // ledger's item 242 orders "R4 OBSERVER read-only" after R3, and Spec C section 5.6's own
+  // observer sentence is "Observers are asked not to send ... this version of URmessage cannot
+  // stop it at the server"). A screen-reader user hearing "cannot send" would have been told the
+  // group enforces something it does not. The clause returns with R4, when the composer and the
+  // sdk gate on the role; --diagnose's `roster names` forbids the enforcement words until then.
   switch (verb) {
     case RoleVerb::MakeAdmin:
       return canAct ? L"Make this member an admin"
@@ -80,7 +89,7 @@ std::wstring RoleControlName(RoleVerb verb, bool canAct) {
       return canAct ? L"Make this member a member"
                     : L"Make member: there is no live session to change roles in";
     case RoleVerb::MakeObserver:
-      return canAct ? L"Make this member an observer, who can read but not send"
+      return canAct ? L"Make this member an observer"
                     : L"Make observer: there is no live session to change roles in";
     case RoleVerb::TransferOwnership:
       return canAct ? L"Transfer ownership of this group to this member; you become an admin"
