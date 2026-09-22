@@ -68,12 +68,20 @@ std::wstring RoleControlLabel(RoleVerb verb) {
   return {};
 }
 
-std::wstring RoleControlName(RoleVerb verb, bool canAct) {
-  // The dark arms follow the [ Try again ] pair's wording ("there is no live session to ...") so
-  // a screen reader hears the same fact from every dark control on the surface. They name the
+std::wstring RoleControlName(RoleVerb verb, RoleControlState state) {
+  // THE NoSession ARMS follow the [ Try again ] pair's wording ("there is no live session to ...")
+  // so a screen reader hears the same fact from every dark control on the surface. They name the
   // SESSION and never the build: this build can change roles, and does, one session away.
   //
-  // The live arms name the VERB and nothing the role would then enforce. "Make this member an
+  // THE Pending ARMS exist because the same button goes dark for a second reason, and the two
+  // were one string until 2026-09-22. While this member's previous change is inside the library
+  // the control is dark so a second press cannot ask for the same change twice -- and the old
+  // wording then announced "there is no live session to change roles in" AT THE ONE MOMENT the
+  // session is provably live, because the app is inside urnet_message_group_set_role while the
+  // words are read out. Someone who cannot see the row was told the opposite of what was
+  // happening. The Pending arm names the wait and says the note carries the answer.
+  //
+  // THE Live ARMS name the VERB and nothing the role would then enforce. "Make this member an
   // observer, who can read but not send" was the wording once, and it claimed a gate this build
   // does not have: nothing in the sdk's send path or the app's composer reads the role (the
   // ledger's item 242 orders "R4 OBSERVER read-only" after R3, and Spec C section 5.6's own
@@ -81,22 +89,39 @@ std::wstring RoleControlName(RoleVerb verb, bool canAct) {
   // stop it at the server"). A screen-reader user hearing "cannot send" would have been told the
   // group enforces something it does not. The clause returns with R4, when the composer and the
   // sdk gate on the role; --diagnose's `roster names` forbids the enforcement words until then.
+  const wchar_t* live = L"Change this member's role";
+  const wchar_t* waiting = L"Change this member's role: waiting for the group to answer the last "
+                           L"change to this member";
+  const wchar_t* dark = L"There is no live session to change roles in";
   switch (verb) {
     case RoleVerb::MakeAdmin:
-      return canAct ? L"Make this member an admin"
-                    : L"Make admin: there is no live session to change roles in";
+      live = L"Make this member an admin";
+      waiting = L"Make admin: waiting for the group to answer the last change to this member";
+      dark = L"Make admin: there is no live session to change roles in";
+      break;
     case RoleVerb::MakeMember:
-      return canAct ? L"Make this member a member"
-                    : L"Make member: there is no live session to change roles in";
+      live = L"Make this member a member";
+      waiting = L"Make member: waiting for the group to answer the last change to this member";
+      dark = L"Make member: there is no live session to change roles in";
+      break;
     case RoleVerb::MakeObserver:
-      return canAct ? L"Make this member an observer"
-                    : L"Make observer: there is no live session to change roles in";
+      live = L"Make this member an observer";
+      waiting = L"Make observer: waiting for the group to answer the last change to this member";
+      dark = L"Make observer: there is no live session to change roles in";
+      break;
     case RoleVerb::TransferOwnership:
-      return canAct ? L"Transfer ownership of this group to this member; you become an admin"
-                    : L"Transfer ownership: there is no live session to change roles in";
+      live = L"Transfer ownership of this group to this member; you become an admin";
+      waiting =
+          L"Transfer ownership: waiting for the group to answer the last change to this member";
+      dark = L"Transfer ownership: there is no live session to change roles in";
+      break;
   }
-  return canAct ? L"Change this member's role"
-                : L"There is no live session to change roles in";
+  switch (state) {
+    case RoleControlState::Live: return live;
+    case RoleControlState::Pending: return waiting;
+    case RoleControlState::NoSession: return dark;
+  }
+  return dark;
 }
 
 std::wstring TransferConfirmTitle() { return L"Transfer ownership?"; }

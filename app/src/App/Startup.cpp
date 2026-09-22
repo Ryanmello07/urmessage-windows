@@ -828,11 +828,15 @@ std::vector<std::wstring> RosterDiagnostics() {
         labelsOk ? L"yes" : L"NO", table));
   }
 
-  // 3. the control names in both arms, on the capability, like the bubble actions - and in
-  //    NEITHER arm a claim of what the role enforces. The first cut of the observer control said
+  // 3. the control names in ALL THREE arms, on the capability, like the bubble actions - and in
+  //    NO arm a claim of what the role enforces. The first cut of the observer control said
   //    "who can read but not send", passed this check (it forbade session denials, not
   //    enforcement claims) and shipped a gate the build does not have: no send path reads the
-  //    role until item 242's R4. Like RunMode's kSendDenials this is an admitted blacklist, kept
+  //    role until item 242's R4. The second cut had two arms, so the PENDING control - dark
+  //    because the app is inside the library right then - announced "there is no live session",
+  //    denying a session at the one moment it is provably live. Both escapes were wordings this
+  //    check allowed, so it now names the state each arm belongs to and holds the Pending arm to
+  //    NOT denying the session. Like RunMode's kSendDenials this is an admitted blacklist, kept
   //    worth having by WHEN it runs (every launch, against the compiled string) and by printing
   //    which words each arm carries rather than a bare verdict. Add to it with a new wording.
   {
@@ -857,26 +861,33 @@ std::vector<std::wstring> RosterDiagnostics() {
     std::wstring listing;
     for (RoleVerb v : {RoleVerb::MakeAdmin, RoleVerb::MakeMember, RoleVerb::MakeObserver,
                        RoleVerb::TransferOwnership}) {
-      const std::wstring on = RoleControlName(v, true);
-      const std::wstring off = RoleControlName(v, false);
+      const std::wstring on = RoleControlName(v, RoleControlState::Live);
+      const std::wstring waiting = RoleControlName(v, RoleControlState::Pending);
+      const std::wstring off = RoleControlName(v, RoleControlState::NoSession);
       const std::wstring onClaims = claimsIn(on);
+      const std::wstring waitClaims = claimsIn(waiting);
       const std::wstring offClaims = claimsIn(off);
-      if (!on.empty() && !off.empty() && on != off && !denies(on) &&
+      if (!on.empty() && !waiting.empty() && !off.empty() && on != off && on != waiting &&
+          waiting != off && !denies(on) && !denies(waiting) &&
           off.find(L"no live session") != std::wstring::npos && onClaims.empty() &&
-          offClaims.empty())
+          waitClaims.empty() && offClaims.empty())
         ++ok;
       if (!listing.empty()) listing += L"; ";
-      listing += std::format(L"\"{}\" [claims: {}] | \"{}\" [claims: {}]", on,
-                             onClaims.empty() ? L"none" : onClaims, off,
+      listing += std::format(L"live \"{}\" [claims: {}] | pending \"{}\" [claims: {}] | dark "
+                             L"\"{}\" [claims: {}]",
+                             on, onClaims.empty() ? L"none" : onClaims, waiting,
+                             waitClaims.empty() ? L"none" : waitClaims, off,
                              offClaims.empty() ? L"none" : offClaims);
     }
     out.push_back(std::format(
-        L"  roster names     : {}  {}/4 controls have a live arm that denies nothing, a dark "
-        L"arm that names the missing session, and no enforcement claim in either -> {}   "
-        L"[query: both arms non-empty and different; live arm contains none of \"no live "
-        L"session\", \"not available\", \"cannot\"; dark arm contains \"no live session\"; "
-        L"neither arm contains \"not send\", \"read but\", \"read-only\", \"read only\", "
-        L"\"can read\" - no send path reads the role before R4]",
+        L"  roster names     : {}  {}/4 controls have a live arm that denies nothing, a pending "
+        L"arm that denies nothing either, a dark arm that names the missing session, and no "
+        L"enforcement claim in any -> {}   [query: three distinct non-empty arms; NEITHER the "
+        L"live nor the pending arm contains \"no live session\", \"not available\", \"cannot\" - "
+        L"the pending arm is read out while the app is inside the library, so a session denial "
+        L"there is false; dark arm contains \"no live session\"; no arm contains \"not send\", "
+        L"\"read but\", \"read-only\", \"read only\", \"can read\" - no send path reads the role "
+        L"before R4]",
         Verdict(ok == 4), ok, listing));
   }
 

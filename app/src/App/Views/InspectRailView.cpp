@@ -958,9 +958,14 @@ std::vector<Border> BuildRoleControlRows(demo::MemberRef const& member,
       b.HorizontalAlignment(HorizontalAlignment::Stretch);
       b.Content(winrt::box_value(H(RoleControlLabel(verb))));
       // Dark while this member's previous request is still inside the library: a second press
-      // during the round trip would be the same change asked for twice.
+      // during the round trip would be the same change asked for twice. The NAME tells the two
+      // darknesses apart -- a pending change is the one moment the session is provably live, so
+      // announcing "there is no live session" there would say the opposite of what is happening.
       b.IsEnabled(canAct && !pending);
-      automation::AutomationProperties::SetName(b, H(RoleControlName(verb, canAct && !pending)));
+      automation::AutomationProperties::SetName(
+          b, H(RoleControlName(verb, !canAct  ? RoleControlState::NoSession
+                                     : pending ? RoleControlState::Pending
+                                               : RoleControlState::Live)));
       if (canAct && !pending) {
         b.Click([verb, identity = member.identityPubHex](
                     winrt::Windows::Foundation::IInspectable const& sender, auto const&) {

@@ -73,16 +73,28 @@ std::vector<RoleVerb> RoleControlsFor(std::wstring_view myRole, std::wstring_vie
 // "Transfer ownership".
 std::wstring RoleControlLabel(RoleVerb verb);
 
-// The button's automation name in both arms, keyed off the CAPABILITY (the rail's
-// CanChangeRoles - a live session with an open group) and not the run mode,
-// exactly as the bubble actions and the [ Try again ] pair are: a --live launch
-// whose mesh has not answered yet draws the fabricated world with no session,
-// and "no live session" is the true sentence there. Never empty; the two arms
-// differ; the dark arm carries "no live session". Neither arm claims what a
-// role ENFORCES: until item 242's R4 lands, no send path reads the role, so
-// "who can read but not send" on the observer control would name a gate this
-// build does not have (the .cpp says where that is written down).
-std::wstring RoleControlName(RoleVerb verb, bool canAct);
+// Why a role control is dark, when it is. A button goes dark for two unrelated
+// reasons, and to someone who cannot see it they are not the same sentence:
+// there is no session to change roles in, or this member's previous change is
+// still inside the library. Saying the first while the second is true denies a
+// session AT THE ONE MOMENT IT IS PROVABLY LIVE - the app is inside
+// urnet_message_group_set_role while the words are being read out.
+enum class RoleControlState {
+  Live,       // the control acts
+  Pending,    // this member's previous change has not come back yet
+  NoSession,  // no live session with an open group
+};
+
+// The button's automation name in each state, keyed off the CAPABILITY (the
+// rail's CanChangeRoles - a live session with an open group) and not the run
+// mode, exactly as the bubble actions and the [ Try again ] pair are: a --live
+// launch whose mesh has not answered yet draws the fabricated world with no
+// session, and "no live session" is the true sentence there. Never empty; the
+// three arms differ; NoSession carries "no live session" and Pending does not.
+// No arm claims what a role ENFORCES: until item 242's R4 lands, no send path
+// reads the role, so "who can read but not send" on the observer control would
+// name a gate this build does not have (the .cpp says where that is written).
+std::wstring RoleControlName(RoleVerb verb, RoleControlState state);
 
 // The transfer confirmation's copy. Ownership is the one change here with no
 // undo by construction (MASTER section 11: the outgoing owner becomes an admin

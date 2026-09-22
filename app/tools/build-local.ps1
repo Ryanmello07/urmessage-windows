@@ -78,7 +78,15 @@ Write-Host "building : $Platform $Configuration" -ForegroundColor Cyan
 
 # --- build --------------------------------------------------------------------
 $log = "$app\msbuild-local-$Platform.log"
-$targets = if ($Clean) { "/t:Rebuild" } else { @() }
+# An ARRAY, assigned DIRECTLY. `@targets` splats, and splatting a bare STRING spreads it one
+# CHARACTER per argument -- msbuild received `/ t : R e b u i l d` and died on the first of them,
+# so -Clean had never once run. Found 2026-09-22 by a verifier asking for a clean rebuild.
+#
+# `$targets = if ($Clean) { @("/t:Rebuild") }` does NOT fix it: an if-block's output is a
+# PIPELINE, and a pipeline enumerates a one-element array back into the scalar it held. The
+# assignment has to be its own statement, where an array literal stays an array.
+$targets = @()
+if ($Clean) { $targets = @("/t:Rebuild") }
 $sw = [Diagnostics.Stopwatch]::StartNew()
 
 msbuild "$app\URmessage.sln" `
