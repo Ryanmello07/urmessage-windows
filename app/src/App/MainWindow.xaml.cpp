@@ -584,8 +584,14 @@ void MainWindow::ArmComposer() {
 bool MainWindow::OpenConversationMaySend() const {
   const int index = OpenConversationIndex();
   if (index < 0) return true;  // no conversation open: nothing has read a role. See above.
-  return ActiveWorld().conversations[static_cast<size_t>(index)].myRole !=
-         urmsg::demo::kRoleObserver;
+  // THE ROLE HALF IS demo::RoleMaySend AND NOT A COMPARISON WRITTEN OUT HERE. --diagnose's
+  // `run mode send` clause drives THAT predicate to decide which composer note an observer is
+  // shown; a second spelling of the rule at this site would leave the gate checking the other
+  // one, and inverting this line would then print PASS under the word "observer" while the
+  // screen showed an observer the sending note. The no-conversation-open default above is this
+  // function's own and is the one half of the pair no gate can reach without a window.
+  return urmsg::demo::RoleMaySend(
+      ActiveWorld().conversations[static_cast<size_t>(index)].myRole);
 }
 
 int MainWindow::OpenConversationIndex() const {

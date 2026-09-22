@@ -554,9 +554,12 @@ wchar_t const* HiddenObserverToggleName(bool expanded);
 //                    worker's own answer, re-read off urnet_message_group_is_open
 //                    every poll. UNCHANGED by R4.
 //   mayRoleSend    — does this device's ROLE in THIS conversation permit it?
-//                    Conversation::myRole != "observer", which the app already
-//                    carries in both worlds (urnet_message_group_my_role since
-//                    item 242 R3 — R4 needs NO new ABI).
+//                    demo::RoleMaySend(Conversation::myRole), which the app
+//                    already carries in both worlds (urnet_message_group_my_role
+//                    since item 242 R3 — R4 needs NO new ABI). The rule is spelled
+//                    in that ONE function and nowhere else, because --diagnose's
+//                    `run mode send` clause drives it to decide which composer
+//                    note an observer is shown.
 //
 // THE ORDER IS SESSION FIRST AND THAT IS LOAD BEARING. A --live launch whose
 // mesh has not answered draws the FABRICATED world, whose conversations carry

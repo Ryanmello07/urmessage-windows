@@ -13,6 +13,12 @@
 #include <iterator>
 #include <string_view>
 
+// The role spellings and demo::RoleMaySend, for the send clause below: it DRIVES the role ->
+// mayRoleSend mapping the composer's note is chosen by rather than handing itself the answer.
+// DemoWorld.h is pure C++ and compiled NotUsing the pch for the same reason this file is, so the
+// "no winrt before init_apartment" property survives the include.
+#include "Demo/DemoWorld.h"
+
 namespace urmsg {
 namespace {
 
@@ -407,30 +413,84 @@ std::vector<std::wstring> RunModeCopyDiagnostics() {
   //                              session is PROVABLY LIVE, since the role could only have been read
   //                              off an open group, so "there is no live session" is the one false
   //                              sentence this arm could carry.
-  const std::wstring deniedByFabricated = DenialsIn(ComposerNote(RunMode::Fabricated, true));
-  const std::wstring deniedByFabObserver = DenialsIn(ComposerNote(RunMode::Fabricated, false));
-  const std::wstring deniedByLive = DenialsIn(ComposerNote(RunMode::Live, true));
-  const std::wstring deniedByLiveObserver = DenialsIn(ComposerNote(RunMode::Live, false));
-  const bool observerDeniesSession =
-      ContainsWord(ComposerNote(RunMode::Live, false), L"no live session");
-  const bool sendOk = !deniedByFabricated.empty() && !deniedByFabObserver.empty() &&
-                      deniedByLive.empty() && !deniedByLiveObserver.empty() &&
-                      !observerDeniesSession;
+  //
+  // AND SINCE 2026-09-22 THE ROLE IS DRIVEN RATHER THAN LABELLED. Until this rewrite the clause
+  // handed ComposerNote a literal `false` and printed the answer under the words
+  // "live+observer" - a sentence about the (live, observer) mapping over a bool the gate had
+  // chosen itself. The one production site that turns a ROLE into that bool is
+  // MainWindow::OpenConversationMaySend; inverting it would have left every field on this line
+  // unchanged while the app showed an observer the SENDING note, so the line printed a claim it
+  // did not hold, which this project ranks below printing no claim at all. The bool now comes
+  // from demo::RoleMaySend - the predicate that production site answers with - and the four role
+  // spellings are walked with an unsourced one beside them, so "observer" here is the ROLE and
+  // the complement (the roles that MAY send, and the placeholder that counts as one) is printed
+  // next to it rather than assumed.
+  //
+  // THE EXPECTATION IS KEYED ON THE ROLE'S NAME AND NEVER ON THE PREDICATE'S OWN ANSWER. Keyed on
+  // the answer, this loop would pass for ANY RoleMaySend, including one that let an observer
+  // send: it would be asking the mapping to mark its own paper. Spec C section 5.6 names the
+  // observer as the role that may not send, and that sentence is what `mustDeny` transcribes.
+  //
+  // WHAT IS STILL NOT DRIVEN, so the line claims no more than it holds: the
+  // no-conversation-open default (OpenConversationMaySend answers "may send", because nothing has
+  // read a role there) needs a window and no pure gate can reach it. This clause is the ROLE half
+  // of that function.
+  //
+  // THE FABRICATED ARM IS HELD EQUAL ACROSS THE ROLES, which is ComposerNote's own decision made
+  // into a property: what stops a send in the demo is that nothing is wired to a mesh, not the
+  // role, so a fabricated arm that branched on the role would name the wrong cause.
+  struct SendRoleCase {
+    wchar_t const* role;
+    wchar_t const* label;
+  };
+  const SendRoleCase sendRoles[] = {{demo::kRoleOwner, L"owner"},
+                                    {demo::kRoleAdmin, L"admin"},
+                                    {demo::kRoleMember, L"member"},
+                                    {demo::kRoleObserver, L"observer"},
+                                    {demo::kUnavailable, L"unsourced"}};
+  size_t sendRolesOk = 0;
+  std::wstring sendTable;
+  std::wstring fabArm;
+  bool fabSameForEveryRole = true;
+  bool observerDeniesSession = false;
+  for (auto const& r : sendRoles) {
+    // THE MAPPING, RUN: role -> mayRoleSend, by the production predicate and not by this file.
+    const bool maySend = demo::RoleMaySend(r.role);
+    const std::wstring fab = ComposerNote(RunMode::Fabricated, maySend);
+    const std::wstring live = ComposerNote(RunMode::Live, maySend);
+    const std::wstring fabDenials = DenialsIn(fab);
+    const std::wstring liveDenials = DenialsIn(live);
+    const bool mustDeny = (r.role == std::wstring_view(demo::kRoleObserver));
+    const bool deniesSession = ContainsWord(live, L"no live session");
+    if (mustDeny) observerDeniesSession = deniesSession;
+    if (!fabDenials.empty() && mustDeny == !liveDenials.empty() && !deniesSession) ++sendRolesOk;
+    if (fabArm.empty())
+      fabArm = fab;
+    else if (fab != fabArm)
+      fabSameForEveryRole = false;
+    if (!sendTable.empty()) sendTable += L"; ";
+    sendTable += std::format(L"{} {} [fab: {} | live: {}]", r.label,
+                             maySend ? L"may send" : L"MAY NOT send",
+                             fabDenials.empty() ? std::wstring(L"(none)") : fabDenials,
+                             liveDenials.empty() ? std::wstring(L"(none)") : liveDenials);
+  }
+  const bool sendOk = sendRolesOk == std::size(sendRoles) && fabSameForEveryRole;
   lines.push_back(std::format(
-      L"  run mode send    : {}  per STATE, not per mode -> fabricated denies [{}] | "
-      L"fabricated+observer denies [{}] | live denies [{}] | live+observer denies [{}], and "
-      L"live+observer denies the SESSION: {}   [query: case-insensitive substring over \"not "
-      L"wired\", \"nothing is sent\", \"no message leaves\", \"cannot send\", \"not available\", "
-      L"\"does not send\", \"not send to it\". Both fabricated arms must be non-empty; live+may "
-      L"send must be empty (this build CAN send: the Send button calls urnet_message_group_send); "
-      L"live+observer must be non-empty AND must not contain \"no live session\", because an "
-      L"observer's session is provably live]",
-      sendOk ? L"PASS" : L"FAIL",
-      deniedByFabricated.empty() ? std::wstring(L"(none)") : deniedByFabricated,
-      deniedByFabObserver.empty() ? std::wstring(L"(none)") : deniedByFabObserver,
-      deniedByLive.empty() ? std::wstring(L"(none)") : deniedByLive,
-      deniedByLiveObserver.empty() ? std::wstring(L"(none)") : deniedByLiveObserver,
-      observerDeniesSession ? L"YES (wrong)" : L"no"));
+      L"  run mode send    : {}  {}/{} roles, per (mode, ROLE) through demo::RoleMaySend -> {}; "
+      L"the fabricated arm is one string for every role: {}; live+observer denies the SESSION: "
+      L"{}   [query: case-insensitive substring over \"not wired\", \"nothing is sent\", \"no "
+      L"message leaves\", \"cannot send\", \"not available\", \"does not send\", \"not send to "
+      L"it\". For each of the four role spellings and an unsourced one, mayRoleSend is DERIVED by "
+      L"demo::RoleMaySend - the predicate MainWindow::OpenConversationMaySend answers with - and "
+      L"the note is asked for that answer: the fabricated arm must deny whatever the role (the "
+      L"demo sends nothing and never could) and must be the SAME string for every role (what "
+      L"stops a send there is not the role); the live arm must deny for the OBSERVER and for no "
+      L"other role, the expectation being keyed on the role's NAME per Spec C section 5.6 and "
+      L"never on the predicate's own answer; and no live arm may contain \"no live session\", "
+      L"because an observer's session is provably live. NOT driven here: "
+      L"OpenConversationMaySend's no-conversation-open default, which needs a window]",
+      sendOk ? L"PASS" : L"FAIL", sendRolesOk, std::size(sendRoles), sendTable,
+      fabSameForEveryRole ? L"yes" : L"NO", observerDeniesSession ? L"YES (wrong)" : L"no"));
 
   // The disclosure's absence list is the SECOND string this commit made false, and it is checked as
   // a list rather than as a paragraph. THE LIST IS PRINTED IN FULL, which is the whole point: a

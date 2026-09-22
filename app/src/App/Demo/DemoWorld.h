@@ -16,6 +16,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace urmsg::demo {
@@ -48,6 +49,22 @@ inline constexpr wchar_t kRoleOwner[] = L"owner";
 inline constexpr wchar_t kRoleAdmin[] = L"admin";
 inline constexpr wchar_t kRoleMember[] = L"member";
 inline constexpr wchar_t kRoleObserver[] = L"observer";
+
+// WHETHER A ROLE MAY WRITE INTO ITS GROUP (item 242 R4), in ONE place, because two callers ask it
+// and a gate now DRIVES it. An OBSERVER may not; every other spelling may - including a spelling
+// this build has no source for, which is ruling 8 ("an unnamed member is a MEMBER") and the only
+// safe direction here: the other way round would put Spec C section 5.6's observer sentence over
+// a thread whose role nothing has read, which is the false denial this app keeps paying for. The
+// sdk refuses an observer's send either way (ErrObserverMayNotSend); this decides what the SCREEN
+// says about it.
+//
+// IT IS A FUNCTION AND NOT A COMPARISON REPEATED AT EACH SITE, and that is the whole of its
+// reason. MainWindow::OpenConversationMaySend turns the open conversation's myRole into the
+// composer's `mayRoleSend` bool through this, and RunModeCopyDiagnostics' send clause turns a
+// ROLE into the same bool through this - so the --diagnose line that prints "live+observer" is a
+// sentence about the mapping rather than a label over a bool the gate handed itself. Two
+// spellings of one rule would leave the gate holding the one the app does not use.
+inline bool RoleMaySend(std::wstring_view role) { return role != kRoleObserver; }
 
 // WHAT THIS DEVICE IS DOING, OR LAST DID, TO A MEMBER'S ROLE. None is the ordinary state. Pending
 // means the call into the library has not returned. The other four are the four ways the ABI's

@@ -506,7 +506,24 @@
            references symbols App.g.h never declares. App.xaml.cpp defines the
            global ::winrt_make_URmessage_App() instead, which is the only symbol
            module.g.cpp actually needs from it. -->
-  <Target Name="UrmCompileGeneratedXamlImpl" BeforeTargets="ClCompile" DependsOnTargets="MarkupCompilePass1;MarkupCompilePass2">
+  <!-- BEFORE THE APP SDK'S OWN CONSTANTS TARGET, not merely before ClCompile,
+       and that ordering IS the fix for five warning C4651s
+       ('/DMICROSOFT_WINDOWSAPPSDK_SELFCONTAINED=1' specified for precompiled
+       header but not for current compile) that a -Clean build printed on
+       XamlTypeInfo.g.cpp, XamlTypeInfo.Impl.g.cpp, XamlLibMetadataProvider.g.cpp,
+       XamlMetaDataProvider.cpp and module.g.cpp.
+       WindowsAppSDKSelfContained=true makes the App SDK add that define in
+       WindowsAppSDKSelfContainedCompileTimeConstants, which UPDATES the metadata
+       of the @(ClCompile) items that exist WHEN IT RUNS. Both it and this target
+       are BeforeTargets="ClCompile", this one was imported later, and so the five
+       units added here were added after the define had been handed out: they
+       compiled against a pch built WITH it and without it themselves. Naming the
+       SDK's target here reuses its logic (and its condition) instead of copying
+       the literal define into this file, which would then be a second place to
+       remember. If a future App SDK renames that target, MSBuild ignores the
+       unknown name, the items go back to being added late, and the five
+       warnings return - which is the detector for it. -->
+  <Target Name="UrmCompileGeneratedXamlImpl" BeforeTargets="WindowsAppSDKSelfContainedCompileTimeConstants;ClCompile" DependsOnTargets="MarkupCompilePass1;MarkupCompilePass2">
     <ItemGroup>
       <_UrmGenXamlCpp Include="$(IntDir)*.g.cpp" />
       <_UrmGenXamlCpp Include="$(MSBuildProjectDirectory)\XamlMetaDataProvider.cpp" Condition="Exists('$(MSBuildProjectDirectory)\XamlMetaDataProvider.cpp')" />

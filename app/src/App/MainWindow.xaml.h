@@ -147,8 +147,10 @@ struct MainWindow : MainWindowT<MainWindow> {
   // two ways; called on a live publish, on a conversation switch, and nowhere else. Idempotent, and
   // a no-op before the thread exists.
   void ArmComposer();
-  // Does the open conversation's myRole permit writing to it? TRUE when nothing is open, which is
-  // the library's own reading of an identity the group's policy does not name (item 242 ruling 20).
+  // Does the open conversation's myRole permit writing to it? The role half is demo::RoleMaySend,
+  // the one place that rule is spelled and the one --diagnose's `run mode send` clause drives.
+  // TRUE when nothing is open, which is the library's own reading of an identity the group's
+  // policy does not name (item 242 ruling 20) and the half of this function no pure gate reaches.
   bool OpenConversationMaySend() const;
   // The other bubble verb: put `emoji` on the row, or take it off. Same shape and the same
   // no-blocking rule; the outcome is a redrawn thread. In a live world the row id IS the record's

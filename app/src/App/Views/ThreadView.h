@@ -71,12 +71,13 @@ void SetThreadSelectedMessage(ThreadView& v, std::wstring const& id);
 // is: the composer bar is built ONCE and is not among the surfaces that beat rebuilds.
 //
 // `mayRoleSend` IS THE SECOND, SEPARATE FACT (item 242 R4): does this device's ROLE in the open
-// conversation permit writing to it? False only for an OBSERVER — Conversation::myRole, which both
-// worlds already carry, so R4 needed no new ABI. The two are kept apart because a composer that
-// could only say "dark" would leave a reader unable to tell a missing session from a role that
-// cannot write, and because the session answer is what the retry buttons and the bubble actions
-// keep asking. The composer's three states are picked from the pair by ComposerStateFor
-// (Views/ThreadLayout.h), session first.
+// conversation permit writing to it? demo::RoleMaySend over Conversation::myRole, which both
+// worlds already carry, so R4 needed no new ABI; false only for an OBSERVER, and that rule is
+// spelled in that one function so --diagnose can drive it. The two are kept apart because a
+// composer that could only say "dark" would leave a reader unable to tell a missing session from
+// a role that cannot write, and because the session answer is what the retry buttons and the
+// bubble actions keep asking. The composer's three states are picked from the pair by
+// ComposerStateFor (Views/ThreadLayout.h), session first.
 void SetThreadSendEnabled(ThreadView& v, bool enabled, bool mayRoleSend);
 // Re-point the composer caption at the wording for `mode`. The composer bar is
 // built ONCE by MakeThread and is never rebuilt, so unlike every other surface

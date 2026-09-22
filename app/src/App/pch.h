@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+// GUARDED, for the reason Common/Strings.cpp gives: Directory.Build.props already defines this
+// on the command line, so an unguarded #define is warning C4005 'macro redefinition' - and from
+// a header the pch builds from, every TU in the project reports it.
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 #include <unknwn.h>
 #include <restrictederrorinfo.h>

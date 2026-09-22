@@ -104,6 +104,12 @@ std::wstring LockHeaderNote(RunMode mode);
 // must deny it WITHOUT denying the session. The old single-boolean form broke by construction the
 // day a live composer could honestly deny sending; the phrases the clause looks for are printed
 // beside the verdict, per state.
+//
+// AND IT DRIVES THE ROLE. `maySend` is not passed as a literal by the gate: it is DERIVED for each
+// of the four role spellings (and one this build has no source for) by demo::RoleMaySend, the
+// predicate MainWindow::OpenConversationMaySend answers with — so the word "observer" on that line
+// is a statement about the mapping and not a label over a bool the gate handed itself, and the
+// expectation is keyed on the role's NAME so the mapping cannot mark its own paper.
 std::wstring ComposerNote(RunMode mode, bool maySend);
 
 // The Network page's relay-path caption (chrome voice, letterspaced uppercase) and the status
@@ -148,11 +154,13 @@ std::wstring DisclosureBody(RunMode mode);
 //
 // THREE CLAUSES BEYOND THE PAIRS, each one a property the pair test cannot see:
 //   * the DUMP line, whose two arms deliberately share a prefix;
-//   * the SEND clause, asserted PER STATE since item 242 R4 - both fabricated arms must deny the
-//     send path; live+may-send must not, because this build can send; live+observer must deny it
-//     AND must not deny the SESSION, an observer's session being provably live. The old
-//     single-boolean form ("the live arm must deny none of it") broke by construction the day a
-//     live composer could honestly deny sending, which is the day R4 landed;
+//   * the SEND clause, asserted PER (MODE, ROLE) since item 242 R4 - the fabricated arm must deny
+//     the send path whatever the role and must be ONE string across the roles; the live arm must
+//     deny for the OBSERVER and for no other role; and no live arm may deny the SESSION, an
+//     observer's session being provably live. The old single-boolean form ("the live arm must deny
+//     none of it") broke by construction the day a live composer could honestly deny sending, which
+//     is the day R4 landed; and the role is DERIVED by demo::RoleMaySend rather than passed in as
+//     an answer, so the line's word "observer" is the mapping and not a label over it;
 //   * the ABSENCE clause - the live disclosure's "What is NOT here:" list, printed in full, must
 //     not name the send path among the things the app cannot do, nor the member list or the
 //     roles, which the app reads off the group since item 242 R3.

@@ -91,9 +91,19 @@ enum class RoleControlState {
 // launch whose mesh has not answered yet draws the fabricated world with no
 // session, and "no live session" is the true sentence there. Never empty; the
 // three arms differ; NoSession carries "no live session" and Pending does not.
-// No arm claims what a role ENFORCES: until item 242's R4 lands, no send path
-// reads the role, so "who can read but not send" on the observer control would
-// name a gate this build does not have (the .cpp says where that is written).
+//
+// EXACTLY ONE ARM OF THE TWELVE CLAIMS WHAT A ROLE ENFORCES, and item 242's R4
+// is why it is one rather than none. The clause was taken out before R3 shipped
+// because no send path then read the role, so "who can read but not send" named
+// a gate the build did not have. R4 built it - the sdk refuses all four sendable
+// kinds for a group it holds OBSERVER in, and this app's composer is disabled
+// with Spec C section 5.6's own sentence - so the words are back on the
+// Make-observer control's LIVE arm, and on no other cell: the pending and dark
+// arms are about the CONTROL's state, and a sentence about the group read out
+// there is R3's mistiming defect in the other mode's clothes. --diagnose's
+// `roster names` line was INVERTED to match (required in that one cell,
+// forbidden in the other eleven); the .cpp says the same thing where the strings
+// are, which is where a copy edit will be standing.
 std::wstring RoleControlName(RoleVerb verb, RoleControlState state);
 
 // The transfer confirmation's copy. Ownership is the one change here with no
