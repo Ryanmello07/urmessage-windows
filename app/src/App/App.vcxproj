@@ -301,6 +301,12 @@
          block AFTER winrt::init_apartment (main.cpp:191 vs :202), so the
          before-init purity rule that NotUsing serves never reaches this TU. -->
     <ClCompile Include="Views\NetworkPageView.cpp" />
+    <!-- NotUsing for the same reason as Views\StatusStripRules.cpp below:
+         Startup.cpp's `roster` lines assert the role words, the control sets
+         and the outcome notes from CollectDiagnostics(), before
+         winrt::init_apartment. The roster's XAML half - the rows, the buttons,
+         the confirmation - is InspectRailView.cpp, which uses the pch. -->
+    <ClCompile Include="Views\RosterRules.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <!-- Uses the pch (it builds XAML): the whole file is element-tree work,
          exactly the reason NetworkPageView.cpp above states. -->
     <ClCompile Include="Views\SettingsView.cpp" />
@@ -352,6 +358,7 @@
     <ClInclude Include="Views\InspectRailFields.h" />
     <ClInclude Include="Views\InspectRailView.h" />
     <ClInclude Include="Views\NetworkPageView.h" />
+    <ClInclude Include="Views\RosterRules.h" />
     <ClInclude Include="Views\SettingsView.h" />
     <ClInclude Include="Views\StatusStripRules.h" />
     <ClInclude Include="Views\StatusStripView.h" />

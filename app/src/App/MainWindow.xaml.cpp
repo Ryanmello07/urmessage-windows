@@ -389,6 +389,9 @@ void MainWindow::ApplyLiveWorld() {
   // screen, and the mode stays Live for the life of the process by design. The button asks the
   // worker, every beat, whether the group is open RIGHT NOW.
   if (thread_.root) urmsg::views::SetThreadSendEnabled(thread_, urmsg::live::CanSend());
+  // AND THE ROSTER'S CONTROLS, by the same predicate and on the same beat (item 242 R3): a role
+  // change is a commit into the same open group a send goes into.
+  urmsg::views::SetInspectRailRosterEnabled(urmsg::live::CanSend());
 
   // The three content views exist only under --demo (BuildDemoViews is demo-gated, and its own
   // comment says why). A live world with nothing built to draw it is not an error: the worker
@@ -441,6 +444,10 @@ void MainWindow::ApplyLiveWorld() {
     SelectConversation(0);
   } else {
     RefreshOpenThread();
+    // AND THE RAIL, in place (item 242 R3): the roster's roles move on another member's commit,
+    // and the note under a member this device is changing lands on a publish - neither is a
+    // message row, so RefreshOpenThread alone would leave the rail drawing the previous beat.
+    urmsg::views::RefreshInspectRail(rail_, ActiveWorld().conversations[static_cast<size_t>(open)]);
   }
   urnw::LogInfo("window: live world generation {} drawn: {} row(s) in conversation 0", generation,
                 liveWorld_->conversations.empty() ? size_t{0}
@@ -484,6 +491,35 @@ bool MainWindow::SendFromComposer(std::wstring text, std::wstring replacesRowId,
         "window: the composer's send was REFUSED before it was queued ({} octets; live session can "
         "send: {}). The text is still in the box.",
         utf8.size(), urmsg::live::CanSend());
+  }
+  return queued;
+}
+
+bool MainWindow::RoleChangeFromRail(std::wstring identityPubHex, std::wstring role) {
+  // The identity key and the role cross as the ASCII they are: the ABI takes identity_pub_hex
+  // back exactly as its member info handed it over, and the role by its protocol spelling.
+  const bool queued =
+      urmsg::live::QueueRoleChange(urnw::Narrow(identityPubHex), urnw::Narrow(role));
+  if (queued) {
+    urnw::LogInfo("window: rail handed a role change ({} -> {}) to the live worker",
+                  urnw::Narrow(identityPubHex), urnw::Narrow(role));
+  } else {
+    urnw::LogWarn("window: the rail's role change was REFUSED before it was queued (live session "
+                  "can send: {})",
+                  urmsg::live::CanSend());
+  }
+  return queued;
+}
+
+bool MainWindow::TransferOwnershipFromRail(std::wstring identityPubHex) {
+  const bool queued = urmsg::live::QueueTransferOwnership(urnw::Narrow(identityPubHex));
+  if (queued) {
+    urnw::LogInfo("window: rail handed a transfer of ownership (to {}) to the live worker",
+                  urnw::Narrow(identityPubHex));
+  } else {
+    urnw::LogWarn("window: the rail's transfer of ownership was REFUSED before it was queued "
+                  "(live session can send: {})",
+                  urmsg::live::CanSend());
   }
   return queued;
 }
@@ -694,6 +730,24 @@ void MainWindow::BuildDemoViews() {
   // InitAdvancedMode has already folded it in. The LIVE toggle subscription
   // is the ONE OnAdvancedModeChanged registration in EnterDemoMode (W7).
   urmsg::views::SetInspectRailAdvanced(rail_, urmsg::AdvancedModeEnabled());
+
+  // The roster's verbs (item 242 R3), handed to the rail the way the composer's are handed to
+  // the thread: get_weak(), not `this`, because the rail keeps them for the window's life. The
+  // capability starts OFF and is armed by ApplyLiveWorld, so a fabricated launch's controls are
+  // dark with a name that says why.
+  urmsg::views::RosterVerb roster;
+  roster.setRole = [weak = get_weak()](std::wstring identityPubHex, std::wstring role) -> bool {
+    auto self = weak.get();
+    if (!self) return false;
+    return self->RoleChangeFromRail(std::move(identityPubHex), std::move(role));
+  };
+  roster.transferOwnership = [weak = get_weak()](std::wstring identityPubHex) -> bool {
+    auto self = weak.get();
+    if (!self) return false;
+    return self->TransferOwnershipFromRail(std::move(identityPubHex));
+  };
+  roster.enabled = false;
+  urmsg::views::SetInspectRailRosterVerb(std::move(roster));
 }
 
 void MainWindow::SelectConversation(int index) {

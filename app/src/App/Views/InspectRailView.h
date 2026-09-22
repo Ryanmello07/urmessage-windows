@@ -28,6 +28,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -103,5 +104,41 @@ void SetInspectRailAdvanced(InspectRailView& v, bool advanced);
 // member identicons were wanted.
 urnw::kit::PaneListRow MakeDeviceRow(demo::DeviceRef const& device, bool showOwner,
                                      demo::Seed const& identiconSeed);
+
+// ---- the roster's two verbs (item 242 R3) ---------------------------------
+//
+// The rail draws the member list with each member's role and, under an expanded
+// member, the controls MASTER section 11's table gives the viewer's own role
+// (Views/RosterRules.h decides which). A control calls ONE of these two hosts,
+// which MainWindow fills with the live worker's QueueRoleChange /
+// QueueTransferOwnership - the same shape as the thread's ThreadSendVerb, and
+// for the same reason: the rail must not know what a worker is, and the window
+// is the one place that knows both. Each answers true when the worker has TAKEN
+// the request, never when it landed; the outcome is a published world, drawn on
+// the member the request named.
+//
+// `enabled` is the CAPABILITY, re-pointed by MainWindow on every live beat from
+// urmsg::live::CanSend() (a live session with an open group) exactly as the
+// composer's Send is. Off, the controls stay visible and dark with a name that
+// says why (RoleControlName's dark arm) - never hidden, never live-looking.
+struct RosterVerb {
+  std::function<bool(std::wstring identityPubHex, std::wstring role)> setRole;
+  std::function<bool(std::wstring identityPubHex)> transferOwnership;
+  bool enabled = false;
+};
+void SetInspectRailRosterVerb(RosterVerb verb);
+void SetInspectRailRosterEnabled(bool enabled);
+// True when a control drawn right now would actually do something: both hosts
+// are set and the capability is on. The one predicate every roster control asks.
+bool CanChangeRoles();
+
+// A LIVE BEAT: the world was republished (a role moved, a change this device
+// asked for was answered, a line arrived) and the rail is re-populated IN PLACE
+// from the fresh conversation, in whichever mode is showing, with NO crossfade
+// and with the expanded members KEPT - the person who opened a member to press
+// a control is looking at exactly that member when the answer lands. Nothing
+// happens when `c` is not the rail's current subject. Called by
+// MainWindow::ApplyLiveWorld beside RefreshOpenThread.
+void RefreshInspectRail(InspectRailView& v, demo::Conversation const& c);
 
 }  // namespace urmsg::views

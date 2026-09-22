@@ -234,6 +234,15 @@ std::wstring WorldDumpFramingLine(RunMode mode) {
              : L"Demo model: fabricated data, no crypto in this build";
 }
 
+std::wstring RosterNote(RunMode mode) {
+  // The live arm says what is real and what is not IN ONE SENTENCE, because the roster is the
+  // one card where both are on screen together: real roles beside placeholder names.
+  return mode == RunMode::Live
+             ? L"Live session: the members and their roles are the group's own; names are "
+               L"unavailable, there being no identity layer yet"
+             : L"Demo model: fabricated members, names and roles";
+}
+
 std::wstring DisclosureCaption(RunMode mode) {
   return mode == RunMode::Live ? L"LIVE SESSION" : L"THIS DEMO";
 }
@@ -259,13 +268,19 @@ std::wstring DisclosureBody(RunMode mode) {
   // the app has one screen away from the button that has it. The absence-list clause in
   // RunModeCopyDiagnostics reads THE LIST ITSELF rather than the paragraph, so the next one fails a
   // launch rather than waiting for somebody to re-read a wall of text.
+  //
+  // "member lists" CAME OUT THE SAME WAY with item 242 R3: the rail now draws the group's roster
+  // and each member's role off the library, and the owner's and admins' controls change them. What
+  // stays absent is the NAME behind a member (contact discovery, an identity layer) - and the
+  // list says that instead, so the absence clause can hold the list to it.
   if (mode == RunMode::Live) {
     return L"Live session \u2014 the messages on these screens are real: this device fetched the "
            L"records from the message server and opened them under MLS, and a message you write "
-           L"here is sealed on this device and submitted to the group. What is NOT here: delivery "
-           L"and read receipts, contact discovery, member lists, group names, attachments, and any "
-           L"per-message attestation check. Every field this build has no source for reads "
-           L"\"unavailable\" rather than a guess.";
+           L"here is sealed on this device and submitted to the group. The members list and each "
+           L"member's role are the group's own, and an owner or admin changes them from here. What "
+           L"is NOT here: delivery and read receipts, contact discovery and the names behind "
+           L"members, group names, attachments, and any per-message attestation check. Every field "
+           L"this build has no source for reads \"unavailable\" rather than a guess.";
   }
   return L"Demo model \u2014 no protocol, no store, no network and no cryptography are running. "
          L"Every value on these screens is fabricated in one module. Nothing has been sent, "
@@ -294,6 +309,7 @@ std::vector<std::wstring> RunModeCopyDiagnostics() {
        DisclosureCaption(RunMode::Live)},
       {L"disclosure title", DisclosureTitle(RunMode::Fabricated), DisclosureTitle(RunMode::Live)},
       {L"disclosure body", DisclosureBody(RunMode::Fabricated), DisclosureBody(RunMode::Live)},
+      {L"roster note", RosterNote(RunMode::Fabricated), RosterNote(RunMode::Live)},
   };
 
   size_t ok = 0;
@@ -361,12 +377,18 @@ std::vector<std::wstring> RunModeCopyDiagnostics() {
   // a list rather than as a paragraph. THE LIST IS PRINTED IN FULL, which is the whole point: a
   // reader sees what the app claims it cannot do and can check it against the app, rather than
   // being told a count of things it agreed with itself about.
+  // AND, SINCE ITEM 242 R3, THE ROSTER: the list must not say the app lacks the member list or
+  // the roles it now reads off the group. "names behind members" is allowed - it is the thing
+  // that IS still absent - so the words gated are "member list" and "role", not "member".
   const std::wstring absences = AbsenceList(DisclosureBody(RunMode::Live));
-  const bool absenceOk = !absences.empty() && !ContainsWord(absences, L"send");
+  const bool absenceOk = !absences.empty() && !ContainsWord(absences, L"send") &&
+                         !ContainsWord(absences, L"member list") &&
+                         !ContainsWord(absences, L"role");
   lines.push_back(std::format(
-      L"  run mode absences: {}  the live disclosure's absence list must not name the send path "
-      L"-> \"{}\"   [query: the text between \"What is NOT here:\" and the next full stop, which "
-      L"must be non-empty and must not contain \"send\"]",
+      L"  run mode absences: {}  the live disclosure's absence list must name neither the send "
+      L"path nor the roster -> \"{}\"   [query: the text between \"What is NOT here:\" and the "
+      L"next full stop, which must be non-empty and must contain none of \"send\", \"member "
+      L"list\", \"role\"]",
       absenceOk ? L"PASS" : L"FAIL", AsciiOnly(absences)));
 
   // And the latch itself. A launch with no live world must report Fabricated: if this ever prints

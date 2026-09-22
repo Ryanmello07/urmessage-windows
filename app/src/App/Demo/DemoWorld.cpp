@@ -67,20 +67,27 @@ DeviceRef MakeDevice(std::wstring id, std::wstring name, std::wstring ownerName,
   return d;
 }
 
-struct PersonSpec { const wchar_t* id; const wchar_t* name; bool admin; };
+// `role` is one of DemoWorld.h's four spellings. A FABRICATED role, like every other value in this
+// file: the fixture's viewer ("Rowan Ashby", the myDevices owner) is not among the members it
+// lists, so `mine` is never set here and the viewer's own role is Conversation::myRole, written
+// per conversation below.
+struct PersonSpec { const wchar_t* id; const wchar_t* name; const wchar_t* role; };
 
 MemberRef MakeMember(PersonSpec const& p) {
   MemberRef m;
   m.id = p.id;
   m.displayName = p.name;
   m.identityKey = SeedFrom(m.id);
-  m.admin = p.admin;
-  // One device each; admins get a second, so the rail's delivered-to and
-  // read-by lists are longer than the member list and cannot be mistaken for
-  // it. Spec C 5.3: delivered is a statement by a DEVICE, never by a person.
+  m.role = p.role;
+  m.mine = false;
+  m.identityPubHex.clear();  // the fixture carries no identity key; the rail offers no control
+  // One device each; a member who administers the group (owner or admin) gets
+  // a second, so the rail's delivered-to and read-by lists are longer than the
+  // member list and cannot be mistaken for it. Spec C 5.3: delivered is a
+  // statement by a DEVICE, never by a person.
   m.devices.push_back(
       MakeDevice(m.id + L"-phone", L"Phone", m.displayName, L"now", true, false));
-  if (p.admin)
+  if (CanAdminister(m))
     m.devices.push_back(
         MakeDevice(m.id + L"-laptop", L"Laptop", m.displayName, L"12 min ago", false, false));
   return m;
@@ -194,7 +201,15 @@ void AppendRows(Conversation& c, size_t conversationIndex,
   }
 }
 
+// `myRole` is the VIEWER's fabricated role in this conversation (Conversation::myRole). The two
+// groups are given different ones on purpose, so the fixture exercises both control sets the
+// rail can draw (Views/RosterRules.h): in "Design team" the viewer is an ADMIN under Mira, who
+// owns it; in "URnetwork core" the viewer is the OWNER and Mira and Hana are its admins. A group
+// has exactly one owner (MASTER section 11), so whichever of the two holds it, no member row of
+// that group may also say owner. A DM is a two-member group the viewer founded: owner over one
+// member.
 Conversation MakeConversation(const wchar_t* id, ConversationKind kind, const wchar_t* name,
+                              const wchar_t* myRole,
                               std::initializer_list<PersonSpec> people,
                               const wchar_t* preview, const wchar_t* time, int unread,
                               bool muted, bool disappearing,
@@ -210,6 +225,7 @@ Conversation MakeConversation(const wchar_t* id, ConversationKind kind, const wc
   c.unread = unread;
   c.muted = muted;
   c.disappearing = disappearing;
+  c.myRole = myRole;
   for (PersonSpec const& p : people) c.members.push_back(MakeMember(p));
   c.memberCount = static_cast<int>(c.members.size());
   c.retentionLabel = retention;
@@ -243,12 +259,12 @@ World BuildWorld() {
 
   // c0 - Design team, 5 members, 24 rows.
   Conversation c0 = MakeConversation(
-      L"conv-design-team", ConversationKind::Group, L"Design team",
-      {{L"m-mira", L"Mira Okonkwo", true},
-       {L"m-tobias", L"Tobias Lind", true},
-       {L"m-saoirse", L"Saoirse Kelly", false},
-       {L"m-ravi", L"Ravi Menon", false},
-       {L"m-elena", L"Elena Vasquez", false}},
+      L"conv-design-team", ConversationKind::Group, L"Design team", kRoleAdmin,
+      {{L"m-mira", L"Mira Okonkwo", kRoleOwner},
+       {L"m-tobias", L"Tobias Lind", kRoleAdmin},
+       {L"m-saoirse", L"Saoirse Kelly", kRoleMember},
+       {L"m-ravi", L"Ravi Menon", kRoleMember},
+       {L"m-elena", L"Elena Vasquez", kRoleMember}},
       L"Retrying the attachment.", L"12:11", 0, false, false,
       L"Kept until deleted", L"Media kept 30 days");
   AppendRows(c0, 0, w.myDevices, {
@@ -282,18 +298,18 @@ World BuildWorld() {
   // c1 - URnetwork core, 11 members, 18 rows, and the PERMANENT key-change
   // record. Spec C 7.4: non-dismissible.
   Conversation c1 = MakeConversation(
-      L"conv-urnetwork-core", ConversationKind::Group, L"URnetwork core",
-      {{L"m-mira", L"Mira Okonkwo", true},
-       {L"m-hana", L"Hana Sato", true},
-       {L"m-viktor", L"Viktor Halden", false},
-       {L"m-noor", L"Noor Haddad", false},
-       {L"m-jonas", L"Jonas Weber", false},
-       {L"m-amara", L"Amara Diallo", false},
-       {L"m-kai", L"Kai Lindqvist", false},
-       {L"m-priya", L"Priya Raman", false},
-       {L"m-oskar", L"Oskar Bremer", false},
-       {L"m-lucia", L"Lucia Ferrari", false},
-       {L"m-tobias", L"Tobias Lind", false}},
+      L"conv-urnetwork-core", ConversationKind::Group, L"URnetwork core", kRoleOwner,
+      {{L"m-mira", L"Mira Okonkwo", kRoleAdmin},
+       {L"m-hana", L"Hana Sato", kRoleAdmin},
+       {L"m-viktor", L"Viktor Halden", kRoleMember},
+       {L"m-noor", L"Noor Haddad", kRoleMember},
+       {L"m-jonas", L"Jonas Weber", kRoleMember},
+       {L"m-amara", L"Amara Diallo", kRoleMember},
+       {L"m-kai", L"Kai Lindqvist", kRoleMember},
+       {L"m-priya", L"Priya Raman", kRoleMember},
+       {L"m-oskar", L"Oskar Bremer", kRoleMember},
+       {L"m-lucia", L"Lucia Ferrari", kRoleMember},
+       {L"m-tobias", L"Tobias Lind", kRoleMember}},
       L"Will do.", L"10:36", 2, false, false,
       L"Kept until deleted", L"Media kept 30 days");
   AppendRows(c1, 1, w.myDevices, {
@@ -369,8 +385,8 @@ World BuildWorld() {
 
   size_t ci = 2;
   for (DmSpec const& dm : kDms) {
-    Conversation c = MakeConversation(dm.id, ConversationKind::Direct, dm.name,
-                                      {{dm.person, dm.name, false}},
+    Conversation c = MakeConversation(dm.id, ConversationKind::Direct, dm.name, kRoleOwner,
+                                      {{dm.person, dm.name, kRoleMember}},
                                       dm.preview, dm.time, dm.unread, dm.muted,
                                       dm.disappearing, dm.retention, dm.mediaRetention);
     AppendRows(c, ci, w.myDevices,

@@ -144,8 +144,8 @@ std::wstring DumpDemoWorld(urmsg::RunMode mode) {
         c.rows.size(), c.retentionLabel, c.mediaRetentionLabel, c.preview,
         c.timeLabel);
     for (auto const& m : c.members) {
-      out += std::format(L"  memb {} \"{}\" key={} admin={} devices={}\n", m.id,
-                         m.displayName, HexPrefix(m.identityKey), int(m.admin),
+      out += std::format(L"  memb {} \"{}\" key={} role={} devices={}\n", m.id,
+                         m.displayName, HexPrefix(m.identityKey), m.role,
                          m.devices.size());
       for (auto const& d : m.devices) {
         out += std::format(L"    dev {} \"{}\" {} \"{}\"\n", d.id, d.name,

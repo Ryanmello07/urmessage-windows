@@ -145,6 +145,13 @@ struct MainWindow : MainWindowT<MainWindow> {
   // no-blocking rule; the outcome is a redrawn thread. In a live world the row id IS the record's
   // message_id, which is what urnet_message_group_react / _unreact name.
   bool ReactFromBubble(std::wstring rowId, std::wstring emoji, bool remove);
+  // The roster's two verbs (item 242 R3), reached from the inspect rail's role controls through
+  // views::RosterVerb the way the composer reaches SendFromComposer. `identityPubHex` is the
+  // member's identity key exactly as the roster row carries it; `role` is one of "admin",
+  // "member", "observer". Same no-blocking rule; the outcome is a redrawn roster or a note on
+  // the member the request named.
+  bool RoleChangeFromRail(std::wstring identityPubHex, std::wstring role);
+  bool TransferOwnershipFromRail(std::wstring identityPubHex);
 
   std::shared_ptr<LiveWorldBridge> liveBridge_;
   urmsg::live::WorldPtr liveWorld_;

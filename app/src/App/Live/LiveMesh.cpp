@@ -50,7 +50,8 @@
 
 // The vendored SDK C ABI. urnetwork_sdk.h carries urnet_release /
 // urnet_free_string / urnet_live_handle_count; urnetwork_message.h carries the
-// 44 messaging exports. Both live in app/third_party/vendor-include, which
+// messaging exports (the roster and the two role verbs among them since item
+// 242 R3). Both live in app/third_party/vendor-include, which
 // Directory.Build.props:68 already puts on every project's include path.
 //
 // urnetwork_message.h SHIPS BECAUSE THIS TASK MADE IT SHIP. cgo/Makefile copied
@@ -381,11 +382,12 @@ int64_t WallClockMs() {
 // a send dropped into that sleep would sit there for up to 3 s with the sender watching an empty
 // composer. The loop therefore WAITS on this instead of sleeping, so a click wakes it at once and a
 // quiet loop still ticks on its own timer.
-// FOUR VERBS, ONE QUEUE. Text and reply become rows of the outbox; react and unreact become
-// entries of the reaction outbox on their target. They share the queue because they share the
+// SIX VERBS, ONE QUEUE. Text and reply become rows of the outbox; react and unreact become
+// entries of the reaction outbox on their target; set-role and transfer become entries of the
+// role outbox on the member they name (item 242 R3). They share the queue because they share the
 // constraint that put the queue here: each one is a round trip inside a single ABI call, and only
 // the worker may hold the group handle.
-enum class OutboundKind { Text, Reply, ReactAdd, ReactRemove };
+enum class OutboundKind { Text, Reply, ReactAdd, ReactRemove, SetRole, TransferOwnership };
 
 struct Outbound {
   OutboundKind kind = OutboundKind::Text;
@@ -395,6 +397,8 @@ struct Outbound {
   std::string targetHex;    // the message named: the parent (Reply) or the target (React*)
   std::vector<uint8_t> target;  // the same 32 octets, decoded once at the queue
   std::string emoji;        // RAW utf-8 (React*)
+  std::string identityPub;  // the member named, as the roster spells it (SetRole, Transfer)
+  std::string role;         // "admin" | "member" | "observer" (SetRole); "owner" (Transfer)
 };
 
 std::mutex g_sendMutex;
@@ -626,6 +630,69 @@ void CollectMessages(uint64_t group, std::vector<urmsg::live::LiveMessage>& out)
     out.push_back(std::move(m));
   }
   if (all != 0) urnet_release(all);
+}
+
+// THE ROSTER, off urnet_message_group_members: every leaf at the current epoch,
+// in leaf order, with its role. Read on every publish, because a commit from
+// another member may have changed a role since the last one. An unreadable
+// roster (the ABI answers 0 with an error) leaves `out` EMPTY, which the world
+// draws as the placeholder, and is logged - it is a fact about the group, not a
+// row to invent.
+void CollectMembers(uint64_t group, std::vector<urmsg::live::LiveMember>& out) {
+  out.clear();
+  char* err = nullptr;
+  const uint64_t list = urnet_message_group_members(group, &err);
+  const std::string failure = TakeError(&err);
+  if (list == 0) {
+    urnw::LogWarn("live: group_members could not be read: {}",
+                  failure.empty() ? "no reason given" : failure);
+    return;
+  }
+  const int32_t count = urnet_message_member_list_count(list);
+  out.reserve(static_cast<size_t>(count < 0 ? 0 : count));
+  for (int32_t i = 0; i < count; ++i) {
+    const std::string info = TakeString(urnet_message_member_list_info(list, i));
+    urmsg::live::LiveMember m;
+    try {
+      const nlohmann::json j = nlohmann::json::parse(info);
+      m.leafIndex = j.value("leaf_index", uint32_t{0});
+      m.senderHandle = j.value("sender_handle", std::string{});
+      m.identityPub = j.value("identity_pub", std::string{});
+      m.role = j.value("role", std::string{});
+      m.mine = j.value("mine", false);
+    } catch (const std::exception& e) {
+      urnw::LogWarn("live: member[{}] info did not parse ({}); the row is kept with what parsed",
+                    i, e.what());
+    }
+    out.push_back(std::move(m));
+  }
+  urnet_release(list);
+}
+
+// This device's own role, off urnet_message_group_my_role. Empty when it could
+// not be read, and the world draws the placeholder for that.
+std::string ReadMyRole(uint64_t group) {
+  char* err = nullptr;
+  std::string role = TakeString(urnet_message_group_my_role(group, &err));
+  const std::string failure = TakeError(&err);
+  if (role.empty()) {
+    urnw::LogWarn("live: group_my_role could not be read: {}",
+                  failure.empty() ? "no reason given" : failure);
+  }
+  return role;
+}
+
+// One line for the roster, in the shape sdk/livepeer prints its own, so the two
+// sides' views of one group can be laid beside each other in two logs.
+std::string RosterLine(urmsg::live::LiveGroup const& live) {
+  std::string rows;
+  for (auto const& m : live.members) {
+    if (!rows.empty()) rows += "; ";
+    rows += "leaf " + std::to_string(m.leafIndex) + " " + m.role + " " +
+            m.identityPub.substr(0, std::min<size_t>(m.identityPub.size(), 16)) +
+            (m.mine ? " (this device)" : "");
+  }
+  return "epoch " + std::to_string(live.epoch) + ", my role " + live.myRole + ": " + rows;
 }
 
 // What a kind code is called, by name rather than by number. An UNKNOWN code is
@@ -886,6 +953,10 @@ void RunSession() {
   std::vector<urmsg::live::LiveOutboxEntry> outbox;
   // And the reactions and un-reactions it has tried. Same ownership, same reason.
   std::vector<urmsg::live::LiveReactionOutboxEntry> reactionOutbox;
+  // And the role changes it has asked for (item 242 R3). Same ownership, same reason.
+  std::vector<urmsg::live::LiveRoleOutboxEntry> roleOutbox;
+  // The roster line last logged, so the log carries a roster only when it moved.
+  std::string lastRosterLine;
 
   // Build the world off the group AS IT STANDS and hand it to the UI. Every publish below goes
   // through here, so the log and the outbox can never be drawn from two different moments — a send
@@ -905,7 +976,16 @@ void RunSession() {
     live.statsJson = TakeString(urnet_message_group_stats(s.group));
     live.outbox = outbox;
     live.reactionOutbox = reactionOutbox;
+    live.roleOutbox = roleOutbox;
     CollectMessages(s.group, live.messages);
+    // THE ROSTER AND THIS DEVICE'S ROLE, on every publish and not once at the open: a role change
+    // is a commit another member makes, and it lands here on some later fetch as a moved row.
+    CollectMembers(s.group, live.members);
+    live.myRole = ReadMyRole(s.group);
+    if (const std::string roster = RosterLine(live); roster != lastRosterLine) {
+      lastRosterLine = roster;
+      urnw::LogInfo("live: ROSTER {}", roster);
+    }
 
     // THE SEND BUTTON'S ONE GATE, re-read off the library every time rather than latched when the
     // group opened: a group the server has closed under us stops accepting sends, and a button
@@ -941,6 +1021,25 @@ void RunSession() {
     if (queued.empty()) return;
 
     for (auto& out : queued) {
+      const bool isRole =
+          out.kind == OutboundKind::SetRole || out.kind == OutboundKind::TransferOwnership;
+      if (isRole) {
+        // ONE ATTEMPT PER MEMBER ON SCREEN, for the same reason a reaction retry supersedes its
+        // failure: a second press after a refusal is that change asked for again, not a second
+        // note under the first.
+        roleOutbox.erase(std::remove_if(roleOutbox.begin(), roleOutbox.end(),
+                                        [&](urmsg::live::LiveRoleOutboxEntry const& e) {
+                                          return e.done && e.identityPub == out.identityPub;
+                                        }),
+                         roleOutbox.end());
+        urmsg::live::LiveRoleOutboxEntry entry;
+        entry.localId = out.localId;
+        entry.identityPub = out.identityPub;
+        entry.role = out.role;
+        entry.attemptedAtMs = WallClockMs();
+        roleOutbox.push_back(std::move(entry));
+        continue;
+      }
       const bool isReaction =
           out.kind == OutboundKind::ReactAdd || out.kind == OutboundKind::ReactRemove;
       if (isReaction) {
@@ -1001,6 +1100,47 @@ void RunSession() {
       const int64_t startedMs = NowMs();
       std::string info;
       const char* verb = "send";
+      // THE TWO ROLE VERBS ANSWER A KIND, NOT A HANDLE (urnetwork_message.h: "BRANCH ON THE KIND
+      // AND SHOW THE TEXT"), so they are handled here before the switch that reads `info`. OK
+      // drops the entry - the roster read on the publish below already shows the change; every
+      // other kind is kept on the entry with the library's own sentence, for the rail to draw as
+      // the outcome it is. The commit is one round trip inside the call, like a send.
+      if (out.kind == OutboundKind::SetRole || out.kind == OutboundKind::TransferOwnership) {
+        const bool transfer = out.kind == OutboundKind::TransferOwnership;
+        verb = transfer ? "transfer_ownership" : "set_role";
+        const int32_t kind =
+            transfer ? urnet_message_group_transfer_ownership(s.group, s.ctx,
+                                                              out.identityPub.c_str(), &sendErr)
+                     : urnet_message_group_set_role(s.group, s.ctx, out.identityPub.c_str(),
+                                                    out.role.c_str(), &sendErr);
+        const std::string failure = TakeError(&sendErr);
+        const int64_t tookMs = NowMs() - startedMs;
+        auto at = std::find_if(roleOutbox.begin(), roleOutbox.end(),
+                               [&](urmsg::live::LiveRoleOutboxEntry const& e) {
+                                 return e.localId == out.localId;
+                               });
+        const char* kindName = kind == URNET_MESSAGE_COMMIT_OK        ? "OK"
+                               : kind == URNET_MESSAGE_COMMIT_REFUSED ? "REFUSED"
+                               : kind == URNET_MESSAGE_COMMIT_LOST    ? "LOST"
+                               : kind == URNET_MESSAGE_COMMIT_INVALID ? "INVALID"
+                                                                      : "FAILED";
+        if (kind == URNET_MESSAGE_COMMIT_OK) {
+          urnw::LogInfo("live: *** {} *** {} -> {} answered OK in {} ms; the group is at epoch {}",
+                        transfer ? "OWNERSHIP TRANSFERRED" : "ROLE SET", out.identityPub,
+                        out.role, tookMs, urnet_message_group_epoch(s.group));
+          if (at != roleOutbox.end()) roleOutbox.erase(at);
+        } else {
+          urnw::LogError("live: {} {} -> {} answered {} after {} ms: {}", verb, out.identityPub,
+                         out.role, kindName, tookMs, failure.empty() ? "no reason given" : failure);
+          if (at != roleOutbox.end()) {
+            at->done = true;
+            at->kind = kind;
+            at->error = failure;
+          }
+        }
+        publishWorld(false);
+        continue;
+      }
       switch (out.kind) {
         case OutboundKind::Text:
           // COUNTED OCTETS, NOT A char*. The body is whatever was typed and a UTF-8 encoding of it
@@ -1039,6 +1179,9 @@ void RunSession() {
                                                         static_cast<int32_t>(out.target.size()),
                                                         out.emoji.c_str(), &sendErr));
           break;
+        case OutboundKind::SetRole:
+        case OutboundKind::TransferOwnership:
+          break;  // handled above; unreachable
       }
       const std::string failure = TakeError(&sendErr);
       const int64_t tookMs = NowMs() - startedMs;
@@ -1205,6 +1348,65 @@ bool QueueSend(std::string utf8Body, std::string replacesLocalId, std::string re
     out.kind = OutboundKind::Reply;
     out.targetHex = std::move(replyToMessageIdHex);
   }
+  Enqueue(std::move(out));
+  return true;
+}
+
+namespace {
+
+// Lower-case hex of even, non-zero length: the ABI parses identity_pub_hex itself and answers
+// INVALID otherwise, but a name that does not decode is refused BEFORE it is queued so the rail
+// hears "false" rather than a note a beat later - the same rule the reply parent follows.
+bool IsHex(std::string const& hex) {
+  if (hex.empty() || hex.size() % 2 != 0) return false;
+  for (char c : hex) {
+    const bool ok = ('0' <= c && c <= '9') || ('a' <= c && c <= 'f') || ('A' <= c && c <= 'F');
+    if (!ok) return false;
+  }
+  return true;
+}
+
+}  // namespace
+
+bool QueueRoleChange(std::string identityPubHex, std::string role) {
+  if (!g_canSend.load(std::memory_order_relaxed)) return false;
+  // The three roles set_role takes, by name. "owner" is refused here on purpose: the ABI answers
+  // INVALID for it (ownership moves through transfer_ownership), and a caller that reached for
+  // it has the wrong verb, not a bad member.
+  if (role != "admin" && role != "member" && role != "observer") {
+    urnw::LogWarn("live: a role change asked for \"{}\", which set_role does not take; refused "
+                  "before it was queued",
+                  role);
+    return false;
+  }
+  if (!IsHex(identityPubHex)) {
+    urnw::LogWarn("live: a role change named an identity that is not hex ({} chars); refused "
+                  "before it was queued",
+                  identityPubHex.size());
+    return false;
+  }
+  Outbound out;
+  out.kind = OutboundKind::SetRole;
+  out.localId = std::to_string(g_nextLocalId.fetch_add(1));
+  out.identityPub = std::move(identityPubHex);
+  out.role = std::move(role);
+  Enqueue(std::move(out));
+  return true;
+}
+
+bool QueueTransferOwnership(std::string identityPubHex) {
+  if (!g_canSend.load(std::memory_order_relaxed)) return false;
+  if (!IsHex(identityPubHex)) {
+    urnw::LogWarn("live: a transfer named an identity that is not hex ({} chars); refused before "
+                  "it was queued",
+                  identityPubHex.size());
+    return false;
+  }
+  Outbound out;
+  out.kind = OutboundKind::TransferOwnership;
+  out.localId = std::to_string(g_nextLocalId.fetch_add(1));
+  out.identityPub = std::move(identityPubHex);
+  out.role = "owner";
   Enqueue(std::move(out));
   return true;
 }

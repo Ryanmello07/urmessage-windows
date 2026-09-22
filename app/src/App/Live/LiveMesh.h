@@ -104,4 +104,23 @@ bool QueueSend(std::string utf8Body, std::string replacesLocalId = {},
 // the reaction standing on the target row, or a Failed entry there carrying the library's reason.
 bool QueueReaction(std::string targetMessageIdHex, std::string utf8Emoji, bool remove);
 
+// ── the two role verbs (item 242 R3) ──────────────────────────────────────────
+
+// CHANGE ONE MEMBER'S ROLE, on the worker: urnet_message_group_set_role with `identityPubHex` (the
+// identity_pub a roster row carries, passed back as is) and `role` ("admin", "member" or
+// "observer" - "owner" is refused here, because ownership moves only through the call below).
+// Answers false, having queued nothing, when CanSend() is false, the identity is not hex, or the
+// role is none of the three. The outcome arrives as a published world: the roster itself moved
+// (OK), or a note on the member naming which of the ABI's four other answers came back.
+//
+// ONE ROUND TRIP INSIDE ONE ABI CALL, like a send, and so queued for the same reason: the worker
+// owns the group handle and the UI thread must never wait on the server.
+bool QueueRoleChange(std::string identityPubHex, std::string role);
+
+// TRANSFER OWNERSHIP TO ONE MEMBER, on the worker: urnet_message_group_transfer_ownership. This
+// device, the outgoing owner, becomes an admin in the same commit (MASTER section 11, ruling 4).
+// The CONFIRMATION is the caller's - the rail asks before it calls this - because this is the one
+// change here with no undo by construction. Same answers as QueueRoleChange.
+bool QueueTransferOwnership(std::string identityPubHex);
+
 }  // namespace urmsg::live

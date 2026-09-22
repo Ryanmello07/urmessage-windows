@@ -6,7 +6,7 @@
 // NO PCH, NO winrt, NO XAML — this is built on the live worker thread. App.vcxproj marks it
 // PrecompiledHeader=NotUsing for the same reason Live\LiveMesh.cpp is marked.
 //
-// WHY THE World STRUCT IS EXTENDED BY EXACTLY ONE SLOT, which explains the decisions below. The
+// WHY THE World STRUCT IS EXTENDED BY SO FEW SLOTS, which explains the decisions below. The
 // first version of this file said the struct could not grow at all, on the belief that Startup.cpp's
 // assertion I10 hashes every byte of the fabricated world. It does not: WorldFingerprint
 // (Startup.cpp) mixes NAMED FIELDS, so a new field the fixture never writes leaves
@@ -14,8 +14,11 @@
 // MessageRow::reactions and reading the fingerprint line on the next launch. The slot exists
 // because a reaction needs a STATE (standing / sending / not sent) and a `mine` bit that the picker
 // and the strip both read, and neither can be carried in a line of text without the view parsing
-// its own output. Everything else the protocol carries that the struct has no slot for is still
-// rendered through a slot it DOES have, using a component that already exists:
+// its own output. The roster's slots (MemberRef::role / mine / identityPubHex and the role-action
+// trio, Conversation::myRole - item 242 R3) exist for the same reason: a role is a fact the rail
+// branches on, and a control set cannot be chosen from a line of text. Everything else the
+// protocol carries that the struct has no slot for is still rendered through a slot it DOES have,
+// using a component that already exists:
 //
 //   * a DELETED message      -> a System line saying it was deleted by its sender
 //   * a GAP                  -> a System line naming the reason (the ABI's "closed placeholder")
@@ -86,6 +89,20 @@ uint64_t Digest(urmsg::demo::World const& world) {
              static_cast<uint64_t>(r.removing) * 11;
         h *= 1099511628211ull;
       }
+    }
+  }
+  // The roster, the viewer's role and any change this device is making to a member: a role that
+  // moves on another member's commit changes no row id and no body, so it has to be mixed on its
+  // own or the world that carries it is "unchanged" and the rail never redraws it.
+  for (auto const& conv : world.conversations) {
+    Mix(h, conv.myRole);
+    for (auto const& m : conv.members) {
+      Mix(h, m.id);
+      Mix(h, m.role);
+      Mix(h, m.roleActionVerb);
+      Mix(h, m.roleActionReason);
+      h ^= static_cast<uint64_t>(m.mine) * 3 + static_cast<uint64_t>(m.roleAction) * 7;
+      h *= 1099511628211ull;
     }
   }
   h ^= world.currentEpoch;
@@ -214,11 +231,51 @@ urmsg::demo::World BuildWorld(LiveGroup const& group) {
   conv.groupIdHex = urnw::Widen(group.groupIdHex);
   conv.muted = false;
   conv.disappearing = false;
-  // EMPTY, and the views render the placeholder for an empty one. The ABI carries no membership:
-  // a member that has never spoken is invisible, so a list built from the senders seen would be a
-  // guess presented as a roster.
+  // THE ROSTER, AS THE LIBRARY READS IT (item 242 R3). One row per leaf, in leaf order, each with
+  // the role the transcript-covered policy gives it and the identity key the two role verbs
+  // name it by. Before this the list was EMPTY, with the placeholder drawn for it, because the ABI
+  // carried no membership and a list built from the senders seen would have been a guess
+  // presented as a roster; urnet_message_group_members now hands the roster over, and what it
+  // does NOT hand over stays the placeholder on every row: a name (no identity layer), and a
+  // device list with its presence (not carried, so `devices` is empty and the rail says so).
   conv.members.clear();
-  conv.memberCount = 0;
+  for (auto const& lm : group.members) {
+    urmsg::demo::MemberRef m;
+    // The sender handle is stable per leaf and is what a message joins to; the leaf index stands
+    // in only for a row the ABI handed over without one.
+    m.id = lm.senderHandle.empty() ? std::format(L"leaf-{}", lm.leafIndex)
+                                   : urnw::Widen(lm.senderHandle);
+    m.displayName = kUnavailable;  // no identity layer: nobody's name is known, this device's included
+    m.identityKey = SeedFromHex(lm.identityPub);  // a rendering of the REAL key, not a name
+    m.role = urnw::Widen(lm.role);
+    m.mine = lm.mine;
+    m.identityPubHex = urnw::Widen(lm.identityPub);
+    m.devices.clear();
+    // A change this device asked for on this identity. The newest entry wins when several name
+    // one identity (a retry after a refusal), which is also the order the worker appends them.
+    for (auto const& out : group.roleOutbox) {
+      if (out.identityPub != lm.identityPub) continue;
+      m.roleActionVerb = urnw::Widen(out.role);
+      m.roleActionReason = out.done ? urnw::Widen(out.error) : std::wstring();
+      if (!out.done) {
+        m.roleAction = urmsg::demo::RoleActionState::Pending;
+        continue;
+      }
+      switch (out.kind) {
+        case URNET_MESSAGE_COMMIT_REFUSED: m.roleAction = urmsg::demo::RoleActionState::Refused; break;
+        case URNET_MESSAGE_COMMIT_LOST: m.roleAction = urmsg::demo::RoleActionState::Lost; break;
+        case URNET_MESSAGE_COMMIT_INVALID: m.roleAction = urmsg::demo::RoleActionState::Invalid; break;
+        case URNET_MESSAGE_COMMIT_OK: m.roleAction = urmsg::demo::RoleActionState::None; break;
+        default: m.roleAction = urmsg::demo::RoleActionState::Failed; break;
+      }
+    }
+    conv.members.push_back(std::move(m));
+  }
+  conv.memberCount = static_cast<int>(conv.members.size());
+  // THIS DEVICE'S OWN ROLE, off urnet_message_group_my_role and not derived from the row marked
+  // mine: the ABI answers it directly, and the rail's control set is chosen by it. Empty (a group
+  // that could not be read) is the placeholder, which the control table treats as no role.
+  conv.myRole = group.myRole.empty() ? std::wstring(kUnavailable) : urnw::Widen(group.myRole);
   conv.retentionLabel = kUnavailable;
   conv.mediaRetentionLabel = kUnavailable;
   // NO UNREAD COUNT EXISTS. There is no read cursor in this build and nothing reports one, so the

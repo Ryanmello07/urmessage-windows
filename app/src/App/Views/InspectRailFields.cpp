@@ -862,10 +862,11 @@ std::wstring InspectRailDeviceProbe() {
       threePlan.rowCount == 3 && threePlan.emptyNote.empty();
 
   // OnlineDeviceCount against DemoWorld's own structure rather than against
-  // itself: every member gets a phone that is online, an admin gets a second
-  // device that is not (DemoWorld.cpp:78-86). So the online total must equal the
-  // member count, the device total must equal members + admins, and exactly the
-  // admins may be short of full. `return devices.size()` breaks the first,
+  // itself: every member gets a phone that is online, a member who administers
+  // the group (owner or admin - demo::CanAdminister) gets a second device that
+  // is not (DemoWorld.cpp's MakeMember). So the online total must equal the
+  // member count, the device total must equal members + administrators, and
+  // exactly the administrators may be short of full. `return devices.size()` breaks the first,
   // `return 0` breaks it the other way, and counting !online breaks it too.
   // Per member, the count is also compared against how many of that member's
   // devices report lastSeenLabel "now" - a different field, though a correlated
@@ -882,7 +883,7 @@ std::wstring InspectRailDeviceProbe() {
     for (auto const& m : c.members) {
       ++members;
       memberDevices += m.devices.size();
-      if (m.admin) ++admins;
+      if (demo::CanAdminister(m)) ++admins;
       const size_t up = OnlineDeviceCount(m);
       onlineDevices += up;
       size_t byLastSeen = 0;
@@ -891,7 +892,7 @@ std::wstring InspectRailDeviceProbe() {
       if (up != byLastSeen || m.devices.size() < up) ++onlineWrong;
       if (up < m.devices.size()) {
         ++shortOfFull;
-        if (m.admin) ++shortAndAdmin;
+        if (demo::CanAdminister(m)) ++shortAndAdmin;
       }
     }
   const bool devicesOk = 0 < members && 0 < admins && onlineWrong == 0 &&

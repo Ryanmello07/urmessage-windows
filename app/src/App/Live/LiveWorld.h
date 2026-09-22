@@ -13,7 +13,7 @@
 // ── THE PLACEHOLDER, WHICH IS THE ONE DESIGN DECISION IN THIS FILE ───────────────────────────
 //
 // The protocol does not carry delivery state past "the server took it", sender names, group names,
-// member lists or unread counts. NOT ONE OF THOSE IS INVENTED HERE. Every one of them renders as
+// member NAMES, device presence or unread counts. NOT ONE OF THOSE IS INVENTED HERE. Every one of them renders as
 // kUnavailable — one string, used everywhere, VISIBLE rather than hidden. Hiding the field would
 // let a reader assume the app simply has nothing to show; fabricating it would be the demo's lie
 // with a real conversation behind it. Saying "unavailable" is the only one of the three that is
@@ -27,6 +27,15 @@
 //     acknowledged the submit. Delivered and Read are never set, because nothing reports them.
 //   * the sender HANDLE is real (16 opaque octets) and is not a name. It is shown as itself, in
 //     the inspect rail, beside the name that is unavailable.
+//   * THE ROSTER AND ITS ROLES ARE REAL (item 242 R3): every leaf of the group at its current
+//     epoch, each with the role the transcript-covered policy gives it, off
+//     urnet_message_group_members; this device's own role off urnet_message_group_my_role. What
+//     is NOT real about a roster row is who the leaf belongs to - no identity layer exists - so
+//     every row's name is the placeholder, its identity public key is shown as itself, and its
+//     presence (a device list this protocol does not carry) is the placeholder too.
+//   * a role change THIS DEVICE asked for is drawn on the member it names, as the library's own
+//     answer: pending, refused by role, lost the epoch race, invalid, or failed in transport. A
+//     change that succeeds is not drawn at all - the roster itself moves, in the same publish.
 //
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
@@ -116,6 +125,34 @@ struct LiveReactionOutboxEntry {
   std::string error;
 };
 
+// ── the roster, transcribed ───────────────────────────────────────────────────
+//
+// One row per leaf, filled from urnet_message_member_list_info's json. The identity key is the
+// value the two role verbs take, so it is carried as the hex the ABI hands over and passed back
+// as is.
+struct LiveMember {
+  uint32_t leafIndex = 0;
+  std::string senderHandle;  // 32 lower-case hex; joins a message to its roster row
+  std::string identityPub;   // lower-case hex; what set_role / transfer_ownership name
+  std::string role;          // "owner" | "admin" | "member" | "observer"
+  bool mine = false;         // this device's own leaf; exactly one row per leaf it holds
+};
+
+// A ROLE CHANGE THIS DEVICE ASKED FOR that the library has not yet answered, or answered with
+// anything but OK. Same argument as the outbox entries above: a refused or lost change moves no
+// roster and leaves no record, so without this a person who pressed "Make admin" and saw nothing
+// move would have no way to learn why. An entry is dropped in the beat its call answers OK: the
+// roster read on that same publish already shows the change.
+struct LiveRoleOutboxEntry {
+  std::string localId;
+  std::string identityPub;    // the member named, as the roster spells it
+  std::string role;           // the role asked for; "owner" for a transfer
+  int64_t attemptedAtMs = 0;
+  bool done = false;          // false while the call is inside the library
+  int32_t kind = 0;           // URNET_MESSAGE_COMMIT_* once done; meaningful when done
+  std::string error;          // the ABI's own out_error, verbatim; "" for OK
+};
+
 // Everything one live session knows about itself. All of it is observed; none of it is invented.
 struct LiveGroup {
   std::string groupIdHex;
@@ -132,6 +169,13 @@ struct LiveGroup {
   // Likewise for reactions and un-reactions; each one lands on its target row rather than at the
   // foot, because a reaction is a change to a line and not a line.
   std::vector<LiveReactionOutboxEntry> reactionOutbox;
+  // The roster at this epoch, in leaf order, and this device's own role. Both re-read on every
+  // publish, because a commit from another member may have changed either.
+  std::vector<LiveMember> members;
+  std::string myRole;
+  // And the role changes this device asked for that have not landed; each lands on the member
+  // row it names.
+  std::vector<LiveRoleOutboxEntry> roleOutbox;
 };
 
 // ── the one placeholder ───────────────────────────────────────────────────────

@@ -116,6 +116,13 @@ std::wstring ServerKeyStateName(bool keyVerified, RunMode mode);
 // otherwise get wrong.
 std::wstring WorldDumpFramingLine(RunMode mode);
 
+// The note under the inspect rail's MEMBERS card (item 242 R3). The roster is the one surface
+// whose two arms differ in what is REAL rather than in what is claimed: the fabricated arm's
+// members, names and roles are all fixture; the live arm's roster and roles are the group's own
+// (urnet_message_group_members) while the names are not carried by anything. Prefix-first, like
+// the lock header, so a crop keeps the framing.
+std::wstring RosterNote(RunMode mode);
+
 // Settings' disclosure block: the caption, the row that opens it, and the paragraph inside.
 // The fabricated paragraph's "No protocol, no store, no network and no cryptography are running"
 // is the single most false sentence in the app when a live world is on screen.
@@ -134,7 +141,8 @@ std::wstring DisclosureBody(RunMode mode);
 //   * the SEND clause - the fabricated composer note must deny the send path and the live one must
 //     not, because this build can send and only one of its two modes does;
 //   * the ABSENCE clause - the live disclosure's "What is NOT here:" list, printed in full, must
-//     not name the send path among the things the app cannot do.
+//     not name the send path among the things the app cannot do, nor the member list or the
+//     roles, which the app reads off the group since item 242 R3.
 std::vector<std::wstring> RunModeCopyDiagnostics();
 
 }  // namespace urmsg

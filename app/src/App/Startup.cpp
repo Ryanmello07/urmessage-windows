@@ -27,6 +27,7 @@
 #include "RunMode.h"  // RunModeCopyDiagnostics - the mode-dependent honesty copy's gate
 #include "Views/DeveloperDump.h"
 #include "Views/InspectRailFields.h"
+#include "Views/RosterRules.h"  // the roster's pure table, for the roster lines below
 #include "Views/StatusStripRules.h"
 #include "Demo/DemoShellState.h"
 #include "Demo/AdvancedMode.h"
@@ -214,9 +215,14 @@ uint64_t WorldFingerprint(urmsg::demo::World const& w) {
     MixU64(h, c.muted ? 1u : 0u); MixU64(h, c.disappearing ? 1u : 0u);
     MixU64(h, static_cast<uint64_t>(c.memberCount));
     MixStr(h, c.retentionLabel); MixStr(h, c.mediaRetentionLabel);
+    // The viewer's role and each member's role, mine bit and identity key (item 242 R3): the
+    // fixture's roles are fabricated by name in DemoWorld.cpp, so a role that drifts there moves
+    // this fingerprint exactly as a renamed member would. The old `admin` bit these replace was
+    // a one-bit projection of the same fact.
+    MixStr(h, c.myRole);
     for (auto const& m : c.members) {
       MixStr(h, m.id); MixStr(h, m.displayName); MixSeed(h, m.identityKey);
-      MixU64(h, m.admin ? 1u : 0u);
+      MixStr(h, m.role); MixU64(h, m.mine ? 1u : 0u); MixStr(h, m.identityPubHex);
       for (auto const& d : m.devices) mixDevice(d);
     }
     for (auto const& r : c.rows) {
@@ -251,7 +257,14 @@ uint64_t WorldFingerprint(urmsg::demo::World const& w) {
 // Filled in by Step 4, from the value the first run prints. A task that
 // deliberately changes the world updates this in the SAME commit; anything
 // else that changes it is the bug this line exists to catch.
-constexpr uint64_t kExpectedWorldFingerprint = 0x97B1C149D13010C3ull;
+//
+// 0x97B1C149D13010C3 -> 0x8C52DBB3652A9BD3 with item 242 R3 (the role model
+// on the roster): MemberRef::admin became MemberRef::role, and the fingerprint
+// now mixes each member's role word, mine bit and identity key and each
+// conversation's myRole. The fixture's roles are fabricated by name in
+// DemoWorld.cpp (Mira owns Design team, the viewer owns URnetwork core), so
+// the world's BYTES changed and the constant moved with them, in one commit.
+constexpr uint64_t kExpectedWorldFingerprint = 0x8C52DBB3652A9BD3ull;
 
 std::wstring Verdict(bool ok) { return ok ? L"PASS" : L"FAIL"; }
 
@@ -696,6 +709,294 @@ std::vector<std::wstring> ReplyReactDiagnostics() {
   return out;
 }
 
+
+// ---- the roster: role words, control sets, outcome notes, the live mapping (item 242 R3) ------
+//
+// Same terms as ReplyReactDiagnostics: every function asked here is pure (Views/RosterRules.h,
+// Live/LiveWorld.h's BuildWorld), no world is mutated, no XAML is touched, and every line prints
+// PASS/FAIL, the QUERY it asked and the complement it looked at. The framing pair the roster adds
+// ("roster note") is gated with the other pairs in RunModeCopyDiagnostics, and the live
+// disclosure's absence list is held there to no longer name the member list.
+std::vector<std::wstring> RosterDiagnostics() {
+  using namespace urmsg::views;
+  namespace demo = urmsg::demo;
+  std::vector<std::wstring> out;
+
+  // 1. the role words: four distinct non-empty words for the four spellings, the placeholder for
+  //    anything else, and "You" leading the title of the viewer's own row whatever its name.
+  {
+    const std::wstring words[] = {RoleWord(demo::kRoleOwner), RoleWord(demo::kRoleAdmin),
+                                  RoleWord(demo::kRoleMember), RoleWord(demo::kRoleObserver)};
+    bool distinct = true;
+    bool nonEmpty = true;
+    for (size_t i = 0; i < 4; ++i) {
+      if (words[i].empty() || words[i] == demo::kUnavailable) nonEmpty = false;
+      for (size_t j = 0; j < i; ++j)
+        if (words[i] == words[j]) distinct = false;
+    }
+    const std::wstring unknown = RoleWord(L"founder");
+    demo::MemberRef mine;
+    mine.displayName = demo::kUnavailable;
+    mine.role = demo::kRoleOwner;
+    mine.mine = true;
+    demo::MemberRef theirs = mine;
+    theirs.displayName = L"Mira Okonkwo";
+    theirs.role = demo::kRoleObserver;
+    theirs.mine = false;
+    const std::wstring mineTitle = MemberRowTitle(mine);
+    const std::wstring theirsTitle = MemberRowTitle(theirs);
+    const bool titlesOk = mineTitle.starts_with(L"You") &&
+                          mineTitle.find(demo::kUnavailable) == std::wstring::npos &&
+                          mineTitle.find(words[0]) != std::wstring::npos &&
+                          theirsTitle.starts_with(L"Mira Okonkwo") &&
+                          theirsTitle.find(words[3]) != std::wstring::npos;
+    const bool ok = distinct && nonEmpty && unknown == demo::kUnavailable && titlesOk;
+    out.push_back(std::format(
+        L"  roster words     : {}  owner \"{}\" | admin \"{}\" | member \"{}\" | observer \"{}\" | "
+        L"unknown \"{}\"; own row \"{}\" | other \"{}\"   [query: four distinct non-empty words, "
+        L"none the placeholder; an unknown role is the placeholder; the viewer's own row leads "
+        L"with You and carries its role word; another's row leads with its name]",
+        Verdict(ok), words[0], words[1], words[2], words[3], unknown, mineTitle, theirsTitle));
+  }
+
+  // 2. the control set per own role, over every (viewer role, member role) pair and the own row.
+  //    Printed as the table it is, so a reader can check it against MASTER section 11 rather
+  //    than trusting the count.
+  {
+    auto label = [](std::vector<RoleVerb> const& verbs) {
+      std::wstring s;
+      for (auto v : verbs) {
+        if (!s.empty()) s += L"/";
+        s += RoleControlLabel(v);
+      }
+      return s.empty() ? std::wstring(L"none") : s;
+    };
+    auto same = [](std::vector<RoleVerb> const& a, std::vector<RoleVerb> const& b) {
+      return a == b;
+    };
+    using V = RoleVerb;
+    struct Case {
+      wchar_t const* mine;
+      wchar_t const* theirs;
+      std::vector<V> want;
+    };
+    const Case cases[] = {
+        {demo::kRoleOwner, demo::kRoleMember, {V::MakeAdmin, V::MakeObserver, V::TransferOwnership}},
+        {demo::kRoleOwner, demo::kRoleAdmin, {V::MakeMember, V::MakeObserver, V::TransferOwnership}},
+        {demo::kRoleOwner, demo::kRoleObserver, {V::MakeAdmin, V::MakeMember, V::TransferOwnership}},
+        {demo::kRoleOwner, demo::kRoleOwner, {}},
+        {demo::kRoleAdmin, demo::kRoleMember, {V::MakeObserver}},
+        {demo::kRoleAdmin, demo::kRoleObserver, {V::MakeMember}},
+        {demo::kRoleAdmin, demo::kRoleAdmin, {}},
+        {demo::kRoleAdmin, demo::kRoleOwner, {}},
+        {demo::kRoleMember, demo::kRoleMember, {}},
+        {demo::kRoleMember, demo::kRoleObserver, {}},
+        {demo::kRoleObserver, demo::kRoleMember, {}},
+        {demo::kUnavailable, demo::kRoleMember, {}},
+    };
+    size_t agree = 0;
+    std::wstring table;
+    for (auto const& c : cases) {
+      const auto got = RoleControlsFor(c.mine, c.theirs, /*theirRowIsMine=*/false);
+      if (same(got, c.want)) ++agree;
+      if (!table.empty()) table += L"; ";
+      table += std::format(L"{} over {} -> {}", c.mine, c.theirs, label(got));
+    }
+    // The own row: nothing, whatever the roles.
+    const bool ownRowEmpty =
+        RoleControlsFor(demo::kRoleOwner, demo::kRoleOwner, true).empty() &&
+        RoleControlsFor(demo::kRoleAdmin, demo::kRoleAdmin, true).empty() &&
+        RoleControlsFor(demo::kRoleOwner, demo::kRoleMember, true).empty();
+    // Every verb has a non-empty label and the four labels differ.
+    const std::wstring labels[] = {RoleControlLabel(V::MakeAdmin), RoleControlLabel(V::MakeMember),
+                                   RoleControlLabel(V::MakeObserver),
+                                   RoleControlLabel(V::TransferOwnership)};
+    bool labelsOk = true;
+    for (size_t i = 0; i < 4; ++i) {
+      if (labels[i].empty()) labelsOk = false;
+      for (size_t j = 0; j < i; ++j)
+        if (labels[i] == labels[j]) labelsOk = false;
+    }
+    const bool ok = agree == std::size(cases) && ownRowEmpty && labelsOk;
+    out.push_back(std::format(
+        L"  roster controls  : {}  {}/{} (viewer, member) pairs give MASTER section 11's set, own "
+        L"row empty {}, labels distinct {} -> {}   [query: owner gets Make admin/member/observer "
+        L"minus the member's current role plus Transfer ownership; admin gets Make member/observer "
+        L"minus current, nothing on an admin or the owner; member/observer/unknown get nothing; "
+        L"nothing on one's own row]",
+        Verdict(ok), agree, std::size(cases), ownRowEmpty ? L"yes" : L"NO",
+        labelsOk ? L"yes" : L"NO", table));
+  }
+
+  // 3. the control names in both arms, on the capability, like the bubble actions.
+  {
+    constexpr std::wstring_view kDenials[] = {L"no live session", L"not available", L"cannot"};
+    auto denies = [&](std::wstring const& s) {
+      for (auto const& d : kDenials)
+        if (s.find(d) != std::wstring::npos) return true;
+      return false;
+    };
+    size_t ok = 0;
+    std::wstring listing;
+    for (RoleVerb v : {RoleVerb::MakeAdmin, RoleVerb::MakeMember, RoleVerb::MakeObserver,
+                       RoleVerb::TransferOwnership}) {
+      const std::wstring on = RoleControlName(v, true);
+      const std::wstring off = RoleControlName(v, false);
+      if (!on.empty() && !off.empty() && on != off && !denies(on) &&
+          off.find(L"no live session") != std::wstring::npos)
+        ++ok;
+      if (!listing.empty()) listing += L"; ";
+      listing += std::format(L"\"{}\" | \"{}\"", on, off);
+    }
+    out.push_back(std::format(
+        L"  roster names     : {}  {}/4 controls have a live arm that denies nothing and a dark "
+        L"arm that names the missing session -> {}   [query: both arms non-empty and different; "
+        L"live arm contains none of \"no live session\", \"not available\", \"cannot\"; dark arm "
+        L"contains \"no live session\"]",
+        Verdict(ok == 4), ok, listing));
+  }
+
+  // 4. the outcome notes: nothing for None, and five distinct sentences for the five states -
+  //    the three a person acts on differently (refused by role, lost the race, transport) being
+  //    told apart by their own words, and the two that carry the library's reason carrying it.
+  {
+    auto make = [](demo::RoleActionState s, wchar_t const* verb, wchar_t const* reason) {
+      demo::MemberRef m;
+      m.roleAction = s;
+      m.roleActionVerb = verb;
+      m.roleActionReason = reason;
+      return m;
+    };
+    const std::wstring none = RoleActionNote(make(demo::RoleActionState::None, demo::kRoleAdmin, L""));
+    const std::wstring pending =
+        RoleActionNote(make(demo::RoleActionState::Pending, demo::kRoleAdmin, L""));
+    const std::wstring pendingTransfer =
+        RoleActionNote(make(demo::RoleActionState::Pending, demo::kRoleOwner, L""));
+    const std::wstring refused = RoleActionNote(
+        make(demo::RoleActionState::Refused, demo::kRoleAdmin, L"the rule's own sentence"));
+    const std::wstring lost =
+        RoleActionNote(make(demo::RoleActionState::Lost, demo::kRoleAdmin, L"epoch stale"));
+    const std::wstring invalid = RoleActionNote(
+        make(demo::RoleActionState::Invalid, demo::kRoleAdmin, L"not a role"));
+    const std::wstring failed = RoleActionNote(
+        make(demo::RoleActionState::Failed, demo::kRoleAdmin, L"the transport failed"));
+    const std::wstring notes[] = {pending, refused, lost, invalid, failed};
+    bool distinct = true;
+    bool nonEmpty = true;
+    for (size_t i = 0; i < 5; ++i) {
+      if (notes[i].empty()) nonEmpty = false;
+      for (size_t j = 0; j < i; ++j)
+        if (notes[i] == notes[j]) distinct = false;
+    }
+    const bool ok = none.empty() && nonEmpty && distinct && pending != pendingTransfer &&
+                    refused.find(L"the rule's own sentence") != std::wstring::npos &&
+                    refused.find(L"role") != std::wstring::npos &&
+                    lost.find(L"someone else changed the group first") != std::wstring::npos &&
+                    lost.find(L"try again") != std::wstring::npos &&
+                    failed.find(L"the transport failed") != std::wstring::npos &&
+                    invalid.find(L"not a role") != std::wstring::npos &&
+                    pending.find(RoleWord(demo::kRoleAdmin)) != std::wstring::npos;
+    out.push_back(std::format(
+        L"  roster outcomes  : {}  none \"{}\" | pending \"{}\" | pending transfer \"{}\" | refused "
+        L"\"{}\" | lost \"{}\" | invalid \"{}\" | failed \"{}\"   [query: None is empty; the five "
+        L"states are five distinct non-empty sentences; a transfer's pending differs from a role's; "
+        L"refused names the role and carries the reason; lost says someone else changed the group "
+        L"first and try again; invalid and failed carry the reason]",
+        Verdict(ok), none, EscapeNonAscii(pending), EscapeNonAscii(pendingTransfer),
+        EscapeNonAscii(refused), EscapeNonAscii(lost), EscapeNonAscii(invalid),
+        EscapeNonAscii(failed)));
+  }
+
+  // 5. the live mapping, over a roster built here: two leaves (this device the owner, the peer a
+  //    member), a lost change on the peer, and a stale answered entry the newest one supersedes.
+  {
+    using namespace urmsg::live;
+    LiveGroup g;
+    g.groupIdHex = "00";
+    g.epoch = 3;
+    g.open = true;
+    g.myRole = "owner";
+    LiveMember me;
+    me.leafIndex = 0;
+    me.senderHandle = std::string(32, 'a');
+    me.identityPub = std::string(64, '1');
+    me.role = "owner";
+    me.mine = true;
+    LiveMember peer;
+    peer.leafIndex = 1;
+    peer.senderHandle = std::string(32, 'b');
+    peer.identityPub = std::string(64, '2');
+    peer.role = "member";
+    peer.mine = false;
+    g.members.push_back(me);
+    g.members.push_back(peer);
+    LiveRoleOutboxEntry stale;
+    stale.localId = "1";
+    stale.identityPub = peer.identityPub;
+    stale.role = "admin";
+    stale.done = true;
+    stale.kind = 4;  // URNET_MESSAGE_COMMIT_FAILED, by value: this TU does not include the ABI header
+    stale.error = "an earlier transport failure";
+    LiveRoleOutboxEntry lost;
+    lost.localId = "2";
+    lost.identityPub = peer.identityPub;
+    lost.role = "admin";
+    lost.done = true;
+    lost.kind = 2;  // URNET_MESSAGE_COMMIT_LOST
+    lost.error = "epoch stale";
+    g.roleOutbox.push_back(stale);
+    g.roleOutbox.push_back(lost);
+
+    const demo::World w = BuildWorld(g);
+    const demo::Conversation* conv = w.conversations.empty() ? nullptr : &w.conversations.front();
+    const demo::MemberRef* mineRow = nullptr;
+    const demo::MemberRef* peerRow = nullptr;
+    if (conv) {
+      for (auto const& m : conv->members) {
+        if (m.mine) mineRow = &m;
+        else peerRow = &m;
+      }
+    }
+    const bool twoRows = conv && conv->members.size() == 2 && conv->memberCount == 2 && mineRow &&
+                         peerRow;
+    const bool myRoleOk = conv && conv->myRole == demo::kRoleOwner;
+    const bool mineOk = mineRow && mineRow->role == demo::kRoleOwner &&
+                        mineRow->displayName == demo::kUnavailable &&
+                        mineRow->identityPubHex == std::wstring(64, L'1') &&
+                        mineRow->devices.empty() &&
+                        mineRow->roleAction == demo::RoleActionState::None &&
+                        MemberRowTitle(*mineRow).starts_with(L"You");
+    const bool peerOk = peerRow && peerRow->role == demo::kRoleMember &&
+                        peerRow->displayName == demo::kUnavailable &&
+                        peerRow->identityPubHex == std::wstring(64, L'2') &&
+                        peerRow->roleAction == demo::RoleActionState::Lost &&
+                        peerRow->roleActionVerb == demo::kRoleAdmin &&
+                        peerRow->roleActionReason == L"epoch stale" &&
+                        peerRow->id == std::wstring(32, L'b');
+    const bool controlsOk =
+        conv && peerRow && mineRow &&
+        RoleControlsFor(conv->myRole, peerRow->role, peerRow->mine).size() == 3 &&
+        RoleControlsFor(conv->myRole, mineRow->role, mineRow->mine).empty();
+    const std::wstring caption = conv ? MembersCaptionMeta(*conv) : std::wstring();
+    const bool captionOk = caption.find(L"2 members") != std::wstring::npos &&
+                           caption.find(L"online") == std::wstring::npos &&
+                           caption.find(L"unavailable") != std::wstring::npos;
+    const bool ok = twoRows && myRoleOk && mineOk && peerOk && controlsOk && captionOk;
+    out.push_back(std::format(
+        L"  roster live      : {}  BuildWorld over 2 leaves gives {} rows (memberCount {}), my role "
+        L"\"{}\", own row {} (You, owner, no name, no devices, key kept), peer row {} (member, no "
+        L"name, newest outcome Lost with the library's reason, id = sender handle), controls {} "
+        L"(3 on the peer, 0 on own row), caption \"{}\" {}   [query: the roster is transcribed row "
+        L"for row with the placeholder for every name and no device list; the newest role-outbox "
+        L"entry naming an identity is the one drawn; presence is never claimed]",
+        Verdict(ok), conv ? conv->members.size() : 0, conv ? conv->memberCount : -1,
+        conv ? conv->myRole : std::wstring(L"-"), mineOk ? L"ok" : L"WRONG",
+        peerOk ? L"ok" : L"WRONG", controlsOk ? L"ok" : L"WRONG", caption,
+        captionOk ? L"ok" : L"WRONG"));
+  }
+  return out;
+}
+
 // ---- the status strip's pure rules (design §6.5) ----------------------------
 //
 // ONE line, per the d7 audit's S1 override: the 560 content-dip collapse rule
@@ -854,6 +1155,10 @@ std::vector<std::wstring> CollectDiagnostics() {
   // because "a reaction that has not been sealed is not sent" is the honesty rule again, one
   // affordance further along.
   for (auto& line : ReplyReactDiagnostics()) lines.push_back(std::move(line));
+  // The roster (item 242 R3): the role words, the control set per own role, the control names in
+  // both arms, the outcome notes, and the live mapping over a roster built here. Beside the
+  // reply/react lines because it is the same shape of gate one surface further along.
+  for (auto& line : RosterDiagnostics()) lines.push_back(std::move(line));
   {
     using namespace urmsg::demo;
     World const& w = GetWorld();

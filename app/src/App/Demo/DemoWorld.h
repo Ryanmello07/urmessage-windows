@@ -39,14 +39,54 @@ struct DeviceRef {
   bool isThisComputer;          // exactly one true in World::myDevices
 };
 
+// THE FOUR ROLES, spelled exactly as the message protocol spells them (MASTER section 11, and
+// urnetwork_message.h's member info): these are the values MemberRef::role and
+// Conversation::myRole carry in BOTH worlds, so a view branches on one spelling. The fabricated
+// fixture writes them by hand; a protocol-backed world copies them off the roster. A row whose
+// role is none of the four is drawn as the placeholder, never as a fifth role.
+inline constexpr wchar_t kRoleOwner[] = L"owner";
+inline constexpr wchar_t kRoleAdmin[] = L"admin";
+inline constexpr wchar_t kRoleMember[] = L"member";
+inline constexpr wchar_t kRoleObserver[] = L"observer";
+
+// WHAT THIS DEVICE IS DOING, OR LAST DID, TO A MEMBER'S ROLE. None is the ordinary state. Pending
+// means the call into the library has not returned. The other four are the four ways the ABI's
+// two role verbs answer other than OK (urnetwork_message.h: URNET_MESSAGE_COMMIT_REFUSED / LOST /
+// INVALID / FAILED), kept apart because each asks a different thing of the person: a refusal by
+// role will answer the same way again, a lost epoch race means fetch and try again, an invalid
+// request is this app's bug, and a failure is the transport. A change that SUCCEEDS leaves no
+// state here at all - the roster itself moves, in the same publish.
+enum class RoleActionState { None, Pending, Refused, Lost, Invalid, Failed };
+
 // A PERSON. A group of 5 members has 5 MemberRefs and may have more devices.
+//
+// `role` is one of the four spellings above. `mine` is true on the row that is this device's own
+// leaf - the fabricated fixture never sets it (its viewer is not in its own member lists), a
+// protocol-backed world sets it on exactly one row per leaf this device holds. `identityPubHex` is
+// what the two role verbs name a member BY (urnetwork_message.h: "IS THE VALUE THE TWO VERBS
+// TAKE"); empty when no source carries one, and then no control is offered on the row.
 struct MemberRef {
   std::wstring id;
   std::wstring displayName;
   Seed identityKey;             // identicon seed
-  bool admin;
+  std::wstring role;            // kRoleOwner | kRoleAdmin | kRoleMember | kRoleObserver
+  bool mine = false;
+  std::wstring identityPubHex;  // the ABI's identity_pub, lower-case hex; "" when unsourced
   std::vector<DeviceRef> devices;
+  // The change this device asked for on this member and its state; see RoleActionState. `verb`
+  // is the role asked for (kRoleAdmin / kRoleMember / kRoleObserver, or kRoleOwner for a transfer)
+  // and `reason` is the library's own out_error, verbatim, on the four non-OK answers.
+  RoleActionState roleAction = RoleActionState::None;
+  std::wstring roleActionVerb;
+  std::wstring roleActionReason;
 };
+
+// Owner or admin: the two roles MASTER section 11's table lets administer a group. The fixture
+// uses it for "who carries a second device"; the rail never does - the rail's control set comes
+// from Views/RosterRules.h, which reads the roles by name.
+inline bool CanAdminister(MemberRef const& m) {
+  return m.role == kRoleOwner || m.role == kRoleAdmin;
+}
 
 struct MessageInspect {
   uint64_t epoch;
@@ -112,6 +152,10 @@ struct Conversation {
   bool disappearing;                    // row draws the timer glyph INSTEAD of preview
   std::vector<MemberRef> members;       // PEOPLE
   int memberCount;                      // MUST equal members.size()
+  // THIS DEVICE'S OWN ROLE in the conversation, one of the four spellings above: what decides
+  // which controls the roster offers (Views/RosterRules.h). The fixture fabricates it per
+  // conversation; a protocol-backed world reads it off urnet_message_group_my_role.
+  std::wstring myRole;
   std::wstring retentionLabel;
   std::wstring mediaRetentionLabel;
   std::vector<MessageRow> rows;
@@ -160,8 +204,8 @@ inline constexpr wchar_t kInspectTargetRowId[] = L"c0-r12";
 // spelling. It is VISIBLE by design — hiding the field would let a reader assume there is simply
 // nothing to show, and filling it would be a fabrication. A protocol-backed world
 // (App\Live\LiveWorld.cpp) writes it wherever the message protocol carries no value: there are no
-// group names, no member lists, no sender names, no receipts past "the server took it", and no
-// read cursor. It lives here, beside the structs, because every view that renders one of those
+// group names, no member NAMES (the roster and its roles are real; who a leaf belongs to is not),
+// no sender names, no receipts past "the server took it", and no read cursor. It lives here, beside the structs, because every view that renders one of those
 // fields already includes this header and none of them may reach into Live\.
 inline constexpr wchar_t kUnavailable[] = L"unavailable";
 

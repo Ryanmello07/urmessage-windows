@@ -19,9 +19,12 @@
 
 #include "Identicon.h"
 #include "Log.h"
+#include "RunMode.h"  // ActiveRunMode, read at populate time (see PopulateMessage)
+#include "Strings.h"  // Narrow, for the roster's log lines
 #include "UrColors.h"
 #include "UrMotion.h"
 #include "Views/InspectRailFields.h"
+#include "Views/RosterRules.h"  // the roster's words, control sets and notes - pure, gated
 #include "Views/ThreadView.h"  // views::SendVerb / CanRetrySend — the app's ONE send verb
 
 // ---- ONE key/value call site in this file, enforced by the build (R3) ------
@@ -759,6 +762,21 @@ void AppendFieldRows(StackPanel const& panel, demo::Conversation const& conv,
   }
   if (card.root) kit::FinalizePaneCard(card);
 }
+
+// THE MEMBER DETAIL'S ROWS GO THROUGH THE SAME FUNNEL (item 242 R3). An expanded
+// member draws key/value rows - identity key, principal, display name, key
+// fingerprint - and every one of them but the identity key carries a value no
+// source can fill today, so a builder that skipped RailValueOr would be exactly
+// the bypass the poison exists to stop. Built HERE, inside the window, and
+// called from the roster code below the marker. Same key style and same faint
+// ink for a blank as AppendFieldRows gives its rows.
+Border MakeRailDetailRow(std::wstring const& key, std::wstring const& value) {
+  auto row = kit::MakePaneKeyValueRow(H(key), winrt::hstring{RailValueOr(value)}, 34,
+                                      winrt::hstring{RailSpokenValueOr(value)});
+  if (auto style = kit::StyleByKey(L"UrCaptionTextStyle")) row.key.Style(style);
+  if (value.empty()) row.value.Foreground(urnw::colors::FaintBrush());
+  return row.root;
+}
 // <-- THE WINDOW ENDS HERE. New functions go BELOW this line, not above it.
 #define MakePaneKeyValueRow MakePaneKeyValueRow_bypasses_RailValueOr_use_AppendFieldRows
 
@@ -770,21 +788,26 @@ bool IsExpanded(InspectRailView const& v, std::wstring const& memberId) {
 }
 
 // The row's whole announcement (a Button with panel content gets no automatic
-// name - the kit rule): identity, the admin note, the presence WORDS, and the
-// disclosure state, rewritten on every toggle so the state is spoken, not only
-// drawn.
+// name - the kit rule): identity and ROLE (the same title the row draws, from
+// the pure table), the presence WORDS, and the disclosure state, rewritten on
+// every toggle so the state is spoken, not only drawn.
 std::wstring MemberPresenceName(demo::MemberRef const& member, bool expanded) {
-  std::wstring name = member.displayName;
-  if (member.admin) name += L", Admin";
-  name += std::format(L", {}/{} online", OnlineDeviceCount(member), member.devices.size());
-  name += expanded ? L", expandable device list, expanded"
-                   : L", expandable device list, collapsed";
+  std::wstring name = MemberRowTitle(member);
+  name += L", " + MemberRowMeta(member);
+  name += expanded ? L", expandable member detail, expanded"
+                   : L", expandable member detail, collapsed";
   return name;
 }
 
 // A sub-row's Tag names the member it belongs to, so a collapse finds exactly
-// that member's rows with no position bookkeeping.
+// that member's rows with no position bookkeeping. EVERY sub-row a member opens
+// carries it - device rows, the detail rows, the role controls, the note - so
+// one collapse takes them all.
 constexpr wchar_t kDeviceSubRowTag[] = L"devsub:";
+
+void TagSubRow(FrameworkElement const& row, std::wstring const& memberId) {
+  row.Tag(winrt::box_value(winrt::hstring{std::wstring{kDeviceSubRowTag} + memberId}));
+}
 
 std::vector<Border> BuildDeviceSubRows(demo::MemberRef const& member) {
   std::vector<Border> rows;
@@ -801,18 +824,201 @@ std::vector<Border> BuildDeviceSubRows(demo::MemberRef const& member) {
     // device rows form one vertical line directly under the member names,
     // which is what reads as "belonging" without a tree glyph.
     row.root.Margin(ThicknessHelper::FromLengths(26, 0, 0, 0));
-    row.root.Tag(winrt::box_value(winrt::hstring{std::wstring{kDeviceSubRowTag} + member.id}));
+    TagSubRow(row.root, member.id);
     rows.push_back(row.root);
   }
   return rows;
 }
 
+// A muted, WRAPPING line inside a card - the roster's framing note under the
+// MEMBERS card and the outcome note under a member's controls. Not
+// MakePaneEmptyLine, which centres itself to fill an empty pane; this sits in a
+// list. `danger` paints it kDanger for an outcome that is a failure, beside
+// words that already say so (colour restates, never carries).
+Border MakeRailNote(std::wstring const& text, bool danger) {
+  Border host;
+  host.Padding(ThicknessHelper::FromLengths(12, 6, 12, 8));
+  TextBlock line;
+  if (auto style = kit::StyleByKey(L"UrRowNoteStyle")) line.Style(style);
+  line.TextWrapping(TextWrapping::Wrap);
+  line.TextTrimming(TextTrimming::None);
+  if (danger) line.Foreground(urnw::colors::DangerBrush());
+  line.Text(H(text));
+  host.Child(line);
+  return host;
+}
+
+// THE MEMBER DETAIL (Spec C screen 16): under the device rows, the fields the
+// screen names, each through the funnel. Principal and key fingerprint are the
+// placeholder in BOTH worlds - no source fills them, and "unavailable" is the
+// ruled spelling for that; the display name is whatever the source gave the
+// row, which in a live world is the same placeholder (no identity layer) and in
+// the fixture is its fabricated name; and the identity key is the ABI's own
+// when there is one (shown the way sdk/livepeer prints it: the first eight
+// octets, so the two logs can be laid side by side) and the placeholder
+// otherwise.
+std::vector<Border> BuildDetailSubRows(demo::MemberRef const& member) {
+  std::vector<Border> rows;
+  const std::wstring identity =
+      member.identityPubHex.empty() ? std::wstring(demo::kUnavailable)
+                                    : ShortHex(member.identityPubHex, 16);
+  struct Field {
+    wchar_t const* key;
+    std::wstring value;
+  };
+  const Field fields[] = {
+      {L"Identity key", identity},
+      {L"Principal", std::wstring(demo::kUnavailable)},
+      {L"Display name", member.displayName},
+      {L"Key fingerprint", std::wstring(demo::kUnavailable)},
+  };
+  for (auto const& f : fields) {
+    auto row = MakeRailDetailRow(f.key, f.value);
+    row.Margin(ThicknessHelper::FromLengths(26, 0, 0, 0));
+    TagSubRow(row, member.id);
+    rows.push_back(row);
+  }
+  return rows;
+}
+
+// ONE ROSTER VERB HOST, exactly as the thread keeps ONE send verb (ThreadView's
+// MutableSendVerb): the window fills it once, every control reads it at click
+// time, and `enabled` is re-pointed on every live beat.
+RosterVerb& MutableRosterVerb() {
+  static RosterVerb verb;
+  return verb;
+}
+
+// The transfer confirmation (item 242 R3). A ContentDialog over the rail's own
+// XamlRoot; Primary is the transfer, Close keeps things as they are and is the
+// default, so Enter does not transfer a group. The verb fires from the dialog's
+// completion and never from the click itself.
+void ConfirmTransfer(Button const& source, std::wstring identityPubHex) {
+  ContentDialog dialog;
+  dialog.XamlRoot(source.XamlRoot());
+  dialog.Title(winrt::box_value(H(TransferConfirmTitle())));
+  dialog.Content(winrt::box_value(H(TransferConfirmBody())));
+  dialog.PrimaryButtonText(H(TransferConfirmPrimary()));
+  dialog.CloseButtonText(H(TransferConfirmClose()));
+  dialog.DefaultButton(ContentDialogButton::Close);
+  dialog.Background(urnw::colors::SheetBrush());
+  auto op = dialog.ShowAsync();
+  op.Completed([identityPubHex](auto const& async, auto const& status) {
+    if (status != winrt::Windows::Foundation::AsyncStatus::Completed) return;
+    if (async.GetResults() != ContentDialogResult::Primary) {
+      urnw::LogInfo("rail: transfer of ownership NOT confirmed; nothing queued");
+      return;
+    }
+    auto const& verb = MutableRosterVerb();
+    if (!verb.enabled || !verb.transferOwnership) return;
+    const bool queued = verb.transferOwnership(identityPubHex);
+    urnw::LogInfo("rail: transfer of ownership confirmed and {} by the host",
+                  queued ? "taken" : "REFUSED");
+  });
+}
+
+// THE ROLE CONTROLS under an expanded member (Spec C screen 16's "role
+// controls"), and the note under them. Which buttons exist is the pure table's
+// answer for the viewer's role against the member's (RoleControlsFor); whether
+// they act is the capability (CanChangeRoles), and a dark one says why in its
+// name. Two per line in a grid, 30 tall, so four fit in two lines of the 360
+// column; a click darkens the pressed button and hands the request to the
+// host, and the outcome comes back as a published world drawn on this member.
+std::vector<Border> BuildRoleControlRows(demo::MemberRef const& member,
+                                         std::wstring const& myRole) {
+  std::vector<Border> rows;
+  const std::vector<RoleVerb> verbs = RoleControlsFor(myRole, member.role, member.mine);
+  const bool canAct = CanChangeRoles() && !member.identityPubHex.empty();
+  const bool pending = member.roleAction == demo::RoleActionState::Pending;
+  if (!verbs.empty()) {
+    Border host;
+    host.Padding(ThicknessHelper::FromLengths(26 + 12, 6, 12, 6));
+    Grid grid;
+    grid.ColumnSpacing(8);
+    grid.RowSpacing(6);
+    ColumnDefinition left, right;
+    left.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
+    right.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
+    grid.ColumnDefinitions().Append(left);
+    grid.ColumnDefinitions().Append(right);
+    for (size_t i = 0; i < verbs.size(); ++i) {
+      if (i % 2 == 0) {
+        RowDefinition row;
+        row.Height(GridLengthHelper::Auto());
+        grid.RowDefinitions().Append(row);
+      }
+      const RoleVerb verb = verbs[i];
+      Button b;
+      if (auto style = kit::StyleByKey(L"UrPaneActionSecondaryStyle")) b.Style(style);
+      b.Height(30);
+      b.MinHeight(30);
+      b.Margin(ThicknessHelper::FromUniformLength(0));
+      b.Padding(ThicknessHelper::FromLengths(8, 0, 8, 0));
+      b.FontSize(12);
+      b.HorizontalAlignment(HorizontalAlignment::Stretch);
+      b.Content(winrt::box_value(H(RoleControlLabel(verb))));
+      // Dark while this member's previous request is still inside the library: a second press
+      // during the round trip would be the same change asked for twice.
+      b.IsEnabled(canAct && !pending);
+      automation::AutomationProperties::SetName(b, H(RoleControlName(verb, canAct && !pending)));
+      if (canAct && !pending) {
+        b.Click([verb, identity = member.identityPubHex](
+                    winrt::Windows::Foundation::IInspectable const& sender, auto const&) {
+          auto button = sender.try_as<Button>();
+          if (verb == RoleVerb::TransferOwnership) {
+            if (button) ConfirmTransfer(button, identity);
+            return;
+          }
+          auto const& host = MutableRosterVerb();
+          if (!host.enabled || !host.setRole) return;
+          const bool queued = host.setRole(identity, std::wstring(RoleVerbTarget(verb)));
+          urnw::LogInfo("rail: {} on a member {} by the host", urnw::Narrow(RoleControlLabel(verb)),
+                        queued ? "taken" : "REFUSED");
+          // Dark once taken, so two clicks cannot queue one change twice while the first is
+          // inside the ABI. The rail is re-populated by the host's next publish either way.
+          if (queued && button) button.IsEnabled(false);
+        });
+      }
+      Grid::SetRow(b, static_cast<int32_t>(i / 2));
+      Grid::SetColumn(b, static_cast<int32_t>(i % 2));
+      grid.Children().Append(b);
+    }
+    host.Child(grid);
+    TagSubRow(host, member.id);
+    rows.push_back(host);
+  }
+  const std::wstring note = RoleActionNote(member);
+  if (!note.empty()) {
+    // Red for the three answers that are failures; muted for Pending and for LOST, which the ABI
+    // says "is not an error to show: the change may still be right" - the words already say what
+    // to do next, and a red line would make a race read as a fault.
+    const bool failure = member.roleAction == demo::RoleActionState::Refused ||
+                         member.roleAction == demo::RoleActionState::Invalid ||
+                         member.roleAction == demo::RoleActionState::Failed;
+    auto line = MakeRailNote(note, /*danger=*/failure);
+    line.Margin(ThicknessHelper::FromLengths(26, 0, 0, 0));
+    TagSubRow(line, member.id);
+    rows.push_back(line);
+  }
+  return rows;
+}
+
+// Everything an expanded member shows, in order: its devices, its detail, its
+// controls and their note.
+std::vector<Border> BuildMemberSubRows(demo::MemberRef const& member, std::wstring const& myRole) {
+  std::vector<Border> rows = BuildDeviceSubRows(member);
+  for (auto const& row : BuildDetailSubRows(member)) rows.push_back(row);
+  for (auto const& row : BuildRoleControlRows(member, myRole)) rows.push_back(row);
+  return rows;
+}
+
 void InsertDeviceSubRows(StackPanel const& cardBody, UIElement const& afterRow,
-                         demo::MemberRef const& member, bool animate) {
+                         demo::MemberRef const& member, std::wstring const& myRole,
+                         bool animate) {
   auto children = cardBody.Children();
   uint32_t index = 0;
   if (!children.IndexOf(afterRow, index)) return;
-  auto rows = BuildDeviceSubRows(member);
+  auto rows = BuildMemberSubRows(member, myRole);
   uint32_t at = index + 1;
   for (auto const& row : rows) children.InsertAt(at++, row);
 
@@ -866,7 +1072,7 @@ void RemoveDeviceSubRows(StackPanel const& cardBody, std::wstring const& memberI
 }
 
 void ToggleMemberExpansion(InspectRailView& v, kit::PanePresenceRow const& row,
-                           demo::MemberRef const& member) {
+                           demo::MemberRef const& member, std::wstring const& myRole) {
   auto& ids = v.expandedMemberIds;
   auto it = std::find(ids.begin(), ids.end(), member.id);
   const bool expanding = it == ids.end();
@@ -885,7 +1091,7 @@ void ToggleMemberExpansion(InspectRailView& v, kit::PanePresenceRow const& row,
   auto cardBody = row.root.Parent().try_as<StackPanel>();
   if (!cardBody) return;
   if (expanding) {
-    InsertDeviceSubRows(cardBody, row.root, member, /*animate=*/true);
+    InsertDeviceSubRows(cardBody, row.root, member, myRole, /*animate=*/true);
   } else {
     RemoveDeviceSubRows(cardBody, member.id);
   }
@@ -894,24 +1100,34 @@ void ToggleMemberExpansion(InspectRailView& v, kit::PanePresenceRow const& row,
   kit::FinalizePaneCard(kit::PaneCard{nullptr, cardBody});
 }
 
-kit::PanePresenceRow MakeMemberPresenceRow(InspectRailView& v, demo::MemberRef const& member) {
+kit::PanePresenceRow MakeMemberPresenceRow(InspectRailView& v, demo::MemberRef const& member,
+                                           std::wstring const& myRole) {
   auto row = kit::MakePanePresenceRow();
   // The member's own mark, 28px, under the badge the kit already seated - the
   // key whose change would change the picture, which is exactly what an
-  // identicon is FOR.
+  // identicon is FOR. In a live world the seed is the member's REAL identity
+  // key, so the mark is a rendering of a fact and still not a name.
   row.avatarHost.Children().InsertAt(0, urmsg::MakeIdenticon(member.identityKey, 28));
-  kit::SetPanePresenceOnline(row, 0 < OnlineDeviceCount(member));
+  // THE BADGE IS A CLAIM ABOUT PRESENCE, so a member with no device list (the
+  // live roster: presence is not carried) draws none - a green disc would say
+  // "online" and a faint ring would say "offline", and neither is known.
+  if (member.devices.empty()) {
+    row.badge.Visibility(Visibility::Collapsed);
+    row.badgeCore.Visibility(Visibility::Collapsed);
+  } else {
+    kit::SetPanePresenceOnline(row, 0 < OnlineDeviceCount(member));
+  }
 
-  std::wstring title = member.displayName;
-  if (member.admin) title += L" \u00B7 Admin";  // U+00B7 MIDDLE DOT
-  row.title.Text(H(title));
+  // The ROLE is in the title, in words, on every row (item 242 R3): "Mira
+  // Okonkwo · Owner", "You · Admin" - the pure table's spelling, so the rail
+  // and --diagnose cannot disagree about what a role is called.
+  row.title.Text(H(MemberRowTitle(member)));
 
   // The meta states the presence in WORDS. That is the primary channel and
   // what entitles the corner badge to remain a Raw restatement - "colour is
-  // never the only carrier of state".
-  const std::wstring presence =
-      std::format(L"{}/{} online", OnlineDeviceCount(member), member.devices.size());
-  row.meta.Text(H(presence));
+  // never the only carrier of state". With no device list it is the
+  // placeholder, and the badge above is gone with it.
+  row.meta.Text(H(MemberRowMeta(member)));
 
   const bool expanded = IsExpanded(v, member.id);
   kit::SetPanePresenceExpanded(row, expanded);
@@ -919,11 +1135,12 @@ kit::PanePresenceRow MakeMemberPresenceRow(InspectRailView& v, demo::MemberRef c
 
   // Captures, deliberately: the view struct BY REFERENCE (it is a MainWindow
   // member and outlives every population generation of its own rows - a click
-  // can only fire while the row exists), the member BY VALUE (ambient
-  // activity can append to the world vector it came from), the row BY VALUE
-  // (a struct of winrt handles). No `this`, no raw pointer into the world.
-  row.root.Click([&v, member, row](auto const&, auto const&) {
-    ToggleMemberExpansion(v, row, member);
+  // can only fire while the row exists), the member and the viewer's role BY
+  // VALUE (ambient activity can append to the world vector it came from), the
+  // row BY VALUE (a struct of winrt handles). No `this`, no raw pointer into
+  // the world.
+  row.root.Click([&v, member, myRole, row](auto const&, auto const&) {
+    ToggleMemberExpansion(v, row, member, myRole);
   });
   return row;
 }
@@ -1030,43 +1247,39 @@ void PopulateConversation(InspectRailView& v, demo::Conversation const& conv,
   body.Clear();
   body.Append(MakeSubjectRow(conv));
 
-  // The caption meta is WORDS, not a bare count (design d4 §2), summed with
-  // the same OnlineDeviceCount the rows report - so the caption and the rows
-  // cannot disagree in a screenshot.
-  size_t online = 0;
-  size_t total = 0;
-  for (auto const& member : conv.members) {
-    online += OnlineDeviceCount(member);
-    total += member.devices.size();
-  }
+  // The caption meta is WORDS, not a bare count (design d4 §2), summed by the
+  // pure table from the same OnlineDeviceCount the rows report - so the caption
+  // and the rows cannot disagree in a screenshot - and "presence unavailable"
+  // where the list carries no devices at all (the live roster).
+  //
   // AN EMPTY LIST IS "NO SOURCE HAS ONE", NOT "NOBODY IS IN IT", and the two must not read alike.
-  // A conversation backed by the message protocol has no membership to draw - the ABI carries no
-  // roster, contact discovery is not built, and a member who has never spoken is invisible - so
-  // "0 members / 0/0 online" and "No members" would both be statements about the group that this
-  // app cannot make. The one placeholder says the true thing instead. The fabricated world never
-  // reaches this branch (assertion I2 requires every conversation's memberCount to equal a
-  // non-empty members.size()), so the demo's rendering is unchanged.
-  AppendCaption(panel, L"MEMBERS",
-                conv.members.empty()
-                    ? std::wstring(demo::kUnavailable)
-                    : std::format(L"{} members \u00B7 {}/{} online",  // U+00B7 MIDDLE DOT
-                                  conv.members.size(), online, total),
-                /*first=*/true);
+  // Since item 242 R3 a conversation backed by the message protocol HAS a roster - the library
+  // hands it over with a role per row - so this branch is now the unreadable-roster case (a
+  // closed group, a parse that failed), and it still says the one placeholder rather than
+  // "0 members". The fabricated world never reaches it (assertion I2 requires every
+  // conversation's memberCount to equal a non-empty members.size()).
+  AppendCaption(panel, L"MEMBERS", MembersCaptionMeta(conv), /*first=*/true);
   if (conv.members.empty()) {
     body.Append(kit::MakePaneEmptyLine(demo::kUnavailable));
   } else {
     auto card = kit::MakePaneCard();
     for (auto const& member : conv.members) {
-      card.body.Children().Append(MakeMemberPresenceRow(v, member).root);
+      card.body.Children().Append(MakeMemberPresenceRow(v, member, conv.myRole).root);
       // An expanded member's sub-rows are rebuilt inline and SILENTLY: a
       // populate never animates - the fade belongs to the click, and a
-      // density toggle must not announce itself.
+      // density toggle or a live beat must not announce itself.
       if (IsExpanded(v, member.id))
-        for (auto const& sub : BuildDeviceSubRows(member)) card.body.Children().Append(sub);
+        for (auto const& sub : BuildMemberSubRows(member, conv.myRole))
+          card.body.Children().Append(sub);
     }
     kit::FinalizePaneCard(card);
     body.Append(card.root);
   }
+  // THE FRAMING UNDER THE CARD, chosen by the LATCH and not the switch (item 240): the same
+  // ActiveRunMode() read PopulateMessage takes for the lock header, at populate time, so it
+  // follows the beat that put a live world on screen and never precedes it. Both arms are gated
+  // as a pair in RunModeCopyDiagnostics.
+  body.Append(MakeRailNote(urmsg::RosterNote(urmsg::ActiveRunMode()), /*danger=*/false));
 
   AppendFieldRows(panel, conv, BuildConversationFields(conv, advanced),
                   /*messageMode=*/false, /*captionsAlreadyOpened=*/true);
@@ -1314,6 +1527,33 @@ void SetInspectRailAdvanced(InspectRailView& v, bool advanced) {
     if (!conv) return;
     if (auto const* row = FindMessageRow(*conv, RailMessageId(v)))
       PopulateMessage(v, *conv, *row, advanced);
+  }
+}
+
+// ---- the roster's verbs and the live beat (item 242 R3) --------------------
+
+void SetInspectRailRosterVerb(RosterVerb verb) { MutableRosterVerb() = std::move(verb); }
+
+void SetInspectRailRosterEnabled(bool enabled) { MutableRosterVerb().enabled = enabled; }
+
+bool CanChangeRoles() {
+  auto const& verb = MutableRosterVerb();
+  return verb.enabled && verb.setRole != nullptr && verb.transferOwnership != nullptr;
+}
+
+void RefreshInspectRail(InspectRailView& v, demo::Conversation const& c) {
+  if (!v.root) return;
+  if (RailConversationId(v) != c.id) return;
+  // POPULATE ONLY, in whichever mode is showing, and the expansion ids are KEPT
+  // (the SetInspectRailAdvanced path, not the SetInspectRailConversation one):
+  // this is the same subject a beat later, not a new subject.
+  const bool advanced = RailAdvanced(v);
+  if (v.conversationScroll && v.conversationScroll.Visibility() == Visibility::Visible) {
+    PopulateConversation(v, c, advanced);
+    return;
+  }
+  if (v.messageScroll && v.messageScroll.Visibility() == Visibility::Visible) {
+    if (auto const* row = FindMessageRow(c, RailMessageId(v))) PopulateMessage(v, c, *row, advanced);
   }
 }
 
