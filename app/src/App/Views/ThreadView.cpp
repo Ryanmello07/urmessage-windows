@@ -425,7 +425,12 @@ FrameworkElement MakeDeliveryCluster(demo::MessageRow const& row) {
   //
   // IT NAMES THE ROW IT CAME FROM. The send is a retry OF THIS MESSAGE, not a second one like it;
   // the host drops the failed entry this id names in the same beat it queues the attempt.
-  const bool canRetry = CanRetrySend();
+  // THE SESSION AND THE ROLE, through the ONE total (ThreadView.h's SendAffordanceState). The row
+  // half is `true`: this line is only reached on a FAILED row (the early return above), and a
+  // failed row is precisely what a retry acts on — MakeBubbleRow's `targetable`, which excludes
+  // Failed, is the reply/react precondition and not this one.
+  const ComposerState retryState = SendAffordanceState();
+  const bool canRetry = BubbleActionCanAct(retryState, /*targetable=*/true);
   Button retry;
   retry.Content(winrt::box_value(winrt::hstring{L"Try again"}));
   retry.HorizontalAlignment(HorizontalAlignment::Right);
@@ -434,17 +439,20 @@ FrameworkElement MakeDeliveryCluster(demo::MessageRow const& row) {
   retry.MinHeight(24);
   retry.IsEnabled(canRetry);
   // A Button whose Content is text gets a name from that text, and "Try again" alone says neither
-  // what it would retry nor — when it is dark — why it cannot. The two wordings are a PAIR: the
-  // disabled one names the missing session rather than the build, because this build can send.
+  // what it would retry nor — when it is dark — why it cannot. The three wordings are a SET (the
+  // pure table in Views/ThreadLayout.h): the no-session one names the missing session rather than
+  // the build, because this build can send; the observer one names the ROLE and never the session,
+  // because an observer's session is provably live.
   Automation::AutomationProperties::SetName(
-      retry, winrt::hstring{canRetry
-                                ? L"Try again: send this message again"
-                                : L"Try again: there is no live session to send this into"});
+      retry, winrt::hstring{BubbleActionName(BubbleAction::Retry, retryState)});
   if (canRetry) {
     retry.Click([id = row.id, body = row.body](
                     winrt::Windows::Foundation::IInspectable const& sender, auto const&) {
       auto const& verb = SendVerb();
-      if (!verb.enabled || !verb.send) return;
+      // THE ROLE IS A DOOR ON THE SEND PATH, not just a reason a button is dark: the thread can be
+      // rebuilt by a publish between this button being drawn and being pressed, and the property
+      // belongs to the path. Same shape as SubmitComposer's own refusal.
+      if (!verb.enabled || !verb.mayRoleSend || !verb.send) return;
       // Dark the moment it is taken, so a second click cannot queue the same message twice while
       // the first attempt is still inside the ABI. The row is replaced by the host's next publish
       // either way — as the record, or as a fresh failure — so nothing has to turn it back on.
@@ -503,10 +511,15 @@ void SetActionsRevealed(FrameworkElement const& strip, bool shown) {
 }
 
 // One icon button of the pair. Same construction as the composer's MakeInertIconButton, with the
-// one difference that IsEnabled is an argument: this button is live where there is a session to
-// act into and dark where there is not, which is design §9.1 unchanged (a disabled control is
-// drawn at 0.38 and never takes focus) rather than relaxed.
-Button MakeBubbleActionButton(wchar_t const* glyph, BubbleAction action, bool canAct) {
+// one difference that IsEnabled is decided rather than fixed: this button is live where there is a
+// session to act into AND A ROLE THAT MAY WRITE TO THIS GROUP, and dark where either is missing,
+// which is design §9.1 unchanged (a disabled control is drawn at 0.38 and never takes focus)
+// rather than relaxed.
+//
+// ONE ARGUMENT, NOT TWO, so the name and the enablement cannot be given different answers. Called
+// only for a row that is targetable (MakeBubbleRow builds the pair under that test), which is why
+// `true` is the row half passed to BubbleActionCanAct here.
+Button MakeBubbleActionButton(wchar_t const* glyph, BubbleAction action, ComposerState state) {
   Button b;
   FontIcon g;
   g.FontFamily(IconFont());
@@ -520,10 +533,10 @@ Button MakeBubbleActionButton(wchar_t const* glyph, BubbleAction action, bool ca
   b.MinHeight(0);
   b.CornerRadius(CornerRadiusHelper::FromUniformRadius(6));
   b.Foreground(urnw::colors::MutedBrush());
-  b.IsEnabled(canAct);
-  // A Button whose Content is an element gets NO automatic name. Both arms come from the pure
+  b.IsEnabled(BubbleActionCanAct(state, /*targetable=*/true));
+  // A Button whose Content is an element gets NO automatic name. All three arms come from the pure
   // table in Views/ThreadLayout.h, where --diagnose reads them.
-  Automation::AutomationProperties::SetName(b, winrt::hstring{BubbleActionName(action, canAct)});
+  Automation::AutomationProperties::SetName(b, winrt::hstring{BubbleActionName(action, state)});
   return b;
 }
 
@@ -617,7 +630,11 @@ Controls::Flyout MakeReactionPicker(demo::MessageRow const& row) {
     b.Click([rowId = row.id, emoji, remove = s.standing, weakFlyout = winrt::make_weak(flyout)](
                 winrt::Windows::Foundation::IInspectable const& sender, auto const&) {
       auto const& verb = SendVerb();
-      if (!verb.enabled || !verb.react) return;
+      // THE ROLE AT THE DOOR, as on every other send path in this file: REACTION_ADD and
+      // REACTION_REMOVE are two of the four kinds item 242 ruling 19 refuses an observer, and the
+      // picker is a surface a publish can outlive. Unreachable while the picker is only attached
+      // under canAct - which is the point: the refusal belongs to the path, not to an IsEnabled.
+      if (!verb.enabled || !verb.mayRoleSend || !verb.react) return;
       if (verb.react(rowId, emoji, remove)) {
         // Dark once taken, so a second click cannot queue the same attempt twice while the first
         // is inside the ABI; the whole picker is rebuilt by the host's next publish anyway.
@@ -907,7 +924,14 @@ BubbleRow MakeBubbleRow(demo::MessageRow const& row, bool group, bool showSender
   // nothing. The fabricated fixture's Pending and Failed rows fall under the same rule.
   const bool targetable = row.state != demo::DeliveryState::Pending &&
                           row.state != demo::DeliveryState::Failed;
-  const bool canAct = targetable && CanRetrySend();
+  // THE SESSION AND THE ROLE, not the session alone. Item 242 R4's first pass gated the composer
+  // and left these two buttons on the SESSION fact, so an observer was offered a live Reply and a
+  // live React on the same screen as a composer reading "You can read this group but not send to
+  // it." — and REPLY and REACTION_ADD are two of the four kinds ruling 19 refuses, so the only
+  // thing left stopping a click was the library failing the send, which is the inference ruling 23
+  // says this app does not make.
+  const ComposerState actState = SendAffordanceState();
+  const bool canAct = BubbleActionCanAct(actState, targetable);
 
   StackPanel pair;
   pair.Orientation(Orientation::Horizontal);
@@ -927,8 +951,8 @@ BubbleRow MakeBubbleRow(demo::MessageRow const& row, bool group, bool showSender
     actions.Margin(ThicknessHelper::FromLengths(0, 0, 0, 2));
     actions.Opacity(0.0);
 
-    auto reply = MakeBubbleActionButton(L"\uE97A", BubbleAction::Reply, canAct);  // "Reply"
-    auto react = MakeBubbleActionButton(L"\uE76E", BubbleAction::React, canAct);  // "Emoji2"
+    auto reply = MakeBubbleActionButton(L"\uE97A", BubbleAction::Reply, actState);  // "Reply"
+    auto react = MakeBubbleActionButton(L"\uE76E", BubbleAction::React, actState);  // "Emoji2"
     auto reveal = std::make_shared<ActionReveal>();
     auto apply = [reveal, actions] {
       SetActionsRevealed(actions, reveal->hover || reveal->focus || reveal->open);
@@ -945,6 +969,12 @@ BubbleRow MakeBubbleRow(demo::MessageRow const& row, bool group, bool showSender
       // this free function has no parts pointer to reach the composer with.
       reply.Click([rowCopy = row](auto const&, auto const&) {
         auto const& verb = SendVerb();
+        // The role at the door, as on the react and retry paths: REPLY is one of the four kinds
+        // ruling 19 refuses an observer, and opening the reply strip is the first step of sending
+        // one. Unreachable while the button is dark - it is here because the property belongs to
+        // the path, and because `canAct` above now gates only THIS wiring: the button's own
+        // enablement is decided once, inside MakeBubbleActionButton, off the same state.
+        if (!verb.mayRoleSend) return;
         if (verb.beginReply) verb.beginReply(rowCopy);
       });
       auto picker = MakeReactionPicker(row);
@@ -2286,6 +2316,17 @@ bool CanRetrySend() {
   return verb.enabled && verb.send != nullptr;
 }
 
+ComposerState SendAffordanceState() {
+  // THE SESSION HALF IS CanRetrySend'S OWN ANSWER - the armed flag AND a verb behind it, because
+  // an armed flag with nothing to call is not a session an affordance can act into. THE ROLE HALF
+  // is the verb's own field, written by SetThreadSendEnabled on the same beat. ComposerStateFor
+  // orders them SESSION FIRST, for the reason Views/ThreadLayout.h gives: a --live launch still
+  // drawing the fabricated world has fabricated roles and a real absence of a session, and the
+  // absence is the true thing to say there.
+  auto const& verb = MutableSendVerb();
+  return ComposerStateFor(CanRetrySend(), verb.mayRoleSend);
+}
+
 ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
                       std::function<void()> onDeselect,
                       std::function<bool(std::wstring, std::wstring, std::wstring)> onSend,
@@ -3596,19 +3637,28 @@ void SetThreadRunMode(ThreadView& v, urmsg::RunMode mode) {
   UpdateComposerSend(parts);
 }
 
-// The host's answer to the composer's TWO questions. Idempotent, safe before any world exists.
+// The host's answer to the TWO QUESTIONS EVERY SEND AFFORDANCE ON THIS SURFACE ASKS - the
+// composer, the per-bubble Reply and React, and both [ Try again ] buttons. Idempotent, safe
+// before any world exists.
 //
-// `enabled` is the SESSION fact (urmsg::live::CanSend()) and it writes BOTH the composer's state
-// and the one the two [ Try again ] buttons read — those are built row by row as the thread
-// redraws, so they read the flag rather than being visited.
+// `enabled` is the SESSION fact (urmsg::live::CanSend()); `mayRoleSend` is the ROLE fact (item 242
+// R4): false only where the OPEN CONVERSATION's myRole is "observer". BOTH go into the one verb,
+// because everything except the composer is built row by row as the thread redraws and reads the
+// verb rather than being visited.
 //
-// `mayRoleSend` is the ROLE fact (item 242 R4): false only where the open conversation's myRole is
-// "observer". IT IS DELIBERATELY NOT FOLDED INTO `enabled`. The retry buttons and the bubble
-// actions keep taking the SESSION answer alone, because their dark arm names the missing session
-// and that sentence has to stay true; and a fold would make the composer unable to say which of the
-// two facts is the one stopping it — which is the whole point of R4's third string.
+// THEY ARE STILL NOT FOLDED INTO ONE BOOLEAN, and the reason is unchanged: a dark control has to
+// be able to say WHICH of the two stopped it. A fold would make every dark button announce that
+// there is no live session — false for an observer, whose role could only have been read off an
+// open group, and that exact sentence read out at the one moment it does not describe is the
+// defect R3 shipped on the roster's controls.
+//
+// WHAT R4'S FIRST PASS GOT WRONG WAS THE OTHER HALF: the role reached the composer and stopped
+// there, so an observer was shown a dead composer and 39 live Reply/React buttons and a live
+// retry beside it. Both facts now travel together and stay distinguishable, and the one place they
+// are combined is SendAffordanceState.
 void SetThreadSendEnabled(ThreadView& v, bool enabled, bool mayRoleSend) {
   MutableSendVerb().enabled = enabled;
+  MutableSendVerb().mayRoleSend = mayRoleSend;
   auto parts = Find(v.root);
   if (!parts) return;
   parts->sendEnabled = enabled;

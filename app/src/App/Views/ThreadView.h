@@ -127,11 +127,25 @@ struct ThreadSendVerb {
   // function MakeBubbleRow, which has no parts - reaches it here. Null before MakeThread ran.
   std::function<void(urmsg::demo::MessageRow const& row)> beginReply;
   bool enabled = false;
+  // THE ROLE HALF, beside the session half and deliberately NOT folded into it (item 242 R4's
+  // follow-up): false only where the OPEN CONVERSATION's myRole is "observer". It lives here for
+  // the same reason `enabled` does - the affordances that read it are built row by row as the
+  // thread redraws and cannot be visited - and it is kept SEPARATE from `enabled` because a dark
+  // control has to be able to say which of the two facts stopped it. True by default, so a host
+  // that wired no role is never silently read as an observer.
+  bool mayRoleSend = true;
 };
 ThreadSendVerb const& SendVerb();
-// True when a retry drawn right now would actually do something. The one predicate both [ Try
-// again ] buttons ask, so the two can never disagree about whether this session can resend.
+// True when a retry drawn right now would find a SESSION to act into. The session half only: it
+// says nothing about the role, and no affordance may be enabled on it alone. Kept as its own
+// predicate because "is there a session" is a question other surfaces ask for their own reasons.
 bool CanRetrySend();
+// THE ONE TOTAL EVERY SEND AFFORDANCE THAT IS NOT THE COMPOSER READS: the per-bubble Reply and
+// React, the thread's [ Try again ] and the rail's. It is the composer's own function over the
+// composer's own two facts (Views/ThreadLayout.h's ComposerStateFor, session first), so the
+// composer and the buttons beside it cannot disagree about whether this device may write to this
+// group - which is exactly what item 242 R4's first pass shipped.
+ComposerState SendAffordanceState();
 
 // ---- the thread's own internals (NOT in the contract) --------------------
 // The identicon gutter. 28 + 8 of air: Spec C §W9's 40x40 is the LIST row's

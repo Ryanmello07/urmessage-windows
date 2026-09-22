@@ -26,7 +26,7 @@
 #include "Views/InspectRailFields.h"
 #include "Views/RosterRules.h"  // the roster's words, control sets and notes - pure, gated
 #include "Views/ThreadLayout.h"  // kObserverSettingsCaveat (item 242 R4, ruling 22) - pure, gated
-#include "Views/ThreadView.h"  // views::SendVerb / CanRetrySend — the app's ONE send verb
+#include "Views/ThreadView.h"  // views::SendVerb / SendAffordanceState — the app's ONE send verb
 
 // ---- ONE key/value call site in this file, enforced by the build (R3) ------
 //
@@ -584,9 +584,10 @@ FrameworkElement MakeLockHeader(urmsg::RunMode mode) {
 }
 
 // The reason AND the affordance, because design 9.1 asks for both - and whether
-// the button ACTS is decided by whether there is a session to act into, which is
-// the same question the thread's own [ Try again ] asks and through the same
-// predicate (views::CanRetrySend). It used to be unconditionally disabled and
+// the button ACTS is decided by whether there is a session to act into AND a
+// role that may write to this group, which is the same question the thread's own
+// [ Try again ] asks and through the same total (views::SendAffordanceState) and
+// the same rule (views::BubbleActionCanAct). It used to be unconditionally disabled and
 // its name said "not available in this build": true while nothing in the app
 // called a send verb, and false the moment the composer was wired to
 // urnet_message_group_send. Where there is no live session it is still dark, and
@@ -633,7 +634,12 @@ void AppendFailureBlock(UIElementCollection const& body, std::wstring const& rea
   row.Child(grid);
   body.Append(row);
 
-  const bool canRetry = CanRetrySend() && !messageBody.empty();
+  // THE SESSION AND THE ROLE, through the SAME total the thread's copy of this button reads
+  // (views::SendAffordanceState) - the whole point of there being one. Item 242 R4's first pass
+  // left both retries on the session alone, so an observer got a live [ Try again ] here too. The
+  // body is this copy's own row half: the rail has to hold octets to resend.
+  const ComposerState retryState = SendAffordanceState();
+  const bool canRetry = BubbleActionCanAct(retryState, !messageBody.empty());
   Button retry;
   if (auto style = kit::StyleByKey(L"UrPaneActionSecondaryStyle")) retry.Style(style);
   retry.Content(winrt::box_value(winrt::hstring{L"Try again"}));
@@ -641,14 +647,18 @@ void AppendFailureBlock(UIElementCollection const& body, std::wstring const& rea
   // A Button whose Content is text still gets a name from that text, but the
   // reason it cannot be pressed is not in it. This project has paid twice for
   // controls that reach a screen reader as "button" and nothing else.
+  //
+  // THE NAME DESCRIBES THE SESSION AND THE ROLE, which is what the three arms of the pure table
+  // say. It does not describe an empty body: that is a degenerate rail state, and the old code
+  // announced "there is no live session" for it - a FALSE sentence - rather than say nothing.
   automation::AutomationProperties::SetName(
-      retry, winrt::hstring{canRetry ? L"Try again, send this message again"
-                                     : L"Try again, there is no live session to send this into"});
+      retry, winrt::hstring{BubbleActionName(BubbleAction::RailRetry, retryState)});
   if (canRetry) {
     retry.Click([rowId, messageBody](winrt::Windows::Foundation::IInspectable const& sender,
                                      auto const&) {
       auto const& verb = SendVerb();
-      if (!verb.enabled || !verb.send) return;
+      // The role at the door, as on the thread's copy: a publish can outlive this button.
+      if (!verb.enabled || !verb.mayRoleSend || !verb.send) return;
       // Dark once taken, so two clicks cannot queue one message twice while the
       // first attempt is inside the ABI. The rail is re-populated by the host's
       // next publish either way.

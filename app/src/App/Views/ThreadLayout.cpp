@@ -25,21 +25,75 @@ bool IsMessage(demo::MessageRow const& r) { return r.kind == demo::RowKind::Mess
 
 }  // namespace
 
-// ---- the two per-bubble actions ------------------------------------------
+// ---- the four per-message send affordances --------------------------------
 
-wchar_t const* BubbleActionName(BubbleAction action, bool canAct) {
-  // The disabled arms follow the [ Try again ] pair's wording ("there is no live
-  // session to ...") so a screen reader hears the same fact from every dark
-  // control on the surface. They name the SESSION and never the build.
+// ACTION-MAJOR, so each control's three arms sit together and a reader can see
+// at one glance that no arm borrows another control's sentence. Every NoSession
+// and MaySend arm below is the string that shipped, character for character; the
+// ObserverOnly arms are the ones item 242 R4's follow-up adds.
+std::wstring BubbleActionName(BubbleAction action, ComposerState state) {
   switch (action) {
     case BubbleAction::Reply:
-      return canAct ? L"Reply to this message"
-                    : L"Reply: there is no live session to send a reply into";
+      switch (state) {
+        case ComposerState::NoSession:
+          return L"Reply: there is no live session to send a reply into";
+        case ComposerState::ObserverOnly:
+          // The control is NAMED and then Spec C's sentence follows verbatim, as
+          // the reason - ComposerBoxName's shape, for the same reason it has it:
+          // a reader has to know WHICH control is dead before being told why.
+          return std::wstring(L"Reply, disabled. ") + kObserverComposerReason;
+        case ComposerState::MaySend:
+          return L"Reply to this message";
+      }
+      break;
     case BubbleAction::React:
-      return canAct ? L"React to this message"
-                    : L"React: there is no live session to send a reaction into";
+      switch (state) {
+        case ComposerState::NoSession:
+          return L"React: there is no live session to send a reaction into";
+        case ComposerState::ObserverOnly:
+          return std::wstring(L"React, disabled. ") + kObserverComposerReason;
+        case ComposerState::MaySend:
+          return L"React to this message";
+      }
+      break;
+    case BubbleAction::Retry:
+      switch (state) {
+        case ComposerState::NoSession:
+          return L"Try again: there is no live session to send this into";
+        case ComposerState::ObserverOnly:
+          return std::wstring(L"Try again, disabled. ") + kObserverComposerReason;
+        case ComposerState::MaySend:
+          return L"Try again: send this message again";
+      }
+      break;
+    case BubbleAction::RailRetry:
+      // THE COMMAS ARE THE RAIL'S OWN SHIPPED COPY, kept character for character
+      // (Views/ThreadLayout.h). Only the observer arm is new.
+      switch (state) {
+        case ComposerState::NoSession:
+          return L"Try again, there is no live session to send this into";
+        case ComposerState::ObserverOnly:
+          return std::wstring(L"Try again, disabled. ") + kObserverComposerReason;
+        case ComposerState::MaySend:
+          return L"Try again, send this message again";
+      }
+      break;
   }
-  return canAct ? L"Act on this message" : L"There is no live session to act into";
+  switch (state) {
+    case ComposerState::NoSession:
+      return L"There is no live session to act into";
+    case ComposerState::ObserverOnly:
+      return std::wstring(L"Disabled. ") + kObserverComposerReason;
+    case ComposerState::MaySend:
+      return L"Act on this message";
+  }
+  return L"Act on this message";
+}
+
+bool BubbleActionCanAct(ComposerState state, bool targetable) {
+  // AND, never OR, and never the session alone: an observer with a live session
+  // is exactly the case R4's first pass left acting.
+  return targetable && state == ComposerState::MaySend;
 }
 
 // ---- OBSERVER read-only (item 242 R4) ---------------------------------------

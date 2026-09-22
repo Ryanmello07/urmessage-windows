@@ -558,30 +558,82 @@ std::vector<std::wstring> ReplyReactDiagnostics() {
   using namespace urmsg::views;
   std::vector<std::wstring> out;
 
-  // 1. the action names
+  // 1. the four per-message send affordances: every arm of every name, and the whole canAct table
+  //
+  // THE PROPERTY, STATED BEFORE THE ARM WAS WRITTEN. Each affordance has THREE names, one per
+  // ComposerState, and each names the fact that actually stopped it: the MaySend arm denies
+  // nothing, the NoSession arm names the missing SESSION, and the ObserverOnly arm denies
+  // something and it is NEVER the session - an observer's session is provably live, because the
+  // role could only have been read off an open group. And the decision itself is a total over
+  // (state, targetable) that is true in exactly ONE of its six cells.
+  //
+  // WHY THE CELL TABLE IS HERE AT ALL: item 242 R4's first pass had three correct composer strings
+  // and a `canAct` that read the SESSION alone, so the surface shipped 39 live Reply and React
+  // buttons and a live [ Try again ] beside a composer saying this device could not send. A gate
+  // over the copy could not see it. This one walks the decision.
   {
-    constexpr std::wstring_view kDenials[] = {L"no live session", L"not available", L"cannot"};
+    constexpr std::wstring_view kSessionDenial = L"no live session";
+    // "not send to it" is in the list so the MaySend arm cannot borrow the OBSERVER sentence
+    // either: a live button must deny nothing at all, whichever way it were to do it.
+    constexpr std::wstring_view kDenials[] = {L"no live session", L"not available", L"cannot",
+                                              L"not send to it"};
     auto denies = [&](std::wstring const& s) {
       for (auto const& d : kDenials)
         if (s.find(d) != std::wstring::npos) return true;
       return false;
     };
+    struct ActionRow {
+      BubbleAction action;
+      wchar_t const* label;
+    };
+    constexpr ActionRow kActions[] = {{BubbleAction::Reply, L"reply"},
+                                      {BubbleAction::React, L"react"},
+                                      {BubbleAction::Retry, L"thread retry"},
+                                      {BubbleAction::RailRetry, L"rail retry"}};
     size_t ok = 0;
-    for (BubbleAction a : {BubbleAction::Reply, BubbleAction::React}) {
-      const std::wstring on = BubbleActionName(a, true);
-      const std::wstring off = BubbleActionName(a, false);
-      if (!on.empty() && !off.empty() && on != off && !denies(on) &&
-          off.find(L"no live session") != std::wstring::npos)
+    std::wstring listing;   // ALL TWELVE NAMES, printed whatever the verdict: the complement of a
+    std::wstring offenders; // narrowing is the thing that shows it narrowed to something real.
+    for (auto const& a : kActions) {
+      const std::wstring live = BubbleActionName(a.action, ComposerState::MaySend);
+      const std::wstring dark = BubbleActionName(a.action, ComposerState::NoSession);
+      const std::wstring obs = BubbleActionName(a.action, ComposerState::ObserverOnly);
+      const bool nonEmpty = !live.empty() && !dark.empty() && !obs.empty();
+      const bool distinct = live != dark && dark != obs && live != obs;
+      const bool liveDeniesNothing = !denies(live);
+      const bool darkNamesSession = dark.find(kSessionDenial) != std::wstring::npos;
+      const bool obsNamesRoleNotSession =
+          denies(obs) && obs.find(kSessionDenial) == std::wstring::npos;
+      if (nonEmpty && distinct && liveDeniesNothing && darkNamesSession && obsNamesRoleNotSession)
         ++ok;
+      else
+        offenders += std::format(L"{}{}", offenders.empty() ? L"" : L", ", a.label);
+      listing += std::format(L"{}{} \"{}\" | \"{}\" | \"{}\"", listing.empty() ? L"" : L"; ",
+                             a.label, EscapeNonAscii(live), EscapeNonAscii(dark),
+                             EscapeNonAscii(obs));
     }
+    // THE DECISION, over all six cells. AND, never OR, and never the session alone.
+    const bool cells = BubbleActionCanAct(ComposerState::MaySend, true) &&
+                       !BubbleActionCanAct(ComposerState::MaySend, false) &&
+                       !BubbleActionCanAct(ComposerState::ObserverOnly, true) &&
+                       !BubbleActionCanAct(ComposerState::ObserverOnly, false) &&
+                       !BubbleActionCanAct(ComposerState::NoSession, true) &&
+                       !BubbleActionCanAct(ComposerState::NoSession, false);
     out.push_back(std::format(
-        L"  bubble actions   : {}  {}/2 names have a live arm that denies nothing and a dark arm "
-        L"that names the missing session -> reply \"{}\" | \"{}\"; react \"{}\" | \"{}\"   "
-        L"[query: both arms non-empty and different; live arm contains none of \"no live "
-        L"session\", \"not available\", \"cannot\"; dark arm contains \"no live session\"]",
-        Verdict(ok == 2), ok, BubbleActionName(BubbleAction::Reply, true),
-        BubbleActionName(BubbleAction::Reply, false), BubbleActionName(BubbleAction::React, true),
-        BubbleActionName(BubbleAction::React, false)));
+        L"  bubble actions   : {}  {}/4 affordances name all three states apart; acts in {} of 6 "
+        L"(state x targetable) cells; not-ok: {} -> {}   [query: for each of reply, react, thread "
+        L"retry and rail retry the three ComposerState names are non-empty and pairwise distinct; "
+        L"the MaySend arm contains none of \"no live session\", \"not available\", \"cannot\", "
+        L"\"not send to it\"; the NoSession arm contains \"no live session\"; the ObserverOnly arm "
+        L"contains one of the denials and NOT \"no live session\", because an observer's session is "
+        L"provably live; BubbleActionCanAct is true in exactly (MaySend, targetable)]",
+        Verdict(ok == 4 && cells), ok,
+        (BubbleActionCanAct(ComposerState::MaySend, true) ? 1 : 0) +
+            (BubbleActionCanAct(ComposerState::MaySend, false) ? 1 : 0) +
+            (BubbleActionCanAct(ComposerState::ObserverOnly, true) ? 1 : 0) +
+            (BubbleActionCanAct(ComposerState::ObserverOnly, false) ? 1 : 0) +
+            (BubbleActionCanAct(ComposerState::NoSession, true) ? 1 : 0) +
+            (BubbleActionCanAct(ComposerState::NoSession, false) ? 1 : 0),
+        offenders.empty() ? L"(none)" : offenders, listing));
   }
 
   // 2. the picker
@@ -734,7 +786,7 @@ std::vector<std::wstring> ReplyReactDiagnostics() {
 // Views/RosterRules.h), no world is mutated, no XAML is touched, and every line prints PASS/FAIL,
 // the QUERY it asked, and the complement it looked at.
 //
-// THE THREE PROPERTIES, STATED BEFORE THE STRINGS WERE WRITTEN (this app has burned twice on
+// THE FOUR PROPERTIES, STATED BEFORE THE STRINGS WERE WRITTEN (this app has burned twice on
 // gates written after the copy, which is how a check ends up agreeing with whatever is there):
 //
 //   1. COMPOSER. The three states are distinct, the SESSION denial appears in the no-session arm
@@ -749,6 +801,12 @@ std::vector<std::wstring> ReplyReactDiagnostics() {
 //   3. THE CAVEAT'S PLACEMENT (ruling 22). The caveat is Spec C line 513 verbatim, it is NOT in
 //      the composer's sentence, and the composer's sentence is NOT in the caveat: the two say
 //      different things about different people's software and neither may borrow the other.
+//   4. THE SENTENCE ON THE AFFORDANCES BESIDE THE COMPOSER. The per-bubble Reply and React and
+//      both [ Try again ] buttons end in Spec C line 511 character for character in their observer
+//      arm, and carry it in NO other arm. R4's first pass gated the composer and left these four
+//      on the session fact alone, so the screen showed 39 live Reply/React buttons and a live
+//      retry beside a composer saying this device could not send; property 4 is the copy half of
+//      closing that, and `bubble actions` above is the decision half.
 std::vector<std::wstring> ObserverDiagnostics() {
   using namespace urmsg::views;
   namespace demo = urmsg::demo;
@@ -918,6 +976,56 @@ std::vector<std::wstring> ObserverDiagnostics() {
         L"at least one member row of each kind exists, so the rail's observer-only placement is "
         L"not vacuous]",
         Verdict(ok), EscapeNonAscii(reason), EscapeNonAscii(caveat), observers, others));
+  }
+
+  // 4. the observer sentence on the FOUR AFFORDANCES BESIDE the composer, and NOWHERE ELSE
+  //
+  // Property 4 of the list at the top. The composer's own three channels are case 1's; this is the
+  // same sentence on the per-bubble Reply and React and on both [ Try again ] buttons, which is
+  // where item 242 R4's first pass left the role unread. TWO HALVES, and the second is the one a
+  // copy gate usually forgets: the sentence is in the ObserverOnly arm of all four, AND it is in
+  // NO arm of any other state - so a tidy-up cannot make every button say it and pass.
+  {
+    const std::wstring reason = kSpecC511;  // this file's transcription, never the app's constant
+    size_t carry = 0, leaked = 0;
+    std::wstring leakage;
+    for (BubbleAction a : {BubbleAction::Reply, BubbleAction::React, BubbleAction::Retry,
+                           BubbleAction::RailRetry}) {
+      const std::wstring obs = BubbleActionName(a, ComposerState::ObserverOnly);
+      // ENDS WITH the sentence, character for character: the arm names its control first (a reader
+      // has to know WHICH control is dead), then quotes spec C and stops - so a paraphrase, a
+      // truncation or a trailing apology all fail here.
+      if (obs.size() >= reason.size() && obs.compare(obs.size() - reason.size(), reason.size(),
+                                                     reason) == 0)
+        ++carry;
+      for (ComposerState s : {ComposerState::NoSession, ComposerState::MaySend}) {
+        const std::wstring other = BubbleActionName(a, s);
+        if (other.find(reason) != std::wstring::npos) {
+          ++leaked;
+          leakage += std::format(L"{}{}", leakage.empty() ? L"" : L", ", EscapeNonAscii(other));
+        }
+      }
+      // And the CAVEAT is never on a button: ruling 22 puts it where the group is configured.
+      if (obs.find(kObserverSettingsCaveat) != std::wstring::npos) ++leaked;
+    }
+    const bool ok = carry == 4 && leaked == 0;
+    out.push_back(std::format(
+        L"  observer buttons : {}  {}/4 affordances end in spec C line 511 verbatim; {} leak(s) of "
+        L"it into another state -> {}; the four observer arms are [{}]   [query: for reply, react, "
+        L"thread retry and rail retry, BubbleActionName(ObserverOnly) ENDS WITH this file's own "
+        L"transcription of spec C section 5.6 line 511; the same sentence appears in NEITHER the "
+        L"NoSession nor the MaySend arm of any of them; and the roster's caveat (line 513) appears "
+        L"on no button at all, because ruling 22 puts it where the group is configured]",
+        Verdict(ok), carry, leaked, leakage.empty() ? L"(none)" : leakage,
+        EscapeNonAscii(BubbleActionName(BubbleAction::Reply, ComposerState::ObserverOnly)) + L" / " +
+            EscapeNonAscii(
+                BubbleActionName(BubbleAction::React, ComposerState::ObserverOnly)) +
+            L" / " +
+            EscapeNonAscii(
+                BubbleActionName(BubbleAction::Retry, ComposerState::ObserverOnly)) +
+            L" / " +
+            EscapeNonAscii(
+                BubbleActionName(BubbleAction::RailRetry, ComposerState::ObserverOnly))));
   }
   return out;
 }

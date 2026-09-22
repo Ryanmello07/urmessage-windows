@@ -500,20 +500,9 @@ HydrateBeatPlan PlanHydrateBeat(std::size_t cursor, std::size_t target,
 // so the fill is DONE rather than owed a negative-size beat.
 bool HydrateFillActive(std::size_t cursor, std::size_t target);
 
-// ---- the two per-bubble actions: reply and react ----------------------------
-// What a bubble's hover-revealed action buttons SAY, as data, so --diagnose can
-// check both arms of each name from a launch that can reach neither. The
-// names are keyed off the CAPABILITY (ThreadView.h's CanRetrySend - a live
-// session with an open group), exactly as the [ Try again ] pair is, and not
-// off the run mode: a --live launch whose mesh has not answered yet draws the
-// fabricated world with no session, and "no live session" is the true sentence
-// there while the mode latch still says fabricated. The disabled arm names the
-// missing SESSION and never the build, because this build can do both.
-enum class BubbleAction { Reply, React };
-
-// The automation name for `action` when the button can act (`canAct`) or not.
-// Never empty; the two arms differ; the disabled arm carries "no live session".
-wchar_t const* BubbleActionName(BubbleAction action, bool canAct);
+// ---- the per-message send affordances -----------------------------------
+// Declared with the composer's own ComposerState, below, because they take it.
+// See "the four per-message send affordances" after the composer's block.
 
 // ---- OBSERVER read-only: the four strings, and where each one is allowed ------
 // Item 242 R4. Every one of these is Spec C's own copy, quoted at the line it
@@ -605,6 +594,59 @@ std::wstring ComposerBoxPlaceholder(ComposerState state);
 // leaves the box live on purpose: a person may type while the mesh is dialling,
 // and the text is still there when it answers.
 bool ComposerBoxEnabled(ComposerState state);
+
+// ---- the four per-message send affordances ----------------------------------
+// What the controls that act on ONE MESSAGE ROW say, as data, so --diagnose can
+// check every arm of every name from a launch that can reach none of them.
+//
+// THEY TAKE THE COMPOSER'S OWN ComposerState, AND ITEM 242 R4'S FOLLOW-UP IS WHY.
+// Until it they took the SESSION fact alone (Views/ThreadView.h's CanRetrySend)
+// and the ROLE reached only the composer — so a live observer was shown a dead
+// composer reading "You can read this group but not send to it." with 39 LIVE
+// Reply and React buttons and a live [ Try again ] on the same screen, and the
+// only thing that stopped a click was the library refusing the send. Ruling 19
+// refuses REPLY and REACTION_ADD by name; ruling 23 says this app does not infer
+// sendability from a send failing, it reads the role. An affordance that reads
+// half of what the composer reads is that inference wearing a button.
+//
+// NOT off the run mode, which is a different question and keeps its old answer:
+// a --live launch whose mesh has not answered yet draws the fabricated world
+// with no session, and "there is no live session" is the true sentence there
+// while the mode latch still says fabricated. That is ComposerState::NoSession,
+// and ComposerStateFor's session-first order is what delivers it.
+//
+// RailRetry IS THE SAME FAILED MESSAGE'S SECOND [ Try again ] — the inspect
+// rail's (Views/InspectRailView.cpp), drawn in another file for the same row. It
+// is in this table because it asks the same question and must never answer it
+// differently. Its wording keeps the COMMAS it shipped with, character for
+// character, where the thread's keeps its colons; the difference is old copy
+// preserved, not a rule.
+enum class BubbleAction { Reply, React, Retry, RailRetry };
+
+// The automation name for `action` in composer state `state`. Never empty; an
+// action's three arms differ; the NoSession arm carries "no live session" and
+// the ObserverOnly arm NEVER does — an observer's session is provably live (the
+// role could only have been read off an open group), so borrowing the session
+// sentence there would deny a session at the one moment it is certain, which is
+// the defect item 242 R3 shipped on the roster's controls. The ObserverOnly arm
+// names the control and then carries Spec C §5.6 line 511 character for
+// character, the shape ComposerBoxName already uses on the composer's box.
+//
+// A LATER KIND EXCEPTION IS A LIST EDIT, NOT A REWRITE (ruling 19). The four
+// sendable kinds are refused as one set, so the day an observer is allowed to
+// send one of them, the change is to WHICH affordances ask this function — not
+// to what any arm of it says.
+std::wstring BubbleActionName(BubbleAction action, ComposerState state);
+
+// Whether the affordance ACTS: drawn live, wired to a verb, focusable.
+//
+// TWO HALVES, AND BOTH ARE REQUIRED. `targetable` is the ROW's own half — a
+// Pending or Failed row has no message_id for a reply or a reaction to name, and
+// the two retries substitute their own precondition (the row failed; the rail
+// also holds a body to resend). `state` is the SESSION-AND-ROLE half. The view
+// derives its `canAct` from this and from nothing else, so this line is the
+// whole decision and --diagnose walks its table.
+bool BubbleActionCanAct(ComposerState state, bool targetable);
 
 // ---- the hidden row, as a decision ------------------------------------------
 // The ONE predicate behind ThreadRowShape::HiddenObserverRecord, so the planner,

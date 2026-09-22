@@ -815,12 +815,18 @@ void MainWindow::SelectConversation(int index) {
   openConversationId_ = conversation.id;
   selectedMessageId_.clear();
   urmsg::views::SetConversationSelected(list_, index);
+  // THE COMPOSER IS ARMED BEFORE THE THREAD IS BUILT, and the order is load bearing. The ROLE half
+  // of the send state is a fact about THIS conversation (item 242 R4): a group this device may
+  // only read and one it may write to are two different composers, and switching between them is
+  // the one moment neither a live publish nor a rebuild covers. Since R4's follow-up it is also
+  // the fact every per-bubble Reply, React and [ Try again ] reads as it is built — and
+  // SetThreadConversation builds every one of them. Armed afterwards, as it was, each row read the
+  // PREVIOUS conversation's role: switching from a group this device may write to into one it may
+  // only read drew a thread full of live Reply and React buttons that the next rebuild silently
+  // corrected. SetInspectRailConversation follows for the same reason (its [ Try again ]).
+  ArmComposer();
   urmsg::views::SetThreadConversation(thread_, conversation);
   urmsg::views::SetInspectRailConversation(rail_, conversation);
-  // AND THE COMPOSER, because the ROLE half of its state is a fact about THIS conversation (item
-  // 242 R4): a group this device may only read and one it may write to are two different composers,
-  // and switching between them is the one moment neither a live publish nor a rebuild covers.
-  ArmComposer();
   urnw::LogInfo("window: conversation -> {} (index {})",
                 urnw::Narrow(openConversationId_), index);
 }
