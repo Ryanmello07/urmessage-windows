@@ -393,7 +393,31 @@ void MainWindow::ArmLiveWorldUpdates() {
           // Cleared FIRST, so a publication that lands while this beat is drawing queues the next
           // one instead of being swallowed.
           bridge->queued = false;
-          if (auto self = bridge->window.get()) self->ApplyLiveWorld();
+          // GUARDED, AND THE REASON IS A PROCESS THAT VANISHED WITH NO LOG LINE. This lambda runs
+          // on the DispatcherQueue, which is OUTSIDE OnLaunched's try: App.xaml.cpp wraps the
+          // window's CONSTRUCTION and nothing wraps its beats. A throw in here therefore went
+          // unhandled on the UI thread and took the process with it, leaving a log whose last
+          // line was an ordinary one -- no error, no stack, no "ending normally". Measured, by
+          // writing such a throw: a null appended to a Children() collection while building the
+          // onboarding dialog, which killed the app on first launch and passed every gate,
+          // because --diagnose runs before winrt::init_apartment() and never builds a window.
+          //
+          // A BEAT THAT FAILS MUST NOT COST THE SESSION. The world it was drawing is still held,
+          // the worker is still fetching, and the next publication gets another go; what the
+          // person loses is one redraw rather than everything they had on screen.
+          auto self = bridge->window.get();
+          if (!self) return;
+          try {
+            self->ApplyLiveWorld();
+          } catch (winrt::hresult_error const& e) {
+            urnw::LogError("window: a live-world beat threw HRESULT 0x{:08X}: {}",
+                           static_cast<uint32_t>(e.code()), urnw::Narrow(std::wstring{e.message()}));
+          } catch (std::exception const& e) {
+            urnw::LogError("window: a live-world beat threw: {}", e.what());
+          } catch (...) {
+            urnw::LogError("window: a live-world beat threw something with no type this build "
+                           "can name");
+          }
         });
     // TryEnqueue answers false once the queue is shutting down. Leaving the flag set on a beat
     // that was never queued would wedge the chain for the rest of the session.
@@ -473,21 +497,6 @@ void MainWindow::BuildOnboardDialog() {
                                             hstring{L"Paste the invitation here"});
   onboardJoinPanel_.Children().Append(onboardPasteBox_);
 
-  // THE FOUNDER FIRST, and the order is the point. Interleaved, a person read "here is your
-  // join code, paste the invitation they send back" and only then met "start a new group" --
-  // so the road for somebody who has nobody to ask was buried under the road for somebody who
-  // does. Two roads, each whole, the shorter one first.
-  panel.Children().Append(onboardFoundButton_);
-
-  {
-    TextBlock orElse;
-    orElse.TextWrapping(TextWrapping::Wrap);
-    orElse.Text(L"Or join a group somebody else has already made:");
-    orElse.Opacity(0.75);
-    panel.Children().Append(orElse);
-  }
-  panel.Children().Append(onboardJoinPanel_);
-
   // ── START A GROUP ──────────────────────────────────────────────────────────────────────────
   onboardFoundButton_ = Button();
   onboardFoundButton_.Content(box_value(hstring{L"Start a new group instead"}));
@@ -503,6 +512,21 @@ void MainWindow::BuildOnboardDialog() {
     }
     urnw::LogInfo("window: a group create was {} by the live worker", taken ? "taken" : "REFUSED");
   });
+
+  // THE FOUNDER FIRST, and the order is the point. Interleaved, a person read "here is your
+  // join code, paste the invitation they send back" and only then met "start a new group" --
+  // so the road for somebody who has nobody to ask was buried under the road for somebody who
+  // does. Two roads, each whole, the shorter one first.
+  panel.Children().Append(onboardFoundButton_);
+
+  {
+    TextBlock orElse;
+    orElse.TextWrapping(TextWrapping::Wrap);
+    orElse.Text(L"Or join a group somebody else has already made:");
+    orElse.Opacity(0.75);
+    panel.Children().Append(orElse);
+  }
+  panel.Children().Append(onboardJoinPanel_);
 
   // ── ADDING SOMEBODY: their code in, an invitation out ──────────────────────────────────────
   onboardAddPanel_ = StackPanel();
