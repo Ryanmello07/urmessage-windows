@@ -166,13 +166,24 @@ enum class OnboardStep {
   Waiting,    // a join code exists and this device is waiting to be let in
   Joining,    // an invite is being parsed and applied
   Joined,     // there is a group; the fetch loop owns the session now
-  Refused,    // the last invite was refused, and `message` says why
+  Refused,    // the last invite or add was refused, and `message` says why
+  // ── the founder's road, which is the other half of the same screen ──────────
+  Founded,    // this device made a group. IT CANNOT SEND YET: a group of one sits at epoch 0 and
+              // is not open on the server, and the commit that opens it is the one that adds the
+              // first other person. So this state is "waiting for somebody's join code", not
+              // "ready".
+  Invited,    // an add succeeded and `inviteCode` holds the invitation to send to that person
 };
 
 struct OnboardState {
   OnboardStep step = OnboardStep::Idle;
   // The join code to show, base64. Empty until the device has minted one.
   std::string joinCode;
+  // AN INVITATION THIS DEVICE JUST MINTED FOR SOMEBODY ELSE, base64, and empty except at Invited.
+  // Set by an add that succeeded and cleared by the next publication, because an invitation is
+  // used ONCE: leaving it on screen past its moment invites a second person to be sent the same
+  // one, and the second of them is refused at the join with no way to tell why from here.
+  std::string inviteCode;
   // One sentence for the person, in their words rather than the library's. Never empty except at
   // Idle, and never carries a code.
   std::string message;
@@ -197,5 +208,29 @@ uint64_t OnboardGeneration();
 // invite at a time and the second replaces the first, because a person who pastes again has
 // corrected themselves rather than asked for two groups.
 bool QueueJoinFromInviteCode(std::string base64Invite);
+
+// MAKE A GROUP, with this device as its owner. Answers false, having queued nothing, when this
+// device already holds one - a device is in one group in this build, and a second create would
+// quietly replace the group on screen.
+//
+// WHAT COMES BACK IS NOT A USABLE GROUP AND THE UI MUST NOT SAY IT IS. A group of one stands at
+// epoch 0 and is not open on the server; every send into it is refused. The commit that opens it
+// is the one that adds the FIRST other person, which is why OnboardStep::Founded's message is
+// about somebody else's join code rather than about being ready.
+bool QueueCreateGroup();
+
+// BRING SOMEBODY IN, from the join code they sent. Answers false, having queued nothing, when
+// there is no group or the text is not a decodable code.
+//
+// TWO DIFFERENT ABI CALLS SIT BEHIND THIS AND THE WORKER CHOOSES BY ASKING THE GROUP, not by
+// counting: urnet_message_group_add_member builds the FOUNDING commit and is refused once the
+// group is open, and urnet_message_group_add_member_and_publish is refused before it. The worker
+// branches on urnet_message_group_is_open, so the first person in and the fifth take the same
+// road through this call.
+//
+// THE OUTCOME IS AN INVITATION TO SEND BACK, published as OnboardState::inviteCode. A refusal -
+// a role that may not add, a lost epoch race, a stale join code - arrives as Refused with the
+// library's own sentence.
+bool QueueAddMemberFromCode(std::string base64JoinCode);
 
 }  // namespace urmsg::live

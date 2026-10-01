@@ -1551,7 +1551,7 @@ std::vector<std::wstring> CollectDiagnostics() {
     logLine += L"  ** COULD NOT BE OPENED — nothing is being written to it **";
   lines.push_back(std::format(L"  log file         : {}", logLine));
   lines.push_back(std::format(L"  storage root     : {}", StorageRoot().wstring()));
-  lines.push_back(std::format(L"  single-inst key  : {}", ids::kSingleInstanceKey));
+  lines.push_back(std::format(L"  single-inst key  : {}", EffectiveSingleInstanceKey()));
   lines.push_back(std::format(L"  built against    : Windows App SDK {}",
                               Widen(URM_WINDOWSAPPSDK_VERSION)));
   lines.push_back(std::format(L"  app runtime      : {}", AppRuntimeProbe()));
@@ -4030,6 +4030,32 @@ std::wstring ResourceProbe() {
            L"or not beside the exe";
   }
   return std::format(L"  resources (mrt)  : resolving (app_name -> \"{}\")", value);
+}
+
+std::wstring EffectiveSingleInstanceKey() {
+  // The override is read here and not through StorageRoot(), because what must key the
+  // registration is the thing the PERSON set: two different overrides are two installs even if
+  // both resolve under one parent, and StorageRoot() has already folded the default in.
+  wchar_t* raw = nullptr;
+  size_t len = 0;
+  std::wstring root;
+  if (::_wdupenv_s(&raw, &len, L"URMESSAGE_APP_ROOT") == 0 && raw != nullptr) {
+    root = raw;
+    ::free(raw);
+  }
+  if (root.empty()) return ids::kSingleInstanceKey;
+
+  // FNV-1a over the case-folded path. Not a cryptographic hash and it does not need to be: the
+  // only property required is that two different roots give two different keys often enough to
+  // stop a silent redirect, and a collision costs a developer one confusing launch rather than
+  // anybody any safety. Case-folded because Windows paths are, so C:\X and c:\x are one install.
+  uint64_t h = 1469598103934665603ULL;
+  for (wchar_t c : root) {
+    const wchar_t lower = (c >= L'A' && c <= L'Z') ? static_cast<wchar_t>(c - L'A' + L'a') : c;
+    h ^= static_cast<uint64_t>(lower);
+    h *= 1099511628211ULL;
+  }
+  return std::format(L"{}.{:016x}", ids::kSingleInstanceKey, h);
 }
 
 int WriteDiagnosticsToConsole(const std::vector<std::wstring>& lines) {

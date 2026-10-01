@@ -417,12 +417,18 @@ void MainWindow::BuildOnboardDialog() {
       L"already in one: send them the join code below, and paste the invitation they send back.");
   panel.Children().Append(intro);
 
+  // THE JOIN CONTROLS AS ONE PANEL, so ApplyOnboard can hide them in a breath once this device
+  // has founded a group: somebody looking at "paste the invitation they send back" while holding
+  // a group of their own is being offered a road they are no longer on.
+  onboardJoinPanel_ = StackPanel();
+  onboardJoinPanel_.Spacing(8);
+
   TextBlock codeLabel;
   codeLabel.TextWrapping(TextWrapping::Wrap);
   codeLabel.Text(L"Your join code. It is not a secret \u2014 it only lets somebody add THIS device to a "
                  L"group.");
   codeLabel.Opacity(0.75);
-  panel.Children().Append(codeLabel);
+  onboardJoinPanel_.Children().Append(codeLabel);
 
   onboardCodeBox_ = TextBox();
   onboardCodeBox_.IsReadOnly(true);
@@ -431,7 +437,7 @@ void MainWindow::BuildOnboardDialog() {
   onboardCodeBox_.MaxHeight(92);
   onboardCodeBox_.IsSpellCheckEnabled(false);
   winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(onboardCodeBox_, hstring{L"Your join code"});
-  panel.Children().Append(onboardCodeBox_);
+  onboardJoinPanel_.Children().Append(onboardCodeBox_);
 
   Button copy;
   copy.Content(box_value(hstring{L"Copy join code"}));
@@ -448,14 +454,14 @@ void MainWindow::BuildOnboardDialog() {
     // different audience from a screen. Only the fact that one was copied.
     urnw::LogInfo("window: the join code was copied to the clipboard");
   });
-  panel.Children().Append(copy);
+  onboardJoinPanel_.Children().Append(copy);
 
   TextBlock pasteLabel;
   pasteLabel.TextWrapping(TextWrapping::Wrap);
   pasteLabel.Text(L"The invitation they send back. THIS ONE IS A SECRET \u2014 whoever has it is in the "
                   L"group, and it can only be used once.");
   pasteLabel.Opacity(0.75);
-  panel.Children().Append(pasteLabel);
+  onboardJoinPanel_.Children().Append(pasteLabel);
 
   onboardPasteBox_ = TextBox();
   onboardPasteBox_.AcceptsReturn(true);
@@ -465,7 +471,113 @@ void MainWindow::BuildOnboardDialog() {
   onboardPasteBox_.PlaceholderText(L"Paste the invitation here");
   winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(onboardPasteBox_,
                                             hstring{L"Paste the invitation here"});
-  panel.Children().Append(onboardPasteBox_);
+  onboardJoinPanel_.Children().Append(onboardPasteBox_);
+
+  panel.Children().Append(onboardJoinPanel_);
+
+  // ── START A GROUP ──────────────────────────────────────────────────────────────────────────
+  onboardFoundButton_ = Button();
+  onboardFoundButton_.Content(box_value(hstring{L"Start a new group instead"}));
+  winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(
+      onboardFoundButton_, hstring{L"Start a new group, with you as its owner"});
+  onboardFoundButton_.Click([weak = get_weak()](auto const&, auto const&) {
+    auto self = weak.get();
+    if (!self) return;
+    const bool taken = urmsg::live::QueueCreateGroup();
+    if (self->onboardStatus_) {
+      self->onboardStatus_.Text(taken ? L"Making the group\u2026"
+                                      : L"A group could not be started right now.");
+    }
+    urnw::LogInfo("window: a group create was {} by the live worker", taken ? "taken" : "REFUSED");
+  });
+  panel.Children().Append(onboardFoundButton_);
+
+  // ── ADDING SOMEBODY: their code in, an invitation out ──────────────────────────────────────
+  onboardAddPanel_ = StackPanel();
+  onboardAddPanel_.Spacing(8);
+  {
+    TextBlock label;
+    label.TextWrapping(TextWrapping::Wrap);
+    label.Text(L"Their join code. Ask them to press \u201cCopy join code\u201d in their own "
+               L"URmessage and send you what it gives them.");
+    label.Opacity(0.75);
+    onboardAddPanel_.Children().Append(label);
+
+    onboardTheirCodeBox_ = TextBox();
+    onboardTheirCodeBox_.AcceptsReturn(true);
+    onboardTheirCodeBox_.TextWrapping(TextWrapping::Wrap);
+    onboardTheirCodeBox_.MaxHeight(92);
+    onboardTheirCodeBox_.IsSpellCheckEnabled(false);
+    onboardTheirCodeBox_.PlaceholderText(L"Paste their join code here");
+    winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(
+        onboardTheirCodeBox_, hstring{L"Paste their join code here"});
+    onboardAddPanel_.Children().Append(onboardTheirCodeBox_);
+
+    Button add;
+    add.Content(box_value(hstring{L"Add them to the group"}));
+    winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(
+        add, hstring{L"Add this person to the group"});
+    add.Click([weak = get_weak()](auto const&, auto const&) {
+      auto self = weak.get();
+      if (!self || !self->onboardTheirCodeBox_) return;
+      const std::wstring text{self->onboardTheirCodeBox_.Text()};
+      if (text.empty()) {
+        if (self->onboardStatus_)
+          self->onboardStatus_.Text(L"Paste their join code into the box above first.");
+        return;
+      }
+      const bool taken = urmsg::live::QueueAddMemberFromCode(urnw::Narrow(text));
+      if (self->onboardStatus_) {
+        self->onboardStatus_.Text(taken ? L"Adding them\u2026"
+                                        : L"That does not look like a join code. Ask for the "
+                                          L"whole thing \u2014 it is one long line.");
+      }
+      urnw::LogInfo("window: a join code of {} characters was {} by the live worker", text.size(),
+                    taken ? "taken" : "REFUSED");
+    });
+    onboardAddPanel_.Children().Append(add);
+  }
+  panel.Children().Append(onboardAddPanel_);
+
+  // ── THE INVITATION THIS DEVICE JUST MINTED FOR SOMEBODY ────────────────────────────────────
+  onboardInvitePanel_ = StackPanel();
+  onboardInvitePanel_.Spacing(8);
+  {
+    TextBlock label;
+    label.TextWrapping(TextWrapping::Wrap);
+    label.Text(L"Send this invitation to the person whose code you just pasted. WHOEVER HAS IT IS "
+               L"IN THE GROUP, and it works once \u2014 send it the way you would send a password.");
+    label.Opacity(0.75);
+    onboardInvitePanel_.Children().Append(label);
+
+    onboardInviteBox_ = TextBox();
+    onboardInviteBox_.IsReadOnly(true);
+    onboardInviteBox_.AcceptsReturn(true);
+    onboardInviteBox_.TextWrapping(TextWrapping::Wrap);
+    onboardInviteBox_.MaxHeight(92);
+    onboardInviteBox_.IsSpellCheckEnabled(false);
+    winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(
+        onboardInviteBox_, hstring{L"The invitation to send them"});
+    onboardInvitePanel_.Children().Append(onboardInviteBox_);
+
+    Button copyInvite;
+    copyInvite.Content(box_value(hstring{L"Copy invitation"}));
+    winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(
+        copyInvite, hstring{L"Copy the invitation to send them"});
+    copyInvite.Click([weak = get_weak()](auto const&, auto const&) {
+      auto self = weak.get();
+      if (!self || !self->onboardInviteBox_) return;
+      winrt::Windows::ApplicationModel::DataTransfer::DataPackage package;
+      package.SetText(self->onboardInviteBox_.Text());
+      winrt::Windows::ApplicationModel::DataTransfer::Clipboard::SetContent(package);
+      if (self->onboardStatus_)
+        self->onboardStatus_.Text(L"Invitation copied. Send it to that one person only.");
+      // The invitation is never logged: it is the group's secrets in full.
+      urnw::LogInfo("window: an invitation was copied to the clipboard");
+    });
+    onboardInvitePanel_.Children().Append(copyInvite);
+  }
+  panel.Children().Append(onboardInvitePanel_);
 
   onboardStatus_ = TextBlock();
   onboardStatus_.TextWrapping(TextWrapping::Wrap);
@@ -535,6 +647,45 @@ void MainWindow::ApplyOnboard() {
     onboardCodeBox_.Text(winrt::to_hstring(state->joinCode));
   if (onboardStatus_ && !state->message.empty())
     onboardStatus_.Text(winrt::to_hstring(state->message));
+
+  // ── WHICH ROAD IS THIS PERSON ON ───────────────────────────────────────────────────────────
+  // Three panels, and the rule is one sentence each: the JOIN panel is for somebody who holds no
+  // group, the ADD panel for somebody who holds one, and the INVITE panel only while there is an
+  // invitation standing that has not been sent yet.
+  //
+  // THE INVITATION IS SHOWN FOR EXACTLY ONE PUBLICATION AND THEN GOES. It can be used once, so
+  // leaving it on screen past its moment is an invitation to send the same one to two people --
+  // and the second of them is refused at the join with nothing here able to say why.
+  const bool founded = state->step == urmsg::live::OnboardStep::Founded ||
+                       state->step == urmsg::live::OnboardStep::Invited;
+  const bool haveInvite = !state->inviteCode.empty();
+  if (onboardJoinPanel_)
+    onboardJoinPanel_.Visibility(founded ? Visibility::Collapsed : Visibility::Visible);
+  if (onboardFoundButton_)
+    onboardFoundButton_.Visibility(founded ? Visibility::Collapsed : Visibility::Visible);
+  if (onboardAddPanel_)
+    onboardAddPanel_.Visibility(founded ? Visibility::Visible : Visibility::Collapsed);
+  if (onboardInvitePanel_)
+    onboardInvitePanel_.Visibility(haveInvite ? Visibility::Visible : Visibility::Collapsed);
+  if (onboardInviteBox_ && haveInvite)
+    onboardInviteBox_.Text(winrt::to_hstring(state->inviteCode));
+  // THE PRIMARY BUTTON IS THE JOIN, so it has no job on the founder's road: an owner adds people
+  // with the button inside the add panel, and a Join here would try to join a group with an empty
+  // box. Hidden rather than disabled, because a dark button invites a person to look for what
+  // would light it.
+  if (onboardDialog_) {
+    onboardDialog_.PrimaryButtonText(founded ? hstring{} : hstring{L"Join"});
+    // AND THE CLOSE BUTTON SAYS WHAT CLOSING MEANS, which changes with the road. "Not now" is
+    // right for somebody who has not joined anything: they are putting it off. It is WRONG for a
+    // founder whose group is open and whose invitation has been copied - they are finished, and a
+    // button offering to postpone what they have already done reads as "this did not work".
+    //
+    // The founder's dialog cannot close ITSELF, and that is why this matters. It closes on
+    // OnboardStep::Joined, which is the JOINER's end state; a founder goes Founded then Invited
+    // and stays there, because the invitation is the one thing on this screen they still need to
+    // copy and taking it away on a timer would lose it.
+    onboardDialog_.CloseButtonText(founded ? hstring{L"Done"} : hstring{L"Not now"});
+  }
 
   // SHOWN ONCE. ShowAsync on a dialog that is already open throws, so the open-ness is the flag:
   // a beat that arrives while it is up only re-points the text.

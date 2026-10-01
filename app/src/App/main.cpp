@@ -44,7 +44,13 @@ using namespace winrt::Microsoft::Windows::AppLifecycle;
 
 namespace {
 
-constexpr const wchar_t* kInstanceKey = urnw::ids::kSingleInstanceKey;
+// NOT the constant directly: see Startup.h's EffectiveSingleInstanceKey. An ordinary launch gets
+// exactly urnw::ids::kSingleInstanceKey; a launch with %URMESSAGE_APP_ROOT% set gets that plus a
+// hash of the root, so two installs on one machine do not redirect into each other.
+const std::wstring& InstanceKey() {
+  static const std::wstring key = urnw::EffectiveSingleInstanceKey();
+  return key;
+}
 
 // How long a second launch waits for the running instance to accept its
 // activation. This wait must never be INFINITE: if the primary is wedged — or
@@ -142,7 +148,7 @@ std::wstring InstanceProbe() {
   try {
     for (auto const& instance : AppInstance::GetInstances()) {
       const winrt::hstring key = instance.Key();
-      if (std::wstring_view(key) == kInstanceKey)
+      if (std::wstring_view(key) == InstanceKey())
         return L"  app instance     : another instance holds the key — the app is running";
     }
     return L"  app instance     : no instance holds the key — the app is not running";
@@ -225,7 +231,7 @@ int __stdcall wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   bool isPrimary = false;
   try {
     args = AppInstance::GetCurrent().GetActivatedEventArgs();
-    primary = AppInstance::FindOrRegisterForKey(kInstanceKey);
+    primary = AppInstance::FindOrRegisterForKey(InstanceKey());
     isPrimary = primary.IsCurrent();
   } catch (winrt::hresult_error const& e) {
     urnw::FailVisible(
@@ -235,7 +241,7 @@ int __stdcall wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     return 1;
   }
   urnw::LogInfo("startup: single instance key '{}': this process {}",
-                urnw::Narrow(std::wstring{kInstanceKey}),
+                urnw::Narrow(InstanceKey()),
                 isPrimary ? "owns the key" : "is a second launch");
 
   // The first launch owns the key; every later launch redirects its activation

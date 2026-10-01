@@ -20,6 +20,8 @@
 #include "Live/LiveMesh.h"
 
 #include <shellapi.h>  // CommandLineToArgvW
+#include <bcrypt.h>    // BCryptGenRandom, for the group id
+#pragma comment(lib, "bcrypt.lib")
 
 #include <stdlib.h>  // _wdupenv_s, free
 #include <string.h>  // _wcsicmp
@@ -220,6 +222,20 @@ std::filesystem::path CredentialPath() {
 std::filesystem::path HandshakeDir() {
   const std::wstring override = EnvVar(L"URMESSAGE_LIVE_HANDSHAKE_DIR");
   if (!override.empty()) return std::filesystem::path(override);
+  // AND IT FOLLOWS %URMESSAGE_APP_ROOT% WHEN THAT IS SET, which the credential's parent does not.
+  //
+  // MEASURED, BY DOING IT: two instances launched with two different app roots and no explicit
+  // %URMESSAGE_LIVE_JWT% both fell back to the DEFAULT credential and therefore to the default
+  // handshake directory -- so both read one account's credential and both wrote app.keypackage to
+  // one path, each clobbering the other. The roots looked isolated and the IDENTITY was not. The
+  // state directories were genuinely separate, which is the only reason that was a clobbered file
+  // rather than two devices at one MLS leaf.
+  //
+  // The whole point of the root override is "this is a separate install", and a handshake file is
+  // part of an install. The credential still needs %URMESSAGE_LIVE_JWT% named explicitly, and that
+  // is right: a credential is the one thing that must never be guessed at from a directory layout.
+  const std::wstring root = EnvVar(L"URMESSAGE_APP_ROOT");
+  if (!root.empty()) return std::filesystem::path(root) / L"dev";
   return CredentialPath().parent_path();
 }
 
@@ -413,6 +429,12 @@ std::deque<Outbound> g_sendQueue;
 // one refused click or one accepted send the worker then refuses by name, and the fetch loop
 // rewrites it every poll.
 std::atomic<bool> g_canSend{false};
+
+// IS THERE A GROUP AT ALL? A WEAKER QUESTION THAN g_canSend ABOVE AND IT HAS TO BE. CanSend asks
+// whether the SERVER says the group is open, which a freshly founded group of one is not; this
+// asks only whether the device holds one. The create verb needs the weaker reading, because the
+// state it must refuse in is exactly the one where a group exists and cannot send yet.
+std::atomic<bool> g_hasGroup{false};
 std::atomic<uint64_t> g_nextLocalId{1};
 
 // The whole queue, taken at once. Called on the worker only.
@@ -531,12 +553,16 @@ bool DecodeBase64(std::string_view text, std::vector<uint8_t>& out) {
 std::mutex g_onboardMutex;
 urmsg::live::OnboardPtr g_onboard;          // guarded by g_onboardMutex
 std::string g_pastedInvite;                 // guarded by g_onboardMutex; consumed by the worker
+std::string g_pastedJoinCode;               // guarded by g_onboardMutex; consumed by the worker
+bool g_createGroupAsked = false;            // guarded by g_onboardMutex; consumed by the worker
 std::atomic<uint64_t> g_onboardGeneration{0};
 
-void PublishOnboard(urmsg::live::OnboardStep step, std::string joinCode, std::string message) {
+void PublishOnboard(urmsg::live::OnboardStep step, std::string joinCode, std::string message,
+                    std::string inviteCode = {}) {
   auto next = std::make_shared<urmsg::live::OnboardState>();
   next->step = step;
   next->joinCode = std::move(joinCode);
+  next->inviteCode = std::move(inviteCode);
   next->message = std::move(message);
   {
     std::lock_guard<std::mutex> lock(g_onboardMutex);
@@ -547,6 +573,110 @@ void PublishOnboard(urmsg::live::OnboardStep step, std::string joinCode, std::st
   // everything else, so a join code that has just been minted reaches the screen on the next beat
   // rather than on the next fetch.
   urmsg::live::NotifyPublished();
+}
+
+// THE SYSTEM ENTROPY SOURCE, and it is BCryptGenRandom rather than anything in <random>. A group
+// id is not a secret - the server indexes records by it - but it must not be GUESSABLE either, or
+// anybody can ask the server whether a particular group has traffic. std::random_device is allowed
+// by the standard to be a deterministic sequence and on some toolchains is; BCRYPT_USE_SYSTEM_
+// PREFERRED_RNG is the one call on this platform that is documented to be neither.
+bool RandomOctets(uint8_t* out, size_t len) {
+  return ::BCryptGenRandom(nullptr, out, static_cast<ULONG>(len),
+                           BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0;
+}
+
+// BRING SOMEBODY IN FROM THEIR JOIN CODE, on the worker, and publish the invitation to send back.
+// Answers true when the group moved.
+//
+// THE TWO ADDS ARE ONE DECISION AND THE GROUP MAKES IT, not a counter here.
+// urnet_message_group_add_member builds the FOUNDING commit and is refused once the group is
+// open; urnet_message_group_add_member_and_publish is refused before it. Asking
+// urnet_message_group_is_open is the only reading that cannot drift from the truth -- a count of
+// how many people this session has added would be wrong after a restart, and wrong in the
+// direction that refuses every later add with a sentence about the wrong call.
+bool AddMemberFromCode(Session& s, const std::string& theirCode, const std::string& joinCode) {
+  std::vector<uint8_t> keyPackage;
+  if (!DecodeBase64(theirCode, keyPackage)) {
+    PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
+                   "That join code could not be read. Ask for the whole code again - it is one "
+                   "long line with no spaces inside it.");
+    urnw::LogWarn("live: a pasted join code was not decodable base64; refused");
+    return false;
+  }
+
+  char* err = nullptr;
+  const bool wasOpen = urnet_message_group_is_open(s.group);
+  uint64_t invite = 0;
+  if (wasOpen) {
+    invite = urnet_message_group_add_member_and_publish(
+        s.group, s.ctx, keyPackage.data(), static_cast<int32_t>(keyPackage.size()), &err);
+  } else {
+    invite = urnet_message_group_add_member(
+        s.group, keyPackage.data(), static_cast<int32_t>(keyPackage.size()), &err);
+  }
+  if (invite == 0) {
+    const std::string why = TakeError(&err);
+    urnw::LogError("live: {} refused the add: {}",
+                   wasOpen ? "add_member_and_publish" : "add_member", why);
+    PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
+                   "That person could not be added: " + why);
+    return false;
+  }
+
+  // The invitation, buffer-out, then the handle goes.
+  int32_t needed = 0;
+  urnet_message_invite_encode(invite, nullptr, &needed, &err);
+  TakeError(&err);
+  std::string code;
+  if (needed > 0) {
+    std::vector<uint8_t> encoded(static_cast<size_t>(needed));
+    int32_t capacity = needed;
+    if (urnet_message_invite_encode(invite, encoded.data(), &capacity, &err)) {
+      encoded.resize(static_cast<size_t>(capacity));
+      code = EncodeBase64(encoded.data(), encoded.size());
+      // ERASED THE MOMENT IT IS TEXT. The octets are the group's secrets in full and this buffer
+      // is about to be freed into a heap this process keeps using.
+      ::SecureZeroMemory(encoded.data(), encoded.size());
+    }
+  }
+  const std::string encodeError = TakeError(&err);
+  urnet_release(invite);
+
+  if (code.empty()) {
+    urnw::LogError("live: the add succeeded and the invitation would not encode: {}",
+                   encodeError.empty() ? "no reason given" : encodeError);
+    // THE ADD ALREADY HAPPENED, which is why this is not a plain refusal: the commit is on the
+    // server and that person IS in the group's next epoch. They simply cannot be told how to
+    // open it from here. Saying "could not be added" would be false and would invite a second
+    // add of the same person.
+    PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
+                   "They were added, but the invitation could not be written out, so there is "
+                   "nothing to send them. Ask them for a fresh join code and add them again.");
+    return true;
+  }
+
+  // THE OPEN, and only on the founding road. add_member_and_publish has already published its
+  // own commit; add_member has not, and group_open is what tells the server the group exists.
+  if (!wasOpen) {
+    if (!urnet_message_group_open(s.group, s.ctx, &err)) {
+      const std::string why = TakeError(&err);
+      urnw::LogError("live: group_open: {}", why);
+      PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
+                     "They were added, but the group could not be published to the server: " +
+                         why);
+      return false;
+    }
+  }
+
+  urnw::LogInfo("live: *** MEMBER ADDED *** by {}; the group is at epoch {}, open: {}",
+                wasOpen ? "add_member_and_publish" : "add_member + open",
+                urnet_message_group_epoch(s.group),
+                urnet_message_group_is_open(s.group) ? "yes" : "no");
+  PublishOnboard(urmsg::live::OnboardStep::Invited, joinCode,
+                 "Send this invitation to that person. It works once, and whoever has it is in "
+                 "the group - send it the way you would send a password.",
+                 code);
+  return true;
 }
 
 // ── the two-party handshake ───────────────────────────────────────────────────
@@ -642,6 +772,77 @@ bool JoinFromPeer(Session& s) {
           encoded.clear();
         } else {
           fromPaste = true;
+        }
+      }
+    }
+
+    // THE FOUNDER'S ROAD, and it is checked before the two joining roads because somebody who
+    // has pressed "Start a group" is not waiting for anybody: they want the group that the next
+    // person's join code will open.
+    {
+      bool make = false;
+      {
+        std::lock_guard<std::mutex> lock(g_onboardMutex);
+        make = g_createGroupAsked;
+        g_createGroupAsked = false;
+      }
+      if (make) {
+        // A GROUP ID IS 32 OCTETS AND IT IS NOT A SECRET, but it must not be guessable either:
+        // the server indexes records by it, so a predictable one lets anybody ask whether a
+        // particular group has traffic. Taken from the OS entropy source, like every other
+        // random value in this process.
+        uint8_t gid[32] = {};
+        if (!RandomOctets(gid, sizeof(gid))) {
+          urnw::LogError("live: could not draw a group id from the system entropy source");
+          PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
+                         "This computer would not give a random number, so no group was made. "
+                         "That is unusual - try again, and tell us if it keeps happening.");
+        } else {
+          char* mkErr = nullptr;
+          const uint64_t made = urnet_message_device_create_group(
+              s.device, s.ctx, gid, static_cast<int32_t>(sizeof(gid)), &mkErr);
+          if (made == 0) {
+            const std::string why = TakeError(&mkErr);
+            urnw::LogError("live: device_create_group: {}", why);
+            PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
+                           "The group could not be made: " + why);
+          } else {
+            s.group = made;
+            // SET HERE AND NOT ONLY IN THE FETCH LOOP. A founded group of one never reaches the
+            // fetch loop until somebody is added, and between those two moments a second create
+            // would replace it. QueueCreateGroup reads this.
+            g_hasGroup.store(true, std::memory_order_relaxed);
+            urnw::LogInfo("live: *** GROUP CREATED *** {} at epoch {}, open on the server: {}",
+                          ToHex(gid, static_cast<int32_t>(sizeof(gid))),
+                          urnet_message_group_epoch(s.group),
+                          urnet_message_group_is_open(s.group) ? "yes" : "no");
+            // AND IT IS NOT USABLE YET, WHICH THE MESSAGE SAYS RATHER THAN THE UI GUESSING. A
+            // group of one is at epoch 0 and the server has never been told about it; the commit
+            // that opens it is the one adding the first other person.
+            PublishOnboard(urmsg::live::OnboardStep::Founded, joinCode,
+                           "Your group is made, but it has only you in it and nothing can be "
+                           "sent yet. Ask somebody for their join code and paste it below - "
+                           "adding them is what opens the group.");
+            // The fetch loop does NOT take over here: a group that is not open has nothing to
+            // fetch, and the add below is served from this same loop.
+          }
+        }
+      }
+    }
+
+    // THE ADD, which is the founder's second half and the only road out of Founded. Served here
+    // as well as in the fetch loop, because a founder sits in THIS loop until their group opens.
+    if (s.group != 0) {
+      std::string theirCode;
+      {
+        std::lock_guard<std::mutex> lock(g_onboardMutex);
+        theirCode.swap(g_pastedJoinCode);
+      }
+      if (!theirCode.empty()) {
+        if (AddMemberFromCode(s, theirCode, joinCode)) {
+          // An add that opened the group is the moment this device has a session. The fetch loop
+          // below takes it from here.
+          if (urnet_message_group_is_open(s.group)) return true;
         }
       }
     }
@@ -1147,6 +1348,7 @@ void RunSession() {
     // group opened: a group the server has closed under us stops accepting sends, and a button
     // that learns that only from a failed click is the enabled-but-dead control design §9.1 bans.
     g_canSend.store(live.open, std::memory_order_relaxed);
+    g_hasGroup.store(true, std::memory_order_relaxed);
 
     // Log a changed log, and only a changed one: this loop runs every three
     // seconds for the life of the process and an unconditional dump would bury
@@ -1436,6 +1638,24 @@ void RunSession() {
 
     publishWorld(true);
 
+    // AND THE ADDS, which is how the third person and the fifth get in. Served HERE as well as in
+    // the wait loop because a founder leaves that loop the moment their group opens, and every
+    // add after the first one happens with a live session and a fetch loop running. Same call,
+    // same branch inside it: AddMemberFromCode asks the group whether it is open rather than
+    // counting how many have been added.
+    {
+      std::string theirCode;
+      {
+        std::lock_guard<std::mutex> lock(g_onboardMutex);
+        theirCode.swap(g_pastedJoinCode);
+      }
+      if (!theirCode.empty()) {
+        AddMemberFromCode(s, theirCode, std::string());
+        // The roster moved, so the world the UI is holding is a beat out of date.
+        publishWorld(true);
+      }
+    }
+
     // NOT ::Sleep. A send queued during the wait wakes this at once; nothing queued and it ticks on
     // its own timer exactly as the sleep did.
     WaitForSendOrPoll(kFetchPollMs);
@@ -1468,6 +1688,7 @@ bool StartIfEnabled() {
     // each of RunSession's nine early returns because a tenth one added later would silently miss
     // it, and the failure mode of missing it is an enabled Send whose clicks vanish.
     g_canSend.store(false, std::memory_order_relaxed);
+    g_hasGroup.store(false, std::memory_order_relaxed);
   });
 
   // DETACHED, AND NOT AS A SHORTCUT. This is called from the UI thread of a
@@ -1612,6 +1833,43 @@ bool QueueJoinFromInviteCode(std::string base64Invite) {
     g_pastedInvite = std::move(base64Invite);
   }
   urnw::LogInfo("live: an invitation of {} octets was handed to the worker", probe.size());
+  return true;
+}
+
+bool QueueCreateGroup() {
+  // REFUSED WHEN THERE IS ALREADY A GROUP. A device holds one group in this build, and a second
+  // create would silently replace the one on screen along with its whole transcript. The worker
+  // can only act on this while it is in the wait loop, which is exactly when there is none - but
+  // the UI can call at any time, so the refusal is stated here rather than relied on there.
+  if (g_hasGroup.load(std::memory_order_relaxed)) {
+    urnw::LogWarn("live: a create was asked for while this device already holds a group; refused");
+    return false;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_onboardMutex);
+    g_createGroupAsked = true;
+  }
+  urnw::LogInfo("live: a group create was handed to the worker");
+  return true;
+}
+
+bool QueueAddMemberFromCode(std::string base64JoinCode) {
+  // Decoded here and the result thrown away, for the same reason QueueJoinFromInviteCode does it:
+  // text that cannot be a join code is refused while the person is still looking at the box.
+  std::vector<uint8_t> probe;
+  if (!DecodeBase64(base64JoinCode, probe)) {
+    urnw::LogWarn("live: a pasted join code was not decodable ({} characters); refused before it "
+                  "was queued",
+                  base64JoinCode.size());
+    return false;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_onboardMutex);
+    // REPLACES rather than queues, like a pasted invitation: somebody who pastes twice has
+    // corrected themselves, and adding both would spend two epochs on one intention.
+    g_pastedJoinCode = std::move(base64JoinCode);
+  }
+  urnw::LogInfo("live: a join code of {} octets was handed to the worker", probe.size());
   return true;
 }
 

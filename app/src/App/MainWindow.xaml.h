@@ -111,6 +111,16 @@ struct MainWindow : MainWindowT<MainWindow> {
   winrt::Microsoft::UI::Xaml::Controls::TextBox onboardCodeBox_{nullptr};
   winrt::Microsoft::UI::Xaml::Controls::TextBox onboardPasteBox_{nullptr};
   winrt::Microsoft::UI::Xaml::Controls::TextBlock onboardStatus_{nullptr};
+  // THE FOUNDER'S HALF OF THE SAME DIALOG. Three panels, one shown at a time by ApplyOnboard:
+  // join (no group), found (a group of one, waiting for somebody's code), invite (an invitation
+  // just minted and waiting to be sent). Built once with the dialog and never rebuilt, because
+  // rebuilding takes the focus out of the box somebody is pasting into.
+  winrt::Microsoft::UI::Xaml::Controls::StackPanel onboardJoinPanel_{nullptr};
+  winrt::Microsoft::UI::Xaml::Controls::StackPanel onboardAddPanel_{nullptr};
+  winrt::Microsoft::UI::Xaml::Controls::StackPanel onboardInvitePanel_{nullptr};
+  winrt::Microsoft::UI::Xaml::Controls::Button onboardFoundButton_{nullptr};
+  winrt::Microsoft::UI::Xaml::Controls::TextBox onboardTheirCodeBox_{nullptr};
+  winrt::Microsoft::UI::Xaml::Controls::TextBox onboardInviteBox_{nullptr};
   void RebuildConversationList();
   void SelectConversation(int index);
   // By value, not string_view: this is called with selectedMessageId_ and it
