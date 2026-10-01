@@ -96,6 +96,21 @@ struct MainWindow : MainWindowT<MainWindow> {
   // The one predicate that separates the three launches this window now has, and every use of it
   // below is a place where "fabricated" and "nothing yet" are different answers.
   bool LiveOnlyLaunch() const;
+
+  // THE WAY IN. A live launch that holds no group has nothing to draw and nothing a person can do
+  // about it from the main window, so the onboarding state gets a dialog: the join code to send,
+  // and a box for the invitation that comes back. Driven by the same beat as the live world -
+  // ApplyLiveWorld calls this first - so there is one bridge, one queue and one set of
+  // marshalling rules rather than two.
+  void ApplyOnboard();
+  void BuildOnboardDialog();
+
+  uint64_t onboardDrawn_ = 0;
+  bool onboardShown_ = false;
+  winrt::Microsoft::UI::Xaml::Controls::ContentDialog onboardDialog_{nullptr};
+  winrt::Microsoft::UI::Xaml::Controls::TextBox onboardCodeBox_{nullptr};
+  winrt::Microsoft::UI::Xaml::Controls::TextBox onboardPasteBox_{nullptr};
+  winrt::Microsoft::UI::Xaml::Controls::TextBlock onboardStatus_{nullptr};
   void RebuildConversationList();
   void SelectConversation(int index);
   // By value, not string_view: this is called with selectedMessageId_ and it

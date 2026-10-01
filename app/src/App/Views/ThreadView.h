@@ -84,6 +84,13 @@ void SetThreadSendEnabled(ThreadView& v, bool enabled, bool mayRoleSend);
 // that carries mode-dependent copy it cannot pick the new wording up from a
 // rebuild; MainWindow calls this on the beat it latches a live world.
 void SetThreadRunMode(ThreadView& v, urmsg::RunMode mode);
+
+// THIS RUN IS DRAWING THE EMPTY WORLD: --live, and no group yet. A third fact, separate from the
+// mode and from the capability, because what it says is that there is nothing to send TO - and
+// the composer's caption is false in BOTH existing wordings while it holds. Set by MainWindow on
+// a live-only launch and cleared on the beat a live world arrives, which is the beat the mode
+// latches on.
+void SetThreadNoSession(ThreadView& v, bool noSession);
 void SetThreadTyping(ThreadView& v, bool typing);
 void AppendThreadRow(ThreadView& v, urmsg::demo::MessageRow const& row);
 

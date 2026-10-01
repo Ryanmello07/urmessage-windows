@@ -33,6 +33,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include <memory>
 #include <string>
 
 namespace urmsg::live {
@@ -139,5 +140,62 @@ bool QueueTransferOwnership(std::string identityPubHex);
 // package from them (device.KeyPackage is single use and is consumed destructively at the join),
 // and the alpha's one-credential peer cannot mint a second one at all.
 bool QueueRemoveMember(std::string identityPubHex);
+
+// ── getting into a group at all (the onboarding half) ─────────────────────────
+//
+// WHY THIS EXISTS. Until now the only way into a group was a FILE HANDSHAKE with sdk/livepeer
+// running on the same machine: this device wrote `app.keypackage` beside its credential and waited
+// for somebody to drop `app.invite` back. That is a developer's flow. A person on their own
+// computer cannot run a Go binary under a second account, and two people on two machines have no
+// shared directory at all.
+//
+// WHAT REPLACES IT IS TEXT, because text goes down every channel people already have. A JOIN CODE
+// is this device's key package, base64. An INVITE CODE is the Welcome that answers it, base64. One
+// is pasted out of this app and sent to whoever holds the group; the other is pasted back in.
+//
+// THE TWO ARE NOT THE SAME KIND OF SECRET AND THE UI MUST NOT TREAT THEM ALIKE:
+//   * a JOIN CODE is a public offer to be added. Showing it to the wrong person costs nothing;
+//     they can add this device to a group it will simply ignore.
+//   * an INVITE CODE carries the group's secrets. WHOEVER READS IT IS IN THE GROUP. It is consumed
+//     on use and must never be stored, logged or shown twice.
+// Neither is ever written to the log by this module, and the code text itself is never formatted
+// into any log line.
+
+enum class OnboardStep {
+  Idle,       // no group, nothing asked for yet
+  Waiting,    // a join code exists and this device is waiting to be let in
+  Joining,    // an invite is being parsed and applied
+  Joined,     // there is a group; the fetch loop owns the session now
+  Refused,    // the last invite was refused, and `message` says why
+};
+
+struct OnboardState {
+  OnboardStep step = OnboardStep::Idle;
+  // The join code to show, base64. Empty until the device has minted one.
+  std::string joinCode;
+  // One sentence for the person, in their words rather than the library's. Never empty except at
+  // Idle, and never carries a code.
+  std::string message;
+};
+
+using OnboardPtr = std::shared_ptr<const OnboardState>;
+
+// The most recent onboarding state, or nullptr before the worker has published one. Safe from any
+// thread; the pointer is swapped under a lock and the pointee is immutable, exactly as the world
+// snapshot is.
+OnboardPtr OnboardSnapshot();
+
+// Bumped on every publication, so the UI can tell a new state from the one it already drew.
+uint64_t OnboardGeneration();
+
+// HAND A PASTED INVITE TO THE WORKER. Answers false, having queued nothing, when the text is empty
+// or is not base64 this build can decode - refused HERE so that a typo is a message beside the box
+// rather than a failure thirty seconds later in a log nobody is reading. True means the worker has
+// taken it; the outcome arrives as a published OnboardState, never as a return value.
+//
+// IT IS SAFE TO CALL BEFORE THE MESH ANSWERS and it is safe to call twice: the worker consumes one
+// invite at a time and the second replaces the first, because a person who pastes again has
+// corrected themselves rather than asked for two groups.
+bool QueueJoinFromInviteCode(std::string base64Invite);
 
 }  // namespace urmsg::live

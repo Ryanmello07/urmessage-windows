@@ -1120,6 +1120,9 @@ struct ThreadParts {
   // lets UpdateComposerSend stay the ONE writer of composerNote.Text, which is what stops the two
   // beats from racing over one TextBlock the way the pill's brushes once did.
   urmsg::RunMode noteMode = urmsg::RunMode::Fabricated;
+  // See ThreadView.h's SetThreadNoSession: a third fact the caption is a function of, stored
+  // beside the mode because they land on different beats and one writer spends both.
+  bool noteNoSession = false;
   // The composer's two interactive elements, held for the SAME reason the caption is: the bar is
   // built ONCE and the window re-points it when the live world lands. `sendEnabled` is the host's
   // answer to "can this session send at all" (SetThreadSendEnabled); whether the BUTTON is live
@@ -1845,7 +1848,8 @@ void UpdateComposerSend(std::shared_ptr<ThreadParts> const& parts) {
   // role and why the live observer arm may not borrow a session denial.
   if (parts->composerNote)
     parts->composerNote.Text(
-        winrt::hstring{urmsg::ComposerNote(parts->noteMode, parts->mayRoleSend)});
+        winrt::hstring{urmsg::ComposerNote(parts->noteMode, parts->mayRoleSend,
+                                           parts->noteNoSession)});
 
   // The disabled wash (design d2 §3's enable-motion bullet) is only ever SEEN while the button is
   // dark, and it still distinguishes the two dark states: transparent on an empty box — the bare
@@ -2277,7 +2281,8 @@ FrameworkElement MakeComposer(std::shared_ptr<ThreadParts> const& parts) {
   // The START POSE only. UpdateComposerSend is the one writer from here on, and it runs at the
   // bottom of this function; parts->noteMode carries the mode it writes for.
   parts->noteMode = urmsg::ActiveRunMode();
-  note.Text(winrt::hstring{urmsg::ComposerNote(parts->noteMode, parts->mayRoleSend)});
+  note.Text(winrt::hstring{
+      urmsg::ComposerNote(parts->noteMode, parts->mayRoleSend, parts->noteNoSession)});
   note.TextWrapping(TextWrapping::Wrap);
   note.TextTrimming(TextTrimming::None);
   if (auto st = StyleByKey(L"UrCaptionTextStyle")) note.Style(st);
@@ -3627,6 +3632,14 @@ void SetThreadSelectedMessage(ThreadView& v, std::wstring const& id) {
 //
 // Safe to call before the mode ever flips and safe to call twice: it writes the
 // answer urmsg::ComposerNote gives for the mode passed in, and nothing else.
+void SetThreadNoSession(ThreadView& v, bool noSession) {
+  auto parts = Find(v.root);
+  if (!parts || !parts->composerNote) return;
+  // Recorded and handed to the ONE writer, exactly as the mode is and for the same reason.
+  parts->noteNoSession = noSession;
+  UpdateComposerSend(parts);
+}
+
 void SetThreadRunMode(ThreadView& v, urmsg::RunMode mode) {
   auto parts = Find(v.root);
   if (!parts || !parts->composerNote) return;

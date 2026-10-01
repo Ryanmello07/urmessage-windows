@@ -567,6 +567,15 @@ void SetOnPublish(std::function<void()> onPublish) {
   g_onPublish = std::move(onPublish);
 }
 
+void NotifyPublished() {
+  std::function<void()> notify;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    notify = g_onPublish;
+  }
+  if (notify) notify();
+}
+
 uint64_t Generation() {
   std::lock_guard<std::mutex> lock(g_mutex);
   return g_generation;

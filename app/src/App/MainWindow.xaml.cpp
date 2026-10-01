@@ -402,7 +402,154 @@ void MainWindow::ArmLiveWorldUpdates() {
   urnw::LogInfo("window: live world updates armed");
 }
 
+// THE ONBOARDING DIALOG, built once and kept. Rebuilding it per beat would take the focus out of
+// the box somebody is pasting into, which is the one thing they are doing while it is open.
+void MainWindow::BuildOnboardDialog() {
+  if (onboardDialog_) return;
+
+  StackPanel panel;
+  panel.Spacing(14);
+
+  TextBlock intro;
+  intro.TextWrapping(TextWrapping::Wrap);
+  intro.Text(
+      L"This device is connected but is not in a group yet. A group is opened by somebody who is "
+      L"already in one: send them the join code below, and paste the invitation they send back.");
+  panel.Children().Append(intro);
+
+  TextBlock codeLabel;
+  codeLabel.TextWrapping(TextWrapping::Wrap);
+  codeLabel.Text(L"Your join code. It is not a secret \u2014 it only lets somebody add THIS device to a "
+                 L"group.");
+  codeLabel.Opacity(0.75);
+  panel.Children().Append(codeLabel);
+
+  onboardCodeBox_ = TextBox();
+  onboardCodeBox_.IsReadOnly(true);
+  onboardCodeBox_.AcceptsReturn(true);
+  onboardCodeBox_.TextWrapping(TextWrapping::Wrap);
+  onboardCodeBox_.MaxHeight(92);
+  onboardCodeBox_.IsSpellCheckEnabled(false);
+  winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(onboardCodeBox_, hstring{L"Your join code"});
+  panel.Children().Append(onboardCodeBox_);
+
+  Button copy;
+  copy.Content(box_value(hstring{L"Copy join code"}));
+  winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(copy, hstring{L"Copy your join code"});
+  copy.Click([weak = get_weak()](auto const&, auto const&) {
+    auto self = weak.get();
+    if (!self || !self->onboardCodeBox_) return;
+    winrt::Windows::ApplicationModel::DataTransfer::DataPackage package;
+    package.SetText(self->onboardCodeBox_.Text());
+    winrt::Windows::ApplicationModel::DataTransfer::Clipboard::SetContent(package);
+    if (self->onboardStatus_)
+      self->onboardStatus_.Text(L"Join code copied. Send it to whoever is setting up the group.");
+    // The CODE is never logged, here or anywhere: a log line outlives the moment and has a
+    // different audience from a screen. Only the fact that one was copied.
+    urnw::LogInfo("window: the join code was copied to the clipboard");
+  });
+  panel.Children().Append(copy);
+
+  TextBlock pasteLabel;
+  pasteLabel.TextWrapping(TextWrapping::Wrap);
+  pasteLabel.Text(L"The invitation they send back. THIS ONE IS A SECRET \u2014 whoever has it is in the "
+                  L"group, and it can only be used once.");
+  pasteLabel.Opacity(0.75);
+  panel.Children().Append(pasteLabel);
+
+  onboardPasteBox_ = TextBox();
+  onboardPasteBox_.AcceptsReturn(true);
+  onboardPasteBox_.TextWrapping(TextWrapping::Wrap);
+  onboardPasteBox_.MaxHeight(92);
+  onboardPasteBox_.IsSpellCheckEnabled(false);
+  onboardPasteBox_.PlaceholderText(L"Paste the invitation here");
+  winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(onboardPasteBox_,
+                                            hstring{L"Paste the invitation here"});
+  panel.Children().Append(onboardPasteBox_);
+
+  onboardStatus_ = TextBlock();
+  onboardStatus_.TextWrapping(TextWrapping::Wrap);
+  panel.Children().Append(onboardStatus_);
+
+  onboardDialog_ = ContentDialog();
+  onboardDialog_.Title(box_value(hstring{L"Join a group"}));
+  onboardDialog_.Content(panel);
+  onboardDialog_.PrimaryButtonText(hstring{L"Join"});
+  onboardDialog_.CloseButtonText(hstring{L"Not now"});
+  onboardDialog_.DefaultButton(ContentDialogButton::Primary);
+  onboardDialog_.Background(urnw::colors::SheetBrush());
+  onboardDialog_.XamlRoot(Content().XamlRoot());
+
+  // THE DIALOG DOES NOT CLOSE ON Join, and that is the whole reason this is a handler rather than
+  // a result read after ShowAsync. Joining is a round trip through the mesh: the invitation is
+  // parsed, a Welcome is opened and a group is built, and any of it can be refused. Closing the
+  // dialog first would take away the box holding the text that failed, and the person would have
+  // nothing to correct. It closes in ApplyOnboard, when the worker says there is a group.
+  onboardDialog_.PrimaryButtonClick([weak = get_weak()](auto const&, auto const& args) {
+    auto self = weak.get();
+    if (!self) return;
+    args.Cancel(true);
+    if (!self->onboardPasteBox_) return;
+    const std::wstring text{self->onboardPasteBox_.Text()};
+    if (text.empty()) {
+      if (self->onboardStatus_)
+        self->onboardStatus_.Text(L"Paste the invitation into the box above first.");
+      return;
+    }
+    const bool taken = urmsg::live::QueueJoinFromInviteCode(urnw::Narrow(text));
+    if (self->onboardStatus_) {
+      self->onboardStatus_.Text(
+          taken ? L"Opening the invitation\u2026"
+                : L"That does not look like an invitation. Copy the whole code and paste it again "
+                  L"\u2014 it is one long line.");
+    }
+    urnw::LogInfo("window: an invitation of {} characters was {} by the live worker", text.size(),
+                  taken ? "taken" : "REFUSED");
+  });
+}
+
+void MainWindow::ApplyOnboard() {
+  // ONLY A LIVE LAUNCH HAS AN ONBOARDING STATE. A fabricated one is already in a group that was
+  // never joined.
+  if (!urmsg::live::IsEnabled()) return;
+  const uint64_t generation = urmsg::live::OnboardGeneration();
+  if (generation == onboardDrawn_) return;
+  auto state = urmsg::live::OnboardSnapshot();
+  if (!state) return;
+  onboardDrawn_ = generation;
+
+  if (state->step == urmsg::live::OnboardStep::Joined) {
+    if (onboardDialog_) {
+      onboardDialog_.Hide();
+      onboardDialog_ = nullptr;
+      onboardCodeBox_ = nullptr;
+      onboardPasteBox_ = nullptr;
+      onboardStatus_ = nullptr;
+      urnw::LogInfo("window: the onboarding dialog closed \u2014 this device is in a group");
+    }
+    return;
+  }
+
+  BuildOnboardDialog();
+  if (onboardCodeBox_ && !state->joinCode.empty())
+    onboardCodeBox_.Text(winrt::to_hstring(state->joinCode));
+  if (onboardStatus_ && !state->message.empty())
+    onboardStatus_.Text(winrt::to_hstring(state->message));
+
+  // SHOWN ONCE. ShowAsync on a dialog that is already open throws, so the open-ness is the flag:
+  // a beat that arrives while it is up only re-points the text.
+  if (!onboardShown_) {
+    onboardShown_ = true;
+    onboardDialog_.ShowAsync();
+    urnw::LogInfo("window: the onboarding dialog is up \u2014 this device holds no group");
+  }
+}
+
 void MainWindow::ApplyLiveWorld() {
+  // THE ONBOARDING HALF FIRST, and unconditionally: it has its own generation and its own early
+  // return, and the world below may have nothing to say for minutes while a person is reading a
+  // join code off the screen.
+  ApplyOnboard();
   const std::uint64_t generation = urmsg::live::Generation();
   if (generation == liveDrawn_) return;
   auto snapshot = urmsg::live::Snapshot();
@@ -438,7 +585,13 @@ void MainWindow::ApplyLiveWorld() {
     // removes the other one.
     if (options_.watermark) DemoChip().Visibility(Visibility::Visible);
   }
-  if (thread_.root) urmsg::views::SetThreadRunMode(thread_, urmsg::RunMode::Live);
+  if (thread_.root) {
+    urmsg::views::SetThreadRunMode(thread_, urmsg::RunMode::Live);
+    // CLEARED IN THE SAME BREATH AS THE MODE LATCHES, which is the only moment at which both
+    // are true: there is a live world on screen, so the empty one is gone and "no group yet"
+    // has stopped being the fact about this run.
+    urmsg::views::SetThreadNoSession(thread_, false);
+  }
   // AND THE SEND BUTTON, on the same beat and for the same reason the caption is: the composer bar
   // is built once and is not among the surfaces rebuilt below.
   //
@@ -829,6 +982,12 @@ void MainWindow::BuildDemoViews() {
   // ComposerStateFor takes the session first, so it would not even be reached. True is what
   // "nothing has read a role" means.
   urmsg::views::SetThreadSendEnabled(thread_, false, true);
+  // AND ON A LIVE-ONLY LAUNCH, THE THIRD FACT: this run draws the empty world, so there is no
+  // group to send to and BOTH of the caption's older wordings are false. Said here, where the
+  // composer is built, for the same reason the line above is: a statement about what a thread
+  // built in this launch can do must not be reachable only through a path some other launch
+  // takes. ApplyLiveWorld clears it on the beat a world arrives.
+  if (LiveOnlyLaunch()) urmsg::views::SetThreadNoSession(thread_, true);
   // ThreadHost, NOT ThreadBody. ApplyBreakpoint gives exactly one of the two
   // thread surfaces to a run: under --demo it collapses ThreadPane outright
   // and shows ThreadHost, so anything appended to ThreadBody here would

@@ -110,7 +110,22 @@ std::wstring LockHeaderNote(RunMode mode);
 // predicate MainWindow::OpenConversationMaySend answers with — so the word "observer" on that line
 // is a statement about the mapping and not a label over a bool the gate handed itself, and the
 // expectation is keyed on the role's NAME so the mapping cannot mark its own paper.
-std::wstring ComposerNote(RunMode mode, bool maySend);
+//
+// AND A THIRD ARM, FOR A STATE THAT DID NOT EXIST WHEN THE PAIR WAS WRITTEN. `noSession` is true on
+// a --live launch that is drawing the EMPTY world: the mesh is dialling, or has answered and this
+// device is in no group yet. Both wordings above are false there and in different ways. "Demo
+// model - nothing is sent, and no message leaves this window" is false because there is no demo:
+// no fabricated row is on screen, the list is empty, and the sentence invites a reader to think
+// the thing they are looking at is a mock-up. "Live session - these messages are real" is false
+// because there are no messages and no session.
+//
+// THE FILE'S OWN REASONING COVERED THE OLD THIRD CASE AND NOT THIS ONE. It says a --live launch
+// whose mesh has not answered draws the FABRICATED world, so the fabricated wording is true there
+// - and that held for exactly as long as --live implied --demo. It does not any more.
+//
+// The true sentence names the absence and says what to do about it, and it claims nothing about
+// encryption in either direction, because nothing has been encrypted or decrypted yet.
+std::wstring ComposerNote(RunMode mode, bool maySend, bool noSession = false);
 
 // The Network page's relay-path caption (chrome voice, letterspaced uppercase) and the status
 // strip drawer's automation name for the same three nodes. In live mode those nodes are

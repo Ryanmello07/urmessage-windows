@@ -185,7 +185,7 @@ std::wstring LockHeaderNote(RunMode mode) {
              : L"Demo model: fabricated data, no crypto in this build";
 }
 
-std::wstring ComposerNote(RunMode mode, bool maySend) {
+std::wstring ComposerNote(RunMode mode, bool maySend, bool noSession) {
   // U+2014 EM DASH, written as an escape and never as a pasted character (the house non-ASCII
   // rule: an editing pass that silently re-encodes a pasted glyph leaves no build error behind,
   // only a wrong byte in a string).
@@ -224,6 +224,11 @@ std::wstring ComposerNote(RunMode mode, bool maySend) {
   // are what the call does and what its answer reports, and it says plainly that nothing reports
   // delivery -- so the ceiling stays where Live/LiveWorld.cpp puts it (DeliveryState::Sent) and no
   // reader is invited to expect a tick this protocol cannot produce.
+  // THE THIRD ARM FIRST, because it is about whether there is anything to send TO, and the two
+  // below are about what happens when there is. See the header for why both of them are false
+  // while the empty world is on screen.
+  if (noSession)
+    return L"No group yet \u2014 there is nothing to send to. Join a group to start a conversation.";
   if (mode != RunMode::Live) return L"Demo model \u2014 nothing is sent, and no message leaves this window.";
   if (!maySend)
     return L"Live session \u2014 these messages are real. You can read this group but not send "
@@ -519,6 +524,40 @@ std::vector<std::wstring> RunModeCopyDiagnostics() {
       L"any world is published, so fabricated is the only correct answer)",
       latchOk ? L"PASS" : L"FAIL",
       ActiveRunMode() == RunMode::Live ? L"live" : L"fabricated"));
+
+  // THE THIRD ARM, WHICH THE PAIR GATE ABOVE CANNOT SEE. Every check in this function compares a
+  // FABRICATED wording against a LIVE one, because for its whole life this file had exactly two
+  // worlds. A --live launch drawing the EMPTY world is a third, and the sentence it needs is wrong
+  // in both of the other two ways at once: it must not say "Demo model" (nothing is fabricated -
+  // the list is empty) and it must not claim a live session (there is no group).
+  //
+  // ASSERTED IN FOUR DIRECTIONS, because fewer would pass a sentence that is simply one of the
+  // other two copied: it differs from BOTH arms, it is the same whatever the role (the absence of
+  // a group outranks what a role would permit), it names neither mode by name, and it is not
+  // empty. AND THE CONTROL FIRES FOR ITS OWN REASON: the same function with noSession false still
+  // answers the two paired wordings the gate above checks, so a third arm that had swallowed them
+  // is caught here rather than silently passing both gates.
+  {
+    const std::wstring none = ComposerNote(RunMode::Fabricated, true, true);
+    const std::wstring noneObserver = ComposerNote(RunMode::Live, false, true);
+    const std::wstring fab = ComposerNote(RunMode::Fabricated, true);
+    const std::wstring live = ComposerNote(RunMode::Live, true);
+    const bool differs = !none.empty() && none != fab && none != live;
+    const bool roleBlind = none == noneObserver;
+    const bool claimsNothing = none.find(L"Demo model") == std::wstring::npos &&
+                               none.find(L"Live session") == std::wstring::npos;
+    const bool controlHolds = fab != live && fab.find(L"Demo model") != std::wstring::npos &&
+                              live.find(L"Live session") != std::wstring::npos;
+    const bool ok = differs && roleBlind && claimsNothing && controlHolds;
+    lines.push_back(std::format(
+        L"  run mode no-sess : {}  \"{}\" | differs from both arms {}, role-blind {}, names "
+        L"neither mode {}, control (noSession=false still gives the paired wordings) {}   [query: "
+        L"a --live launch drawing the EMPTY world is a third state; its sentence must differ from "
+        L"the fabricated AND the live wording, must be the same for an observer, and must contain "
+        L"neither \"Demo model\" nor \"Live session\"]",
+        ok ? L"PASS" : L"FAIL", none, differs ? L"yes" : L"NO", roleBlind ? L"yes" : L"NO",
+        claimsNothing ? L"yes" : L"NO", controlHolds ? L"holds" : L"FAILED"));
+  }
 
   return lines;
 }

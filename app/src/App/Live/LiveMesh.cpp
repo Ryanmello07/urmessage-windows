@@ -34,8 +34,10 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <vector>
@@ -461,6 +463,92 @@ std::string ToHex(const uint8_t* data, int32_t len) {
   return out;
 }
 
+// ── codes: the text a person can carry between two machines ───────────────────
+//
+// RFC 4648 base64 with padding and no line breaks, written out here rather than taken from
+// Windows: CryptBinaryToStringW inserts CRLF unless asked not to, and the one thing that must not
+// happen to a code is for a mail client to wrap it and a reader to paste back something that no
+// longer decodes.
+const char kB64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+std::string EncodeBase64(const uint8_t* data, size_t len) {
+  std::string out;
+  out.reserve(((len + 2) / 3) * 4);
+  size_t i = 0;
+  for (; i + 2 < len; i += 3) {
+    const uint32_t v = (uint32_t(data[i]) << 16) | (uint32_t(data[i + 1]) << 8) | data[i + 2];
+    out += kB64[(v >> 18) & 63];
+    out += kB64[(v >> 12) & 63];
+    out += kB64[(v >> 6) & 63];
+    out += kB64[v & 63];
+  }
+  if (i < len) {
+    const bool two = (i + 1 < len);
+    const uint32_t v = (uint32_t(data[i]) << 16) | (two ? (uint32_t(data[i + 1]) << 8) : 0);
+    out += kB64[(v >> 18) & 63];
+    out += kB64[(v >> 12) & 63];
+    out += two ? kB64[(v >> 6) & 63] : '=';
+    out += '=';
+  }
+  return out;
+}
+
+// Answers false on anything that is not a decodable code. WHITESPACE IS SKIPPED, not refused: a
+// code that has been through an email client or a chat app arrives wrapped, and refusing it would
+// blame the person for their mail client. Every other stray character IS refused, because a code
+// that decodes to the wrong octets fails later as a checksum error that looks like corruption.
+bool DecodeBase64(std::string_view text, std::vector<uint8_t>& out) {
+  auto value = [](char c) -> int {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+  };
+  out.clear();
+  uint32_t acc = 0;
+  int bits = 0;
+  size_t pad = 0;
+  for (char c : text) {
+    if (c == ' ' || c == '\r' || c == '\n' || c == '\t') continue;
+    if (c == '=') { pad += 1; continue; }
+    if (pad != 0) return false;  // data after padding
+    const int v = value(c);
+    if (v < 0) return false;
+    acc = (acc << 6) | static_cast<uint32_t>(v);
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out.push_back(static_cast<uint8_t>((acc >> bits) & 0xFF));
+    }
+  }
+  if (pad > 2) return false;
+  return !out.empty();
+}
+
+// ── the published onboarding state ────────────────────────────────────────────
+std::mutex g_onboardMutex;
+urmsg::live::OnboardPtr g_onboard;          // guarded by g_onboardMutex
+std::string g_pastedInvite;                 // guarded by g_onboardMutex; consumed by the worker
+std::atomic<uint64_t> g_onboardGeneration{0};
+
+void PublishOnboard(urmsg::live::OnboardStep step, std::string joinCode, std::string message) {
+  auto next = std::make_shared<urmsg::live::OnboardState>();
+  next->step = step;
+  next->joinCode = std::move(joinCode);
+  next->message = std::move(message);
+  {
+    std::lock_guard<std::mutex> lock(g_onboardMutex);
+    g_onboard = std::move(next);
+  }
+  g_onboardGeneration.fetch_add(1, std::memory_order_release);
+  // THE SAME BELL THE WORLD RINGS. The window's beat re-reads the onboarding state along with
+  // everything else, so a join code that has just been minted reaches the screen on the next beat
+  // rather than on the next fetch.
+  urmsg::live::NotifyPublished();
+}
+
 // ── the two-party handshake ───────────────────────────────────────────────────
 
 // Publish this device's key package, wait for the peer's invite, and join.
@@ -509,67 +597,126 @@ bool JoinFromPeer(Session& s) {
       "account, pointed at this file.",
       keyPackage.size(), Utf8Path(keyPackagePath));
 
-  // ── wait for the invite ─────────────────────────────────────────────────────
+  // THE SAME OCTETS AS TEXT. A key package is a public offer to be added, so this is not a secret
+  // and the UI may show it, copy it and let a person send it down any channel they like. The code
+  // itself is still never LOGGED: a log line is a different audience from a screen, it outlives
+  // the moment, and there is no reason to put two kilobytes of base64 in one.
+  const std::string joinCode = EncodeBase64(keyPackage.data(), keyPackage.size());
+  PublishOnboard(urmsg::live::OnboardStep::Waiting, joinCode,
+                 "This device is not in a group yet. Send your join code to whoever is setting "
+                 "the group up, and paste the invitation they send back.");
+
+  // ── wait for an invite, from EITHER road ────────────────────────────────────
+  //
+  // THE FILE IS THE DEVELOPER'S ROAD and sdk/livehost still uses it unchanged. THE PASTED CODE IS
+  // THE PERSON'S, and it is the one that works between two machines. Both land in the same place
+  // and are applied by the same code below, so there is one join path and not two.
+  //
+  // THERE IS NO LONGER A DEADLINE, and that is a behaviour change with a reason. The old loop gave
+  // up after kInviteWaitMs and returned false, which CLOSED THE WHOLE SESSION: the app went dead
+  // until somebody relaunched it. That is defensible for a scripted handshake between two
+  // processes started seconds apart. It is wrong for a person, who may paste their code into an
+  // email and come back after lunch. The worker sleeps kInvitePollMs between looks, so waiting
+  // costs nothing.
   const int64_t waitStartedMs = NowMs();
-  std::vector<uint8_t> encoded;
   std::vector<uint8_t> previous;
-  bool have = false;
-  while (NowMs() - waitStartedMs < kInviteWaitMs) {
-    std::vector<uint8_t> raw;
-    if (ReadOctets(invitePath, raw)) {
-      // Two identical reads before accepting it: the writer is another process
-      // and a partially written file read whole is a checksum failure at the
-      // parse, where it looks like corruption rather than like a race.
-      if (!previous.empty() && previous == raw) {
-        encoded = std::move(raw);
-        have = true;
-        break;
+  for (;;) {
+    std::vector<uint8_t> encoded;
+    bool fromPaste = false;
+
+    // The person's road first: somebody who has just pasted is waiting at the screen.
+    {
+      std::string pasted;
+      {
+        std::lock_guard<std::mutex> lock(g_onboardMutex);
+        pasted.swap(g_pastedInvite);
       }
-      previous = std::move(raw);
+      if (!pasted.empty()) {
+        if (!DecodeBase64(pasted, encoded)) {
+          // Refused BY NAME and the loop CONTINUES: a person who mistyped gets to try again, and
+          // a session that closed here would make a typo cost a relaunch.
+          PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
+                         "That invitation could not be read. Copy the whole code and paste it "
+                         "again - it is one long line with no spaces inside it.");
+          urnw::LogWarn("live: a pasted invite was not decodable base64; refused, still waiting");
+          encoded.clear();
+        } else {
+          fromPaste = true;
+        }
+      }
     }
-    ::Sleep(static_cast<DWORD>(kInvitePollMs));
-  }
-  if (!have) {
-    urnw::LogError(
-        "live: no invite at {} after {} ms. The peer never answered. Nothing here can mint one: "
-        "the group is founded by the OTHER account and this device is the member it adds.",
-        Utf8Path(invitePath), NowMs() - waitStartedMs);
-    return false;
-  }
-  urnw::LogInfo("live: invite read from {} ({} octets) after {} ms", Utf8Path(invitePath),
-                encoded.size(), NowMs() - waitStartedMs);
 
-  // An invite ends with a checksum of everything before it, so a damaged one is
-  // refused HERE rather than joining something wrong.
-  const uint64_t invite =
-      urnet_message_parse_invite(encoded.data(), static_cast<int32_t>(encoded.size()), &err);
-  if (invite == 0) {
-    urnw::LogError("live: parse_invite refused it: {}", TakeError(&err));
-    return false;
-  }
-  s.group = urnet_message_device_join(s.device, s.ctx, invite, &err);
-  urnet_release(invite);
-  if (s.group == 0) {
-    urnw::LogError(
-        "live: device_join: {} — if this names a key package this device does not hold, the peer "
-        "built the invite from a STALE key package file. Delete both handshake files and run both "
-        "sides again.",
-        TakeError(&err));
-    return false;
-  }
-  urnw::LogInfo("live: *** JOINED the group *** at epoch {}", urnet_message_group_epoch(s.group));
+    // The developer's road: the file sdk/livehost writes.
+    if (encoded.empty()) {
+      std::vector<uint8_t> raw;
+      if (ReadOctets(invitePath, raw)) {
+        // Two identical reads before accepting it: the writer is another process and a partially
+        // written file read whole is a checksum failure at the parse, where it looks like
+        // corruption rather than like a race.
+        if (!previous.empty() && previous == raw) {
+          encoded = std::move(raw);
+        } else {
+          previous = std::move(raw);
+        }
+      }
+    }
 
-  // CONSUMED, SO DELETED. It is key material and it has done its job; leaving it
-  // on disk is a group anyone who reads that file is in.
-  std::error_code ec;
-  if (!std::filesystem::remove(invitePath, ec)) {
-    urnw::LogWarn("live: the invite at {} could not be deleted ({}). Delete it by hand: it is key "
-                  "material and whoever reads it is in this group.",
-                  Utf8Path(invitePath), ec.message());
-  } else {
-    urnw::LogInfo("live: the invite has been consumed and deleted");
+    if (encoded.empty()) {
+      ::Sleep(static_cast<DWORD>(kInvitePollMs));
+      continue;
+    }
+
+    PublishOnboard(urmsg::live::OnboardStep::Joining, joinCode, "Opening the invitation...");
+    urnw::LogInfo("live: an invite arrived from {} ({} octets) after {} ms",
+                  fromPaste ? "the app" : "the handshake file", encoded.size(),
+                  NowMs() - waitStartedMs);
+
+    // An invite ends with a checksum of everything before it, so a damaged one is refused HERE
+    // rather than joining something wrong.
+    const uint64_t invite =
+        urnet_message_parse_invite(encoded.data(), static_cast<int32_t>(encoded.size()), &err);
+    if (invite == 0) {
+      urnw::LogError("live: parse_invite refused it: {}", TakeError(&err));
+      PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
+                     "That invitation was refused: it did not survive the journey intact. Ask for "
+                     "a fresh one - an invitation can only be used once.");
+      previous.clear();
+      ::Sleep(static_cast<DWORD>(kInvitePollMs));
+      continue;
+    }
+    s.group = urnet_message_device_join(s.device, s.ctx, invite, &err);
+    urnet_release(invite);
+    if (s.group == 0) {
+      urnw::LogError(
+          "live: device_join: {} - if this names a key package this device does not hold, the "
+          "invite was built from a STALE join code. Send the code the app is showing NOW.",
+          TakeError(&err));
+      PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
+                     "That invitation was not meant for this device. Send the join code this "
+                     "screen is showing now, and ask for a new invitation built from it.");
+      previous.clear();
+      ::Sleep(static_cast<DWORD>(kInvitePollMs));
+      continue;
+    }
+
+    urnw::LogInfo("live: *** JOINED the group *** at epoch {}", urnet_message_group_epoch(s.group));
+    PublishOnboard(urmsg::live::OnboardStep::Joined, std::string(), "You are in the group.");
+
+    // CONSUMED, SO DELETED. It is key material and it has done its job; leaving it on disk is a
+    // group anyone who reads that file is in. Only the FILE road leaves anything behind - a pasted
+    // code was never written down by this process, which is the better of the two for that reason.
+    std::error_code ec;
+    if (!fromPaste && std::filesystem::exists(invitePath, ec)) {
+      if (!std::filesystem::remove(invitePath, ec)) {
+        urnw::LogWarn("live: the invite at {} could not be deleted ({}). Delete it by hand: it is "
+                      "key material and whoever reads it is in this group.",
+                      Utf8Path(invitePath), ec.message());
+      } else {
+        urnw::LogInfo("live: the invite has been consumed and deleted");
+      }
+    }
+    return true;
   }
-  return true;
 }
 
 // ── reading the conversation off the ABI ──────────────────────────────────────
@@ -1434,6 +1581,37 @@ bool QueueTransferOwnership(std::string identityPubHex) {
   out.identityPub = std::move(identityPubHex);
   out.role = "owner";
   Enqueue(std::move(out));
+  return true;
+}
+
+OnboardPtr OnboardSnapshot() {
+  std::lock_guard<std::mutex> lock(g_onboardMutex);
+  return g_onboard;
+}
+
+uint64_t OnboardGeneration() {
+  return g_onboardGeneration.load(std::memory_order_acquire);
+}
+
+bool QueueJoinFromInviteCode(std::string base64Invite) {
+  // DECODED HERE, AT THE QUEUE, AND THE RESULT THROWN AWAY. The worker decodes it again for real;
+  // this call exists only so that text which cannot possibly be an invitation is refused while the
+  // person is still looking at the box they pasted into. Same reason QueueSend decodes a reply's
+  // parent at the queue rather than on the worker.
+  std::vector<uint8_t> probe;
+  if (!DecodeBase64(base64Invite, probe)) {
+    urnw::LogWarn("live: a pasted invitation was not decodable ({} characters); refused before it "
+                  "was queued",
+                  base64Invite.size());
+    return false;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_onboardMutex);
+    // REPLACES rather than queues. Somebody who pastes twice has corrected themselves; applying
+    // both would try to join two groups with one device.
+    g_pastedInvite = std::move(base64Invite);
+  }
+  urnw::LogInfo("live: an invitation of {} octets was handed to the worker", probe.size());
   return true;
 }
 

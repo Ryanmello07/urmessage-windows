@@ -214,6 +214,15 @@ WorldPtr Snapshot();
 // must marshal to the UI thread itself. Pass {} to clear it. Safe from any thread.
 void SetOnPublish(std::function<void()> onPublish);
 
+// RING THE SAME BELL WITHOUT PUBLISHING A WORLD. The onboarding half of LiveMesh has state the UI
+// must redraw - a join code to show, an invitation refused - and none of it is a world. Rather
+// than a second bridge with a second DispatcherQueue and a second set of marshalling rules, it
+// rings this one: the window's beat already re-reads everything it draws, so one bell is enough.
+//
+// Called from the worker thread, like Publish. The callback is taken under the lock and invoked
+// OUTSIDE it, for the reason Publish states.
+void NotifyPublished();
+
 // How many times Publish has been called. The UI uses it to drop a stale marshalled beat rather
 // than rebuilding the list once per queued notification.
 uint64_t Generation();
