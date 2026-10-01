@@ -124,6 +124,10 @@ urnw::kit::PaneListRow MakeDeviceRow(demo::DeviceRef const& device, bool showOwn
 struct RosterVerb {
   std::function<bool(std::wstring identityPubHex, std::wstring role)> setRole;
   std::function<bool(std::wstring identityPubHex)> transferOwnership;
+  // Takes every leaf the named identity holds out of the group in one commit. A SEPARATE host
+  // from setRole and not a role string through it, because the ABI call is a different one and
+  // a verb that reached setRole with "removed" would be a role this protocol does not have.
+  std::function<bool(std::wstring identityPubHex)> removeMember;
   bool enabled = false;
 };
 void SetInspectRailRosterVerb(RosterVerb verb);

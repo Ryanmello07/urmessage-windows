@@ -31,6 +31,7 @@
  *
  * THESE CALLS BLOCK AND YOU SHOULD NOT BE ON A UI THREAD. urnet_message_device_connect,
  * _group_open, _group_send, _group_receive, _group_set_role, _group_transfer_ownership,
+ * _group_remove_member,
  * _device_restore and _device_create_group/_join all wait on the network. connect's budget
  * DEFAULTS TO 90 SECONDS, because a reconnecting client is not routed to by the operator for
  * about sixty (measured). run them on a thread of your own and pass a urnet_message_context
@@ -63,14 +64,26 @@
  * THE ROLE MODEL CROSSES TOO (MASTER section 11). every member has a role -- owner, admin, member
  * or observer -- and the library refuses, on both sides, a commit the committer's role does not
  * permit: urnet_message_group_members is the roster with a role per row, _group_my_role is what
- * THIS device may do, and _group_set_role and _group_transfer_ownership are the two policy verbs.
+ * THIS device may do, _group_set_role and _group_transfer_ownership are the two policy verbs, and
+ * _group_remove_member takes one identity out of the group -- every device leaf it holds and its
+ * entry in the policy -- in one commit.
  * a verb answers a URNET_MESSAGE_COMMIT_* KIND rather than a bool, because "your role does not
  * permit this", "somebody else's commit landed first, fetch and retry" and "the network failed"
  * are three different things for a caller to do next. see the roster section.
  *
- * WHAT IS STILL NOT HERE: receipts, edit, media, group names, contact discovery, removing a
- * member, and adding a member to a group that is already open (the go verb exists; its export
- * does not). they are not built underneath this or not exported here, and they are not stubbed.
+ * AND BEING REMOVED IS A STATE YOU CAN READ, NOT ONLY AN ERROR YOU MIGHT SEE. when a commit takes
+ * THIS device out of a group, every later receive, send and commit verb answers by that name -- and
+ * urnet_message_group_removal reports it directly, with the last epoch this device was a member of,
+ * so a screen can go read-only without having had to make a call fail first. a removed device still
+ * reads the conversation up to that epoch; what it cannot do is follow anything above it, or send.
+ *
+ * WHAT IS STILL NOT HERE: receipts, edit, media, group names, contact discovery, and adding a
+ * member to a group that is already open (the go verb exists; its export does not). they are not
+ * built underneath this or not exported here, and they are not stubbed. ("removing a member" stood
+ * in this list after the verb shipped, two paragraphs under the one that documents it.) TWO
+ * PERMANENT STATES ARE STILL ONLY out_error SENTENCES: a group HALTED on a commit this device
+ * refused as invalid, and one gone DARK because the epoch key wrap never reached it. both are
+ * different screens from a removal, and both are owed the projection the removal now has.
  *
  * SPDX-License-Identifier: MPL-2.0 */
 #ifndef URNETWORK_MESSAGE_H
@@ -130,9 +143,9 @@ extern "C" {
 #define URNET_MESSAGE_GAP_UNSUPPORTED   "unsupported"
 #define URNET_MESSAGE_GAP_OUT_OF_WINDOW "out_of_window"
 
-/* what urnet_message_group_set_role and urnet_message_group_transfer_ownership answer. out_error is
- * set on everything but OK. BRANCH ON THE KIND AND SHOW THE TEXT: the kind is what to do next and
- * the text is why.
+/* what urnet_message_group_set_role, urnet_message_group_transfer_ownership and
+ * urnet_message_group_remove_member answer. out_error is set on everything but OK. BRANCH ON THE
+ * KIND AND SHOW THE TEXT: the kind is what to do next and the text is why.
  *
  * REFUSED: this device's role does not permit the change (MASTER section 11). nothing was built,
  * nothing moved for anybody, the stats' commit_refused_own moved by one, and retrying answers the
@@ -143,7 +156,10 @@ extern "C" {
  * INVALID: the request was malformed and refused by name before any rule was reached -- a role
  * that is not "admin", "member" or "observer", a set_role naming the owner's own identity (both
  * because ownership moves through transfer_ownership), a transfer to the identity that already
- * owns the group, an identity_pub_hex that is not hex. nothing counted. it is a caller bug.
+ * owns the group, a remove_member naming the identity that OWNS the group or THIS device's own
+ * identity or an identity no leaf carries, an identity_pub_hex that is not hex. nothing counted.
+ * it is a caller bug, and the text names the door: transfer ownership first, or -- for your own
+ * identity -- ask an admin, because no identity's last leaf ever leaves in its own commit.
  * FAILED: everything else -- the transport, a group that is not open or not yet reconciled, a
  * closed handle. FAILED with out_error left NULL is an unknown self or ctx handle, which this abi
  * logs by name rather than reporting.
@@ -268,6 +284,13 @@ uint64_t urnet_message_device_groups(uint64_t self);
 uint64_t urnet_message_device_restore(uint64_t self, uint64_t ctx, char** out_error);
 /* group_id is 32 octets. */
 uint64_t urnet_message_device_create_group(uint64_t self, uint64_t ctx, const uint8_t* group_id, int32_t group_id_len, char** out_error);
+/* a group joined ABOVE EPOCH ONE will not seal until urnet_message_group_receive has run once over
+ * it -- that is urmessage's ErrStreamFloorUnheld, and it is what bounds a leaf a removed member may
+ * have stood at: the joiner inherits that member's sender_handle byte for byte, and a first send
+ * with no receive behind it collides with a stream claim the server already holds and is then
+ * refused FOR THE LIFE OF THE PROCESS. receive once, then send: a group joined at epoch one never
+ * carries it, so that order is correct in both cases and needs no epoch test. errors here are
+ * sentences and not codes -- this abi has no typed error channel. */
 uint64_t urnet_message_device_join(uint64_t self, uint64_t ctx, uint64_t invite, char** out_error);
 
 /* ----- the invite, which is secret in full ----- */
@@ -348,9 +371,12 @@ bool urnet_message_group_id(uint64_t self, uint8_t* out, int32_t* inout_len);
 uint64_t urnet_message_group_epoch(uint64_t self);
 bool urnet_message_group_is_open(uint64_t self);
 /* what this group has SEEN, as json: fetched, opened, skipped_ceremony, skipped_own, opened_own,
- * own_without_copy, skipped_seen, unopened, omitted, skipped_class, gap_malformed, gap_unsupported,
- * gap_out_of_window, opened_past_epoch, hidden_observer, role_undeterminable, ingested,
- * commit_refused, commit_refused_own, failed_open, submitted, rebound, pages, unattested.
+ * own_without_copy, skipped_seen, unopened, omitted, skipped_class, wrap_opened, wrap_missing,
+ * wrap_unreadable, wrap_orphaned, gap_malformed, gap_unsupported,
+ * gap_out_of_window, opened_past_epoch, hidden_observer, observer_reaction_refused,
+ * role_undeterminable, ingested,
+ * commit_refused, commit_refused_own, failed_open, submitted, rebound, pages, unattested,
+ * stream_floor_seeded, unopened_unattributed.
  *
  * THE LIST ABOVE IS THE JSON'S OWN KEY LIST, IN ITS ORDER, and a go test in this directory reads it
  * off this file and holds it equal to the keys the json carries -- it went stale once, omitting
@@ -360,10 +386,27 @@ bool urnet_message_group_is_open(uint64_t self);
  * this device was a member then. hidden_observer counts lines whose sender was an OBSERVER at the
  * epoch it sealed them -- a member running a build that does not take the send refusal, since
  * OBSERVER is enforced in the client and not at the server -- and the rows are in the log with
- * their bodies intact, collapsed by sender_role_at_send rather than dropped. role_undeterminable
+ * their bodies intact, collapsed by sender_role_at_send rather than dropped.
+ * observer_reaction_refused counts the other answer, and the asymmetry is the rule: an observer's
+ * REACTION is NOT APPLIED at all, so it never appears in any message's reactions array and there is
+ * nothing to collapse -- a message is kept because dropping it would hide that something was said,
+ * and a reaction that is not applied hides nothing, since the message it names is right there whole.
+ * It is one per record. An observer's TOMBSTONE is applied and counted by neither: it only ever
+ * retracts that observer's own message. role_undeterminable
  * counts records that opened and whose sender's role could not be read: it MUST STAY ZERO, because
  * the role is read off the same handle the open read, and it is not gap_out_of_window's
  * counterpart -- a record no schedule reaches never opens and is never asked about.
+ * wrap_opened, wrap_missing, wrap_unreadable and wrap_orphaned are the epoch device wrap that
+ * carries this group post-quantum secret for the epoch a commit opens (ledger item 251).
+ * wrap_opened rises by one per epoch change this device did not commit itself, and a zero
+ * across a commit is the first thing to look at. The other three are FAILURES with a typed
+ * error each, and they are three numbers rather than one because they have three repairs: a
+ * wrap that never arrived is a committer that left this device out of the fan-out; one that did
+ * not open was sealed to a key this device does not hold; and wrap_orphaned is the fan-out of a
+ * committer that LOST its race to open the epoch, which repairs itself -- a number there with
+ * no wrap_missing beside it is the healthy reading. A device with wrap_missing or
+ * wrap_unreadable above zero can neither read nor write at that epoch and says so by name,
+ * rather than meeting an undiagnosable refusal from the server.
  * ingested counts membership-change commits this device followed
  * into the next epoch; commit_refused counts the ones its receiving-side role check refused --
  * a number there is a member that committed what its role does not permit, and a group this
@@ -382,6 +425,30 @@ bool urnet_message_group_is_open(uint64_t self);
  * counts its own records it has no copy of and cannot show. it exists so that "nothing arrived" and "something arrived and this build would
  * not open it" are two readings rather than one silence. free with urnet_free_string. */
 char* urnet_message_group_stats(uint64_t self);
+/* WHETHER A COMMIT HAS TAKEN THIS DEVICE OUT OF THIS GROUP, as json:
+ *   {"removed":true,"removed_epoch":7}
+ *
+ * THE SHAPE ABOVE IS THE JSON'S OWN KEY LIST, IN ITS ORDER, held by a go test in this directory in
+ * the same way the message and member shapes are. NULL for an unknown handle, which is this abi's
+ * convention; free with urnet_free_string.
+ *
+ * `removed` FALSE IS THE ORDINARY ANSWER and says nothing else about the group's health. TRUE means a
+ * VALID commit this group received removed this device: it is not the same thing as a commit this
+ * device REFUSED (that group is halted and is still a member) and not the same as a wrap that never
+ * arrived (that group followed the commit and holds no keys for the epoch). those two are still only
+ * out_error sentences here.
+ *
+ * WHAT A UI OWES IT. it never clears -- the only way back into the group is to be added again, which
+ * arrives as a new invite and a different group -- so the right shape is a permanent read-only state
+ * and not a retry: disable the composer with an inline reason (Spec C section 5's disabled-composer
+ * rule, and screen 10's read-only variant), and keep the transcript. `removed_epoch` is the LAST epoch
+ * this device was a member of, and the server serves it nothing above that epoch, so it is exactly
+ * where the conversation this device can still read stops.
+ *
+ * READ IT AFTER ANY receive OR send THAT FAILED, and on restore: it is persisted, so a device that was
+ * removed while the app was closed comes back already knowing, and its first receive does not have to
+ * fail for the screen to be right. */
+char* urnet_message_group_removal(uint64_t self);
 bool urnet_message_group_close(uint64_t self, char** out_error);
 
 /* ----- the roster and the two role verbs (MASTER section 11) ----- */
@@ -411,6 +478,17 @@ int32_t urnet_message_group_set_role(uint64_t self, uint64_t ctx, const char* id
  * a stranger is REFUSED, the current owner is INVALID, and anybody but the owner calling this is
  * REFUSED. answers a URNET_MESSAGE_COMMIT_* kind. */
 int32_t urnet_message_group_transfer_ownership(uint64_t self, uint64_t ctx, const char* identity_pub_hex, char** out_error);
+/* take one identity out of the group: EVERY device leaf it holds and its entry in the group's
+ * policy, in ONE commit. BLOCKS on the submit and takes a cancel handle. identity_pub_hex is the
+ * identity_pub a member info carries, so a roster row is all a caller needs -- one call per PERSON
+ * and not one per device, because a removal that left one of somebody's devices in the group would
+ * have removed nobody. answers a URNET_MESSAGE_COMMIT_* kind: a member or an observer is REFUSED,
+ * and only the owner may remove an admin. the OWNER's identity is INVALID -- transfer ownership
+ * first, and the outgoing owner is then an admin the new owner may remove -- and so is THIS
+ * device's own identity, which is a leave and not a removal. after it lands, the removed identity
+ * can neither read the group nor write to it: the epoch the removal opens runs on a fresh secret
+ * that is delivered to every other member and not to it. re-read the roster afterwards. */
+int32_t urnet_message_group_remove_member(uint64_t self, uint64_t ctx, const char* identity_pub_hex, char** out_error);
 
 /* ----- the list handles ----- */
 
@@ -425,11 +503,26 @@ uint64_t urnet_message_group_list_at(uint64_t self, int32_t index);
 
 int32_t urnet_message_list_count(uint64_t self);
 /* one message's metadata as json, WITHOUT the body and WITHOUT its reactions:
- *   {"record_id":u64,"sender_handle":"<32 hex>","mine":bool,"sender_role_at_send":"member",
+ *   {"record_id":u64,"sender_handle":"<32 hex>","sender_identity":"<hex>","mine":bool,
+ *    "sender_role_at_send":"member",
  *    "sent_at_ms":i64,"body_len":i32,"message_id":"<64 hex>","kind":u8,"gap":"","reply_to_id":"",
  *    "deleted":bool,"reaction_count":i32}
  * THE KEY LIST ABOVE IS THE JSON'S OWN, IN ITS ORDER, and a go test in this directory holds it so.
- * sender_handle is 16 opaque octets and IS NOT A NAME: the alpha has no identity system.
+ * sender_handle is 16 opaque octets and IS NOT A NAME and IS NOT AN ATTRIBUTION EITHER: it is
+ * derived from the LEAF alone and the group's handle key never rotates, so a member added onto a
+ * REMOVED member's leaf carries the removed member's sender_handle byte for byte -- two people,
+ * one label, for ever (msgrepo ledger item 245). JOIN A LINE TO A ROSTER ROW ON sender_identity,
+ * which is what MLS signs and is the same value urnet_message_group_members answers as
+ * identity_pub; it is "" only on a record that did not open and that this device did not seal.
+ *
+ * mine is decided ON sender_identity OR ON OCTETS THIS DEVICE PRODUCED, and NEVER on
+ * sender_handle. a record that opened is mine when its sender_identity is this device's own; a
+ * record that did NOT open is mine only when this device sealed at that stream index and the
+ * record carries the body_hash it sealed there -- and such a record carries this device's
+ * sender_identity too. so mine and sender_identity agree on every line, and a caller that keys
+ * its rows on sender_identity may read mine beside them. a build that took mine off
+ * sender_handle showed a REMOVED member's whole history as this device's own the day this device
+ * landed on that member's leaf.
  *
  * sender_role_at_send is the role the SENDER HELD AT THE EPOCH THIS RECORD WAS SEALED AT --
  * "owner", "admin", "member", "observer" -- and "" on a record that did not open. IT IS A FACT

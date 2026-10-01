@@ -123,4 +123,21 @@ bool QueueRoleChange(std::string identityPubHex, std::string role);
 // change here with no undo by construction. Same answers as QueueRoleChange.
 bool QueueTransferOwnership(std::string identityPubHex);
 
+// REMOVE ONE MEMBER FROM THE GROUP, on the worker: urnet_message_group_remove_member with the
+// identity_pub a roster row carries, passed back as is. Answers false, having queued nothing, when
+// CanSend() is false or the identity is not hex. Same five answers as the two verbs above, drawn
+// the same way.
+//
+// ONE CALL TAKES EVERY LEAF THAT IDENTITY HOLDS, and that is the ABI's contract rather than this
+// app's loop (ruling 49): a person with a phone and a laptop in the group is two leaves and one
+// identity, and a removal that took one would leave the other reading everything. So there is no
+// per-device verb here and this one is keyed on the identity, which is also why the confirmation
+// says "every device this member holds".
+//
+// THE CONFIRMATION IS THE CALLER'S, exactly as it is for a transfer: the rail asks before it calls
+// this, because nothing in this product can put the member back. Re-admitting needs a fresh key
+// package from them (device.KeyPackage is single use and is consumed destructively at the join),
+// and the alpha's one-credential peer cannot mint a second one at all.
+bool QueueRemoveMember(std::string identityPubHex);
+
 }  // namespace urmsg::live

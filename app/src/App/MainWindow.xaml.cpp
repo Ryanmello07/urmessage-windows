@@ -529,6 +529,19 @@ bool MainWindow::TransferOwnershipFromRail(std::wstring identityPubHex) {
   return queued;
 }
 
+bool MainWindow::RemoveMemberFromRail(std::wstring identityPubHex) {
+  const bool queued = urmsg::live::QueueRemoveMember(urnw::Narrow(identityPubHex));
+  if (queued) {
+    urnw::LogInfo("window: rail handed a removal (of {}) to the live worker",
+                  urnw::Narrow(identityPubHex));
+  } else {
+    urnw::LogWarn("window: the rail's removal was REFUSED before it was queued (live session can "
+                  "send: {})",
+                  urmsg::live::CanSend());
+  }
+  return queued;
+}
+
 bool MainWindow::ReactFromBubble(std::wstring rowId, std::wstring emoji, bool remove) {
   // The row id is the message_id (see SendFromComposer); the emoji crosses as UTF-8 because the
   // ABI checks it as 1..64 octets of valid UTF-8 and folds nothing, so the octets queued here are
@@ -804,6 +817,11 @@ void MainWindow::BuildDemoViews() {
     auto self = weak.get();
     if (!self) return false;
     return self->TransferOwnershipFromRail(std::move(identityPubHex));
+  };
+  roster.removeMember = [weak = get_weak()](std::wstring identityPubHex) -> bool {
+    auto self = weak.get();
+    if (!self) return false;
+    return self->RemoveMemberFromRail(std::move(identityPubHex));
   };
   roster.enabled = false;
   urmsg::views::SetInspectRailRosterVerb(std::move(roster));

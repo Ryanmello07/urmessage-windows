@@ -1100,13 +1100,21 @@ std::vector<std::wstring> RosterDiagnostics() {
       wchar_t const* theirs;
       std::vector<V> want;
     };
+    // REMOVE IS LAST ON EVERY ROW THAT HAS ANY CONTROL AND IS ABSENT FROM EVERY ROW THAT HAS
+    // NONE, which is the whole of item 242 R2 and R3 as a table. The two rows that matter most
+    // are the ones where it must NOT appear and a reader would expect it to: an admin looking at
+    // another ADMIN gets nothing (R3 - the admin set is the owner's alone, and removal is part of
+    // that set), and anybody looking at the OWNER gets nothing.
     const Case cases[] = {
-        {demo::kRoleOwner, demo::kRoleMember, {V::MakeAdmin, V::MakeObserver, V::TransferOwnership}},
-        {demo::kRoleOwner, demo::kRoleAdmin, {V::MakeMember, V::MakeObserver, V::TransferOwnership}},
-        {demo::kRoleOwner, demo::kRoleObserver, {V::MakeAdmin, V::MakeMember, V::TransferOwnership}},
+        {demo::kRoleOwner, demo::kRoleMember,
+         {V::MakeAdmin, V::MakeObserver, V::TransferOwnership, V::Remove}},
+        {demo::kRoleOwner, demo::kRoleAdmin,
+         {V::MakeMember, V::MakeObserver, V::TransferOwnership, V::Remove}},
+        {demo::kRoleOwner, demo::kRoleObserver,
+         {V::MakeAdmin, V::MakeMember, V::TransferOwnership, V::Remove}},
         {demo::kRoleOwner, demo::kRoleOwner, {}},
-        {demo::kRoleAdmin, demo::kRoleMember, {V::MakeObserver}},
-        {demo::kRoleAdmin, demo::kRoleObserver, {V::MakeMember}},
+        {demo::kRoleAdmin, demo::kRoleMember, {V::MakeObserver, V::Remove}},
+        {demo::kRoleAdmin, demo::kRoleObserver, {V::MakeMember, V::Remove}},
         {demo::kRoleAdmin, demo::kRoleAdmin, {}},
         {demo::kRoleAdmin, demo::kRoleOwner, {}},
         {demo::kRoleMember, demo::kRoleMember, {}},
@@ -1127,25 +1135,43 @@ std::vector<std::wstring> RosterDiagnostics() {
         RoleControlsFor(demo::kRoleOwner, demo::kRoleOwner, true).empty() &&
         RoleControlsFor(demo::kRoleAdmin, demo::kRoleAdmin, true).empty() &&
         RoleControlsFor(demo::kRoleOwner, demo::kRoleMember, true).empty();
-    // Every verb has a non-empty label and the four labels differ.
+    // Every verb has a non-empty label and the five labels differ.
     const std::wstring labels[] = {RoleControlLabel(V::MakeAdmin), RoleControlLabel(V::MakeMember),
                                    RoleControlLabel(V::MakeObserver),
-                                   RoleControlLabel(V::TransferOwnership)};
+                                   RoleControlLabel(V::TransferOwnership),
+                                   RoleControlLabel(V::Remove)};
     bool labelsOk = true;
-    for (size_t i = 0; i < 4; ++i) {
+    for (size_t i = 0; i < std::size(labels); ++i) {
       if (labels[i].empty()) labelsOk = false;
       for (size_t j = 0; j < i; ++j)
         if (labels[i] == labels[j]) labelsOk = false;
     }
-    const bool ok = agree == std::size(cases) && ownRowEmpty && labelsOk;
+    // THE ROLE A VERB ASKS FOR, AND THE ONE THAT ASKS FOR NONE. RoleVerbTarget's default arm
+    // answers kRoleMember, so a Remove that fell through to it would read as a demotion AND would
+    // be spent on urnet_message_group_set_role by any caller that did not branch first. Asserted
+    // BOTH WAYS: the four role verbs answer a non-empty, distinct spelling, and Remove answers
+    // empty. A gate that only checked the four would pass the exact defect.
+    const std::wstring targets[] = {
+        std::wstring(RoleVerbTarget(V::MakeAdmin)), std::wstring(RoleVerbTarget(V::MakeMember)),
+        std::wstring(RoleVerbTarget(V::MakeObserver)),
+        std::wstring(RoleVerbTarget(V::TransferOwnership))};
+    bool targetsOk = RoleVerbTarget(V::Remove).empty();
+    for (size_t i = 0; i < std::size(targets); ++i) {
+      if (targets[i].empty()) targetsOk = false;
+      for (size_t j = 0; j < i; ++j)
+        if (targets[i] == targets[j]) targetsOk = false;
+    }
+    const bool ok = agree == std::size(cases) && ownRowEmpty && labelsOk && targetsOk;
     out.push_back(std::format(
         L"  roster controls  : {}  {}/{} (viewer, member) pairs give MASTER section 11's set, own "
-        L"row empty {}, labels distinct {} -> {}   [query: owner gets Make admin/member/observer "
-        L"minus the member's current role plus Transfer ownership; admin gets Make member/observer "
-        L"minus current, nothing on an admin or the owner; member/observer/unknown get nothing; "
-        L"nothing on one's own row]",
+        L"row empty {}, labels distinct {}, role targets {} -> {}   [query: owner gets Make "
+        L"admin/member/observer minus the member's current role plus Transfer ownership; admin gets "
+        L"Make member/observer minus current, nothing on an admin or the owner; member/observer/"
+        L"unknown get nothing; nothing on one's own row; Remove LAST on every row that has any "
+        L"control and on no row that has none; the four role verbs name a distinct non-empty role "
+        L"and Remove names none]",
         Verdict(ok), agree, std::size(cases), ownRowEmpty ? L"yes" : L"NO",
-        labelsOk ? L"yes" : L"NO", table));
+        labelsOk ? L"yes" : L"NO", targetsOk ? L"yes" : L"NO", table));
   }
 
   // 3. the control names in ALL THREE arms, on the capability, like the bubble actions - and the
@@ -1195,7 +1221,7 @@ std::vector<std::wstring> RosterDiagnostics() {
     size_t ok = 0;
     std::wstring listing;
     for (RoleVerb v : {RoleVerb::MakeAdmin, RoleVerb::MakeMember, RoleVerb::MakeObserver,
-                       RoleVerb::TransferOwnership}) {
+                       RoleVerb::TransferOwnership, RoleVerb::Remove}) {
       const std::wstring on = RoleControlName(v, RoleControlState::Live);
       const std::wstring waiting = RoleControlName(v, RoleControlState::Pending);
       const std::wstring off = RoleControlName(v, RoleControlState::NoSession);
@@ -1219,7 +1245,7 @@ std::vector<std::wstring> RosterDiagnostics() {
                              offClaims.empty() ? L"none" : offClaims);
     }
     out.push_back(std::format(
-        L"  roster names     : {}  {}/4 controls have three distinct arms, a live and a pending "
+        L"  roster names     : {}  {}/5 controls have three distinct arms, a live and a pending "
         L"arm that deny no session, a dark arm that names the missing one, and an enforcement "
         L"claim in EXACTLY the (Make observer, live) cell -> {}   [query: three distinct non-empty "
         L"arms; NEITHER the live nor the pending arm contains \"no live session\", \"not "
@@ -1227,8 +1253,57 @@ std::vector<std::wstring> RosterDiagnostics() {
         L"library, so a session denial there is false; dark arm contains \"no live session\"; of "
         L"the words \"not send\", \"read but\", \"read-only\", \"read only\", \"can read\", the "
         L"Make-observer LIVE arm must carry at least one - item 242 R4 built the gate, so the "
-        L"control must say what the role does - and the other eleven cells must carry none]",
-        Verdict(ok == 4), ok, listing));
+        L"control must say what the role does - and the other FOURTEEN cells must carry none, "
+        L"Remove's three included: what Remove does is not a gate on reading]",
+        Verdict(ok == 5), ok, listing));
+  }
+
+  // 3b. THE TWO CONFIRMATIONS, which had no gate at all until a removal needed one. Both guard a
+  //     change this product cannot undo, and the property that makes them safe is not the wording:
+  //     it is that the CLOSE button is the harmless arm and is the dialog's default, so a stray
+  //     Enter keeps things as they are. That half lives in InspectRailView.cpp's
+  //     DefaultButton(ContentDialogButton::Close) and is not reachable from here. What IS reachable
+  //     is that all four strings exist, that the two dialogs are told apart by every one of them,
+  //     and that each CLOSE arm names KEEPING rather than cancelling - "Cancel" beside a title
+  //     asking "Remove this member?" is the one wording where a hurried reader cannot tell which
+  //     button does nothing.
+  {
+    struct Confirm {
+      wchar_t const* what;
+      std::wstring title, body, primary, close;
+      wchar_t const* keeps;
+    };
+    const Confirm pair[] = {
+        {L"transfer", TransferConfirmTitle(), TransferConfirmBody(), TransferConfirmPrimary(),
+         TransferConfirmClose(), L"Keep"},
+        {L"remove", RemoveConfirmTitle(), RemoveConfirmBody(), RemoveConfirmPrimary(),
+         RemoveConfirmClose(), L"Keep"},
+    };
+    size_t good = 0;
+    std::wstring listing;
+    for (auto const& c : pair) {
+      const bool filled = !c.title.empty() && !c.body.empty() && !c.primary.empty() &&
+                          !c.close.empty();
+      const bool distinct = c.primary != c.close && c.title != c.body;
+      const bool keeps = c.close.find(c.keeps) != std::wstring::npos;
+      // The body must say what cannot be taken back, in its own words rather than by being short.
+      const bool irreversible = c.body.find(L"Only the new owner") != std::wstring::npos ||
+                                c.body.find(L"cannot add them back") != std::wstring::npos;
+      if (filled && distinct && keeps && irreversible) ++good;
+      if (!listing.empty()) listing += L"; ";
+      listing += std::format(L"{}: \"{}\" primary \"{}\" close \"{}\"", c.what, c.title,
+                             c.primary, c.close);
+    }
+    // And the two dialogs share NO string, so neither can be mistaken for the other on screen.
+    const bool disjoint = pair[0].title != pair[1].title && pair[0].body != pair[1].body &&
+                          pair[0].primary != pair[1].primary && pair[0].close != pair[1].close;
+    out.push_back(std::format(
+        L"  roster confirms  : {}  {}/2 confirmations are filled, have a close arm that names "
+        L"keeping, and say in the body what cannot be undone; the two share no string {} -> {}   "
+        L"[query: title/body/primary/close all non-empty; primary != close; close contains "
+        L"\"Keep\"; body names the irreversibility (\"Only the new owner\" / \"cannot add them "
+        L"back\"); and all four strings differ between the two dialogs]",
+        Verdict(good == 2 && disjoint), good, disjoint ? L"yes" : L"NO", listing));
   }
 
   // 4. the outcome notes: nothing for None, and five distinct sentences for the five states -
@@ -1348,9 +1423,16 @@ std::vector<std::wstring> RosterDiagnostics() {
                         peerRow->roleActionVerb == demo::kRoleAdmin &&
                         peerRow->roleActionReason == L"epoch stale" &&
                         peerRow->id == std::wstring(32, L'b');
+    // THE SET AND NOT ITS SIZE. This read `.size() == 3` until a fifth verb was added, and a
+    // count is a claim with its query thrown away: it goes red when a verb is added (which is how
+    // this line was found) but it would go GREEN if one verb were swapped for another, which is
+    // the change a count cannot see. The expected set is this device's own row for an owner
+    // looking at a member: promote, make observer, hand over the group, take them out.
+    const std::vector<RoleVerb> wantPeer = {RoleVerb::MakeAdmin, RoleVerb::MakeObserver,
+                                            RoleVerb::TransferOwnership, RoleVerb::Remove};
     const bool controlsOk =
         conv && peerRow && mineRow &&
-        RoleControlsFor(conv->myRole, peerRow->role, peerRow->mine).size() == 3 &&
+        RoleControlsFor(conv->myRole, peerRow->role, peerRow->mine) == wantPeer &&
         RoleControlsFor(conv->myRole, mineRow->role, mineRow->mine).empty();
     const std::wstring caption = conv ? MembersCaptionMeta(*conv) : std::wstring();
     const bool captionOk = caption.find(L"2 members") != std::wstring::npos &&

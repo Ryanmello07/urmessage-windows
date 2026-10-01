@@ -163,6 +163,7 @@ struct MainWindow : MainWindowT<MainWindow> {
   // the member the request named.
   bool RoleChangeFromRail(std::wstring identityPubHex, std::wstring role);
   bool TransferOwnershipFromRail(std::wstring identityPubHex);
+  bool RemoveMemberFromRail(std::wstring identityPubHex);
 
   std::shared_ptr<LiveWorldBridge> liveBridge_;
   urmsg::live::WorldPtr liveWorld_;

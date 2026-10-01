@@ -928,6 +928,34 @@ void ConfirmTransfer(Button const& source, std::wstring identityPubHex) {
   });
 }
 
+// The removal confirmation. The same shape as ConfirmTransfer above and for the
+// same reason: Close is the DEFAULT, so Enter on a focused dialog keeps the
+// member in the group. A removal has no undo anywhere in this product - nothing
+// here can re-admit anybody, because that needs a fresh key package from them -
+// so the one keystroke that is easy to make by accident must be the harmless one.
+void ConfirmRemove(Button const& source, std::wstring identityPubHex) {
+  ContentDialog dialog;
+  dialog.XamlRoot(source.XamlRoot());
+  dialog.Title(winrt::box_value(H(RemoveConfirmTitle())));
+  dialog.Content(winrt::box_value(H(RemoveConfirmBody())));
+  dialog.PrimaryButtonText(H(RemoveConfirmPrimary()));
+  dialog.CloseButtonText(H(RemoveConfirmClose()));
+  dialog.DefaultButton(ContentDialogButton::Close);
+  dialog.Background(urnw::colors::SheetBrush());
+  auto op = dialog.ShowAsync();
+  op.Completed([identityPubHex](auto const& async, auto const& status) {
+    if (status != winrt::Windows::Foundation::AsyncStatus::Completed) return;
+    if (async.GetResults() != ContentDialogResult::Primary) {
+      urnw::LogInfo("rail: removal NOT confirmed; nothing queued");
+      return;
+    }
+    auto const& verb = MutableRosterVerb();
+    if (!verb.enabled || !verb.removeMember) return;
+    const bool queued = verb.removeMember(identityPubHex);
+    urnw::LogInfo("rail: removal confirmed and {} by the host", queued ? "taken" : "REFUSED");
+  });
+}
+
 // THE ROLE CONTROLS under an expanded member (Spec C screen 16's "role
 // controls"), and the note under them. Which buttons exist is the pure table's
 // answer for the viewer's role against the member's (RoleControlsFor); whether
@@ -983,6 +1011,13 @@ std::vector<Border> BuildRoleControlRows(demo::MemberRef const& member,
           auto button = sender.try_as<Button>();
           if (verb == RoleVerb::TransferOwnership) {
             if (button) ConfirmTransfer(button, identity);
+            return;
+          }
+          // THE SECOND VERB BEHIND A CONFIRMATION, and the last one that is not a set_role. Both
+          // return before the setRole host below is read, which is what keeps RoleVerbTarget's
+          // empty answer for Remove from ever being spent on a role change.
+          if (verb == RoleVerb::Remove) {
+            if (button) ConfirmRemove(button, identity);
             return;
           }
           auto const& host = MutableRosterVerb();
@@ -1578,7 +1613,13 @@ void SetInspectRailRosterEnabled(bool enabled) { MutableRosterVerb().enabled = e
 
 bool CanChangeRoles() {
   auto const& verb = MutableRosterVerb();
-  return verb.enabled && verb.setRole != nullptr && verb.transferOwnership != nullptr;
+  // ALL THREE HOSTS, because RoleControlsFor now offers a control for each of them and this one
+  // predicate gates every button on the row. Leaving removeMember out would draw a live Remove
+  // with nothing behind it - design section 9.1's enabled button that cannot work - and the
+  // window fills all three in one statement, so there is no launch where two are set and one is
+  // not.
+  return verb.enabled && verb.setRole != nullptr && verb.transferOwnership != nullptr &&
+         verb.removeMember != nullptr;
 }
 
 void RefreshInspectRail(InspectRailView& v, demo::Conversation const& c) {

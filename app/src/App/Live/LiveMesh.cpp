@@ -387,7 +387,9 @@ int64_t WallClockMs() {
 // role outbox on the member they name (item 242 R3). They share the queue because they share the
 // constraint that put the queue here: each one is a round trip inside a single ABI call, and only
 // the worker may hold the group handle.
-enum class OutboundKind { Text, Reply, ReactAdd, ReactRemove, SetRole, TransferOwnership };
+enum class OutboundKind {
+  Text, Reply, ReactAdd, ReactRemove, SetRole, TransferOwnership, RemoveMember
+};
 
 struct Outbound {
   OutboundKind kind = OutboundKind::Text;
@@ -397,7 +399,8 @@ struct Outbound {
   std::string targetHex;    // the message named: the parent (Reply) or the target (React*)
   std::vector<uint8_t> target;  // the same 32 octets, decoded once at the queue
   std::string emoji;        // RAW utf-8 (React*)
-  std::string identityPub;  // the member named, as the roster spells it (SetRole, Transfer)
+  std::string identityPub;  // the member named, as the roster spells it (SetRole, Transfer,
+                            // RemoveMember)
   std::string role;         // "admin" | "member" | "observer" (SetRole); "owner" (Transfer)
 };
 
@@ -1027,8 +1030,11 @@ void RunSession() {
     if (queued.empty()) return;
 
     for (auto& out : queued) {
-      const bool isRole =
-          out.kind == OutboundKind::SetRole || out.kind == OutboundKind::TransferOwnership;
+      // THE THREE COMMIT VERBS, and the name stays `isRole` because what it selects is "this
+      // entry's outcome is drawn as a note under a MEMBER", which is true of a removal too.
+      const bool isRole = out.kind == OutboundKind::SetRole ||
+                          out.kind == OutboundKind::TransferOwnership ||
+                          out.kind == OutboundKind::RemoveMember;
       if (isRole) {
         // ONE ATTEMPT PER MEMBER ON SCREEN, for the same reason a reaction retry supersedes its
         // failure: a second press after a refusal is that change asked for again, not a second
@@ -1111,14 +1117,21 @@ void RunSession() {
       // drops the entry - the roster read on the publish below already shows the change; every
       // other kind is kept on the entry with the library's own sentence, for the rail to draw as
       // the outcome it is. The commit is one round trip inside the call, like a send.
-      if (out.kind == OutboundKind::SetRole || out.kind == OutboundKind::TransferOwnership) {
+      if (out.kind == OutboundKind::SetRole || out.kind == OutboundKind::TransferOwnership ||
+          out.kind == OutboundKind::RemoveMember) {
         const bool transfer = out.kind == OutboundKind::TransferOwnership;
-        verb = transfer ? "transfer_ownership" : "set_role";
+        const bool removal = out.kind == OutboundKind::RemoveMember;
+        verb = removal ? "remove_member" : transfer ? "transfer_ownership" : "set_role";
+        // THE REMOVAL TAKES NO ROLE, which is why it is a third arm here rather than a set_role
+        // with a different string: urnet_message_group_remove_member's only member argument is the
+        // identity, and every leaf that identity holds goes in the one commit it builds.
         const int32_t kind =
-            transfer ? urnet_message_group_transfer_ownership(s.group, s.ctx,
-                                                              out.identityPub.c_str(), &sendErr)
-                     : urnet_message_group_set_role(s.group, s.ctx, out.identityPub.c_str(),
-                                                    out.role.c_str(), &sendErr);
+            removal  ? urnet_message_group_remove_member(s.group, s.ctx,
+                                                         out.identityPub.c_str(), &sendErr)
+            : transfer ? urnet_message_group_transfer_ownership(s.group, s.ctx,
+                                                                out.identityPub.c_str(), &sendErr)
+                       : urnet_message_group_set_role(s.group, s.ctx, out.identityPub.c_str(),
+                                                      out.role.c_str(), &sendErr);
         const std::string failure = TakeError(&sendErr);
         const int64_t tookMs = NowMs() - startedMs;
         auto at = std::find_if(roleOutbox.begin(), roleOutbox.end(),
@@ -1131,13 +1144,20 @@ void RunSession() {
                                : kind == URNET_MESSAGE_COMMIT_INVALID ? "INVALID"
                                                                       : "FAILED";
         if (kind == URNET_MESSAGE_COMMIT_OK) {
-          urnw::LogInfo("live: *** {} *** {} -> {} answered OK in {} ms; the group is at epoch {}",
-                        transfer ? "OWNERSHIP TRANSFERRED" : "ROLE SET", out.identityPub,
-                        out.role, tookMs, urnet_message_group_epoch(s.group));
+          // The removal's line names no role, because it asked for none. Printing `-> member`
+          // beside a member that is no longer in the group would be the log claiming the opposite
+          // of what the call did.
+          urnw::LogInfo("live: *** {} *** {}{} answered OK in {} ms; the group is at epoch {}",
+                        removal    ? "MEMBER REMOVED"
+                        : transfer ? "OWNERSHIP TRANSFERRED"
+                                   : "ROLE SET",
+                        out.identityPub, removal ? std::string() : " -> " + out.role, tookMs,
+                        urnet_message_group_epoch(s.group));
           if (at != roleOutbox.end()) roleOutbox.erase(at);
         } else {
-          urnw::LogError("live: {} {} -> {} answered {} after {} ms: {}", verb, out.identityPub,
-                         out.role, kindName, tookMs, failure.empty() ? "no reason given" : failure);
+          urnw::LogError("live: {} {}{} answered {} after {} ms: {}", verb, out.identityPub,
+                         removal ? std::string() : " -> " + out.role, kindName, tookMs,
+                         failure.empty() ? "no reason given" : failure);
           if (at != roleOutbox.end()) {
             at->done = true;
             at->kind = kind;
@@ -1413,6 +1433,25 @@ bool QueueTransferOwnership(std::string identityPubHex) {
   out.localId = std::to_string(g_nextLocalId.fetch_add(1));
   out.identityPub = std::move(identityPubHex);
   out.role = "owner";
+  Enqueue(std::move(out));
+  return true;
+}
+
+bool QueueRemoveMember(std::string identityPubHex) {
+  if (!g_canSend.load(std::memory_order_relaxed)) return false;
+  if (!IsHex(identityPubHex)) {
+    urnw::LogWarn("live: a removal named an identity that is not hex ({} chars); refused before "
+                  "it was queued",
+                  identityPubHex.size());
+    return false;
+  }
+  Outbound out;
+  out.kind = OutboundKind::RemoveMember;
+  out.localId = std::to_string(g_nextLocalId.fetch_add(1));
+  out.identityPub = std::move(identityPubHex);
+  // NO ROLE, DELIBERATELY LEFT EMPTY. The two verbs above fill this because the ABI takes it; this
+  // one does not, and the outbox entry carries the empty string so that any note drawn from it
+  // cannot name a role the commit never asked for.
   Enqueue(std::move(out));
   return true;
 }

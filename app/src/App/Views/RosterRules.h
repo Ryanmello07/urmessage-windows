@@ -45,13 +45,30 @@ std::wstring RoleWord(std::wstring_view role);
 // so a collapsed roster already answers who may do what.
 std::wstring MemberRowTitle(demo::MemberRef const& member);
 
-// The four verbs a roster control can ask for. The first three are
+// The five verbs a roster control can ask for. The first three are
 // urnet_message_group_set_role with the role named; the fourth is
-// urnet_message_group_transfer_ownership.
-enum class RoleVerb { MakeAdmin, MakeMember, MakeObserver, TransferOwnership };
+// urnet_message_group_transfer_ownership; the fifth is
+// urnet_message_group_remove_member.
+//
+// REMOVE IS NOT A ROLE CHANGE AND THE ENUM IS THE ONLY PLACE THEY SIT TOGETHER.
+// It shares this type because it shares everything a roster control needs - a
+// gate keyed on the viewer's role and the member's, a label, an automation name
+// in three states, and a commit whose five answers RoleActionNote already draws
+// - and it differs in the one way RoleVerbTarget below makes explicit: there is
+// no role it asks for. A member it takes out of the group holds no role
+// afterwards, because it is not in the group.
+enum class RoleVerb { MakeAdmin, MakeMember, MakeObserver, TransferOwnership, Remove };
 
 // The role a verb asks the ABI for, in the protocol's spelling (kRoleAdmin,
 // kRoleMember, kRoleObserver; kRoleOwner for a transfer).
+//
+// EMPTY FOR RoleVerb::Remove, which is the one verb that asks for no role.
+// Returning a role there would be a lie with a plausible shape - every caller
+// would spend it on a set_role - so it answers empty and InspectRailView
+// branches on the verb before it ever reads this. --diagnose asserts the four
+// are non-empty and distinct AND that the fifth is empty, because a default
+// arm that quietly answered kRoleMember is exactly the defect this comment
+// exists to prevent.
 std::wstring_view RoleVerbTarget(RoleVerb verb);
 
 // THE CONTROL SET. What a viewer holding `myRole` may do to a member holding
@@ -61,8 +78,17 @@ std::wstring_view RoleVerbTarget(RoleVerb verb);
 //   * an ADMIN may set MEMBER or OBSERVER, and may not touch an admin or the
 //     owner (the admin set is the owner's alone);
 //   * a MEMBER or an OBSERVER gets nothing.
+//   * and REMOVE is offered wherever a role control is (item 242 R2): an admin
+//     or the owner may remove any member they can already act on. It needs no
+//     clause of its own, and that is a property of the order rather than an
+//     omission - the admin-on-admin row has already returned empty above, so by
+//     the time Remove is pushed an admin's target can only be a member or an
+//     observer, which is R2's rule exactly. R3 (only the owner removes an admin)
+//     is therefore held by the SAME early return that holds it for MakeAdmin.
 // Empty on the viewer's own row (`theirRowIsMine`) and on the owner's row -
 // ownership moves only through a transfer, which is offered on the OTHER rows.
+// A removal of the owner is refused by the library by name and a removal of
+// one's own last leaf answers mls.ErrRemoveCommitter, so neither is offered.
 // A verb naming the role the member already holds is left out: the library
 // answers OK and commits nothing, so it would be a control that does nothing.
 // The order is the order the buttons are drawn in.
@@ -114,6 +140,19 @@ std::wstring TransferConfirmTitle();
 std::wstring TransferConfirmBody();
 std::wstring TransferConfirmPrimary();
 std::wstring TransferConfirmClose();
+
+// The removal confirmation's copy, and removal is behind one for the same reason
+// a transfer is: there is no undo in this product. Ruling 48 made leaving a
+// group product surface rather than an MLS proposal, and the mirror of that is
+// that re-admitting somebody is a fresh AddMember with a fresh key package -
+// which this deployment's one-credential peer cannot even produce. So the body
+// says what the person cannot take back, and says what the removed member keeps,
+// because the honest sentence is not "their messages are gone": the transcript
+// up to the epoch they were removed at is theirs and stays readable to them.
+std::wstring RemoveConfirmTitle();
+std::wstring RemoveConfirmBody();
+std::wstring RemoveConfirmPrimary();
+std::wstring RemoveConfirmClose();
 
 // The note drawn under a member while this device is changing its role and after
 // the library has answered anything but OK. Empty for RoleActionState::None.

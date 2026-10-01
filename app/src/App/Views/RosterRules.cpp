@@ -34,6 +34,9 @@ std::wstring_view RoleVerbTarget(RoleVerb verb) {
     case RoleVerb::MakeMember: return demo::kRoleMember;
     case RoleVerb::MakeObserver: return demo::kRoleObserver;
     case RoleVerb::TransferOwnership: return demo::kRoleOwner;
+    // THE ONE VERB WITH NO ROLE. See the header: answering kRoleMember here would
+    // read as a demotion to every caller and would be spent on a set_role.
+    case RoleVerb::Remove: return {};
   }
   return demo::kRoleMember;
 }
@@ -55,6 +58,10 @@ std::vector<RoleVerb> RoleControlsFor(std::wstring_view myRole, std::wstring_vie
   if (theirRole != demo::kRoleMember) out.push_back(RoleVerb::MakeMember);
   if (theirRole != demo::kRoleObserver) out.push_back(RoleVerb::MakeObserver);
   if (owner) out.push_back(RoleVerb::TransferOwnership);
+  // LAST, AND LAST ON PURPOSE: it is the only control here that takes somebody out of the group,
+  // so it sits at the end of the row rather than between two role changes. No clause of its own -
+  // see the header: the admin-on-admin early return above is what makes R3 hold for this too.
+  out.push_back(RoleVerb::Remove);
   return out;
 }
 
@@ -64,6 +71,7 @@ std::wstring RoleControlLabel(RoleVerb verb) {
     case RoleVerb::MakeMember: return L"Make member";
     case RoleVerb::MakeObserver: return L"Make observer";
     case RoleVerb::TransferOwnership: return L"Transfer ownership";
+    case RoleVerb::Remove: return L"Remove from group";
   }
   return {};
 }
@@ -127,6 +135,19 @@ std::wstring RoleControlName(RoleVerb verb, RoleControlState state) {
           L"Transfer ownership: waiting for the group to answer the last change to this member";
       dark = L"Transfer ownership: there is no live session to change roles in";
       break;
+    case RoleVerb::Remove:
+      // THE LIVE ARM NAMES THE EFFECT AND NOT THE BUTTON, because this is the one control on the
+      // row whose effect is not a role: every device this member holds leaves the group in one
+      // commit, which is what the library does (one identity, every leaf, one epoch) and is the
+      // part a person cannot infer from the word "remove".
+      live = L"Remove this member from the group; every device they hold leaves in one change";
+      waiting = L"Remove from group: waiting for the group to answer the last change to this "
+                L"member";
+      // Keeps the "no live session" wording every dark control on this surface shares, and names
+      // removing rather than changing a role, because that is the sentence this button's own
+      // absence of a session denies.
+      dark = L"Remove from group: there is no live session to remove a member in";
+      break;
   }
   switch (state) {
     case RoleControlState::Live: return live;
@@ -148,6 +169,24 @@ std::wstring TransferConfirmBody() {
 
 std::wstring TransferConfirmPrimary() { return L"Transfer ownership"; }
 std::wstring TransferConfirmClose() { return L"Keep ownership"; }
+
+std::wstring RemoveConfirmTitle() { return L"Remove this member?"; }
+
+std::wstring RemoveConfirmBody() {
+  // THREE FACTS, AND THE THIRD IS THE ONE A PERSON WOULD GUESS WRONG. Every device the member
+  // holds goes in one change (the library is keyed on the identity, not the leaf); nobody here
+  // can put them back, because re-admitting needs a fresh key package from them; and what they
+  // already read stays readable to them. The last is not a reassurance, it is the protocol: they
+  // hold the keys of the epochs they were a member for, and no commit can reach back and take
+  // those away. Saying "their access is revoked" without it would be the comfortable sentence
+  // rather than the true one.
+  return L"Every device this member holds leaves the group in one change, and they stop "
+         L"receiving anything sent from now on. They keep what they could already read. You "
+         L"cannot add them back from here - that needs a new invitation from them.";
+}
+
+std::wstring RemoveConfirmPrimary() { return L"Remove from group"; }
+std::wstring RemoveConfirmClose() { return L"Keep in group"; }
 
 std::wstring RoleActionNote(demo::MemberRef const& member) {
   const bool transfer = member.roleActionVerb == demo::kRoleOwner;
