@@ -150,7 +150,14 @@ MainWindow::MainWindow() {
   // --demo BuildConversationList early-returns without touching the list
   // children, so the two never write the same container.
   BuildConversationList();
-  if (options_.enabled) {
+  // THE SAME ENTRY FOR BOTH WORLDS, and it is the same function rather than a second one because
+  // what it does is almost all STRUCTURAL: it resolves Advanced Mode before anything reads it,
+  // swaps ThreadPane for ThreadHost (miss that and the thread renders zero pixels into the
+  // collapsed twin, which this file has shipped once), builds the Developer nav item ApplyAdvanced
+  // inserts, and builds the three content views. Only the fabricated FLAVOUR is demo-only, and
+  // each of those is guarded inside on options_.enabled: the chip, the deep link, the autoplay and
+  // the ambient activity. A --live launch needs every structural line and none of the flavour.
+  if (options_.enabled || urmsg::live::IsEnabled()) {
     EnterDemoMode();
   }
   BuildNetworkPage();
@@ -283,7 +290,12 @@ void MainWindow::BuildConversationList() {
   // the demo's rows are already sitting in. Without --demo every line below
   // is byte-for-byte what it was: design doc 8, "without --demo the app
   // behaves exactly as it does today".
-  if (urmsg::demo::ParseDemoOptions().enabled) return;
+  // AND THE SAME RETURN FOR A LIVE LAUNCH, for a reason that is not the demo's. kSampleConversations
+  // below is a SECOND fabrication - Nadia, Theo, the rest - and it is the one a plain launch has
+  // always drawn. Drawing it under --live would hand a human seven invented correspondents while
+  // their own conversation was still being fetched, and RebuildConversationList would then clear
+  // the same container underneath them. The live launch's list is empty until the mesh fills it.
+  if (urmsg::demo::ParseDemoOptions().enabled || urmsg::live::IsEnabled()) return;
 
   auto list = ConversationList().Children();
   list.Clear();
@@ -308,8 +320,48 @@ void MainWindow::BuildConversationList() {
 }
 
 // THE ONLY urmsg::demo::GetWorld() IN THIS FILE. Every other site reads ActiveWorld().
+bool MainWindow::LiveOnlyLaunch() const {
+  return urmsg::live::IsEnabled() && !options_.enabled;
+}
+
+// DOES THIS RUN BUILD THE FULL CONVERSATION SHELL? The list, the thread, the inspect rail, the
+// status strip, the Network/Settings/Developer pages and the wide window they need.
+//
+// IT USED TO BE SPELLED options_.enabled AT EVERY ONE OF THESE SITES, and that was right while
+// --demo was the only thing that drew a conversation. It is wrong now: a --live launch draws a
+// REAL conversation and needs every one of the same surfaces. Leaving them demo-keyed gave a live
+// launch the 480x760 placeholder scaffold with no rail and no strip, and ApplyLiveWorld then
+// refused to draw into it - the app fetched its own messages over the mesh and showed the person
+// nothing.
+//
+// WHAT STAYS options_.enabled IS THE FLAVOUR, not the structure: the autoplay and ambient activity
+// (StartAmbientActivity), the deep link (DrainDeepLink), and the chip. Those are the fabricated
+// tour; they have no meaning when the data is real. The split is "would this surface be wanted by
+// somebody reading their own messages" - if yes it is structure, and it is keyed here.
+bool MainWindow::ContentShell() const {
+  return options_.enabled || urmsg::live::IsEnabled();
+}
+
+// THE THIRD WORLD, AND IT HAS NO CONTENT BY CONSTRUCTION. A --live launch draws the mesh; until
+// the mesh answers there is nothing to draw, and "nothing" is a different statement from the
+// fabricated world. Falling back to GetWorld() there would put Design team, Bo Nakamura and Freya
+// Nilsson in front of somebody who opened this app to read their own messages - people who do not
+// exist, under a chip that cannot say LIVE yet. The honest answer to "what have you received" is
+// an empty list.
+//
+// A function-local static, like GetWorld's own: it is immutable, it outlives every reference the
+// views take, and it costs one zeroed struct for the life of the process.
+urmsg::demo::World const& EmptyWorld() {
+  static const urmsg::demo::World empty{};
+  return empty;
+}
+
 urmsg::demo::World const& MainWindow::ActiveWorld() const {
   if (liveWorld_) return *liveWorld_;
+  // --demo keeps the fabricated world while the mesh is still dialling, which is what makes
+  // `--live --demo` the useful development launch: the shell is populated and the real world
+  // replaces it in one beat. Without --demo there is nothing to fall back TO.
+  if (LiveOnlyLaunch()) return EmptyWorld();
   return urmsg::demo::GetWorld();
 }
 
@@ -378,7 +430,14 @@ void MainWindow::ApplyLiveWorld() {
   // The chip and the composer caption are the two mode-dependent surfaces that are NOT
   // rebuilt below — the chip is written once in EnterDemoMode and the composer bar once
   // by MakeThread — so they are re-pointed by hand. Both are cheap and both are idempotent.
-  if (DemoChip()) DemoChipText().Text(winrt::hstring{urmsg::ModeChipText(urmsg::RunMode::Live)});
+  if (DemoChip()) {
+    DemoChipText().Text(winrt::hstring{urmsg::ModeChipText(urmsg::RunMode::Live)});
+    // AND SHOWN, because a live-only launch hid it: see EnterDemoMode. This is the statement that
+    // there is now a live world on screen, and it is made in the same beat as the world itself.
+    // options_.watermark still decides, so --demo-watermark=off removes this chip exactly as it
+    // removes the other one.
+    if (options_.watermark) DemoChip().Visibility(Visibility::Visible);
+  }
   if (thread_.root) urmsg::views::SetThreadRunMode(thread_, urmsg::RunMode::Live);
   // AND THE SEND BUTTON, on the same beat and for the same reason the caption is: the composer bar
   // is built once and is not among the surfaces rebuilt below.
@@ -401,10 +460,10 @@ void MainWindow::ApplyLiveWorld() {
   // The three content views exist only under --demo (BuildDemoViews is demo-gated, and its own
   // comment says why). A live world with nothing built to draw it is not an error: the worker
   // keeps fetching and the log keeps the record.
-  if (!options_.enabled || !thread_.root) {
+  if (!ContentShell() || !thread_.root) {
     urnw::LogInfo(
         "window: live world generation {} ({} conversation(s)) held, and no view is built to draw "
-        "it — the conversation views are built under --demo",
+        "it — this run has no content shell",
         generation, liveWorld_->conversations.size());
     return;
   }
@@ -1000,8 +1059,10 @@ void MainWindow::BuildNetworkPage() {
   // whether the host is routable at all, so a second read here would give the
   // host is routable at all, so a second read here would give the mount and
   // the route two sources of truth for one flag. It also keeps GetWorld() off
-  // a normal launch (design §8: the app behaves exactly as it does today).
-  if (!options_.enabled) return;
+  // a normal launch (design §8: the app behaves exactly as it does today). ContentShell(),
+  // because a --live launch wants this page too and GetWorld() still stays off it: ActiveWorld()
+  // answers the EMPTY world there, never the fabricated one.
+  if (!ContentShell()) return;
 
   network_ = urmsg::views::MakeNetworkPage(ActiveWorld());
   // NetworkHost, NOT a host of the network task's own: MainWindow.xaml:282
@@ -1029,8 +1090,9 @@ void MainWindow::BuildNetworkPage() {
 void MainWindow::BuildSettings() {
   // options_, NOT a second ParseDemoOptions() call — one flag, parsed once
   // in the constructor (the rule BuildNetworkPage states). It also keeps GetWorld() off a normal
-  // launch (design §8: the app behaves exactly as it does today).
-  if (!options_.enabled) return;
+  // launch (design §8: the app behaves exactly as it does today). ContentShell(): a person
+  // reading their own messages needs Settings, and the empty world keeps GetWorld() off it.
+  if (!ContentShell()) return;
 
   // The callback IS the preference's one writer (Demo/AdvancedMode.h): the
   // view owns the switch and follows itself, so there is no Set*Advanced seed
@@ -1060,8 +1122,8 @@ void MainWindow::BuildDeveloper() {
   // options_, NOT a second ParseDemoOptions() call — one flag, parsed once
   // in the constructor (the rule BuildNetworkPage states). It also keeps
   // GetWorld() off a normal launch (design §8: the app behaves exactly as it
-  // does today).
-  if (!options_.enabled) return;
+  // does today). ContentShell(): Advanced Mode is a product feature, not a demo one.
+  if (!ContentShell()) return;
 
   developer_ = urmsg::views::MakeDeveloper(ActiveWorld());
   // DeveloperHost, NOT a Grid of this task's own: MainWindow.xaml:286 already
@@ -1086,9 +1148,10 @@ void MainWindow::BuildStatusStrip() {
   // do exactly that. This early return is also why demo::GetWorld() is never
   // constructed on a normal launch. options_, NOT a second ParseDemoOptions()
   // call — one flag, parsed once in the constructor (the rule
-  // BuildNetworkPage states).
-  if (!options_.enabled) {
-    urnw::LogInfo("window: status strip not built (demo off)");
+  // BuildNetworkPage states). ContentShell(): the strip carries Connected / server / epoch,
+  // which is the most useful line on the screen when the data is real.
+  if (!ContentShell()) {
+    urnw::LogInfo("window: status strip not built (no content shell)");
     return;
   }
 
@@ -1288,8 +1351,15 @@ void MainWindow::EnterDemoMode() {
   // 10dip, achromatic; MakeIdenticonLattice owns its corner radius.
   DemoChipLatticeHost().Children().Clear();
   DemoChipLatticeHost().Children().Append(urmsg::MakeIdenticonLattice(10));
-  DemoChip().Visibility(options_.watermark ? Visibility::Visible
-                                           : Visibility::Collapsed);
+  // HIDDEN ON A LIVE-ONLY LAUNCH UNTIL THE LATCH, and this is an honesty rule rather than a
+  // cosmetic one. ActiveRunMode() is Fabricated until ApplyLiveWorld latches it, so the chip's
+  // text here would read DEMO - over an EMPTY world, on a run whose whole purpose is the mesh.
+  // Neither chip is true in that window: there is no fabricated data to warn about and no live
+  // session to announce. An absent chip claims nothing, which is the only one of the three that
+  // is honest. ApplyLiveWorld shows it, with the Live wording, in the same statement that puts
+  // the live world on screen.
+  DemoChip().Visibility(options_.watermark && !LiveOnlyLaunch() ? Visibility::Visible
+                                                               : Visibility::Collapsed);
 
   // The demo's three content views, built ONCE here (W5: BuildDemoViews is
   // their sole builder - the placeholder-era BuildThread/BuildInspectRail/
@@ -1311,9 +1381,13 @@ void MainWindow::EnterDemoMode() {
   });
   ApplyAdvanced(urmsg::AdvancedModeEnabled());
 
-  // Armed, not run. See DrainDeepLink.
-  pendingLink_ = link;
-  pendingLinkArmed_ = true;
+  // Armed, not run. See DrainDeepLink. DEMO ONLY: a deep link names a screen of the fabricated
+  // tour (--demo=thread, --demo=developer), and arming it on a live launch would pre-select a
+  // conversation index into a world that has none.
+  if (options_.enabled) {
+    pendingLink_ = link;
+    pendingLinkArmed_ = true;
+  }
 
   urnw::LogInfo("window: demo mode on (screen tag {}, autoplay {}, advanced {}, watermark {})",
                 urnw::Narrow(std::wstring{link.navTag}), options_.autoplay, advanced_,
@@ -1608,13 +1682,13 @@ void MainWindow::ApplyBreakpoint() {
   NavPaneRule().Visibility(navDocked_ ? Visibility::Visible : Visibility::Collapsed);
   // Exactly one of the two thread surfaces is ever live: the shipped scaffold,
   // or the demo's ThreadView host.
-  ThreadPane().Visibility(options_.enabled ? Visibility::Collapsed : threadVisibility);
-  ThreadHost().Visibility(options_.enabled ? threadVisibility : Visibility::Collapsed);
+  ThreadPane().Visibility(ContentShell() ? Visibility::Collapsed : threadVisibility);
+  ThreadHost().Visibility(ContentShell() ? threadVisibility : Visibility::Collapsed);
 
   // The rail is demo-only and exists only at or above kRailBreakpointDip. Below
   // it, message inspect is simply unavailable - no sheet, no fallback, no error
   // (design doc 6.5a).
-  const bool rail = options_.enabled && layout_.rail;
+  const bool rail = ContentShell() && layout_.rail;
   RailColumn().Width(rail ? GridLengthHelper::FromPixels(urmsg::demo::kRailWidthDip)
                           : GridLengthHelper::FromPixels(0));
   const auto railVisibility = rail ? Visibility::Visible : Visibility::Collapsed;
@@ -1626,7 +1700,7 @@ void MainWindow::ApplyBreakpoint() {
 
   // The strip is hidden below kStripMinHeightDip of content HEIGHT so it can
   // never eat a readable thread at Spec C 1.2's 480dip minimum.
-  StatusStripHost().Visibility(options_.enabled && layout_.strip
+  StatusStripHost().Visibility(ContentShell() && layout_.strip
                                    ? Visibility::Visible
                                    : Visibility::Collapsed);
   // A drawer standing on a strip that has just collapsed would be left on the
@@ -1634,7 +1708,7 @@ void MainWindow::ApplyBreakpoint() {
   // nothing beneath it — and its toggle would be unreachable. The strip going
   // away takes its drawer with it (S3). On a non-demo launch statusStrip_ is
   // empty and SetStatusStripDrawerOpen no-ops on the null drawer.
-  if (!(options_.enabled && layout_.strip))
+  if (!(ContentShell() && layout_.strip))
     urmsg::views::SetStatusStripDrawerOpen(statusStrip_, false);
 
   urnw::LogInfo("window: layout wide={} rail={} strip={} listW={:.0f} navRule={} (content {:.0f}x{:.0f} dip)",
@@ -1657,13 +1731,13 @@ void MainWindow::ShowDestination(std::wstring_view tag) {
   } else if (tag == L"contacts") {
     incoming = StubPage();
     header = Loc("nav_contacts");
-  } else if (tag == L"network" && options_.enabled) {
+  } else if (tag == L"network" && ContentShell()) {
     incoming = NetworkHost();
     header = hstring{kDemoNavNetwork};
-  } else if (tag == L"developer" && options_.enabled) {
+  } else if (tag == L"developer" && ContentShell()) {
     incoming = DeveloperHost();
     header = hstring{kDemoNavDeveloper};
-  } else if (tag == L"settings" && options_.enabled) {
+  } else if (tag == L"settings" && ContentShell()) {
     incoming = SettingsHost();
     header = Loc("nav_settings");
   }

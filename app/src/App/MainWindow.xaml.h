@@ -63,6 +63,13 @@ struct MainWindow : MainWindowT<MainWindow> {
   // the implementation through winrt::get_self for StartReveal().
   urmsg::demo::DemoOptions const& DemoOptions() const { return options_; }
 
+  // TRUE WHEN THIS RUN BUILDS THE FULL CONVERSATION SHELL - --demo or --live. Every structural
+  // surface is keyed on this; only the fabricated flavour stays keyed on options_.enabled. PUBLIC
+  // beside DemoOptions() and for the same reason: App.xaml.cpp reads it to choose the window size
+  // BEFORE the window is shown, off the instance that already parsed the command line, so there
+  // stays exactly one parser.
+  bool ContentShell() const;
+
  private:
   // Every label in the window, from the localization store. One place, so a
   // missing key is one line to find rather than a hunt through the markup.
@@ -85,6 +92,10 @@ struct MainWindow : MainWindowT<MainWindow> {
   // a view was CONSTRUCTED with, so MainWindow never walks a view's element
   // tree looking for something to attach to.
   void BuildDemoViews();
+  // TRUE WHEN THIS RUN DRAWS THE MESH AND NOTHING ELSE: --live was asked for and --demo was not.
+  // The one predicate that separates the three launches this window now has, and every use of it
+  // below is a place where "fabricated" and "nothing yet" are different answers.
+  bool LiveOnlyLaunch() const;
   void RebuildConversationList();
   void SelectConversation(int index);
   // By value, not string_view: this is called with selectedMessageId_ and it
