@@ -473,6 +473,19 @@ void MainWindow::BuildOnboardDialog() {
                                             hstring{L"Paste the invitation here"});
   onboardJoinPanel_.Children().Append(onboardPasteBox_);
 
+  // THE FOUNDER FIRST, and the order is the point. Interleaved, a person read "here is your
+  // join code, paste the invitation they send back" and only then met "start a new group" --
+  // so the road for somebody who has nobody to ask was buried under the road for somebody who
+  // does. Two roads, each whole, the shorter one first.
+  panel.Children().Append(onboardFoundButton_);
+
+  {
+    TextBlock orElse;
+    orElse.TextWrapping(TextWrapping::Wrap);
+    orElse.Text(L"Or join a group somebody else has already made:");
+    orElse.Opacity(0.75);
+    panel.Children().Append(orElse);
+  }
   panel.Children().Append(onboardJoinPanel_);
 
   // ── START A GROUP ──────────────────────────────────────────────────────────────────────────
@@ -490,7 +503,6 @@ void MainWindow::BuildOnboardDialog() {
     }
     urnw::LogInfo("window: a group create was {} by the live worker", taken ? "taken" : "REFUSED");
   });
-  panel.Children().Append(onboardFoundButton_);
 
   // ── ADDING SOMEBODY: their code in, an invitation out ──────────────────────────────────────
   onboardAddPanel_ = StackPanel();
