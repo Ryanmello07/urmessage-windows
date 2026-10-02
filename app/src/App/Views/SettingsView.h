@@ -44,7 +44,14 @@ struct SettingsView {
 // the value the pane is BUILT in. MainWindow wires the callback to
 // urmsg::SetAdvancedModeEnabled and passes urmsg::AdvancedModeEnabled() — no
 // view reads the preference itself (Demo/AdvancedMode.h).
+//
+// `routeThroughUrnetwork` and `onRouteChanged` are the same shape for the
+// "Route through URnetwork" switch (ledger 268): MainWindow passes
+// urmsg::live::RouteThroughUrnetwork() and wires the callback to
+// urmsg::live::SetRouteThroughUrnetwork, its one writer.
 SettingsView MakeSettings(urmsg::demo::World const& world,
-                          std::function<void(bool)> onAdvancedChanged, bool advanced);
+                          std::function<void(bool)> onAdvancedChanged, bool advanced,
+                          std::function<void(bool)> onRouteChanged,
+                          bool routeThroughUrnetwork);
 
 }  // namespace urmsg::views

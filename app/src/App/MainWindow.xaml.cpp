@@ -1448,7 +1448,9 @@ void MainWindow::BuildSettings() {
   // EnterDemoMode ran InitAdvancedMode before any Build* call.
   settings_ = urmsg::views::MakeSettings(
       ActiveWorld(), [](bool on) { urmsg::SetAdvancedModeEnabled(on); },
-      urmsg::AdvancedModeEnabled());
+      urmsg::AdvancedModeEnabled(),
+      [](bool on) { urmsg::live::SetRouteThroughUrnetwork(on); },
+      urmsg::live::RouteThroughUrnetwork());
   // SettingsHost, NOT a Grid of this task's own: MainWindow.xaml:284 already
   // declares it and ShowDestination's settings arm routes to it (the d7
   // audit's A3 override — do not add a SettingsPage Grid; that is "mounted

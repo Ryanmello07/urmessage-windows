@@ -79,6 +79,8 @@ bool urnet_device_get_public_identity_key(uint64_t self, uint8_t* out, int32_t* 
 #define URNET_LOCATION_TYPE_COUNTRY "country"
 #define URNET_LOCATION_TYPE_REGION "region"
 #define URNET_MATIC "MATIC"
+#define URNET_MESSAGE_ROUTE_DIRECT 1
+#define URNET_MESSAGE_ROUTE_URNETWORK 0
 #define URNET_PROVIDER_STATE_ADDED "Added"
 #define URNET_PROVIDER_STATE_EVALUATION_FAILED "EvaluationFailed"
 #define URNET_PROVIDER_STATE_IN_EVALUATION "InEvaluation"
@@ -1078,6 +1080,7 @@ uint64_t urnet_new_device_local_with_memory_target(uint64_t network_space, const
 uint64_t urnet_new_device_remote_with_defaults(uint64_t network_space, const char* by_jwt, const char* instance_id, char** out_error);
 char* urnet_new_id(void);
 uint64_t urnet_new_login_view_controller(uint64_t api);
+char* urnet_new_message_transport(const char* config_json, char** out_error);
 uint64_t urnet_new_network_name_validation_view_controller(uint64_t api);
 char* urnet_new_network_space_key(const char* host_name, const char* env_name);
 uint64_t urnet_new_network_space_manager(const char* storage_path);
@@ -1089,7 +1092,9 @@ char* urnet_new_transfer_path(const char* source_id, const char* destination_id,
 uint64_t urnet_new_tunnel(void);
 uint64_t urnet_new_urls_network_space(const char* api_url, const char* platform_url);
 char* urnet_normal_env_name(const char* env_name);
+char* urnet_open_stream_store(const char* dir, char** out_error);
 char* urnet_parse_id(const char* src, char** out_error);
+int64_t urnet_parse_message_route_mode(const char* value, char** out_error);
 int64_t urnet_points_to_nano_points(double points);
 char* urnet_public_identity_key_hash(const uint8_t* public_key, int32_t public_key_len);
 char* urnet_service_url(const char* key_json, const char* values_json, const char* scheme, const char* service);
@@ -1927,6 +1932,16 @@ int64_t urnet_usd_to_nano_cents(double usd);
  *   PoolCreatedCount: number
  */
 
+/* MessageTransport (json):
+ */
+
+/* MessageTransportConfig (json):
+ *   Client: any
+ *   Server: any
+ *   ProtocolVersion: number
+ *   Timeout: number (ns)
+ */
+
 /* NetExtender (json):
  *   ip: string
  *   secret: string
@@ -2485,6 +2500,9 @@ int64_t urnet_usd_to_nano_cents(double usd);
 
 /* SolanaPaymentIntentResult (json):
  *   error?: SolanaPaymentIntentError | null
+ */
+
+/* StreamStore (json):
  */
 
 /* StringList (json):

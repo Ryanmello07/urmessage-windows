@@ -48,6 +48,7 @@
 
 #include "Live/LiveWorld.h"
 #include "Log.h"
+#include "AppPrefs.h"
 #include "Paths.h"
 #include "Strings.h"
 #include "ThreadGuard.h"
@@ -85,6 +86,32 @@ constexpr const char* kServerClientId = "01a0a199-5b06-5117-e86a-4bf5c01db15c";
 // Named in the connect client so a server-side operator can tell this app's
 // sessions from the probe's.
 constexpr const char* kAppVersion = "urmessage-windows-alpha";
+
+// ── the server's own endpoint (ledger 268) ────────────────────────────────────
+//
+// The alpha message server also listens on its own TLS endpoint, and this is the SHA-256 of
+// that key's SubjectPublicKeyInfo. A session to anything presenting another key is refused
+// before a single frame is written, so neither an exit provider nor any network between can
+// stand in for the server. An IP address sends no TLS server name: an exit sees an address,
+// a port and TLS records, and nothing else.
+constexpr const char* kServerEndpoint = "wss://74.50.11.53/urmessage/v1";
+constexpr const char* kServerEndpointPin =
+    "868fd5ea59c78915b3e2feb6d4834fb8c74e3532591f6d5b605ef285f014787b";
+
+constexpr const char* kRoutePrefKey = "route_through_urnetwork";
+
+// URNETWORK and DIRECT reach that endpoint; PLATFORM is the operator path this app used
+// before, kept for %URMESSAGE_ROUTE%=platform while the server still serves it.
+enum class Route { Urnetwork, Direct, Platform };
+
+const char* RouteName(Route route) {
+  switch (route) {
+    case Route::Urnetwork: return "urnetwork";
+    case Route::Direct: return "direct";
+    case Route::Platform: return "platform";
+  }
+  return "unknown";
+}
 
 // ── the reconnect window, which is the whole reason for the retry below ───────
 //
@@ -316,9 +343,24 @@ void OnConnectAttempt(void* user_data, int32_t attempt, int64_t elapsed_ms, int6
 // Every handle one session owns, closed in the order the ABI requires:
 // stop-then-release, innermost first. The client is closed LAST because the
 // transport and the device are built over it and neither closes it.
+// %URMESSAGE_ROUTE% for this launch, else the Settings switch.
+Route ChosenRoute() {
+  const std::wstring forced = EnvVar(L"URMESSAGE_ROUTE");
+  if (!forced.empty()) {
+    if (_wcsicmp(forced.c_str(), L"urnetwork") == 0) return Route::Urnetwork;
+    if (_wcsicmp(forced.c_str(), L"direct") == 0) return Route::Direct;
+    if (_wcsicmp(forced.c_str(), L"platform") == 0) return Route::Platform;
+    urnw::LogWarn("live: URMESSAGE_ROUTE is not urnetwork, direct or platform; the Settings switch decides");
+  }
+  return RouteThroughUrnetwork() ? Route::Urnetwork : Route::Direct;
+}
+
 struct Session {
   uint64_t ctx = 0;
   uint64_t client = 0;
+  // a route client (urnet_message_route_client_new) rather than the operator client; the two
+  // are closed by different exports
+  bool routeClient = false;
   uint64_t transport = 0;
   uint64_t streamStore = 0;
   uint64_t reserver = 0;
@@ -362,7 +404,11 @@ struct Session {
       urnet_release(transport);
     }
     if (client != 0) {
-      urnet_message_client_close(client);
+      if (routeClient) {
+        urnet_message_route_client_close(client);
+      } else {
+        urnet_message_client_close(client);
+      }
       urnet_release(client);
     }
     if (ctx != 0) {
@@ -1111,6 +1157,26 @@ void LogMessages(urmsg::live::LiveGroup const& live) {
   }
 }
 
+// What the status strip says about the route: the operator host on the operator path; for a
+// route, the way out and, through URnetwork, the countries of the exits the tunnel holds.
+std::string RouteLabel(Session const& s, Route route) {
+  if (!s.routeClient) return kHost;
+  if (route == Route::Direct) return "direct";
+  const nlohmann::json status =
+      nlohmann::json::parse(TakeString(urnet_message_route_client_status(s.client)), nullptr, false);
+  std::string countries;
+  if (!status.is_discarded() && status.contains("window_countries") &&
+      status["window_countries"].is_array()) {
+    for (auto const& country : status["window_countries"]) {
+      if (!country.is_string()) continue;
+      if (!countries.empty()) countries += ", ";
+      countries += country.get<std::string>();
+    }
+  }
+  if (countries.empty()) return "URnetwork (finding an exit)";
+  return "URnetwork exit \u00B7 " + countries;
+}
+
 void RunSession() {
   const int64_t startedMs = NowMs();
   urnw::LogInfo("live: ==== live mesh session starting ====");
@@ -1167,9 +1233,21 @@ void RunSession() {
   // instance_id NULL draws a fresh installation uuid each launch. The client_id
   // is the credential's either way, and it is the client_id the operator routes
   // to — so a fresh instance_id does not avoid the reconnect window below.
-  s.client = urnet_message_client_new(credential.c_str(), kHost, nullptr, nullptr, kAppVersion, &err);
+  //
+  // THE ROUTE (ledger 268). URNETWORK and DIRECT reach the server's own endpoint with its key
+  // pinned; the credential is used only by URNETWORK, to mint the tunnel's exit clients.
+  const Route route = ChosenRoute();
+  if (route == Route::Platform) {
+    s.client = urnet_message_client_new(credential.c_str(), kHost, nullptr, nullptr, kAppVersion, &err);
+  } else {
+    s.routeClient = true;
+    s.client = urnet_message_route_client_new(
+        credential.c_str(), kHost, nullptr, kServerEndpoint, kServerEndpointPin,
+        route == Route::Urnetwork ? URNET_MESSAGE_ROUTE_URNETWORK : URNET_MESSAGE_ROUTE_DIRECT,
+        kAppVersion, &err);
+  }
   if (s.client == 0) {
-    urnw::LogError("live: client_new refused the credential: {}", TakeError(&err));
+    urnw::LogError("live: the {} client was refused: {}", RouteName(route), TakeError(&err));
     s.Close();
     return;
   }
@@ -1179,9 +1257,19 @@ void RunSession() {
   ::SecureZeroMemory(credential.data(), credential.size());
   credential.clear();
 
-  const std::string clientId = TakeString(urnet_message_client_id(s.client));
-  const std::string platformUrl = TakeString(urnet_message_client_platform_url(s.client));
-  urnw::LogInfo("live: client_id {} dialling {}", clientId, platformUrl);
+  std::string clientId;
+  std::string platformUrl;
+  if (s.routeClient) {
+    platformUrl = kServerEndpoint;
+    urnw::LogInfo("live: route {} to {}, key pinned; {}", RouteName(route), kServerEndpoint,
+                  route == Route::Urnetwork
+                      ? "the connection leaves through a URnetwork exit, so the server never sees this computer's address"
+                      : "DIRECT, so the message server sees this computer's address");
+  } else {
+    clientId = TakeString(urnet_message_client_id(s.client));
+    platformUrl = TakeString(urnet_message_client_platform_url(s.client));
+    urnw::LogInfo("live: client_id {} dialling {}", clientId, platformUrl);
+  }
 
   s.transport = urnet_message_transport_new(s.client, kServerClientId,
                                             URNET_MESSAGE_PROTOCOL_VERSION, 30000, &err);
@@ -1314,6 +1402,7 @@ void RunSession() {
   std::vector<urmsg::live::LiveRoleOutboxEntry> roleOutbox;
   // The roster line last logged, so the log carries a roster only when it moved.
   std::string lastRosterLine;
+  std::string lastRouteLine;
 
   // Build the world off the group AS IT STANDS and hand it to the UI. Every publish below goes
   // through here, so the log and the outbox can never be drawn from two different moments — a send
@@ -1329,7 +1418,14 @@ void RunSession() {
     live.clientId = clientId;
     live.serverClientId = kServerClientId;
     live.platformUrl = platformUrl;
-    live.host = kHost;
+    live.host = RouteLabel(s, route);
+    if (s.routeClient) {
+      if (const std::string line = TakeString(urnet_message_route_client_status(s.client));
+          line != lastRouteLine) {
+        lastRouteLine = line;
+        urnw::LogInfo("live: ROUTE {}", line);
+      }
+    }
     live.statsJson = TakeString(urnet_message_group_stats(s.group));
     live.outbox = outbox;
     live.reactionOutbox = reactionOutbox;
@@ -1665,6 +1761,21 @@ void RunSession() {
 }  // namespace
 
 bool IsEnabled() { return EnvVar(L"URMESSAGE_LIVE") == L"1" || HasCommandLineFlag(L"--live"); }
+
+bool RouteThroughUrnetwork() {
+  const nlohmann::json prefs = urnw::LoadAppPrefs();
+  // is_boolean() and not just contains(): a hand-edited prefs file must not choose the route by
+  // throwing, and anything that is not a boolean leaves the default, which is ON
+  if (prefs.contains(kRoutePrefKey) && prefs[kRoutePrefKey].is_boolean()) {
+    return prefs[kRoutePrefKey].get<bool>();
+  }
+  return true;
+}
+
+void SetRouteThroughUrnetwork(bool on) {
+  urnw::SaveAppPref(kRoutePrefKey, on);
+  urnw::LogInfo("live: route_through_urnetwork -> {} (applies the next time the app connects)", on);
+}
 
 bool StartIfEnabled() {
   if (!IsEnabled()) return false;

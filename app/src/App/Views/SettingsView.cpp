@@ -93,7 +93,9 @@ void AppendInertGroup(StackPanel const& column, winrt::hstring const& title) {
 }  // namespace
 
 SettingsView MakeSettings(urmsg::demo::World const& world,
-                          std::function<void(bool)> onAdvancedChanged, bool advanced) {
+                          std::function<void(bool)> onAdvancedChanged, bool advanced,
+                          std::function<void(bool)> onRouteChanged,
+                          bool routeThroughUrnetwork) {
   SettingsView view;
 
   // THE ONE urmsg::ActiveRunMode() READ ON THIS PAGE, taken at build time and never
@@ -225,6 +227,27 @@ SettingsView MakeSettings(urmsg::demo::World const& world,
                      winrt::hstring{world.server.host + L"  ·  " +
                                     world.server.jurisdiction})
             .root);
+    {
+      // Ledger 268. ON (the default): the connection to the server's own endpoint leaves
+      // through a URnetwork exit, so the message server never sees this computer's address.
+      // OFF: a direct connection, which shows it. Read when the live worker starts, so the
+      // subtitle says when a change takes effect rather than letting the switch imply now.
+      auto row = kit::MakePaneTwoLineRow(
+          L"Route through URnetwork",
+          L"Hides your IP address from the message server. Applies on next launch.", kRowHeight);
+      ToggleSwitch toggle;
+      if (auto style = StyleByKey(L"UrSwitchToggleStyle")) toggle.Style(style);
+      automation::AutomationProperties::SetLabeledBy(toggle, row.title);
+      // seeded BEFORE the handler is attached, for the reason the Advanced switch states below:
+      // IsOn() raises Toggled, and a seed must not be a write
+      toggle.IsOn(routeThroughUrnetwork);
+      toggle.Toggled([onRouteChanged](winrt::Windows::Foundation::IInspectable const& sender,
+                                      auto const&) {
+        if (onRouteChanged) onRouteChanged(sender.as<ToggleSwitch>().IsOn());
+      });
+      row.trailing.Children().Append(toggle);
+      card.body.Children().Append(row.root);
+    }
     {
       // FormatKeyState is the ONE owner of this string (NetworkPageView.h:48)
       // and it is prefix-first — "Demo model: verified" — because the bare

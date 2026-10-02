@@ -233,4 +233,14 @@ bool QueueCreateGroup();
 // library's own sentence.
 bool QueueAddMemberFromCode(std::string base64JoinCode);
 
+// ── how this app reaches the message server (ledger 268) ──────────────────────
+
+// The Settings switch "Route through URnetwork", persisted as route_through_urnetwork and ON
+// by default. ON: the connection to the server's own endpoint leaves through a URnetwork exit,
+// so the message server never sees this computer's address. OFF: connect directly, which
+// shows it. %URMESSAGE_ROUTE% (urnetwork | direct | platform) overrides it for one launch. The
+// live worker reads it when it starts, so a change applies the next time the app connects.
+bool RouteThroughUrnetwork();
+void SetRouteThroughUrnetwork(bool on);
+
 }  // namespace urmsg::live
