@@ -186,6 +186,10 @@ constexpr int64_t kInvitePollMs = 2000;
 // reclaims it at exit.
 constexpr int64_t kFetchPollMs = 3000;
 
+// With a subscription the server PUSHES (spec B 4.3.5) the moment the group gains a record, and
+// the poll is only the safety net under a push that was lost. Ledger 269.
+constexpr int64_t kPushedPollMs = 15000;
+
 // ── small helpers ─────────────────────────────────────────────────────────────
 
 // Take ownership of an out_error, free it, and answer it as a std::string. The
@@ -471,6 +475,9 @@ struct Outbound {
 std::mutex g_sendMutex;
 std::condition_variable g_sendWake;
 std::deque<Outbound> g_sendQueue;
+// Set by the push waiter under g_sendMutex and consumed by WaitForSendOrPoll: a push wakes the
+// fetch loop exactly the way a queued send does.
+bool g_pushPending = false;
 // Written by the worker (one writer), read by the UI thread. Relaxed is enough: a stale read costs
 // one refused click or one accepted send the worker then refuses by name, and the fetch loop
 // rewrites it every poll.
@@ -494,8 +501,42 @@ std::deque<Outbound> TakeSendQueue() {
 // Sleep until there is something to send or `ms` has passed, whichever comes first.
 void WaitForSendOrPoll(int64_t ms) {
   std::unique_lock<std::mutex> lock(g_sendMutex);
-  g_sendWake.wait_for(lock, std::chrono::milliseconds(ms), [] { return !g_sendQueue.empty(); });
+  g_sendWake.wait_for(lock, std::chrono::milliseconds(ms),
+                      [] { return !g_sendQueue.empty() || g_pushPending; });
+  g_pushPending = false;
 }
+
+// The push waiter: one thread, blocked in the library until the server announces a record, which
+// it turns into a wake of the fetch loop. It owns nothing but the device handle it is given, and
+// it is stopped and joined before that handle can be closed (PushWaiter's destructor).
+class PushWaiter {
+ public:
+  explicit PushWaiter(uint64_t device) : device_(device), thread_([this] { Run(); }) {}
+  ~PushWaiter() {
+    stop_.store(true);
+    if (thread_.joinable()) thread_.join();
+  }
+  PushWaiter(const PushWaiter&) = delete;
+  PushWaiter& operator=(const PushWaiter&) = delete;
+
+ private:
+  void Run() {
+    while (!stop_.load()) {
+      // a short wait, so a stop is noticed within a second
+      char* groupHex = urnet_message_device_wait_push(device_, 1000);
+      if (groupHex == nullptr) continue;
+      urnet_free_string(groupHex);
+      {
+        std::lock_guard<std::mutex> lock(g_sendMutex);
+        g_pushPending = true;
+      }
+      g_sendWake.notify_all();
+    }
+  }
+  const uint64_t device_;
+  std::atomic<bool> stop_{false};
+  std::thread thread_;
+};
 
 // The reference is cgo/ctest/message_abi_test.c's hex_to_id: exactly 64 hex characters in, 32
 // octets out, and any other width or any non-hex character is a refusal rather than a best effort.
@@ -1384,12 +1425,18 @@ void RunSession() {
                 urnet_message_group_is_open(s.group) ? "yes" : "no");
 
   // ── fetch, forever ──────────────────────────────────────────────────────────
-  // THERE IS NO RECEIVE PUSH: this is a poll and that is what the transport is,
-  // so a conversation that updates is a LOOP. It runs for the life of the
-  // process; the worker is detached and the OS reclaims it at exit, which is why
-  // Session::Close below is only reached on the paths that give up.
-  urnw::LogInfo("live: entering the fetch loop, every {} ms", kFetchPollMs);
+  // A LOOP THAT A PUSH WAKES. The server announces each new record to a subscribed
+  // connection (spec B 4.3.5, ledger 269) and the loop answers with the same fetch
+  // it polls with, so a push changes WHEN a record is read and never HOW. It runs
+  // for the life of the process; the worker is detached and the OS reclaims it at
+  // exit, which is why Session::Close below is only reached on the paths that give up.
+  urnw::LogInfo("live: entering the fetch loop, every {} ms until the push subscription holds", kFetchPollMs);
   int64_t lastPublishedCount = -1;
+  // THE PUSH (ledger 269): a waiter that wakes this loop the moment the server announces a record,
+  // and the subscription state the loop keeps current below
+  PushWaiter pushWaiter(s.device);
+  bool subscribed = false;
+  std::string lastSubscribeError;
 
   // WHAT THIS DEVICE HAS TRIED TO SEND AND THE SERVER HAS NOT TAKEN. Owned by this thread and by
   // nothing else — the UI hands over octets through the queue and reads the result back as a
@@ -1714,6 +1761,25 @@ void RunSession() {
     // round trip to every message this app writes.
     drainSends();
 
+    // SUBSCRIBE WHEN NOT CURRENT: no subscription yet, an epoch that moved past the one it was
+    // authorized at, or a reconnect whose Hello the transport sent by itself. Cheap when current,
+    // and the receive below reads whatever arrived before a new subscription took hold.
+    {
+      const int32_t subscribedNow = urnet_message_group_ensure_subscribed(s.group, s.ctx, &err);
+      if (0 < subscribedNow) {
+        urnw::LogInfo("live: subscribed to push at epoch {}", urnet_message_group_epoch(s.group));
+        subscribed = true;
+        lastSubscribeError.clear();
+      } else if (subscribedNow < 0) {
+        const std::string why = TakeError(&err);
+        if (why != lastSubscribeError) {
+          urnw::LogWarn("live: push subscription refused, polling every {} ms: {}", kFetchPollMs, why);
+          lastSubscribeError = why;
+        }
+        subscribed = false;
+      }
+    }
+
     const int64_t fetchStartedMs = NowMs();
     const uint64_t fetched = urnet_message_group_receive(s.group, s.ctx, &err);
     const std::string fetchError = TakeError(&err);
@@ -1752,9 +1818,9 @@ void RunSession() {
       }
     }
 
-    // NOT ::Sleep. A send queued during the wait wakes this at once; nothing queued and it ticks on
-    // its own timer exactly as the sleep did.
-    WaitForSendOrPoll(kFetchPollMs);
+    // NOT ::Sleep. A send queued during the wait wakes this at once, and so does a push; with
+    // neither it ticks on its own timer, which is long when the push subscription holds.
+    WaitForSendOrPoll(subscribed ? kPushedPollMs : kFetchPollMs);
   }
 }
 
