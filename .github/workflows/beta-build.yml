@@ -1,0 +1,582 @@
+# URmessage — Windows beta build, smoke test and prerelease.
+#
+# For the fork Ryanmello07/urmessage-windows. Modelled on that fork's beta
+# workflow for the VPN client (.github/workflows/fork-beta-build.yml in
+# Ryanmello07/urnetwork-windows): same version grammar, same job shape, same
+# artifact habits.
+#
+# EVERYTHING VPN-SPECIFIC IS GONE, and its absence is the point. There is no Go
+# SDK to cross-compile, no URnetworkSdk.dll, no llvm-mingw, no wintun, no
+# driver, no WiX installer and no packager script — this repo is two MSVC
+# projects (Common.lib + the WinUI 3 exe) and nothing else. So there is no
+# ubuntu SDK job, no fetch-deps step and no MSI verification here. A step that
+# checked out urnetwork/sdk would not just be dead weight, it would fail.
+#
+# THE BETA SHIPS UNSIGNED. That is a recorded decision, not an omission: there
+# is deliberately no code-signing step and no signing secret referenced.
+#
+# SPDX-License-Identifier: MPL-2.0
+name: Beta Build - Windows
+
+on:
+  push:
+    branches:
+      - main
+    # Explicit releases. `v[0-9]*` rather than `v*` so a doc or scratch tag
+    # cannot accidentally publish a prerelease. The tag carries the leading v;
+    # the version stamped into the binaries never does (Common/Version.h).
+    tags:
+      - 'v[0-9]*'
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Publish an (unsigned) prerelease from this run'
+        type: boolean
+        default: false
+        required: false
+
+# Least privilege for the whole workflow; the release job widens contents to
+# write for itself alone, below.
+permissions:
+  contents: read
+  # the version derive step reads this run's created_at via the actions api
+  actions: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # One place decides what this run is called, and every other job reads it.
+  # Deriving it per-job would let two matrix legs disagree across a UTC midnight
+  # and ship a release whose two zips carry different versions.
+  # ---------------------------------------------------------------------------
+  version:
+    name: Derive version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.derive.outputs.version }}
+      version_code: ${{ steps.derive.outputs.version_code }}
+      version_major: ${{ steps.derive.outputs.version_major }}
+      version_minor: ${{ steps.derive.outputs.version_minor }}
+      version_patch: ${{ steps.derive.outputs.version_patch }}
+    steps:
+      # Same version scheme as the android, apple and Windows-VPN beta lines:
+      # the official date format with warpctl's counter (seconds since the
+      # company founding times 10), derived from the RUN's creation time so
+      # every job of one run agrees even across midnight utc.
+      #
+      # A tag push overrides it: the tag IS the version the maintainer chose, so
+      # a re-run of a tag build must not silently stamp today's date instead.
+      - name: Derive version
+        id: derive
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          created=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" --jq .created_at)
+          founded=$(date -u -d "2023-05-23" +%s)
+          run_code=$(( ($(date -u -d "$created" +%s) - founded) * 10 ))
+          run_base=$(date -u -d "$created" '+%Y.%-m.%-d')
+
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            # v2026.9.6-1234567890-beta  ->  base 2026.9.6, code 1234567890
+            raw="${GITHUB_REF_NAME#v}"
+            base="${raw%%-*}"
+            tail="${raw#*-}"
+            code="${tail%%-*}"
+            case "$base" in
+              [0-9]*.[0-9]*.[0-9]*) : ;;
+              *) echo "::error::tag '${GITHUB_REF_NAME}' does not start with MAJOR.MINOR.PATCH; refusing to guess a version"; exit 1 ;;
+            esac
+            case "$code" in
+              ''|*[!0-9]*)
+                code="$run_code"
+                echo "::notice::tag '${GITHUB_REF_NAME}' carries no numeric version code; using the run-derived ${run_code}"
+                ;;
+            esac
+            version="$raw"
+          else
+            base="$run_base"
+            code="$run_code"
+            version="${base}-${code}-beta"
+          fi
+
+          # The date parts feed VERSIONINFO's numeric FILEVERSION, whose fields
+          # are 16-bit -- each part fits on its own, the full string would not.
+          major="${base%%.*}"
+          rest="${base#*.}"
+          minor="${rest%%.*}"
+          patch="${rest#*.}"
+          for part in "$major" "$minor" "$patch"; do
+            case "$part" in
+              ''|*[!0-9]*)
+                echo "::error::version base '${base}' is not exactly three numeric parts (got '${major}' '${minor}' '${patch}')"
+                exit 1
+                ;;
+            esac
+          done
+
+          {
+            echo "version=${version}"
+            echo "version_code=${code}"
+            echo "version_major=${major}"
+            echo "version_minor=${minor}"
+            echo "version_patch=${patch}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "version ${version}  (code ${code}, parts ${major}.${minor}.${patch})"
+
+  # ---------------------------------------------------------------------------
+  # Build, smoke-test, package. Restore + msbuild + the app's own --diagnose.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build Release ${{ matrix.platform }}
+    needs: version
+    # NOT windows-latest: that image has moved to Visual Studio 18 (toolset
+    # v180), which carries v143 for x64 but not the v143 ARM64 cross tools, so
+    # ARM64 fails MSB8020 while x64 compiles. windows-2022 is the image whose
+    # toolchain matches app/Directory.Build.props' pins (v143, SDK
+    # 10.0.22621.0) -- this runner IS the reference box those pins name, which
+    # is why nothing here reuses tools/build-local.ps1's toolset/SDK detection.
+    # That detection exists because a DEV box rarely has the pins exactly;
+    # letting CI drift off them too would leave nobody building what is pinned.
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both configurations genuinely exist: URmessage.sln declares
+        # Release|ARM64 with Build.0 for both project GUIDs, and Common.vcxproj
+        # and App.vcxproj each declare a Release|ARM64 ProjectConfiguration.
+        # ARM64 cross-builds from this x64 runner (v143 ships both toolchains);
+        # only the platform argument changes.
+        platform: [x64, ARM64]
+    env:
+      # Keep the app's per-user state inside the workspace instead of
+      # %LOCALAPPDATA% (README: "%URMESSAGE_APP_ROOT% overrides the per-user
+      # state root"), so the --diagnose run's log is collectable as an artifact.
+      # The name matches the repo's .localstate*/ gitignore rule.
+      URMESSAGE_APP_ROOT: ${{ github.workspace }}\.localstate-ci
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      # Print-only, never fails. app/Directory.Build.props pins v143 +
+      # 10.0.22621.0 and this workflow passes NEITHER as an override, so if the
+      # image ever drops one, msbuild's own MSB8020/MSB8036 is the error --
+      # this step just puts the inventory in the log next to it, so "the image
+      # changed" is one scroll away instead of a bisect.
+      - name: Show the toolchain this runner has
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path -LiteralPath $vswhere) {
+            $vs = @(& $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath) |
+              Select-Object -First 1
+            Write-Host "visual studio : $vs"
+            if ($vs) {
+              $toolsetDir = Join-Path $vs 'VC\Tools\MSVC'
+              if (Test-Path -LiteralPath $toolsetDir) {
+                Write-Host "msvc toolsets : $((Get-ChildItem $toolsetDir -Directory).Name -join ', ')"
+              }
+            }
+          } else {
+            Write-Host "visual studio : vswhere not found"
+          }
+          $roots = @(
+            "${env:ProgramFiles(x86)}\Windows Kits\10\Include",
+            "$env:ProgramFiles\Windows Kits\10\Include"
+          ) | Where-Object { Test-Path -LiteralPath $_ }
+          $sdks = @($roots | ForEach-Object { Get-ChildItem $_ -Directory } |
+            Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' -and (Test-Path (Join-Path $_.FullName 'um\windows.h')) } |
+            Sort-Object { [version]$_.Name })
+          Write-Host "windows sdks  : $($sdks.Name -join ', ')"
+          if ($sdks.Name -notcontains '10.0.22621.0') {
+            Write-Host "::warning::the pinned Windows SDK 10.0.22621.0 (app/Directory.Build.props) is not on this image; msbuild will fail with MSB8036"
+          }
+          Write-Host "msbuild       : $((Get-Command msbuild).Source)"
+
+      # /restore pulls Microsoft.WindowsAppSDK 2.2.0, Microsoft.Windows.CppWinRT
+      # and Microsoft.Windows.SDK.BuildTools (PackageReference; this repo has no
+      # packages.config, so no RestorePackagesConfig).
+      #
+      # No /p:PlatformToolset and no /p:WindowsTargetPlatformVersion: the pins
+      # in Directory.Build.props are the contract, and CI is the box they name.
+      #
+      # The Ur* properties stamp the derived version into the exe --
+      # Directory.Build.props turns them into preprocessor definitions for every
+      # TU and every .rc. Absent, the build defaults to 0.0.0-dev / code 0,
+      # which is deliberately the value that means "never released".
+      - name: Build the solution (Release ${{ matrix.platform }})
+        shell: pwsh
+        working-directory: app
+        run: |
+          msbuild URmessage.sln `
+            /restore `
+            /p:Configuration=Release `
+            /p:Platform=${{ matrix.platform }} `
+            /p:UrVersion=${{ needs.version.outputs.version }} `
+            /p:UrVersionCode=${{ needs.version.outputs.version_code }} `
+            /p:UrVersionMajor=${{ needs.version.outputs.version_major }} `
+            /p:UrVersionMinor=${{ needs.version.outputs.version_minor }} `
+            /p:UrVersionPatch=${{ needs.version.outputs.version_patch }} `
+            /m `
+            /v:minimal `
+            /clp:Summary `
+            /flp:LogFile=msbuild-${{ matrix.platform }}.log`;Verbosity=detailed
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # The detailed log is the whole point of the run when a toolchain change
+      # breaks the build, so keep it even on failure.
+      - name: Upload the msbuild log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: msbuild-log-${{ matrix.platform }}
+          path: app/msbuild-${{ matrix.platform }}.log
+          if-no-files-found: warn
+
+      # -----------------------------------------------------------------------
+      # THE TEST. This repo has no gtest/catch2 and none may be added; the
+      # runnable check is the app's own --diagnose switch. Verified against
+      # app/src/App/main.cpp: --diagnose returns from wWinMain BEFORE
+      # AppInstance::FindOrRegisterForKey and before Application::Start, so it
+      # creates no window and registers no single-instance key -- safe headless.
+      #
+      # TWO HAZARDS, both handled here rather than hoped away:
+      #
+      # (1) THE MODAL BOX. Startup.cpp's WriteDiagnosticsToConsole falls back to
+      #     ::MessageBoxW when it cannot write to stdout, and a modal box on a
+      #     headless runner hangs the job until the 6-hour limit. Redirecting
+      #     stdout makes that branch unreachable: the child inherits a valid
+      #     handle, GetConsoleMode fails on it (it is a pipe, not a console),
+      #     and the utf-8 WriteFile path succeeds -- so `wrote` is true and the
+      #     box is never shown. VERIFIED by running the real exe this way, not
+      #     inferred: it exits in ~40ms with 17 lines on stdout. The 120s
+      #     WaitForExit is the belt to that braces -- wWinMain's OUTERMOST catch
+      #     can also box, before any of the console code runs, if
+      #     %LOCALAPPDATA% is unwritable.
+      #
+      #     This uses System.Diagnostics.Process rather than Start-Process
+      #     because `Start-Process -PassThru` WITHOUT `-Wait` returns a process
+      #     whose ExitCode is EMPTY after it exits (HasExited is $true, Refresh
+      #     does not help) -- measured here, not assumed. Read into `$code` that
+      #     way, `$code -ne 0` is `$null -ne 0`, which is TRUE, and the step
+      #     fails every healthy run. `-Wait` fixes the exit code but takes no
+      #     timeout, which reintroduces hazard (1). Owning the Process gives
+      #     both a bounded wait and a real exit code.
+      #
+      # (2) THE VACUOUS PASS. The diagnose path returns 0 unconditionally
+      #     (WriteDiagnosticsToConsole always returns 0), so the exit code is
+      #     NOT the signal -- and "no FAIL lines" is equally true of a process
+      #     that printed nothing at all. So the header line is asserted first;
+      #     only then does the absence of FAIL mean anything.
+      #
+      # Today CollectDiagnostics() emits no PASS/FAIL lines, so this passes on a
+      # healthy build. The demo plan adds counted assertion lines to it
+      # (docs/superpowers/plans/2026-09-06-urmessage-demo-ui.md); when they land
+      # this step already fails the job on any FAIL, with no edit here.
+      #
+      # x64 only: the runner is x64 and cannot execute the ARM64 binary.
+      - name: Smoke test (URmessage.exe --diagnose)
+        if: matrix.platform == 'x64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $dir = Join-Path $env:GITHUB_WORKSPACE 'app\build\x64\Release'
+          $exe = Join-Path $dir 'URmessage.exe'
+          if (-not (Test-Path -LiteralPath $exe)) {
+            Write-Host "::error::$exe was not produced by the build"
+            exit 1
+          }
+
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = $exe
+          $psi.Arguments = '--diagnose'
+          $psi.WorkingDirectory = $dir
+          $psi.UseShellExecute = $false
+          $psi.CreateNoWindow = $true
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          # The app writes utf-8 BYTES on a redirected handle (Startup.cpp's
+          # WriteStdout narrows before WriteFile), so say so or the em dashes in
+          # the diagnostics come back mojibaked.
+          $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+          $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+
+          $proc = New-Object System.Diagnostics.Process
+          $proc.StartInfo = $psi
+          $null = $proc.Start()
+
+          # Start draining BOTH pipes before waiting. A child that fills a pipe
+          # buffer nobody is reading blocks forever -- a hang produced by the
+          # harness rather than by the app.
+          $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+          $stderrTask = $proc.StandardError.ReadToEndAsync()
+
+          if (-not $proc.WaitForExit(120000)) {
+            Write-Host "::error::--diagnose did not exit within 120s; it is probably showing a modal dialog. Killing it."
+            try { $proc.Kill() } catch { }
+            exit 1
+          }
+          $code = $proc.ExitCode
+          $stdout = $stdoutTask.GetAwaiter().GetResult()
+          $stderrText = $stderrTask.GetAwaiter().GetResult()
+
+          # Kept for the artifact, so a failure is readable without re-running.
+          Set-Content -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'app\diagnose-x64.txt') -Value $stdout -Encoding utf8
+          Set-Content -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'app\diagnose-x64.stderr.txt') -Value $stderrText -Encoding utf8
+
+          $lines = @($stdout -split "`r?`n")
+
+          Write-Host '--- URmessage.exe --diagnose ---------------------------------'
+          $lines | ForEach-Object { Write-Host $_ }
+          Write-Host '--------------------------------------------------------------'
+          Write-Host "exit code: $code"
+          if ($stderrText.Trim()) { Write-Host "stderr:`n$stderrText" }
+
+          # Guard against the vacuous pass: prove the diagnostics actually ran.
+          if (-not ($lines | Where-Object { $_ -clike '*URmessage startup diagnostics*' })) {
+            Write-Host "::error::--diagnose produced no diagnostics header; the process printed nothing usable (exit $code)"
+            exit 1
+          }
+
+          if ($code -ne 0) {
+            Write-Host "::error::--diagnose exited $code"
+            exit 1
+          }
+
+          # Case-sensitive on purpose: PASS/FAIL is the plan's assertion
+          # grammar, and it also catches the FAILED wording already in
+          # Startup.cpp/main.cpp ("com apartment : FAILED", "resources (mrt) :
+          # FAILED", "app instance : FAILED").
+          # NOT FOUND and NOT RESOLVING are FAILURES, not warnings, and they
+          # carry no FAIL token of their own -- so matching 'FAIL' alone let a
+          # build that cannot start report "smoke test OK". Both strings come
+          # straight out of the app's own probes:
+          #   Startup.cpp:130-134 AppRuntimeProbe() -> "NOT FOUND (LoadLibrary
+          #     error ...) -- the Windows App Runtime could not be resolved; the
+          #     app cannot start without it"
+          #   Startup.cpp:236-239 ResourceProbe()   -> "NOT RESOLVING -- the UI
+          #     would render key ids ("app_name") instead of text; resources.pri
+          #     is missing, unindexed, or not beside the exe"
+          # A self-contained-deployment regression or a MakePri regression is
+          # exactly what this smoke test exists to catch, and it is the only
+          # test this repo has. Annotating them green manufactures false
+          # confidence, which is worse than having no smoke test at all.
+          $failed = @($lines | Where-Object { $_ -cmatch 'FAIL|NOT FOUND|NOT RESOLVING' })
+          $passed = @($lines | Where-Object { $_ -cmatch 'PASS' })
+          Write-Host "assertions: $($passed.Count) PASS, $($failed.Count) FAIL"
+
+          # MISSING stays an annotation: the zip-verification step below counts
+          # resources.pri and the four brand faces in the real artifact and hard
+          # -fails on a shortfall, so it already has a stronger gate downstream.
+          foreach ($line in $lines) {
+            if ($line -cmatch 'MISSING') {
+              Write-Host "::warning::diagnose: $($line.Trim())"
+            }
+          }
+
+          if ($failed.Count -gt 0) {
+            foreach ($line in $failed) { Write-Host "::error::diagnose: $($line.Trim())" }
+            Write-Host "::error::--diagnose reported $($failed.Count) failing line(s) (FAIL, NOT FOUND or NOT RESOLVING)"
+            exit 1
+          }
+
+          $proc.Dispose()
+          Write-Host 'smoke test OK'
+
+      - name: Upload the diagnose output and app log
+        if: always() && matrix.platform == 'x64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnose-x64
+          path: |
+            app/diagnose-x64.txt
+            app/diagnose-x64.stderr.txt
+            .localstate-ci/logs/
+          if-no-files-found: warn
+
+      # Payload at the ZIP ROOT, no wrapper folder -- the same grammar the VPN
+      # client's portable zip uses, so "unzip and run URmessage.exe" is the
+      # whole install. There is no package-portable.ps1 in this repo, and this
+      # deliberately does not invent one in YAML: it archives the entire build
+      # output directory, exclusions and all-none. The VPN repo learned that a
+      # curated glob (*.exe/*.dll/*.pri) silently dropped Assets\Fonts -- the
+      # brand faces the app copies next to the exe, whose absence produces NO
+      # error, just a silent fallback to a system face. An artifact missing
+      # files the build produced is worse than a bigger artifact.
+      #
+      # The zip is written to the PARENT of the directory being archived; a
+      # destination inside the source is how Compress-Archive races itself.
+      - name: Package the portable zip
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = Join-Path $env:GITHUB_WORKSPACE 'app\build\${{ matrix.platform }}\Release'
+          if (-not (Test-Path -LiteralPath $dir)) { throw "build output $dir does not exist" }
+
+          $version = '${{ needs.version.outputs.version }}'
+          $zip = Join-Path $env:GITHUB_WORKSPACE "app\build\${{ matrix.platform }}\URmessage-$version-${{ matrix.platform }}-portable.zip"
+          if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+
+          Compress-Archive -Path (Join-Path $dir '*') -DestinationPath $zip -CompressionLevel Optimal
+
+          $item = Get-Item -LiteralPath $zip
+          Write-Host "$($item.Name): $([int]($item.Length / 1MB)) MB"
+          # A self-contained WinUI 3 drop is tens of MB; a tiny zip means the
+          # archive picked up an empty or partial output directory.
+          if ($item.Length -lt 5MB) {
+            Write-Host "::error::$($item.Name) is only $($item.Length) bytes -- implausibly small for a self-contained WinUI 3 build"
+            exit 1
+          }
+
+          # Verify the PAYLOAD, not just that a zip appeared. "A zip exists" and
+          # "the zip is big" were both true of the VPN client's installer for
+          # the months it silently shipped without Assets\Fonts and without the
+          # self-contained runtime. Size alone cannot see that; this can.
+          #
+          # Entry names are normalised to forward slashes first: .NET Framework
+          # writes zip entries with BACKSLASHES and .NET (pwsh 7, which is what
+          # `shell: pwsh` gives us here) with forward slashes, and a check that
+          # is wrong about which one it gets passes vacuously.
+          if (-not ('System.IO.Compression.ZipFile' -as [type])) {
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+          }
+          $archive = [System.IO.Compression.ZipFile]::OpenRead($zip)
+          try {
+            $names = @($archive.Entries | ForEach-Object { $_.FullName -replace '\\', '/' })
+          } finally {
+            $archive.Dispose()
+          }
+          Write-Host "entries: $($names.Count)"
+
+          $missing = @()
+          # At the zip ROOT: the app loads resources.pri by path from beside the
+          # exe, so a wrapper folder would also be a broken layout, not just an
+          # inconvenient one.
+          foreach ($required in @('URmessage.exe', 'resources.pri', 'Assets/app.ico')) {
+            if ($names -notcontains $required) { $missing += $required }
+          }
+          # The four brand faces. Their absence produces NO error at runtime --
+          # DirectWrite just fails to register the family and XAML falls back to
+          # a system face, which is why nobody notices until a screenshot.
+          $fonts = @($names | Where-Object { $_ -like 'Assets/Fonts/*' })
+          if ($fonts.Count -lt 4) { $missing += "Assets/Fonts/* (found $($fonts.Count), expected 4)" }
+          # WindowsAppSDKSelfContained: the runtime ships INSIDE the zip, so
+          # there is nothing machine-wide for a clean box to be missing.
+          $runtime = @($names | Where-Object { $_ -like '*WindowsAppRuntime*' })
+          if ($runtime.Count -lt 1) { $missing += 'Microsoft.WindowsAppRuntime*.dll' }
+
+          if ($missing.Count -gt 0) {
+            foreach ($m in $missing) { Write-Host "::error::$($item.Name) is missing $m" }
+            exit 1
+          }
+          Write-Host "payload OK: exe + resources.pri at the root, $($fonts.Count) fonts, $($runtime.Count) app-runtime files"
+
+      - name: Upload the portable zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: urmessage-portable-${{ matrix.platform }}
+          path: app/build/${{ matrix.platform }}/URmessage-*-portable.zip
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Publish. Gated so it does NOT run on an ordinary push to main: only an
+  # explicit tag, or a workflow_dispatch that ticked the box.
+  # ---------------------------------------------------------------------------
+  release:
+    name: Publish beta prerelease
+    needs: [version, build]
+    # The manual arm is additionally pinned to main. Without that, someone could
+    # dispatch from any branch with the publish box ticked and cut a public
+    # prerelease out of unreviewed code -- and there IS such a branch right now
+    # (demo-ui, where the whole demo is being built). A tag is already a
+    # deliberate, reviewable act, so it keeps its own path.
+    if: >-
+      github.ref_type == 'tag' ||
+      (github.event_name == 'workflow_dispatch' &&
+       github.event.inputs.publish_release == 'true' &&
+       github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    # The only job that writes anything. contents: write is what creates the
+    # release (and, on a dispatch, the tag that carries it).
+    permissions:
+      contents: write
+    steps:
+      - name: Download the portable zips
+        uses: actions/download-artifact@v4
+        with:
+          pattern: urmessage-portable-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish the prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+          VERSION_CODE: ${{ needs.version.outputs.version_code }}
+        run: |
+          set -euo pipefail
+
+          ls -la dist
+          count=$(find dist -maxdepth 1 -name '*.zip' | wc -l)
+          if [ "$count" -eq 0 ]; then
+            echo "::error::no portable zips were downloaded; nothing to release"
+            exit 1
+          fi
+
+          # On a tag push the tag already exists and IS the release name. On a
+          # dispatch there is no tag yet, so gh creates one at this run's sha.
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            tag="v${VERSION}"
+          fi
+
+          # Built OUTSIDE the heredoc on purpose: a command substitution inside
+          # one, mixed with the backticks this markdown wants, is a quoting trap
+          # with no error message when it goes wrong.
+          assets=$(cd dist && for z in *.zip; do printf -- '- `%s`\n' "$z"; done)
+
+          cat > notes.md <<EOF
+          URmessage for Windows — beta ${VERSION} (version code ${VERSION_CODE}).
+
+          Built from \`${GITHUB_SHA}\` by run [${GITHUB_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}).
+
+          **These binaries are UNSIGNED.** That is a decision for the beta line, not
+          an oversight: SmartScreen will warn on first launch.
+
+          Each zip unpacks to the app itself — the payload is at the zip root, so
+          extract it anywhere and run \`URmessage.exe\`. The Windows App Runtime ships
+          inside the zip (self-contained), so there is nothing machine-wide to install.
+          For a fast check that a copy is intact, run \`URmessage.exe --diagnose\` from a
+          terminal.
+
+          Assets:
+
+          ${assets}
+          EOF
+
+          echo "--- release notes ---"
+          cat notes.md
+          echo "---------------------"
+
+          if gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $tag already exists -- replacing its assets"
+            gh release upload "$tag" dist/*.zip --clobber -R "$GITHUB_REPOSITORY"
+            gh release edit "$tag" --prerelease --notes-file notes.md -R "$GITHUB_REPOSITORY"
+          else
+            gh release create "$tag" dist/*.zip \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "URmessage ${VERSION} (Windows beta)" \
+              --notes-file notes.md \
+              --prerelease
+          fi
+
+          echo "published $tag"
