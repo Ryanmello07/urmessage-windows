@@ -1306,6 +1306,61 @@ std::vector<std::wstring> RosterDiagnostics() {
         Verdict(good == 2 && disjoint), good, disjoint ? L"yes" : L"NO", listing));
   }
 
+  // THE COMPOSER'S TEXT LIMIT (ledger 266, item 6): the UTF-8 count is exact at all four encoded
+  // widths and for a lone surrogate, it agrees with the narrowing the send path really uses, the two
+  // limits are the library's (also static_asserted in ThreadLayout.cpp), and the caption names both
+  // numbers, grouped.
+  {
+    struct Width {
+      std::wstring text;
+      size_t want;
+      wchar_t const* what;
+    };
+    const Width widths[] = {
+        {L"hello", 5, L"ascii"},
+        {L"\u00e9", 2, L"two"},
+        {L"\u20ac", 3, L"three"},
+        {L"\U0001F600", 4, L"pair"},
+        {std::wstring(1, static_cast<wchar_t>(0xD800)), 3, L"lone"},
+    };
+    size_t exact = 0;
+    std::wstring listing;
+    for (auto const& w : widths) {
+      const size_t got = urmsg::views::Utf8Octets(w.text);
+      if (got == w.want) ++exact;
+      listing += std::format(L"{}={} ", w.what, got);
+    }
+    const std::wstring mixed = L"a\u00e9\u20ac\U0001F600z";
+    const bool agrees = urnw::Narrow(mixed).size() == urmsg::views::Utf8Octets(mixed);
+    const bool limits = urmsg::views::ComposerTextLimit(false) == 65333 &&
+                        urmsg::views::ComposerTextLimit(true) == 65301;
+    const std::wstring note = urmsg::views::ComposerTooLongNote(70112, 65333);
+    const bool named = note.find(L"70,112") != std::wstring::npos &&
+                       note.find(L"65,333") != std::wstring::npos;
+    // the dark button SAYS why for MaySend only; the other two states keep their own reasons
+    using urmsg::views::ComposerSendName;
+    using urmsg::views::ComposerSendNameAt;
+    const bool spoken =
+        ComposerSendNameAt(ComposerState::MaySend, true, false, true).find(L"too long") !=
+            std::wstring::npos &&
+        ComposerSendNameAt(ComposerState::MaySend, true, false, false) ==
+            ComposerSendName(ComposerState::MaySend, true, false) &&
+        ComposerSendNameAt(ComposerState::ObserverOnly, true, false, true) ==
+            ComposerSendName(ComposerState::ObserverOnly, true, false) &&
+        ComposerSendNameAt(ComposerState::NoSession, true, false, true) ==
+            ComposerSendName(ComposerState::NoSession, true, false);
+    out.push_back(std::format(
+        L"  composer limit   : {}  {}/5 widths counted exactly ({}); agrees with Narrow on a mixed "
+        L"string {}; limits 65,333/65,301 {}; caption \"{}\"; the dark button says why {}   "
+        L"[query: Utf8Octets of ascii, U+00E9, U+20AC, U+1F600 and a lone high surrogate is 5, 2, 3, "
+        L"4, 3; equal to Narrow().size() on a mixed string; ComposerTextLimit(false/true) is "
+        L"65333/65301; the note names both numbers comma-grouped; ComposerSendNameAt says \"too "
+        L"long\" for MaySend past the limit and is ComposerSendName otherwise and in the other "
+        L"two states]",
+        Verdict(exact == 5 && agrees && limits && named && spoken), exact, listing,
+        agrees ? L"yes" : L"NO", limits ? L"yes" : L"NO", note, spoken ? L"yes" : L"NO"));
+  }
+
   // 4. the outcome notes: nothing for None, and five distinct sentences for the five states -
   //    the three a person acts on differently (refused by role, lost the race, transport) being
   //    told apart by their own words, and the two that carry the library's reason carrying it.

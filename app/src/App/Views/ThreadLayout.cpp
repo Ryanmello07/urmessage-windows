@@ -18,6 +18,19 @@
 
 #include "Strings.h"  // urnw::Narrow, for ReactionPickerOctets (Win32 only, no winrt)
 
+#include <format>
+
+// The SDK's C header, for two #defines and nothing else: the composer's limits are tied to the
+// library's at compile time, so the two cannot drift apart without this unit failing to build.
+extern "C" {
+#include "urnetwork_message.h"
+}
+
+static_assert(urmsg::views::kMaxTextOctets == URNET_MESSAGE_MAX_TEXT_OCTETS,
+              "the composer's text limit is not the library's");
+static_assert(urmsg::views::kMaxReplyTextOctets == URNET_MESSAGE_MAX_REPLY_TEXT_OCTETS,
+              "the composer's reply limit is not the library's");
+
 namespace urmsg::views {
 namespace {
 
@@ -159,6 +172,52 @@ std::wstring ComposerBoxPlaceholder(ComposerState state) {
 }
 
 bool ComposerBoxEnabled(ComposerState state) { return state != ComposerState::ObserverOnly; }
+
+std::size_t Utf8Octets(std::wstring_view text) {
+  std::size_t octets = 0;
+  for (std::size_t at = 0; at < text.size(); ++at) {
+    const wchar_t unit = text[at];
+    if (unit < 0x80) {
+      octets += 1;
+    } else if (unit < 0x800) {
+      octets += 2;
+    } else if (0xD800 <= unit && unit <= 0xDBFF && at + 1 < text.size() &&
+               0xDC00 <= text[at + 1] && text[at + 1] <= 0xDFFF) {
+      octets += 4;
+      ++at;
+    } else {
+      // the rest of the BMP, and a lone surrogate, which narrows to U+FFFD
+      octets += 3;
+    }
+  }
+  return octets;
+}
+
+std::size_t ComposerTextLimit(bool replying) {
+  return replying ? kMaxReplyTextOctets : kMaxTextOctets;
+}
+
+namespace {
+// Thousands grouped with a comma, by hand: the locale-aware format would make the caption a
+// function of the machine it runs on.
+std::wstring Grouped(std::size_t value) {
+  std::wstring digits = std::to_wstring(value);
+  for (std::ptrdiff_t at = static_cast<std::ptrdiff_t>(digits.size()) - 3; 0 < at; at -= 3)
+    digits.insert(static_cast<std::size_t>(at), 1, L',');
+  return digits;
+}
+}  // namespace
+
+std::wstring ComposerSendNameAt(ComposerState state, bool hasText, bool replying, bool overLimit) {
+  if (overLimit && state == ComposerState::MaySend) return L"Send: the message is too long to send";
+  return ComposerSendName(state, hasText, replying);
+}
+
+std::wstring ComposerTooLongNote(std::size_t octets, std::size_t limit) {
+  // U+2014 EM DASH as an escape, never a pasted glyph (the house non-ASCII rule)
+  return std::format(L"Too long to send \u2014 {} of {} bytes. Shorten it, or send it in parts.",
+                     Grouped(octets), Grouped(limit));
+}
 
 bool IsHiddenObserverRow(demo::MessageRow const& row) {
   return row.kind == demo::RowKind::Message && row.senderRoleAtSend == demo::kRoleObserver;

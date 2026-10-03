@@ -39,6 +39,10 @@ enum class DemoComposer {
   AsIs,      // no switch: the session is the worker's answer and the role is the conversation's
   Session,   // --demo-composer=session:  a session is fabricated; the ROLE is still the world's
   Observer,  // --demo-composer=observer: a session is fabricated AND the role is read-only
+  // --demo-composer=overlimit: a session is fabricated and the box is pre-filled PAST the text
+  // limit, so the over-limit state (ledger 266, item 6) can be looked at without anyone typing
+  // 65 KB into it. It fabricates the box's contents and claims nothing else.
+  OverLimit,
 };
 
 struct DemoOptions {

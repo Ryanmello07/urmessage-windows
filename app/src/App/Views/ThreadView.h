@@ -91,6 +91,9 @@ void SetThreadRunMode(ThreadView& v, urmsg::RunMode mode);
 // a live-only launch and cleared on the beat a live world arrives, which is the beat the mode
 // latches on.
 void SetThreadNoSession(ThreadView& v, bool noSession);
+// Put text in the composer as though it had been typed, for the one demo switch that needs the
+// box full (--demo-composer=overlimit). The button and caption follow it through the one writer.
+void SetThreadComposerText(ThreadView& v, std::wstring const& text);
 void SetThreadTyping(ThreadView& v, bool typing);
 void AppendThreadRow(ThreadView& v, urmsg::demo::MessageRow const& row);
 

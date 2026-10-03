@@ -23,6 +23,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "Demo/DemoWorld.h"
@@ -597,6 +598,30 @@ std::wstring ComposerBoxPlaceholder(ComposerState state);
 // leaves the box live on purpose: a person may type while the mesh is dialling,
 // and the text is still there when it answers.
 bool ComposerBoxEnabled(ComposerState state);
+
+// ---- the text limit (ledger 266, item 6) -------------------------------------------------
+// The longest text the sealer takes, in UTF-8 OCTETS and not characters, and the longest a
+// reply takes, which spends 32 of them naming its parent. ThreadLayout.cpp static_asserts both
+// against the SDK header's URNET_MESSAGE_MAX_TEXT_OCTETS and _REPLY_, which sdk/cgo/gen holds
+// against the sealer's own constants. They are checked BEFORE a send, because the sealer refuses
+// a longer text and a refusal after the box has emptied is a lost message: that was the bug.
+inline constexpr std::size_t kMaxTextOctets = 65333;
+inline constexpr std::size_t kMaxReplyTextOctets = 65301;
+
+// What the box holds, as the UTF-8 it will be sent as, counted from the UTF-16 without converting
+// it: a surrogate pair is four octets, and a lone surrogate the three of the U+FFFD it narrows to.
+std::size_t Utf8Octets(std::wstring_view text);
+
+// The limit that applies: a reply's while the reply strip is up.
+std::size_t ComposerTextLimit(bool replying);
+
+// The caption while the box holds more than the limit, in the unit the limit is in.
+std::wstring ComposerTooLongNote(std::size_t octets, std::size_t limit);
+
+// The Send button's name with the limit in it: past the limit the button is dark for a reason a
+// screen reader has to hear, as a sighted user reads it in the caption. Only the MaySend arm
+// changes; the other two states are dark for reasons of their own, which come first.
+std::wstring ComposerSendNameAt(ComposerState state, bool hasText, bool replying, bool overLimit);
 
 // ---- the four per-message send affordances ----------------------------------
 // What the controls that act on ONE MESSAGE ROW say, as data, so --diagnose can

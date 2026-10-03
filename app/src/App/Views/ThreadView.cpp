@@ -1830,15 +1830,22 @@ void UpdateComposerSend(std::shared_ptr<ThreadParts> const& parts) {
   if (!parts || !parts->composerSend || !parts->composerBox) return;
   const bool sessionCanSend = parts->sendEnabled && parts->onSend != nullptr;
   const ComposerState state = ComposerStateFor(sessionCanSend, parts->mayRoleSend);
-  const bool hasText = !parts->composerBox.Text().empty();
-  const bool live = state == ComposerState::MaySend && hasText;
-
-  parts->composerSend.IsEnabled(live);
+  const std::wstring boxText{parts->composerBox.Text()};
+  const bool hasText = !boxText.empty();
   // "Send reply" while the strip is up: what the button does has changed, and the name is the
   // channel that says so to a reader who cannot see the strip.
   const bool replying = !parts->replyToId.empty();
+  // THE LIMIT, measured on every change: past it the button is dark and the caption says by how
+  // much, and the text stays in the box (ledger 266, item 6)
+  const std::size_t octets = Utf8Octets(boxText);
+  const std::size_t limit = ComposerTextLimit(replying);
+  const bool overLimit = limit < octets;
+  const bool live = state == ComposerState::MaySend && hasText && !overLimit;
+
+  parts->composerSend.IsEnabled(live);
   Automation::AutomationProperties::SetName(
-      parts->composerSend, winrt::hstring{ComposerSendName(state, hasText, replying)});
+      parts->composerSend,
+      winrt::hstring{ComposerSendNameAt(state, hasText, replying, overLimit)});
   Automation::AutomationProperties::SetName(parts->composerBox,
                                             winrt::hstring{ComposerBoxName(state, replying)});
   parts->composerBox.PlaceholderText(winrt::hstring{ComposerBoxPlaceholder(state)});
@@ -1846,10 +1853,16 @@ void UpdateComposerSend(std::shared_ptr<ThreadParts> const& parts) {
   // THE CAPTION, from here and nowhere else: it is a function of the mode AND the role, and the
   // two arrive on different beats. RunMode.h carries why the fabricated arm does not branch on the
   // role and why the live observer arm may not borrow a session denial.
-  if (parts->composerNote)
+  // Past the limit it is the one caption that is a REFUSAL, so it takes the danger brush the
+  // failed-send line takes: in the faint brush, Enter doing nothing read as the app ignoring you.
+  if (parts->composerNote) {
     parts->composerNote.Text(
-        winrt::hstring{urmsg::ComposerNote(parts->noteMode, parts->mayRoleSend,
-                                           parts->noteNoSession)});
+        overLimit ? winrt::hstring{ComposerTooLongNote(octets, limit)}
+                  : winrt::hstring{urmsg::ComposerNote(parts->noteMode, parts->mayRoleSend,
+                                                       parts->noteNoSession)});
+    parts->composerNote.Foreground(overLimit ? urnw::colors::DangerBrush()
+                                             : urnw::colors::FaintBrush());
+  }
 
   // The disabled wash (design d2 §3's enable-motion bullet) is only ever SEEN while the button is
   // dark, and it still distinguishes the two dark states: transparent on an empty box — the bare
@@ -1921,6 +1934,8 @@ void SubmitComposer(std::shared_ptr<ThreadParts> const& parts) {
   if (!parts->mayRoleSend) return;
   const std::wstring text{parts->composerBox.Text()};
   if (text.empty()) return;
+  // the button is dark past the limit, and the Enter key is a second door to the same send
+  if (ComposerTextLimit(!parts->replyToId.empty()) < Utf8Octets(text)) return;
   if (parts->onSend(text, std::wstring{}, parts->replyToId)) {
     parts->composerBox.Text(L"");
     ClearComposerReply(parts);
@@ -3637,6 +3652,13 @@ void SetThreadNoSession(ThreadView& v, bool noSession) {
   if (!parts || !parts->composerNote) return;
   // Recorded and handed to the ONE writer, exactly as the mode is and for the same reason.
   parts->noteNoSession = noSession;
+  UpdateComposerSend(parts);
+}
+
+void SetThreadComposerText(ThreadView& v, std::wstring const& text) {
+  auto parts = Find(v.root);
+  if (!parts || !parts->composerBox) return;
+  parts->composerBox.Text(winrt::hstring{text});
   UpdateComposerSend(parts);
 }
 

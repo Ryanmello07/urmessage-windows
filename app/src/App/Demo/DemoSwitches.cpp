@@ -100,6 +100,11 @@ constexpr void ApplyArg(DemoOptions& o, std::wstring_view arg) {
     o.composer = DemoComposer::Observer;
     return;
   }
+  if (body == L"demo-composer=overlimit") {
+    o.enabled = true;
+    o.composer = DemoComposer::OverLimit;
+    return;
+  }
 }
 
 constexpr DemoOptions ParseArgs(std::initializer_list<std::wstring_view> args) {
@@ -219,6 +224,8 @@ static_assert(ParseArgs({L"--demo"}).composer == DemoComposer::AsIs);
 static_assert(ParseArgs({L"--demo-composer=session"}).composer == DemoComposer::Session);
 static_assert(ParseArgs({L"--demo-composer=session"}).enabled);
 static_assert(ParseArgs({L"--demo-composer=observer"}).composer == DemoComposer::Observer);
+static_assert(ParseArgs({L"--demo-composer=overlimit"}).composer == DemoComposer::OverLimit);
+static_assert(ParseArgs({L"--demo-composer=overlimit"}).enabled);
 static_assert(ParseArgs({L"--demo-composer=observer"}).enabled);
 static_assert(ParseArgs({L"-demo-composer=observer"}).composer == DemoComposer::Observer);
 static_assert(ParseArgs({L"/demo-composer=observer"}).composer == DemoComposer::Observer);

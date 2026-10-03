@@ -880,6 +880,14 @@ bool MainWindow::SendFromComposer(std::wstring text, std::wstring replacesRowId,
   // tail that is not valid UTF-8 at the seal, so an ANSI narrowing here would be a send that fails
   // for a reason nobody could read off the screen.
   const std::string utf8 = urnw::Narrow(text);
+  // THE LIMIT, at the last door before the queue: a text the sealer will refuse is never queued,
+  // so the box keeps it (false below) and no failed row is drawn for it (ledger 266, item 6)
+  const std::size_t limit = urmsg::views::ComposerTextLimit(!replyToRowId.empty());
+  if (limit < utf8.size()) {
+    urnw::LogWarn("window: the composer's send was refused before it was queued: {} octets, the "
+                  "limit is {}. The text is still in the box.", utf8.size(), limit);
+    return false;
+  }
   const bool queued = urmsg::live::QueueSend(utf8, urnw::Narrow(replacesLocalId),
                                              urnw::Narrow(replyToRowId));
 
@@ -989,8 +997,15 @@ void MainWindow::ArmComposer() {
       session = true;
       mayRoleSend = false;
       break;
+    case urmsg::demo::DemoComposer::OverLimit:
+      session = true;
+      break;
   }
   urmsg::views::SetThreadSendEnabled(thread_, session, mayRoleSend);
+  if (options_.composer == urmsg::demo::DemoComposer::OverLimit) {
+    // 70,000 octets of ASCII against the 65,333 limit: over by 4,667
+    urmsg::views::SetThreadComposerText(thread_, std::wstring(70000, L'a'));
+  }
 }
 
 bool MainWindow::OpenConversationMaySend() const {
