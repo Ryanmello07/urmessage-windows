@@ -23,8 +23,12 @@ std::wstring RoleWord(std::wstring_view role) {
 std::wstring MemberRowTitle(demo::MemberRef const& member) {
   // "You" over whatever the source called this leaf: the fixture never sets `mine`, and the live
   // world's own leaf carries the placeholder for a name exactly as every other leaf does, so
-  // without this the viewer's own row would read "unavailable (middle dot) Owner".
-  const std::wstring who = member.mine ? std::wstring(L"You") : member.displayName;
+  // without this the viewer's own row would read "unavailable (middle dot) Owner". Then the
+  // viewer's own LABEL for the member, when there is one, over the protocol's display name: the
+  // row is the viewer's list, and the detail under it keeps both, each under its own key.
+  const std::wstring who = member.mine ? std::wstring(L"You")
+                          : !member.localName.empty() ? member.localName
+                                                      : member.displayName;
   return who + L" \u00B7 " + RoleWord(member.role);  // U+00B7 MIDDLE DOT
 }
 
@@ -233,6 +237,38 @@ std::wstring MembersCaptionMeta(demo::Conversation const& conv) {
 std::wstring MemberRowMeta(demo::MemberRef const& member) {
   if (member.devices.empty()) return std::wstring(demo::kUnavailable);
   return std::format(L"{}/{} online", OnlineDeviceCount(member), member.devices.size());
+}
+
+std::wstring LocalNameButtonLabel(bool conversation, bool named) {
+  if (conversation) return named ? L"Rename this conversation" : L"Name this conversation";
+  return named ? L"Rename" : L"Name them";
+}
+
+std::wstring LocalNameButtonName(bool conversation, bool named) {
+  if (conversation)
+    return named ? L"Change the name only you see for this conversation"
+                 : L"Give this conversation a name only you will see";
+  return named ? L"Change the name only you see for this member"
+               : L"Give this member a name only you will see";
+}
+
+std::wstring LocalNameDialogTitle(bool conversation) {
+  return conversation ? L"Your name for this conversation" : L"Your name for them";
+}
+
+std::wstring LocalNameDialogNote() {
+  // THE WHOLE TRUTH OF A LABEL IN ONE SENTENCE, and the half a person would guess wrong is the
+  // second: in a messenger a name you type looks like something you are TELLING people.
+  return L"Only you see this name. It is kept on this computer and is never sent: nobody in the "
+         L"group learns it, and neither does the server.";
+}
+
+std::wstring LocalNameFieldKey() { return L"Your name for them"; }
+
+std::wstring LocalNameUnset() { return L"not set"; }
+
+std::wstring LocalNameMarked(std::wstring const& label) {
+  return label + L" (your name for them)";
 }
 
 }  // namespace urmsg::views

@@ -1028,6 +1028,7 @@ void CollectMessages(uint64_t group, std::vector<urmsg::live::LiveMessage>& out)
       m.recordId = j.value("record_id", uint64_t{0});
       m.messageId = j.value("message_id", std::string{});
       m.senderHandle = j.value("sender_handle", std::string{});
+      m.senderIdentity = j.value("sender_identity", std::string{});
       m.mine = j.value("mine", false);
       m.sentAtMs = j.value("sent_at_ms", int64_t{0});
       m.kind = static_cast<uint8_t>(j.value("kind", 0));

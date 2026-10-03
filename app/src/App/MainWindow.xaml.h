@@ -200,6 +200,12 @@ struct MainWindow : MainWindowT<MainWindow> {
   bool RoleChangeFromRail(std::wstring identityPubHex, std::wstring role);
   bool TransferOwnershipFromRail(std::wstring identityPubHex);
   bool RemoveMemberFromRail(std::wstring identityPubHex);
+  // A label typed in the rail's dialog (Live/LocalNames.h): checked, stored under the key, and
+  // the live world redrawn with it. "" removes. True when the file on disk now says so.
+  bool NameFromRail(bool conversation, std::wstring key, std::wstring typed);
+  // --demo-names=expand|dialog: the label surfaces, reached once by the app itself.
+  void ShowNamesSurfaceOnce();
+  bool namesShown_ = false;
 
   std::shared_ptr<LiveWorldBridge> liveBridge_;
   urmsg::live::WorldPtr liveWorld_;

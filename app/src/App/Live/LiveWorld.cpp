@@ -157,6 +157,14 @@ int64_t DayOrdinal(int64_t ms) {
 // one. The identicon is then a rendering of something the protocol actually carries: two messages
 // from one sender_handle draw the same mark, and two different handles draw different marks. It is
 // NOT a name and the app never presents it as one.
+// WHO A LINE IS ATTRIBUTED TO, as hex: the identity MLS authenticated as its signer, and the
+// sixteen-octet handle only where there is no identity (a record that did not open, which draws
+// as a system line with no identicon anyway). The roster seeds each member's identicon off the
+// same identity, so a line and its sender's roster row draw one face.
+std::string AttributionKey(LiveMessage const& m) {
+  return m.senderIdentity.empty() ? m.senderHandle : m.senderIdentity;
+}
+
 urmsg::demo::Seed SeedFromHex(std::string const& hex) {
   urmsg::demo::Seed seed{};
   // Fill from the hex nibbles, repeating if the source is shorter than 32 octets. An empty source
@@ -226,11 +234,11 @@ urmsg::demo::World BuildWorld(LiveGroup const& group) {
   // ── the conversation ────────────────────────────────────────────────────────
   urmsg::demo::Conversation conv;
   conv.id = L"live-" + urnw::Widen(group.groupIdHex);
-  // DIRECT, and that is a statement of fact rather than a simplification. The alpha's group is
-  // exactly two parties — the founder and the one member add_member admits — and the product model
-  // is that a DM IS a two-member group. Calling it a Group would make the thread header render
-  // "Group, N members" off a member list the protocol does not carry, which is the fabrication
-  // this whole file exists to avoid.
+  // THE KIND IS SET BELOW, FROM THE ROSTER. It used to be Direct unconditionally, on two premises
+  // that are no longer true: that the alpha's group is exactly two parties (onboarding adds as
+  // many as the founder invites), and that the protocol carries no member list (item 242 R3 hands
+  // it over). A three-party group drawn as a direct message showed no sender on any incoming
+  // line - the thread draws a sender only in a Group - so three people's messages read as one.
   conv.kind = urmsg::demo::ConversationKind::Direct;
   conv.name = kUnavailable;  // there are no group names and no contact discovery
   conv.identityKey = SeedFromHex(group.groupIdHex);
@@ -278,6 +286,10 @@ urmsg::demo::World BuildWorld(LiveGroup const& group) {
     conv.members.push_back(std::move(m));
   }
   conv.memberCount = static_cast<int>(conv.members.size());
+  // A GROUP FROM THREE MEMBERS UP, off the roster the library handed over. Two is a direct
+  // conversation - the product model is that a DM IS a two-member group - and so is one, the
+  // founder alone before anybody has joined, which has no "N members" worth drawing.
+  if (3 <= conv.members.size()) conv.kind = urmsg::demo::ConversationKind::Group;
   // THIS DEVICE'S OWN ROLE, off urnet_message_group_my_role and not derived from the row marked
   // mine: the ABI answers it directly, and the rail's control set is chosen by it. Empty (a group
   // that could not be read) is the placeholder, which the control table treats as no role.
@@ -292,11 +304,17 @@ urmsg::demo::World BuildWorld(LiveGroup const& group) {
   int64_t lastDay = 0;
   int64_t newestMs = 0;
   std::wstring newestBody;
-  // THIS DEVICE'S OWN sender_handle, taken from a record it sealed rather than asked for: the ABI
-  // has no "who am I" call, and `mine` is exactly the bit that says a record is ours. It seeds the
-  // identicon on the outbox rows below, so a message waiting to be sent draws the same mark as the
-  // ones that got through. Empty until this device has sealed anything, which is the all-zero seed.
-  std::string myHandle;
+  // THIS DEVICE'S OWN IDENTITY, which seeds the identicon on the outbox rows below so a message
+  // waiting to be sent draws the same mark as the ones that got through. The roster's own row
+  // first (the ABI marks it mine); failing that, the first record this device sealed, read the
+  // same way every line is (AttributionKey). Empty until either exists: the all-zero seed.
+  std::string myKey;
+  for (auto const& lm : group.members) {
+    if (lm.mine && !lm.identityPub.empty()) {
+      myKey = lm.identityPub;
+      break;
+    }
+  }
 
   for (size_t i = 0; i < group.messages.size(); ++i) {
     LiveMessage const& m = group.messages[i];
@@ -350,12 +368,16 @@ urmsg::demo::World BuildWorld(LiveGroup const& group) {
     // Drawn only on a GROUP's incoming run start, so on this Direct conversation it renders
     // nowhere; the rail's Sender field carries the same placeholder where it IS drawn.
     row.senderName = kUnavailable;
-    row.senderKey = SeedFromHex(m.senderHandle);
+    // ATTRIBUTED BY THE SIGNING IDENTITY, so a line's identicon is the identicon its sender's
+    // roster row draws (MemberRef::identityKey is seeded off the same key). It was seeded off the
+    // handle, which matched nobody's roster row and is shared by two occupants of one leaf.
+    row.senderKey = SeedFromHex(AttributionKey(m));
+    row.senderIdentityHex = urnw::Widen(m.senderIdentity);
     row.body = urnw::Widen(m.body);
     row.timeLabel = FormatClock(m.sentAtMs);
     // REAL: the ABI's `mine` is true when THIS device sealed the record.
     row.outgoing = m.mine;
-    if (m.mine && myHandle.empty()) myHandle = m.senderHandle;
+    if (m.mine && myKey.empty()) myKey = AttributionKey(m);
     // SENT IS THE CEILING AND IT IS REAL: the server acknowledged the submit. Delivered and Read
     // are never set, because nothing in this protocol reports either — there are no receipts.
     row.state = urmsg::demo::DeliveryState::Sent;
@@ -457,7 +479,7 @@ urmsg::demo::World BuildWorld(LiveGroup const& group) {
     row.kind = urmsg::demo::RowKind::Message;
     row.id = L"outbox-" + urnw::Widen(out.localId);
     row.senderName = kUnavailable;
-    row.senderKey = SeedFromHex(myHandle);
+    row.senderKey = SeedFromHex(myKey);
     row.body = urnw::Widen(out.body);
     row.timeLabel = FormatClock(out.attemptedAtMs);
     row.outgoing = true;

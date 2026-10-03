@@ -128,6 +128,15 @@ struct RosterVerb {
   // from setRole and not a role string through it, because the ABI call is a different one and
   // a verb that reached setRole with "removed" would be a role this protocol does not have.
   std::function<bool(std::wstring identityPubHex)> removeMember;
+  // A LABEL, which is local and needs no session (Live/LocalNames.h): stored under the member's
+  // identity key or the conversation's group id, and removed when `typed` is empty. The host
+  // answers whether the file now says so. Not gated by `enabled`: naming somebody on this
+  // computer is not a commit and works with the mesh down.
+  std::function<bool(std::wstring identityPubHex, std::wstring typed)> nameMember;
+  std::function<bool(std::wstring groupIdHex, std::wstring typed)> nameConversation;
+  // What the store would say about `typed`: "" when it would take it, else the sentence. The
+  // rule lives with the store (the views take no dependency on Live/), and the dialog asks it.
+  std::function<std::wstring(std::wstring const& typed)> nameRefusal;
   bool enabled = false;
 };
 void SetInspectRailRosterVerb(RosterVerb verb);
@@ -144,5 +153,11 @@ bool CanChangeRoles();
 // happens when `c` is not the rail's current subject. Called by
 // MainWindow::ApplyLiveWorld beside RefreshOpenThread.
 void RefreshInspectRail(InspectRailView& v, demo::Conversation const& c);
+
+// The label dialog for one member, exactly as its "Name them" button opens it, over the rail's
+// own XamlRoot. For --demo-names=dialog (Demo/DemoSwitches.h), which reaches a click's surface
+// without synthesising the click. Nothing happens on this device's own row, on a member with no
+// identity key, or when the host has no store to name with.
+void OpenLocalNameDialogFor(InspectRailView const& v, demo::MemberRef const& member);
 
 }  // namespace urmsg::views

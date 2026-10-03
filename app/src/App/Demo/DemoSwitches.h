@@ -45,6 +45,18 @@ enum class DemoComposer {
   OverLimit,
 };
 
+// --demo-names=expand|dialog (Live/LocalNames.h). The label surfaces are reached by a CLICK - a
+// member's expansion, and the dialog its "Name them" button opens - and an agent may not
+// synthesise one. So the app reaches them itself, ONCE, on the first LIVE world that has another
+// member to name: `expand` opens that member in the rail, `dialog` also opens the dialog over
+// it. It fabricates nothing: the member is the roster's own and the dialog is the one the click
+// opens. A fabricated world has no identity key to name, so there the switch does nothing.
+enum class DemoNames {
+  None,
+  Expand,
+  Dialog,
+};
+
 struct DemoOptions {
   bool enabled;           // --demo, or implied by any other demo switch
   DemoScreen screen;
@@ -53,6 +65,7 @@ struct DemoOptions {
   bool watermark;         // false only when --demo-watermark=off
   int stressRows;         // --demo-stress=N: synthetic history rows for conversation 0; 0 = off
   DemoComposer composer;  // --demo-composer=session|observer; see above
+  DemoNames names;        // --demo-names=expand|dialog; see above
 };
 
 // Inspect is a STATE, not a screen: it opens Chats, selects conversation 0,

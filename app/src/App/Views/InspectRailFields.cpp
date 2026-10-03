@@ -10,6 +10,7 @@
 #include <format>
 
 #include "RunMode.h"
+#include "Views/RosterRules.h"  // LocalNameMarked, the Sender field's label words
 
 namespace urmsg::views {
 namespace {
@@ -159,6 +160,9 @@ std::wstring SenderLabel(demo::MessageRow const& row) {
   // populated, run continuations included, so an empty one is a DemoWorld defect
   // and InspectRailFieldsProbe reports it as a blank "Sender" value.
   if (row.outgoing) return L"You";
+  // The viewer's own label for the signing identity, MARKED as theirs: the protocol's display
+  // name is what senderDisplayName holds, and a bare label here would read as the sender's claim.
+  if (!row.senderLocalName.empty()) return LocalNameMarked(row.senderLocalName);
   return row.inspect.senderDisplayName;
 }
 

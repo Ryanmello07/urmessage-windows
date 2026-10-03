@@ -38,6 +38,7 @@
 #include "Views/ThreadLayout.h"
 #include "Views/ThreadView.h"  // ShouldPinToBottom, for the scroll-pin line below
 #include "Live/LiveWorld.h"    // BuildWorld, for the reply/reaction mapping gate below (pure)
+#include "Live/LocalNames.h"   // the labels gate below (pure)
 #include "Demo/DemoSwitches.h"
 #include "Demo/DemoStress.h"
 
@@ -1359,6 +1360,199 @@ std::vector<std::wstring> RosterDiagnostics() {
         L"two states]",
         Verdict(exact == 5 && agrees && limits && named && spoken), exact, listing,
         agrees ? L"yes" : L"NO", limits ? L"yes" : L"NO", note, spoken ? L"yes" : L"NO"));
+  }
+
+  // THE LABELS (Live/LocalNames.h): the rule a label must pass, the file it is kept in, and the
+  // overlay that lays it on a live world. A label is the viewer's own name for an identity or a
+  // conversation, kept on this computer and never sent, so the overlay may write LABELS AND NOTHING
+  // ELSE, and it attributes a line by the identity that SIGNED it, never by the leaf's handle. This
+  // line prints verdicts and counts, never a label: W10 keeps names out of the log, test ones too.
+  {
+    using namespace urmsg::live;
+    // (a) the rule: trimmed, bounded in UTF-8 octets at both encoded widths, controls refused
+    struct Case {
+      std::wstring typed;
+      LocalNameVerdict want;
+      std::size_t octets;  // checked on Ok and TooLong
+      wchar_t const* what;
+    };
+    std::wstring sixteenPairs;
+    for (int i = 0; i < 16; ++i) sixteenPairs += L"\U0001F600";
+    const Case cases[] = {
+        {L"  Ravi  ", LocalNameVerdict::Ok, 4, L"trimmed"},
+        {L"", LocalNameVerdict::Empty, 0, L"empty"},
+        {L" \t\u3000 ", LocalNameVerdict::Empty, 0, L"blank"},
+        {std::wstring(64, L'a'), LocalNameVerdict::Ok, 64, L"64"},
+        {std::wstring(65, L'a'), LocalNameVerdict::TooLong, 65, L"65"},
+        {sixteenPairs, LocalNameVerdict::Ok, 64, L"16pairs"},
+        {sixteenPairs + L"\U0001F600", LocalNameVerdict::TooLong, 68, L"17pairs"},
+        {L"\u00c9lise", LocalNameVerdict::Ok, 6, L"accented"},
+        {L"Ra\nvi", LocalNameVerdict::ControlCharacter, 0, L"newline"},
+        {L"Ra\u0085vi", LocalNameVerdict::ControlCharacter, 0, L"C1"},
+        {L"Ra\u202Evi", LocalNameVerdict::ControlCharacter, 0, L"override"},
+        {L"Ra\u2067vi", LocalNameVerdict::ControlCharacter, 0, L"isolate"},
+    };
+    std::size_t ruled = 0;
+    std::wstring misruled;
+    for (auto const& c : cases) {
+      const LocalNameCheck got = CheckLocalName(c.typed);
+      const bool counted = c.want != LocalNameVerdict::Ok && c.want != LocalNameVerdict::TooLong;
+      if (got.verdict == c.want && (counted || got.octets == c.octets)) {
+        ++ruled;
+      } else {
+        misruled += std::format(L"{} ", c.what);
+      }
+    }
+    const bool trimmedTo = CheckLocalName(L"  Ravi  ").utf8 == "Ravi";
+    const bool boundNamed =
+        LocalNameRefusal(CheckLocalName(std::wstring(65, L'a'))).find(L"65 of 64") !=
+        std::wstring::npos;
+
+    // (b) the file: a round trip, damage dropped entry by entry, garbage is no labels, and a
+    //     second save REPLACES the first and leaves no temporary file behind
+    const std::string idA(64, 'a'), idB(64, 'b'), idC(64, 'c'), idMe(64, 'e'), gid(32, 'd');
+    LocalNames labels;
+    labels.members[idA] = "Ravi";
+    labels.members[idB] = "Bo";
+    labels.members[idC] = "Former";
+    labels.conversations[gid] = "Design";
+    const LocalNames back = ParseLocalNames(SerializeLocalNames(labels));
+    const bool roundTrip = back.members == labels.members && back.conversations == labels.conversations;
+    const LocalNames damaged = ParseLocalNames(
+        R"({"version":1,"members":{"AA":"upper","aa":" untrimmed","bb":7,"cc":"fine"},"conversations":"x"})");
+    const bool damageDropped = damaged.members.size() == 1 && damaged.members.count("cc") == 1 &&
+                               damaged.conversations.empty();
+    const bool garbageIsNone = ParseLocalNames("not json").members.empty();
+    std::error_code fsError;
+    const auto dir = std::filesystem::temp_directory_path() / L"urmsg-labels-gate";
+    std::filesystem::remove_all(dir, fsError);
+    const auto file = dir / L"local_names.json";
+    LocalNames first;
+    first.members[idA] = "First";
+    const bool saved = SaveLocalNamesTo(file, first) && SaveLocalNamesTo(file, labels);
+    const LocalNames loaded = LoadLocalNamesFrom(file);
+    const bool fileOk = saved && loaded.members == labels.members &&
+                        loaded.conversations == labels.conversations &&
+                        !std::filesystem::exists(dir / L"local_names.json.tmp");
+    std::filesystem::remove_all(dir, fsError);
+
+    // (c) the mapping and the overlay, over a group built here: this device, A and B on the
+    //     roster, and three incoming lines. C was REMOVED and a newcomer took C's leaf, so C's
+    //     line carries the HANDLE that B holds now: attributed by identity it is C's, by handle B's.
+    auto member = [](std::string handle, std::string identity, bool mine) {
+      LiveMember m;
+      m.senderHandle = std::move(handle);
+      m.identityPub = std::move(identity);
+      m.role = mine ? "owner" : "member";
+      m.mine = mine;
+      return m;
+    };
+    auto line = [](char id, std::string handle, std::string identity) {
+      LiveMessage m;
+      m.messageId = std::string(64, id);
+      m.senderHandle = std::move(handle);
+      m.senderIdentity = std::move(identity);
+      m.kind = 0x01;  // URNET_MESSAGE_KIND_TEXT, by value: this TU does not include the ABI header
+      m.sentAtMs = 1'700'000'000'000;
+      m.body = "x";
+      m.bodyLen = 1;
+      return m;
+    };
+    LiveGroup g;
+    g.groupIdHex = gid;
+    g.epoch = 2;
+    g.open = true;
+    g.myRole = "owner";
+    g.members.push_back(member(std::string(32, '0'), idMe, true));
+    g.members.push_back(member(std::string(32, '1'), idA, false));
+    g.members.push_back(member(std::string(32, '2'), idB, false));
+    g.messages.push_back(line('1', std::string(32, '1'), idA));
+    g.messages.push_back(line('2', std::string(32, '2'), idB));
+    g.messages.push_back(line('3', std::string(32, '2'), idC));
+    const demo::World raw = BuildWorld(g);
+    const demo::Conversation* rc = raw.conversations.empty() ? nullptr : &raw.conversations.front();
+    const bool grouped = rc && rc->kind == demo::ConversationKind::Group;
+    // ONE FACE: every line's identicon is its signer's roster identicon. Seeded off the handle,
+    // C's line would wear B's face.
+    std::vector<demo::MessageRow const*> lines3;
+    if (rc)
+      for (auto const& r : rc->rows)
+        if (r.kind == demo::RowKind::Message) lines3.push_back(&r);
+    auto rosterFace = [&](std::wstring const& identity) -> demo::Seed const* {
+      if (!rc) return nullptr;
+      for (auto const& m : rc->members)
+        if (m.identityPubHex == identity) return &m.identityKey;
+      return nullptr;
+    };
+    const bool faces = lines3.size() == 3 && rosterFace(urnw::Widen(idA)) &&
+                       lines3[0]->senderKey == *rosterFace(urnw::Widen(idA)) &&
+                       lines3[1]->senderKey == *rosterFace(urnw::Widen(idB)) &&
+                       lines3[2]->senderKey != *rosterFace(urnw::Widen(idB));
+
+    const demo::World named = WithLocalNames(raw, labels);
+    const demo::Conversation* nc = named.conversations.empty() ? nullptr : &named.conversations.front();
+    std::vector<demo::MessageRow const*> nlines;
+    if (nc)
+      for (auto const& r : nc->rows)
+        if (r.kind == demo::RowKind::Message) nlines.push_back(&r);
+    const bool attributed = nlines.size() == 3 && nlines[0]->senderName == L"Ravi" &&
+                            nlines[1]->senderName == L"Bo" && nlines[2]->senderName == L"Former" &&
+                            nlines[2]->senderLocalName == L"Former";
+    bool protocolKept = nc != nullptr;
+    if (nc) {
+      for (auto const& m : nc->members)
+        if (m.displayName != demo::kUnavailable) protocolKept = false;
+      for (auto const* r : nlines)
+        if (r->inspect.senderDisplayName != demo::kUnavailable) protocolKept = false;
+    }
+    std::size_t labelled = 0;
+    if (nc)
+      for (auto const& m : nc->members)
+        if (!m.localName.empty()) ++labelled;
+    const bool conversationOwn = nc && nc->name == L"Design" && nc->localName == L"Design";
+    // A TWO-PARTY conversation is called what you call the other party, and its own label wins.
+    LiveGroup pair = g;
+    pair.members.pop_back();
+    pair.messages.clear();
+    LocalNames noConversation = labels;
+    noConversation.conversations.clear();
+    const demo::World pairNamed = WithLocalNames(BuildWorld(pair), noConversation);
+    const demo::World pairOwn = WithLocalNames(BuildWorld(pair), labels);
+    const bool direct =
+        !pairNamed.conversations.empty() &&
+        pairNamed.conversations.front().kind == demo::ConversationKind::Direct &&
+        pairNamed.conversations.front().name == L"Ravi" && !pairOwn.conversations.empty() &&
+        pairOwn.conversations.front().name == L"Design";
+    // NOTHING ELSE MOVES: no labels is the world exactly as it was.
+    const bool inert = WorldFingerprint(WithLocalNames(raw, LocalNames{})) == WorldFingerprint(raw);
+
+    // (d) the words: whose name it is, and that it is never sent
+    const std::wstring dialogNote = urmsg::views::LocalNameDialogNote();
+    const bool words = dialogNote.find(L"Only you") != std::wstring::npos &&
+                       dialogNote.find(L"never sent") != std::wstring::npos &&
+                       urmsg::views::LocalNameMarked(L"X").find(L"your name") != std::wstring::npos;
+
+    const bool ok = ruled == std::size(cases) && trimmedTo && boundNamed && roundTrip &&
+                    damageDropped && garbageIsNone && fileOk && grouped && faces && attributed &&
+                    protocolKept && labelled == 2 && conversationOwn && direct && inert && words;
+    out.push_back(std::format(
+        L"  local names      : {}  rule {}/{} {}; trimmed {}; bound named {}; file round trip {}, "
+        L"damage dropped {}, garbage none {}, replace-and-no-temp {}; 3-member live group is a "
+        L"Group {}; one face per signer {}; lines attributed by identity {}; protocol names kept "
+        L"{}; {} members labelled; conversation's own {}; two-party {}; inert without labels {}; "
+        L"words {}   [query: CheckLocalName over 12 cases (trim, empty, blank, 64/65 ascii, 16/17 "
+        L"surrogate pairs, accented, newline, C1, override, isolate); Parse(Serialize) equal; a "
+        L"damaged file keeps only its one good entry; SaveLocalNamesTo twice then Load; BuildWorld of "
+        L"3 members is Group; each line's senderKey is its signer's roster identityKey and C's is "
+        L"not B's; WithLocalNames names A, B and REMOVED C by sender_identity although C's handle is "
+        L"B's; displayName and senderDisplayName stay unavailable; the conversation label wins; a "
+        L"pair takes the other member's label; no labels leaves the fingerprint unchanged]",
+        Verdict(ok), ruled, std::size(cases), misruled.empty() ? L"" : misruled,
+        trimmedTo ? L"yes" : L"NO", boundNamed ? L"yes" : L"NO", roundTrip ? L"yes" : L"NO",
+        damageDropped ? L"yes" : L"NO", garbageIsNone ? L"yes" : L"NO", fileOk ? L"yes" : L"NO",
+        grouped ? L"yes" : L"NO", faces ? L"yes" : L"NO", attributed ? L"yes" : L"NO",
+        protocolKept ? L"yes" : L"NO", labelled, conversationOwn ? L"yes" : L"NO",
+        direct ? L"yes" : L"NO", inert ? L"yes" : L"NO", words ? L"yes" : L"NO"));
   }
 
   // 4. the outcome notes: nothing for None, and five distinct sentences for the five states -

@@ -96,6 +96,11 @@ struct MemberRef {
   RoleActionState roleAction = RoleActionState::None;
   std::wstring roleActionVerb;
   std::wstring roleActionReason;
+  // THE NAME THIS PERSON GAVE THIS MEMBER, on this computer, or "" (Live/LocalNames.h). It is
+  // NOT displayName and never replaces it: displayName is what the protocol says the member is
+  // called, which in a live world is the placeholder, and this is the viewer's own label for an
+  // identity key. The fixture never writes it, and WorldFingerprint does not mix it.
+  std::wstring localName;
 };
 
 // Owner or admin: the two roles MASTER section 11's table lets administer a group. The fixture
@@ -173,6 +178,15 @@ struct MessageRow {
   std::wstring senderRoleAtSend;
   MessageInspect inspect;
   std::vector<MessageReaction> reactions;  // empty in the fixture; see MessageReaction
+  // WHO SIGNED IT: the ABI's sender_identity, lower-case hex, the credential identity MLS
+  // authenticated at the record's own epoch. It is what a line is ATTRIBUTED by, and it is the
+  // value the roster answers as identity_pub (urnetwork_message.h: "JOIN A LINE TO A ROSTER ROW
+  // ON sender_identity"). NOT the sender handle, which a newcomer on a removed member's leaf
+  // inherits byte for byte (ledger item 245). "" in the fixture and on a record that did not open.
+  std::wstring senderIdentityHex;
+  // The viewer's own name for that identity, or "" (Live/LocalNames.h). The rail's Sender field
+  // shows it marked as the viewer's; inspect.senderDisplayName stays what the protocol said.
+  std::wstring senderLocalName;
 };
 
 struct Conversation {
@@ -195,6 +209,11 @@ struct Conversation {
   std::wstring retentionLabel;
   std::wstring mediaRetentionLabel;
   std::vector<MessageRow> rows;
+  // THE NAME THIS PERSON GAVE THIS CONVERSATION, on this computer, or "" (Live/LocalNames.h).
+  // When it is set, `name` above is this; when it is not, `name` may still be a member's local
+  // name (a two-party conversation is called what you call the other party). It is kept apart
+  // so the rename dialog edits the conversation's own name and never a member's.
+  std::wstring localName;
 };
 
 struct ServerInfo {

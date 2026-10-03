@@ -874,15 +874,21 @@ std::vector<Border> BuildDetailSubRows(demo::MemberRef const& member) {
       member.identityPubHex.empty() ? std::wstring(demo::kUnavailable)
                                     : ShortHex(member.identityPubHex, 16);
   struct Field {
-    wchar_t const* key;
+    std::wstring key;
     std::wstring value;
   };
-  const Field fields[] = {
+  std::vector<Field> fields = {
       {L"Identity key", identity},
       {L"Principal", std::wstring(demo::kUnavailable)},
       {L"Display name", member.displayName},
-      {L"Key fingerprint", std::wstring(demo::kUnavailable)},
   };
+  // THE VIEWER'S OWN LABEL, under its own key and BESIDE the display name, never in place of it
+  // (Live/LocalNames.h). Only on another member with an identity key, which is the only row a
+  // label can be kept for: the fixture carries no key, so the fabricated rail is unchanged.
+  if (!member.mine && !member.identityPubHex.empty())
+    fields.push_back({LocalNameFieldKey(),
+                      member.localName.empty() ? LocalNameUnset() : member.localName});
+  fields.push_back({L"Key fingerprint", std::wstring(demo::kUnavailable)});
   for (auto const& f : fields) {
     auto row = MakeRailDetailRow(f.key, f.value);
     row.Margin(ThicknessHelper::FromLengths(26, 0, 0, 0));
@@ -963,6 +969,143 @@ void ConfirmRemove(Button const& source, std::wstring identityPubHex) {
 // name. Two per line in a grid, 30 tall, so four fit in two lines of the 360
 // column; a click darkens the pressed button and hands the request to the
 // host, and the outcome comes back as a published world drawn on this member.
+// THE LABEL DIALOG (Live/LocalNames.h), for a member and a conversation alike. Primary saves and
+// is the default - a label is no commit, and undoing it is one click away - Secondary removes the
+// label when there is one, and Close leaves everything as it was. The STORE'S OWN RULE judges the
+// text on every change, through the host: Save is dark while the store would refuse what is in the
+// box, and the refusal is shown in the unit the bound is in. A store that fails to write keeps the
+// dialog open and says so, rather than closing over a name that was not kept.
+//
+// Weak references inside every handler: the box's own TextChanged holding the box, or the dialog
+// holding a handler that holds the dialog, would keep the whole sheet alive after it closed.
+void AskLocalName(XamlRoot const& xamlRoot, bool conversation, std::wstring key,
+                  std::wstring current) {
+  auto const& host = MutableRosterVerb();
+  auto store = conversation ? host.nameConversation : host.nameMember;
+  auto refusalFor = host.nameRefusal;
+  if (!store || !refusalFor) return;
+
+  ContentDialog dialog;
+  dialog.XamlRoot(xamlRoot);
+  dialog.Title(winrt::box_value(H(LocalNameDialogTitle(conversation))));
+  StackPanel content;
+  content.Spacing(10);
+  TextBox box;
+  box.Text(H(current));
+  box.PlaceholderText(H(L"A name only you will see"));
+  box.AcceptsReturn(false);
+  box.TextWrapping(TextWrapping::NoWrap);
+  automation::AutomationProperties::SetName(box, H(LocalNameDialogTitle(conversation)));
+  content.Children().Append(box);
+  TextBlock refusal;
+  refusal.TextWrapping(TextWrapping::Wrap);
+  refusal.Foreground(urnw::colors::DangerBrush());
+  refusal.Visibility(Visibility::Collapsed);
+  content.Children().Append(refusal);
+  TextBlock note;
+  if (auto style = kit::StyleByKey(L"UrRowNoteStyle")) note.Style(style);
+  note.TextWrapping(TextWrapping::Wrap);
+  note.Text(H(LocalNameDialogNote()));
+  content.Children().Append(note);
+  dialog.Content(content);
+  dialog.PrimaryButtonText(H(L"Save"));
+  if (!current.empty()) dialog.SecondaryButtonText(H(L"Remove name"));
+  dialog.CloseButtonText(H(L"Cancel"));
+  dialog.DefaultButton(ContentDialogButton::Primary);
+  dialog.Background(urnw::colors::SheetBrush());
+
+  // Shown only once something is typed: an empty box opening with a red line under it would scold
+  // a person for not having typed yet. Save is dark either way.
+  auto judge = [boxRef = winrt::make_weak(box), refusalRef = winrt::make_weak(refusal),
+                dialogRef = winrt::make_weak(dialog), refusalFor]() {
+    auto b = boxRef.get();
+    auto r = refusalRef.get();
+    auto d = dialogRef.get();
+    if (!b || !r || !d) return;
+    const std::wstring typed{b.Text()};
+    const std::wstring why = refusalFor(typed);
+    d.IsPrimaryButtonEnabled(why.empty());
+    const bool show = !why.empty() && !typed.empty();
+    r.Text(H(show ? why : std::wstring{}));
+    r.Visibility(show ? Visibility::Visible : Visibility::Collapsed);
+  };
+  judge();
+  box.TextChanged([judge](auto const&, auto const&) { judge(); });
+
+  dialog.PrimaryButtonClick([boxRef = winrt::make_weak(box), refusalRef = winrt::make_weak(refusal),
+                             store, key, conversation](ContentDialog const&,
+                                                       ContentDialogButtonClickEventArgs const& args) {
+    auto b = boxRef.get();
+    if (b && store(key, std::wstring{b.Text()})) {
+      urnw::LogInfo("rail: a name for a {} was saved by the host", conversation ? "conversation" : "member");
+      return;
+    }
+    args.Cancel(true);
+    if (auto r = refusalRef.get()) {
+      r.Text(H(L"The name could not be saved on this computer."));
+      r.Visibility(Visibility::Visible);
+    }
+  });
+  dialog.SecondaryButtonClick([refusalRef = winrt::make_weak(refusal), store, key, conversation](
+                                  ContentDialog const&, ContentDialogButtonClickEventArgs const& args) {
+    if (store(key, std::wstring{})) {
+      urnw::LogInfo("rail: a name for a {} was removed by the host", conversation ? "conversation" : "member");
+      return;
+    }
+    args.Cancel(true);
+    if (auto r = refusalRef.get()) {
+      r.Text(H(L"The name could not be removed on this computer."));
+      r.Visibility(Visibility::Visible);
+    }
+  });
+  dialog.ShowAsync();
+}
+
+// ONE LABEL BUTTON, for a member's expansion and for the conversation's header alike.
+Border MakeLocalNameButtonRow(bool conversation, bool named, std::wstring key, std::wstring current,
+                              double indent) {
+  Border row;
+  row.Padding(ThicknessHelper::FromLengths(indent + 12, 6, 12, 6));
+  Button b;
+  if (auto style = kit::StyleByKey(L"UrPaneActionSecondaryStyle")) b.Style(style);
+  b.Height(30);
+  b.MinHeight(30);
+  b.Padding(ThicknessHelper::FromLengths(10, 0, 10, 0));
+  b.FontSize(12);
+  b.HorizontalAlignment(HorizontalAlignment::Left);
+  b.Content(winrt::box_value(H(LocalNameButtonLabel(conversation, named))));
+  automation::AutomationProperties::SetName(b, H(LocalNameButtonName(conversation, named)));
+  b.Click([conversation, key = std::move(key), current = std::move(current)](
+              winrt::Windows::Foundation::IInspectable const& sender, auto const&) {
+    if (auto button = sender.try_as<Button>())
+      AskLocalName(button.XamlRoot(), conversation, key, current);
+  });
+  row.Child(b);
+  return row;
+}
+
+// Whether a label control may be drawn right now: the host has the store's verbs, and the world on
+// screen is a live one (a fabricated member has no identity key to keep a label under anyway).
+bool CanNameLocally(bool conversation) {
+  auto const& host = MutableRosterVerb();
+  const bool verb = conversation ? static_cast<bool>(host.nameConversation)
+                                 : static_cast<bool>(host.nameMember);
+  return verb && static_cast<bool>(host.nameRefusal) &&
+         urmsg::ActiveRunMode() == urmsg::RunMode::Live;
+}
+
+// THE LABEL CONTROL under an expanded member: on another member of a live roster only. Not on this
+// device's own row - that is "You" - and not on a member with no identity key.
+std::vector<Border> BuildNameControlRows(demo::MemberRef const& member) {
+  std::vector<Border> rows;
+  if (member.mine || member.identityPubHex.empty() || !CanNameLocally(false)) return rows;
+  auto row = MakeLocalNameButtonRow(false, !member.localName.empty(), member.identityPubHex,
+                                    member.localName, 26);
+  TagSubRow(row, member.id);
+  rows.push_back(row);
+  return rows;
+}
+
 std::vector<Border> BuildRoleControlRows(demo::MemberRef const& member,
                                          std::wstring const& myRole) {
   std::vector<Border> rows;
@@ -1075,6 +1218,7 @@ std::vector<Border> BuildRoleControlRows(demo::MemberRef const& member,
 std::vector<Border> BuildMemberSubRows(demo::MemberRef const& member, std::wstring const& myRole) {
   std::vector<Border> rows = BuildDeviceSubRows(member);
   for (auto const& row : BuildDetailSubRows(member)) rows.push_back(row);
+  for (auto const& row : BuildNameControlRows(member)) rows.push_back(row);
   for (auto const& row : BuildRoleControlRows(member, myRole)) rows.push_back(row);
   if (member.role == demo::kRoleObserver) {
     // Muted, not danger: nothing has gone wrong. It is a limit of the build,
@@ -1321,6 +1465,12 @@ void PopulateConversation(InspectRailView& v, demo::Conversation const& conv,
   auto body = panel.Children();
   body.Clear();
   body.Append(MakeSubjectRow(conv));
+  // THE CONVERSATION'S OWN LABEL, under its subject (Live/LocalNames.h): live only, and keyed by
+  // the group id. The dialog edits the conversation's OWN label - conv.localName - and never the
+  // member label a two-party conversation may be showing as its name.
+  if (!conv.groupIdHex.empty() && CanNameLocally(true))
+    body.Append(MakeLocalNameButtonRow(true, !conv.localName.empty(), conv.groupIdHex,
+                                       conv.localName, 0));
 
   // The caption meta is WORDS, not a bare count (design d4 §2), summed by the
   // pure table from the same OnlineDeviceCount the rows report - so the caption
@@ -1620,6 +1770,11 @@ bool CanChangeRoles() {
   // not.
   return verb.enabled && verb.setRole != nullptr && verb.transferOwnership != nullptr &&
          verb.removeMember != nullptr;
+}
+
+void OpenLocalNameDialogFor(InspectRailView const& v, demo::MemberRef const& member) {
+  if (!v.root || member.mine || member.identityPubHex.empty() || !CanNameLocally(false)) return;
+  AskLocalName(v.root.XamlRoot(), false, member.identityPubHex, member.localName);
 }
 
 void RefreshInspectRail(InspectRailView& v, demo::Conversation const& c) {

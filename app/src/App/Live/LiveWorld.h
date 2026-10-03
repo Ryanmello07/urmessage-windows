@@ -66,6 +66,10 @@ struct LiveMessage {
   uint64_t recordId = 0;
   std::string messageId;     // 64 lower-case hex, the name a reply/reaction quotes
   std::string senderHandle;  // 32 lower-case hex; 16 opaque octets and NOT a name
+  // The ABI's sender_identity: the identity public key MLS authenticated as this record's
+  // signer, lower-case hex, "" on a record that did not open. THE field a line is attributed
+  // by; the handle above is a leaf's label and a newcomer on a removed member's leaf inherits it.
+  std::string senderIdentity;
   bool mine = false;
   int64_t sentAtMs = 0;
   uint8_t kind = 0;

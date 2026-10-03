@@ -274,8 +274,9 @@ std::wstring RosterNote(RunMode mode) {
   // The live arm says what is real and what is not IN ONE SENTENCE, because the roster is the
   // one card where both are on screen together: real roles beside placeholder names.
   return mode == RunMode::Live
-             ? L"Live session: the members and their roles are the group's own; names are "
-               L"unavailable, there being no identity layer yet"
+             ? L"Live session: the members and their roles are the group's own. Names are "
+               L"unavailable, there being no identity layer yet; a name shown here is one you "
+               L"gave, and only you see it"
              : L"Demo model: fabricated members, names and roles";
 }
 

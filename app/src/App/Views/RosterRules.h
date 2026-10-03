@@ -173,4 +173,23 @@ std::wstring MembersCaptionMeta(demo::Conversation const& conv);
 // the member has devices, demo::kUnavailable when it has none.
 std::wstring MemberRowMeta(demo::MemberRef const& member);
 
+// ---- labels this person gives (Live/LocalNames.h) ----------------------------------------
+// A label is the viewer's own name for a member or a conversation, kept on this computer and
+// never sent. Every word below says WHOSE name it is, because the protocol's own display name
+// stays the placeholder beside it and the two must never read as one claim.
+//
+// The button that opens the dialog, by what it names and whether a label exists yet.
+std::wstring LocalNameButtonLabel(bool conversation, bool named);
+// Its accessible name: the button's label alone does not say the name stays here.
+std::wstring LocalNameButtonName(bool conversation, bool named);
+std::wstring LocalNameDialogTitle(bool conversation);
+// The sentence under the box: only you see it, it stays on this computer, it is never sent.
+std::wstring LocalNameDialogNote();
+// The member detail's key for the label, and its value while there is none. "not set" and not
+// the placeholder: that a label is absent is a fact this app knows, not one it cannot learn.
+std::wstring LocalNameFieldKey();
+std::wstring LocalNameUnset();
+// A label shown where the protocol's sender name would be (the rail's Sender field), marked.
+std::wstring LocalNameMarked(std::wstring const& label);
+
 }  // namespace urmsg::views

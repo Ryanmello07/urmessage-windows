@@ -19,6 +19,7 @@
 #include "Identicon.h"
 #include "Live/LiveMesh.h"
 #include "Live/LiveWorld.h"
+#include "Live/LocalNames.h"
 #include "Localization.h"
 #include "Log.h"
 #include "RunMode.h"  // ActiveRunMode / SetActiveRunMode - this file is the latch's one writer
@@ -743,7 +744,12 @@ void MainWindow::ApplyLiveWorld() {
   if (!snapshot) return;
   liveDrawn_ = generation;
   const bool first = !liveWorld_;
-  liveWorld_ = std::move(snapshot);
+  // THE PERSON'S OWN LABELS, laid over the worker's snapshot HERE, on the UI thread, at the one
+  // place a snapshot becomes the world this window draws (Live/LocalNames.h). Not in BuildWorld:
+  // a rename has to redraw at once, and the worker may be fifteen seconds from its next beat.
+  // The overlay writes labels and nothing else, so everything the protocol said is as it said it.
+  liveWorld_ = std::make_shared<const urmsg::demo::World>(
+      urmsg::live::WithLocalNames(*snapshot, urmsg::live::CurrentLocalNames()));
 
   // ── THE LATCH, AND IT IS DELIBERATELY IN THIS STATEMENT AND NOT AT STARTUP ──
   // Every honesty string in the app that differs between the two worlds is chosen by
@@ -853,6 +859,7 @@ void MainWindow::ApplyLiveWorld() {
     // message row, so RefreshOpenThread alone would leave the rail drawing the previous beat.
     urmsg::views::RefreshInspectRail(rail_, ActiveWorld().conversations[static_cast<size_t>(open)]);
   }
+  if (options_.names != urmsg::demo::DemoNames::None && !namesShown_) ShowNamesSurfaceOnce();
   urnw::LogInfo("window: live world generation {} drawn: {} row(s) in conversation 0", generation,
                 liveWorld_->conversations.empty() ? size_t{0}
                                                   : liveWorld_->conversations.front().rows.size());
@@ -1243,8 +1250,68 @@ void MainWindow::BuildDemoViews() {
     if (!self) return false;
     return self->RemoveMemberFromRail(std::move(identityPubHex));
   };
+  // THE LABELS (Live/LocalNames.h): local, so they are not behind `enabled` - a person can name
+  // somebody with the mesh down. The rule is the store's own, handed to the dialog as a function
+  // so the views take no dependency on Live/.
+  roster.nameMember = [weak = get_weak()](std::wstring identityPubHex, std::wstring typed) -> bool {
+    auto self = weak.get();
+    if (!self) return false;
+    return self->NameFromRail(false, std::move(identityPubHex), std::move(typed));
+  };
+  roster.nameConversation = [weak = get_weak()](std::wstring groupIdHex, std::wstring typed) -> bool {
+    auto self = weak.get();
+    if (!self) return false;
+    return self->NameFromRail(true, std::move(groupIdHex), std::move(typed));
+  };
+  roster.nameRefusal = [](std::wstring const& typed) -> std::wstring {
+    return urmsg::live::LocalNameRefusal(urmsg::live::CheckLocalName(typed));
+  };
   roster.enabled = false;
   urmsg::views::SetInspectRailRosterVerb(std::move(roster));
+}
+
+void MainWindow::ShowNamesSurfaceOnce() {
+  const int open = OpenConversationIndex();
+  if (open < 0) return;
+  auto const& conversation = ActiveWorld().conversations[static_cast<size_t>(open)];
+  for (auto const& member : conversation.members) {
+    if (member.mine || member.identityPubHex.empty()) continue;
+    namesShown_ = true;
+    if (std::find(rail_.expandedMemberIds.begin(), rail_.expandedMemberIds.end(), member.id) ==
+        rail_.expandedMemberIds.end())
+      rail_.expandedMemberIds.push_back(member.id);
+    urmsg::views::RefreshInspectRail(rail_, conversation);
+    if (options_.names == urmsg::demo::DemoNames::Dialog) {
+      try {
+        urmsg::views::OpenLocalNameDialogFor(rail_, member);
+      } catch (winrt::hresult_error const& e) {
+        urnw::LogWarn("window: --demo-names=dialog could not open the dialog: 0x{:08X}",
+                      static_cast<uint32_t>(e.code()));
+      }
+    }
+    urnw::LogInfo("window: --demo-names opened a member's label surface ({})",
+                  options_.names == urmsg::demo::DemoNames::Dialog ? "dialog" : "expanded");
+    return;
+  }
+}
+
+bool MainWindow::NameFromRail(bool conversation, std::wstring key, std::wstring typed) {
+  std::string utf8;
+  if (!typed.empty()) {
+    const urmsg::live::LocalNameCheck check = urmsg::live::CheckLocalName(typed);
+    // The dialog keeps Save dark on a refusal, so this is the second door, not the first.
+    if (check.verdict != urmsg::live::LocalNameVerdict::Ok) return false;
+    utf8 = check.utf8;
+  }
+  const std::string key8 = urnw::Narrow(key);
+  const bool stored = conversation ? urmsg::live::StoreConversationLocalName(key8, utf8)
+                                   : urmsg::live::StoreMemberLocalName(key8, utf8);
+  if (!stored) return false;
+  // REDRAWN NOW, from the snapshot the window already holds: forgetting which generation was
+  // drawn makes ApplyLiveWorld take the standing snapshot again and lay the new labels over it.
+  liveDrawn_ = 0;
+  ApplyLiveWorld();
+  return true;
 }
 
 void MainWindow::SelectConversation(int index) {
