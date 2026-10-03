@@ -590,7 +590,8 @@ std::vector<std::wstring> ReplyReactDiagnostics() {
     constexpr ActionRow kActions[] = {{BubbleAction::Reply, L"reply"},
                                       {BubbleAction::React, L"react"},
                                       {BubbleAction::Retry, L"thread retry"},
-                                      {BubbleAction::RailRetry, L"rail retry"}};
+                                      {BubbleAction::RailRetry, L"rail retry"},
+                                      {BubbleAction::Delete, L"delete"}};
     size_t ok = 0;
     std::wstring listing;   // ALL TWELVE NAMES, printed whatever the verdict: the complement of a
     std::wstring offenders; // narrowing is the thing that shows it narrowed to something real.
@@ -620,14 +621,14 @@ std::vector<std::wstring> ReplyReactDiagnostics() {
                        !BubbleActionCanAct(ComposerState::NoSession, true) &&
                        !BubbleActionCanAct(ComposerState::NoSession, false);
     out.push_back(std::format(
-        L"  bubble actions   : {}  {}/4 affordances name all three states apart; acts in {} of 6 "
+        L"  bubble actions   : {}  {}/5 affordances name all three states apart; acts in {} of 6 "
         L"(state x targetable) cells; not-ok: {} -> {}   [query: for each of reply, react, thread "
-        L"retry and rail retry the three ComposerState names are non-empty and pairwise distinct; "
+        L"retry, rail retry and delete the three ComposerState names are non-empty and pairwise distinct; "
         L"the MaySend arm contains none of \"no live session\", \"not available\", \"cannot\", "
         L"\"not send to it\"; the NoSession arm contains \"no live session\"; the ObserverOnly arm "
         L"contains one of the denials and NOT \"no live session\", because an observer's session is "
         L"provably live; BubbleActionCanAct is true in exactly (MaySend, targetable)]",
-        Verdict(ok == 4 && cells), ok,
+        Verdict(ok == 5 && cells), ok,
         (BubbleActionCanAct(ComposerState::MaySend, true) ? 1 : 0) +
             (BubbleActionCanAct(ComposerState::MaySend, false) ? 1 : 0) +
             (BubbleActionCanAct(ComposerState::ObserverOnly, true) ? 1 : 0) +
@@ -635,6 +636,29 @@ std::vector<std::wstring> ReplyReactDiagnostics() {
             (BubbleActionCanAct(ComposerState::NoSession, true) ? 1 : 0) +
             (BubbleActionCanAct(ComposerState::NoSession, false) ? 1 : 0),
         offenders.empty() ? L"(none)" : offenders, listing));
+  }
+
+  // THE DELETE CONFIRMATION, against Spec C's string table TRANSCRIBED HERE (the kSpecC511
+  // pattern: an independent copy, so a paraphrase in the app fails the launch). The owner's ruling
+  // of 2026-10-02 removed the 24-hour window and kept this explainer.
+  //   docs/specs/2026-08-12-spec-c-windows-client-ui.md - msg_delete_for_everyone_explainer
+  {
+    constexpr wchar_t kSpecCDeleteExplainer[] =
+        L"Removed from this conversation on every device that is online and honest. Anyone who "
+        L"already read it may have kept a copy, and we cannot detect that.";
+    const bool body = DeleteConfirmBody() == kSpecCDeleteExplainer;
+    const bool noWindow = DeleteConfirmBody().find(L"24 hours") == std::wstring::npos &&
+                          DeleteConfirmTitle().find(L"24") == std::wstring::npos;
+    const bool distinct = DeleteConfirmPrimary() != DeleteConfirmClose() &&
+                          !DeleteConfirmPrimary().empty() && !DeleteConfirmClose().empty();
+    out.push_back(std::format(
+        L"  delete confirm   : {}  body is Spec C's explainer {}; no time window named {}; two "
+        L"distinct buttons {} -> \"{}\" [{}] [{}]   [query: DeleteConfirmBody() == the "
+        L"msg_delete_for_everyone_explainer transcribed in Startup.cpp; neither title nor body "
+        L"mentions 24 hours; primary and close differ and are non-empty]",
+        Verdict(body && noWindow && distinct), body ? L"yes" : L"NO", noWindow ? L"yes" : L"NO",
+        distinct ? L"yes" : L"NO", DeleteConfirmTitle(), DeleteConfirmPrimary(),
+        DeleteConfirmClose()));
   }
 
   // 2. the picker

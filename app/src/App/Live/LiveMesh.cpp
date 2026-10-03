@@ -457,7 +457,7 @@ int64_t WallClockMs() {
 // constraint that put the queue here: each one is a round trip inside a single ABI call, and only
 // the worker may hold the group handle.
 enum class OutboundKind {
-  Text, Reply, ReactAdd, ReactRemove, SetRole, TransferOwnership, RemoveMember
+  Text, Reply, ReactAdd, ReactRemove, SetRole, TransferOwnership, RemoveMember, Delete
 };
 
 struct Outbound {
@@ -465,7 +465,7 @@ struct Outbound {
   std::string localId;      // this session's name for the attempt
   std::string body;         // utf-8 octets, exactly as the composer held them (Text, Reply)
   std::string replaces;     // a failed entry this one supersedes, or empty (Text, Reply)
-  std::string targetHex;    // the message named: the parent (Reply) or the target (React*)
+  std::string targetHex;    // the message named: the parent (Reply) or the target (React*, Delete)
   std::vector<uint8_t> target;  // the same 32 octets, decoded once at the queue
   std::string emoji;        // RAW utf-8 (React*)
   std::string identityPub;  // the member named, as the roster spells it (SetRole, Transfer,
@@ -1468,6 +1468,8 @@ void RunSession() {
   std::vector<urmsg::live::LiveOutboxEntry> outbox;
   // And the reactions and un-reactions it has tried. Same ownership, same reason.
   std::vector<urmsg::live::LiveReactionOutboxEntry> reactionOutbox;
+  // And the deletions it has asked for. Same ownership, same reason.
+  std::vector<urmsg::live::LiveDeleteOutboxEntry> deleteOutbox;
   // And the role changes it has asked for (item 242 R3). Same ownership, same reason.
   std::vector<urmsg::live::LiveRoleOutboxEntry> roleOutbox;
   // The roster line last logged, so the log carries a roster only when it moved.
@@ -1500,6 +1502,7 @@ void RunSession() {
     live.statsJson = TakeString(urnet_message_group_stats(s.group));
     live.outbox = outbox;
     live.reactionOutbox = reactionOutbox;
+    live.deleteOutbox = deleteOutbox;
     live.roleOutbox = roleOutbox;
     CollectMessages(s.group, live.messages);
     // THE ROSTER AND THIS DEVICE'S ROLE, on every publish and not once at the open: a role change
@@ -1566,6 +1569,21 @@ void RunSession() {
         entry.role = out.role;
         entry.attemptedAtMs = WallClockMs();
         roleOutbox.push_back(std::move(entry));
+        continue;
+      }
+      if (out.kind == OutboundKind::Delete) {
+        // ONE ATTEMPT PER LINE ON SCREEN: a second press on a line whose last deletion failed is
+        // that deletion again, not a second note beside the first failure.
+        deleteOutbox.erase(std::remove_if(deleteOutbox.begin(), deleteOutbox.end(),
+                                          [&](urmsg::live::LiveDeleteOutboxEntry const& e) {
+                                            return e.targetId == out.targetHex;
+                                          }),
+                           deleteOutbox.end());
+        urmsg::live::LiveDeleteOutboxEntry entry;
+        entry.localId = out.localId;
+        entry.targetId = out.targetHex;
+        entry.attemptedAtMs = WallClockMs();
+        deleteOutbox.push_back(std::move(entry));
         continue;
       }
       const bool isReaction =
@@ -1721,13 +1739,45 @@ void RunSession() {
                                                         static_cast<int32_t>(out.target.size()),
                                                         out.emoji.c_str(), &sendErr));
           break;
+        case OutboundKind::Delete:
+          // The target as 32 counted octets, decoded at the queue. The library answers the
+          // tombstone's own message info, or refuses a target this device did not write.
+          verb = "delete";
+          info = TakeString(urnet_message_group_delete(s.group, s.ctx, out.target.data(),
+                                                       static_cast<int32_t>(out.target.size()),
+                                                       &sendErr));
+          break;
         case OutboundKind::SetRole:
         case OutboundKind::TransferOwnership:
+        case OutboundKind::RemoveMember:
           break;  // handled above; unreachable
       }
       const std::string failure = TakeError(&sendErr);
       const int64_t tookMs = NowMs() - startedMs;
 
+      if (out.kind == OutboundKind::Delete) {
+        auto at = std::find_if(deleteOutbox.begin(), deleteOutbox.end(),
+                               [&](urmsg::live::LiveDeleteOutboxEntry const& e) {
+                                 return e.localId == out.localId;
+                               });
+        if (!info.empty()) {
+          // the tombstone's own record id and message_id, and no body: the TARGET changes and the
+          // next publish draws it as the placeholder
+          urnw::LogInfo("live: *** DELETED *** message {} for everyone in {} ms: {}", out.targetHex,
+                        tookMs, info);
+          if (at != deleteOutbox.end()) deleteOutbox.erase(at);
+        } else {
+          urnw::LogError("live: delete of message {} was REFUSED after {} ms: {}", out.targetHex,
+                         tookMs, failure.empty() ? "no reason given" : failure);
+          if (at != deleteOutbox.end()) {
+            at->failed = true;
+            at->error = failure.empty() ? std::string("the library refused the deletion and gave no reason")
+                                        : failure;
+          }
+        }
+        publishWorld(false);
+        continue;
+      }
       if (out.kind == OutboundKind::ReactAdd || out.kind == OutboundKind::ReactRemove) {
         auto at = std::find_if(reactionOutbox.begin(), reactionOutbox.end(),
                                [&](urmsg::live::LiveReactionOutboxEntry const& e) {
@@ -2109,6 +2159,22 @@ bool QueueRemoveMember(std::string identityPubHex) {
   // NO ROLE, DELIBERATELY LEFT EMPTY. The two verbs above fill this because the ABI takes it; this
   // one does not, and the outbox entry carries the empty string so that any note drawn from it
   // cannot name a role the commit never asked for.
+  Enqueue(std::move(out));
+  return true;
+}
+
+bool QueueDelete(std::string targetMessageIdHex) {
+  if (!g_canSend.load(std::memory_order_relaxed)) return false;
+  Outbound out;
+  out.kind = OutboundKind::Delete;
+  out.localId = std::to_string(g_nextLocalId.fetch_add(1));
+  if (!FromHexId(targetMessageIdHex, out.target)) {
+    urnw::LogWarn("live: a deletion named a target that is not a 64-hex message_id ({} chars); "
+                  "refused before it was queued",
+                  targetMessageIdHex.size());
+    return false;
+  }
+  out.targetHex = std::move(targetMessageIdHex);
   Enqueue(std::move(out));
   return true;
 }

@@ -139,6 +139,20 @@ struct LiveReactionOutboxEntry {
   std::string error;
 };
 
+// ── a deletion this device asked for (the owner's ruling of 2026-10-02: any time) ──
+//
+// A TOMBSTONE THAT IS NOT (YET) A RECORD, drawn under the line it names: Pending while the call is
+// inside the library, Failed with the library's own sentence when it refused. A deletion that
+// succeeds is not drawn from this list at all: the tombstone is in the log a beat later and the
+// line itself becomes the deleted placeholder, so one deletion is never two rows.
+struct LiveDeleteOutboxEntry {
+  std::string localId;
+  std::string targetId;  // the message_id (64 hex) of the line being deleted
+  int64_t attemptedAtMs = 0;
+  bool failed = false;
+  std::string error;
+};
+
 // ── the roster, transcribed ───────────────────────────────────────────────────
 //
 // One row per leaf, filled from urnet_message_member_list_info's json. The identity key is the
@@ -186,6 +200,8 @@ struct LiveGroup {
   // Likewise for reactions and un-reactions; each one lands on its target row rather than at the
   // foot, because a reaction is a change to a line and not a line.
   std::vector<LiveReactionOutboxEntry> reactionOutbox;
+  // ...and the deletions it has asked for, under the line each names.
+  std::vector<LiveDeleteOutboxEntry> deleteOutbox;
   // The roster at this epoch, in leaf order, and this device's own role. Both re-read on every
   // publish, because a commit from another member may have changed either.
   std::vector<LiveMember> members;

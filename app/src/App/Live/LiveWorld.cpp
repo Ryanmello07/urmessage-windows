@@ -435,9 +435,22 @@ urmsg::demo::World BuildWorld(LiveGroup const& group) {
     }
     conv.rows.push_back(std::move(row));
 
+    // THE PREVIEW, read off the row AS STORED. It was read off `row` after the move above, which
+    // leaves a moved-from string: every live conversation's second line read "unavailable".
     if (m.sentAtMs >= newestMs) {
       newestMs = m.sentAtMs;
-      newestBody = row.body;
+      newestBody = conv.rows.back().body;
+    }
+
+    // A DELETION THIS DEVICE ASKED FOR AND THE LIBRARY HAS NOT YET ANSWERED, or refused - under
+    // the line it names. One per line: the queue supersedes a failed attempt with the next one.
+    for (auto const& out : group.deleteOutbox) {
+      if (out.targetId != m.messageId) continue;
+      conv.rows.push_back(MakeSystemRow(
+          wideId + L"-delete",
+          out.failed ? std::format(L"Not deleted: {}", urnw::Widen(out.error))
+                     : std::wstring(L"Deleting this message for everyone\u2026")));
+      break;
     }
   }
 

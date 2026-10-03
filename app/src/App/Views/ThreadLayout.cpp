@@ -79,6 +79,16 @@ std::wstring BubbleActionName(BubbleAction action, ComposerState state) {
           return L"Try again: send this message again";
       }
       break;
+    case BubbleAction::Delete:
+      switch (state) {
+        case ComposerState::NoSession:
+          return L"Delete: there is no live session to send a deletion into";
+        case ComposerState::ObserverOnly:
+          return std::wstring(L"Delete, disabled. ") + kObserverComposerReason;
+        case ComposerState::MaySend:
+          return L"Delete this message for everyone";
+      }
+      break;
     case BubbleAction::RailRetry:
       // THE COMMAS ARE THE RAIL'S OWN SHIPPED COPY, kept character for character
       // (Views/ThreadLayout.h). Only the observer arm is new.
@@ -172,6 +182,18 @@ std::wstring ComposerBoxPlaceholder(ComposerState state) {
 }
 
 bool ComposerBoxEnabled(ComposerState state) { return state != ComposerState::ObserverOnly; }
+
+std::wstring DeleteConfirmTitle() { return L"Delete for everyone?"; }
+
+std::wstring DeleteConfirmBody() {
+  // U+2014 nowhere: the explainer has none. Character for character with Spec C's string table.
+  return L"Removed from this conversation on every device that is online and honest. Anyone who "
+         L"already read it may have kept a copy, and we cannot detect that.";
+}
+
+std::wstring DeleteConfirmPrimary() { return L"Delete for everyone"; }
+
+std::wstring DeleteConfirmClose() { return L"Cancel"; }
 
 std::size_t Utf8Octets(std::wstring_view text) {
   std::size_t octets = 0;

@@ -133,6 +133,9 @@ struct ThreadSendVerb {
   std::function<bool(std::wstring text, std::wstring replacesRowId, std::wstring replyToRowId)> send;
   // The reaction verb, reached from the bubble's picker the same way.
   std::function<bool(std::wstring rowId, std::wstring emoji, bool remove)> react;
+  // Delete one of THIS DEVICE'S OWN lines for everyone. Set by SetThreadDeleteVerb; null leaves
+  // the button dark with its no-session name.
+  std::function<bool(std::wstring rowId)> deleteForEveryone;
   // Put the composer into its "replying to" state for `row`. Filled by MakeThread, because only
   // the composer's own parts know where the strip is; a bubble's Reply button - built by the free
   // function MakeBubbleRow, which has no parts - reaches it here. Null before MakeThread ran.
@@ -147,6 +150,10 @@ struct ThreadSendVerb {
   bool mayRoleSend = true;
 };
 ThreadSendVerb const& SendVerb();
+// The delete verb, handed over once by the window: the bubble's Delete reads it at click time.
+void SetThreadDeleteVerb(std::function<bool(std::wstring rowId)> deleteForEveryone);
+// --demo-actions=revealed: draw every bubble's actions as though hovered (a capture aid).
+void SetThreadActionsRevealedForCapture(bool revealed);
 // True when a retry drawn right now would find a SESSION to act into. The session half only: it
 // says nothing about the role, and no affordance may be enabled on it alone. Kept as its own
 // predicate because "is there a session" is a question other surfaces ask for their own reasons.

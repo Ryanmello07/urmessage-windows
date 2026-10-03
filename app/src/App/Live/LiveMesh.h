@@ -109,6 +109,16 @@ bool QueueSend(std::string utf8Body, std::string replacesLocalId = {},
 // the reaction standing on the target row, or a Failed entry there carrying the library's reason.
 bool QueueReaction(std::string targetMessageIdHex, std::string utf8Emoji, bool remove);
 
+// DELETE ONE OF THIS DEVICE'S OWN MESSAGES FOR EVERYONE, on the worker: urnet_message_group_delete
+// seals a TOMBSTONE naming `targetMessageIdHex`. There is no time limit: the owner ruled
+// 2026-10-02 that a person may delete their own messages at any time, and the line stays as a
+// visible "deleted" placeholder for everyone, so a deletion is never silent. The library refuses
+// a tombstone over anybody else's message, and every honest receiver ignores one (T-b). Answers
+// false, having queued nothing, when CanSend() is false or the id does not decode. The outcome
+// arrives as a published world: the line becomes the placeholder, or a Failed note under it
+// carries the library's reason.
+bool QueueDelete(std::string targetMessageIdHex);
+
 // ── the two role verbs (item 242 R3) ──────────────────────────────────────────
 
 // CHANGE ONE MEMBER'S ROLE, on the worker: urnet_message_group_set_role with `identityPubHex` (the

@@ -519,6 +519,9 @@ void SetActionsRevealed(FrameworkElement const& strip, bool shown) {
 // ONE ARGUMENT, NOT TWO, so the name and the enablement cannot be given different answers. Called
 // only for a row that is targetable (MakeBubbleRow builds the pair under that test), which is why
 // `true` is the row half passed to BubbleActionCanAct here.
+// --demo-actions=revealed (Demo/DemoSwitches.h): read where each bubble's actions are built.
+bool g_actionsRevealedForCapture = false;
+
 Button MakeBubbleActionButton(wchar_t const* glyph, BubbleAction action, ComposerState state) {
   Button b;
   FontIcon g;
@@ -949,17 +952,21 @@ BubbleRow MakeBubbleRow(demo::MessageRow const& row, bool group, bool showSender
     actions.Spacing(0);
     actions.VerticalAlignment(VerticalAlignment::Bottom);
     actions.Margin(ThicknessHelper::FromLengths(0, 0, 0, 2));
-    actions.Opacity(0.0);
+    actions.Opacity(g_actionsRevealedForCapture ? 1.0 : 0.0);
 
     auto reply = MakeBubbleActionButton(L"\uE97A", BubbleAction::Reply, actState);  // "Reply"
     auto react = MakeBubbleActionButton(L"\uE76E", BubbleAction::React, actState);  // "Emoji2"
+    // ONLY ON THIS DEVICE'S OWN LINES: the library refuses a tombstone over anybody else's.
+    Button erase{nullptr};
+    if (row.outgoing) erase = MakeBubbleActionButton(L"\uE74D", BubbleAction::Delete, actState);  // "Delete"
     auto reveal = std::make_shared<ActionReveal>();
     auto apply = [reveal, actions] {
       SetActionsRevealed(actions, reveal->hover || reveal->focus || reveal->open);
     };
     pair.PointerEntered([reveal, apply](auto const&, auto const&) { reveal->hover = true; apply(); });
     pair.PointerExited([reveal, apply](auto const&, auto const&) { reveal->hover = false; apply(); });
-    for (auto const& b : {reply, react}) {
+    for (auto const& b : {reply, react, erase}) {
+      if (!b) continue;
       b.GotFocus([reveal, apply](auto const&, auto const&) { reveal->focus = true; apply(); });
       b.LostFocus([reveal, apply](auto const&, auto const&) { reveal->focus = false; apply(); });
     }
@@ -981,9 +988,43 @@ BubbleRow MakeBubbleRow(demo::MessageRow const& row, bool group, bool showSender
       picker.Opened([reveal, apply](auto const&, auto const&) { reveal->open = true; apply(); });
       picker.Closed([reveal, apply](auto const&, auto const&) { reveal->open = false; apply(); });
       react.Flyout(picker);
+      if (erase) {
+        // BEHIND A CONFIRMATION, whose default is Cancel: Enter on a focused dialog keeps the
+        // message. The verb fires from the dialog's completion, never from the click itself.
+        erase.Click([rowId = row.id](winrt::Windows::Foundation::IInspectable const& sender,
+                                     auto const&) {
+          auto button = sender.try_as<Button>();
+          if (!button) return;
+          ContentDialog dialog;
+          dialog.XamlRoot(button.XamlRoot());
+          dialog.Title(winrt::box_value(winrt::hstring{DeleteConfirmTitle()}));
+          TextBlock body;
+          body.TextWrapping(TextWrapping::Wrap);
+          body.Text(winrt::hstring{DeleteConfirmBody()});
+          dialog.Content(body);
+          dialog.PrimaryButtonText(winrt::hstring{DeleteConfirmPrimary()});
+          dialog.CloseButtonText(winrt::hstring{DeleteConfirmClose()});
+          dialog.DefaultButton(ContentDialogButton::Close);
+          dialog.Background(urnw::colors::SheetBrush());
+          auto op = dialog.ShowAsync();
+          op.Completed([rowId](auto const& async, auto const& status) {
+            if (status != winrt::Windows::Foundation::AsyncStatus::Completed) return;
+            if (async.GetResults() != ContentDialogResult::Primary) {
+              urnw::LogInfo("thread: delete for everyone NOT confirmed; nothing queued");
+              return;
+            }
+            auto const& verb = SendVerb();
+            if (!verb.enabled || !verb.mayRoleSend || !verb.deleteForEveryone) return;
+            const bool queued = verb.deleteForEveryone(rowId);
+            urnw::LogInfo("thread: delete for everyone confirmed and {} by the host",
+                          queued ? "taken" : "REFUSED");
+          });
+        });
+      }
     }
     actions.Children().Append(reply);
     actions.Children().Append(react);
+    if (erase) actions.Children().Append(erase);
   }
 
   if (row.outgoing) {
@@ -2330,6 +2371,12 @@ FrameworkElement MakeComposer(std::shared_ptr<ThreadParts> const& parts) {
 }  // namespace
 
 ThreadSendVerb const& SendVerb() { return MutableSendVerb(); }
+
+void SetThreadActionsRevealedForCapture(bool revealed) { g_actionsRevealedForCapture = revealed; }
+
+void SetThreadDeleteVerb(std::function<bool(std::wstring rowId)> deleteForEveryone) {
+  MutableSendVerb().deleteForEveryone = std::move(deleteForEveryone);
+}
 
 bool CanRetrySend() {
   auto const& verb = MutableSendVerb();

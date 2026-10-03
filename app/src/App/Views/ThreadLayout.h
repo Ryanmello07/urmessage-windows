@@ -599,6 +599,15 @@ std::wstring ComposerBoxPlaceholder(ComposerState state);
 // and the text is still there when it answers.
 bool ComposerBoxEnabled(ComposerState state);
 
+// ---- delete for everyone (Spec C 8.2; the owner's ruling of 2026-10-02: at any time) ------
+// The confirmation a Delete press opens. Close is the DEFAULT, so Enter keeps the message. The
+// body is msg_delete_for_everyone_explainer, character for character: it says what a deletion
+// reaches and what it cannot.
+std::wstring DeleteConfirmTitle();
+std::wstring DeleteConfirmBody();
+std::wstring DeleteConfirmPrimary();
+std::wstring DeleteConfirmClose();
+
 // ---- the text limit (ledger 266, item 6) -------------------------------------------------
 // The longest text the sealer takes, in UTF-8 OCTETS and not characters, and the longest a
 // reply takes, which spends 32 of them naming its parent. ThreadLayout.cpp static_asserts both
@@ -649,7 +658,9 @@ std::wstring ComposerSendNameAt(ComposerState state, bool hasText, bool replying
 // differently. Its wording keeps the COMMAS it shipped with, character for
 // character, where the thread's keeps its colons; the difference is old copy
 // preserved, not a rule.
-enum class BubbleAction { Reply, React, Retry, RailRetry };
+// Delete is on THIS DEVICE'S OWN sent lines only: the library refuses a tombstone over anybody
+// else's message, so the control is never offered where it could only fail.
+enum class BubbleAction { Reply, React, Retry, RailRetry, Delete };
 
 // The automation name for `action` in composer state `state`. Never empty; an
 // action's three arms differ; the NoSession arm carries "no live session" and

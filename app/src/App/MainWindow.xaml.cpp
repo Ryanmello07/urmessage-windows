@@ -138,6 +138,7 @@ MainWindow::MainWindow() {
   SetTitleBar(AppTitleBar());
 
   options_ = urmsg::demo::ParseDemoOptions();
+  urmsg::views::SetThreadActionsRevealedForCapture(options_.actionsRevealed);
   ApplyStrings();
   // Seeded before anything can navigate: CrossfadePageSwap with a null outgoing
   // fades the incoming page in and never collapses the old one, so both would be
@@ -1014,8 +1015,9 @@ bool MainWindow::ReactFromBubble(std::wstring rowId, std::wstring emoji, bool re
   const std::string utf8Emoji = urnw::Narrow(emoji);
   const bool queued = urmsg::live::QueueReaction(urnw::Narrow(rowId), utf8Emoji, remove);
   if (queued) {
-    urnw::LogInfo("window: bubble handed a {} of {} ({} octets) on {} to the live worker",
-                  remove ? "unreact" : "react", utf8Emoji, utf8Emoji.size(), urnw::Narrow(rowId));
+    // the emoji is content (W10): its length is logged, never the emoji
+    urnw::LogInfo("window: bubble handed a {} ({} octets) on {} to the live worker",
+                  remove ? "unreact" : "react", utf8Emoji.size(), urnw::Narrow(rowId));
   } else {
     urnw::LogWarn("window: the bubble's {} was REFUSED before it was queued (live session can "
                   "send: {})",
@@ -1232,6 +1234,19 @@ void MainWindow::BuildDemoViews() {
         if (!self) return false;
         return self->ReactFromBubble(std::move(rowId), std::move(emoji), remove);
       });
+  // DELETE FOR EVERYONE, at any time (the owner's ruling of 2026-10-02). The row id is the
+  // message_id, exactly as for a reaction.
+  urmsg::views::SetThreadDeleteVerb([](std::wstring rowId) -> bool {
+    const bool queued = urmsg::live::QueueDelete(urnw::Narrow(rowId));
+    if (queued) {
+      urnw::LogInfo("window: bubble handed a deletion of {} to the live worker", urnw::Narrow(rowId));
+    } else {
+      urnw::LogWarn("window: the bubble's deletion was REFUSED before it was queued (live session "
+                    "can send: {})",
+                    urmsg::live::CanSend());
+    }
+    return queued;
+  });
   // The composer starts dark and is armed by ApplyLiveWorld. Said here EXPLICITLY rather than left
   // to the member's initialiser: this is the statement that a thread built in a fabricated launch
   // can send nothing, and it must not be reachable only through a path a live launch takes.

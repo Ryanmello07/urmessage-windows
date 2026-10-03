@@ -66,6 +66,10 @@ struct DemoOptions {
   int stressRows;         // --demo-stress=N: synthetic history rows for conversation 0; 0 = off
   DemoComposer composer;  // --demo-composer=session|observer; see above
   DemoNames names;        // --demo-names=expand|dialog; see above
+  // --demo-actions=revealed: every bubble's hover actions (Reply, React, and Delete on this
+  // device's own lines) are drawn as though hovered, so they can be captured without a
+  // synthesised pointer. It changes an opacity and fabricates nothing.
+  bool actionsRevealed;
 };
 
 // Inspect is a STATE, not a screen: it opens Chats, selects conversation 0,

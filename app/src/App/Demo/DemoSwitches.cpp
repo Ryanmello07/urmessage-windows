@@ -18,7 +18,7 @@ namespace urmsg::demo {
 namespace {
 
 constexpr DemoOptions kDefaults{false, DemoScreen::None, false, false, true, 0,
-                                DemoComposer::AsIs, DemoNames::None};
+                                DemoComposer::AsIs, DemoNames::None, false};
 
 // The ceiling for --demo-stress=N. The switch exists to find the thread's
 // knee, and 20000 rows (~200x the fixture's longest conversation) is far
@@ -103,6 +103,11 @@ constexpr void ApplyArg(DemoOptions& o, std::wstring_view arg) {
   if (body == L"demo-composer=overlimit") {
     o.enabled = true;
     o.composer = DemoComposer::OverLimit;
+    return;
+  }
+  if (body == L"demo-actions=revealed") {
+    o.enabled = true;
+    o.actionsRevealed = true;
     return;
   }
   if (body == L"demo-names=expand") {
@@ -236,6 +241,10 @@ static_assert(ParseArgs({L"--demo-composer=session"}).enabled);
 static_assert(ParseArgs({L"--demo-composer=observer"}).composer == DemoComposer::Observer);
 static_assert(ParseArgs({L"--demo-composer=overlimit"}).composer == DemoComposer::OverLimit);
 static_assert(ParseArgs({}).names == DemoNames::None);
+static_assert(!ParseArgs({}).actionsRevealed);
+static_assert(ParseArgs({L"--demo-actions=revealed"}).actionsRevealed);
+static_assert(ParseArgs({L"--demo-actions=revealed"}).enabled);
+static_assert(!ParseArgs({L"--demo-actions=hidden"}).actionsRevealed);
 static_assert(ParseArgs({L"--demo-names=expand"}).names == DemoNames::Expand);
 static_assert(ParseArgs({L"--demo-names=dialog"}).names == DemoNames::Dialog);
 static_assert(ParseArgs({L"--demo-names=dialog"}).enabled);
