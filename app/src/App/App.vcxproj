@@ -27,22 +27,30 @@
        SDK (UrnSdkDir) went "with the tunnel"; this is the messaging half of it
        coming back, under a name of its own.
 
-       WHAT IS VENDORED AND WHAT IS NOT. The two headers live in
-       third_party\vendor-include (already on every project's include path, see
-       Directory.Build.props) and are committed, exactly as nlohmann\json.hpp
-       beside them is. The import library and the 33 MB dll are BUILD OUTPUT of
-       ..\..\..\sdk\cgo (`make build_windows_amd64`, then lib.exe /def:) and are
-       NOT committed — .gitignore's [Bb]in/ and x64/ already exclude both, which
-       is why they sit under bin\$(Platform) and lib\$(Platform).
+       WHAT IS VENDORED AND WHAT IS NOT. The SDK's ABI is three files, and all
+       three are committed in third_party\vendor-include, exactly as
+       nlohmann\json.hpp beside them is: the two headers (already on every
+       project's include path, see Directory.Build.props) and urnetwork_sdk.def,
+       the dll's export list. All three are copied from ONE ..\..\..\sdk\cgo
+       build (its include\ directory), never one without the others. The
+       dll, about 50 MB, is that build's OUTPUT and is NOT committed;
+       .gitignore's [Bb]in/ already excludes it, which is why it sits under
+       bin\$(Platform).
+
+       THE IMPORT LIBRARY IS MADE HERE, FROM THE .def (UrmSdkImportLib, below).
+       An import library is nothing but the export list, so lib.exe /def: makes
+       it without the dll, and with the dll delay-loaded nothing else at link
+       time needs the SDK. That is what lets a clean checkout, and CI, build and
+       run the app with no Go toolchain: everything except the live path works
+       without the dll. It also makes an ARM64 build link. Only amd64 has a dll
+       staged here today, so an ARM64 app cannot go live, and says so.
 
        $(Platform) rather than a hard-coded x64 because the SDK Makefile builds
-       windows/amd64 and windows/arm64 alike; only amd64 is vendored here today,
-       so an ARM64 build will fail at link naming this path, which is the honest
-       failure for a dependency nobody has staged yet. -->
+       windows/amd64 and windows/arm64 alike. -->
   <PropertyGroup>
     <UrmSdkRoot Condition="'$(UrmSdkRoot)'==''">$(MSBuildProjectDirectory)\..\..\third_party\urnetwork-sdk\</UrmSdkRoot>
-    <UrmSdkLibDir>$(UrmSdkRoot)lib\$(Platform)\</UrmSdkLibDir>
     <UrmSdkBinDir>$(UrmSdkRoot)bin\$(Platform)\</UrmSdkBinDir>
+    <UrmSdkDef>$(MSBuildProjectDirectory)\..\..\third_party\vendor-include\urnetwork_sdk.def</UrmSdkDef>
   </PropertyGroup>
 
   <!-- SELF-CONTAINED, unconditionally. With WindowsPackageType=None the App SDK
@@ -184,9 +192,9 @@
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
-      <AdditionalDependencies>shell32.lib;advapi32.lib;delayimp.lib;$(UrmSdkLibDir)URnetworkSdk.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>shell32.lib;advapi32.lib;delayimp.lib;$(IntDir)URnetworkSdk.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <!-- DELAY-LOADED, AND THAT IS THE WHOLE POINT OF LINKING IT THIS WAY.
-           URnetworkSdk.dll is 33 MB of Go runtime: loading it installs Go's
+           URnetworkSdk.dll is about 50 MB of Go runtime: loading it installs Go's
            exception handlers and sets the process error mode (the VPN client's
            main.cpp clears SEM_NOGPFAULTERRORBOX again after the Go runtime sets
            it). A normal import would pay all of that on EVERY launch, including
@@ -383,7 +391,19 @@
     </CopyFileToFolders>
   </ItemGroup>
   <Target Name="UrmWarnMissingSdkDll" AfterTargets="Build" Condition="!Exists('$(UrmSdkBinDir)URnetworkSdk.dll')">
-    <Warning Text="URnetworkSdk.dll is not staged at $(UrmSdkBinDir): the app builds and runs, but the --live path will report that it could not load the SDK. Build it with sdk/cgo's build_windows_amd64 target and copy it there." />
+    <Warning Text="URnetworkSdk.dll is not staged at $(UrmSdkBinDir): the app builds and runs, but its live path, which an ordinary launch takes, will report that it could not load the SDK. Build it with sdk/cgo's build_windows_amd64 target, from the same sdk commit the three files in third_party\vendor-include came from, and copy it there." />
+  </Target>
+
+  <!-- URnetworkSdk.lib, MADE FROM THE VENDORED .def into $(IntDir) (see THE
+       VENDORED URnetwork SDK, above). Inputs/Outputs make it incremental: it
+       runs on a clean build and again whenever the .def is newer than the
+       library, so a re-vendored export list is never linked against a stale
+       one. BeforeTargets="Link" runs it after Link's own dependencies, so PATH
+       already holds this configuration's toolset, and its lib.exe. -->
+  <Target Name="UrmSdkImportLib" BeforeTargets="Link" Inputs="$(UrmSdkDef)" Outputs="$(IntDir)URnetworkSdk.lib">
+    <Error Condition="!Exists('$(UrmSdkDef)')" Text="$(UrmSdkDef) is missing: it is the SDK's export list, committed beside urnetwork_sdk.h, and the import library is made from it." />
+    <MakeDir Directories="$(IntDir)" />
+    <Exec Command="lib.exe /nologo /machine:$(Platform) /def:&quot;$(UrmSdkDef)&quot; /out:&quot;$(IntDir)URnetworkSdk.lib&quot;" />
   </Target>
 
   <!-- The app icon, copied next to the exe so it is resolvable as
