@@ -176,6 +176,9 @@ struct LiveGroup {
   std::string serverClientId;  // the message server this transport is bound to
   std::string platformUrl;     // what the library actually dialled
   std::string host;            // the operator host asked for
+  // TRUE ON THE TWO ROUTES THAT PIN THE SERVER'S KEY (ledger 268): URNETWORK and DIRECT refuse any
+  // endpoint key but the compiled-in one before a frame is written. The platform route pins none.
+  bool keyPinned = false;
   std::string statsJson;    // urnet_message_group_stats, verbatim
   std::vector<LiveMessage> messages;
   // What this device tried to send and the server has not (or will not) take. Ordered by attempt.

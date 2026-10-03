@@ -543,9 +543,11 @@ urmsg::demo::World BuildWorld(LiveGroup const& group) {
   world.server.host = urnw::Widen(group.host);
   world.server.jurisdiction = kUnavailable;
   world.server.latencyMs = 0;  // not measured; the page draws the placeholder for a non-positive one
-  // FALSE, so the rail and the network page read "not verified". This build verifies no server
-  // key, so the affirmative would be a claim it cannot make.
-  world.server.keyVerified = false;
+  // THE PIN, and only the pin: true on the routes that refuse any endpoint key but the compiled-in
+  // one (ledger 268), false on the platform route, which pins nothing. In a live world this bit
+  // means "pinned" and every surface says so in those words (FormatKeyState, ServerKeyStateName);
+  // it is never rendered as "verified", which in the fixture names a check this bit is not.
+  world.server.keyVerified = group.keyPinned;
 
   world.currentEpoch = group.epoch;   // real
   world.connectState = urmsg::demo::ConnectState::Connected;  // real: the device is connected

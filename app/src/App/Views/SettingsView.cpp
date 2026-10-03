@@ -262,7 +262,9 @@ SettingsView MakeSettings(urmsg::demo::World const& world,
         // and green on an absence would be a positive claim carried by colour alone —
         // the one thing contract rule 6 forbids. (This row's negative arm was already
         // muted rather than red, so only the affirmative needed guarding.)
-        value.Foreground(world.server.keyVerified && mode != urmsg::RunMode::Live
+        // ...and in live mode the true bit is the PIN (ledger 268), whose words say "pinned",
+        // so green restates them there exactly as it restates "verified" in the fixture.
+        value.Foreground(world.server.keyVerified
                              ? urnw::colors::MakeBrush(urnw::colors::kUrGreen)
                              : urnw::colors::MutedBrush());
       }

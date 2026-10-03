@@ -543,13 +543,15 @@ std::wstring FormatLatency(int latencyMs) {
 }
 
 std::wstring FormatKeyState(bool keyVerified, urmsg::RunMode mode) {
-  // LIVE: THE ONE PLACEHOLDER, for both arms, and for the same reason
-  // AttestationLabel gives (InspectRailFields.cpp). "Not verified" reports the RESULT of
-  // a check; this build pins no server key and the live world hard-codes keyVerified
-  // false for exactly that reason (Live/LiveWorld.cpp:350-352), so there is no result of
-  // either sign to report. An absence is not a negative. The affirmative arm is
-  // unreachable in live mode and is not written as a claim that could be reached.
-  if (mode == urmsg::RunMode::Live) return std::wstring(urmsg::demo::kUnavailable);
+  // LIVE: "pinned" on the routes that pin the server's endpoint key (ledger 268), and the ONE
+  // PLACEHOLDER on the platform route, which pins none. "Pinned" states the rule this app
+  // enforces - it connects to no server holding another key, refused before a frame is written
+  // - and claims nothing about any message. "Not verified" would report the RESULT of a check
+  // the platform route never runs, so that arm stays the placeholder: an absence is not a
+  // negative. Prefix-first, so a bare "Pinned" can never be read as the fixture's word.
+  if (mode == urmsg::RunMode::Live)
+    return keyVerified ? std::wstring(L"Live session: pinned")
+                       : std::wstring(urmsg::demo::kUnavailable);
   return keyVerified ? std::wstring(L"Demo model: verified")
                      : std::wstring(L"Demo model: not verified");
 }
@@ -590,15 +592,23 @@ std::vector<std::wstring> CollectNetworkDiagnostics() {
   // wording is that placeholder. That is the disjointness, and it fails if a copy edit
   // ever makes one wording serve both modes in either direction.
   const std::wstring placeholder{urmsg::demo::kUnavailable};
+  // SINCE LEDGER 268 THE LIVE TRUE ARM SAYS "pinned": the route refuses any other key before a
+  // frame is written, so a check does run and its rule is what the words state. The false arm
+  // (the platform route, which pins nothing) stays EXACTLY the placeholder, and neither live arm
+  // may be either fabricated wording.
+  const std::wstring livePinned = FormatKeyState(true, urmsg::RunMode::Live);
   const bool keyStateOk =
       FormatKeyState(true, urmsg::RunMode::Fabricated) == L"Demo model: verified" &&
       FormatKeyState(false, urmsg::RunMode::Fabricated) == L"Demo model: not verified" &&
-      FormatKeyState(true, urmsg::RunMode::Live) == placeholder &&
-      FormatKeyState(false, urmsg::RunMode::Live) == placeholder;
+      livePinned == L"Live session: pinned" &&
+      FormatKeyState(false, urmsg::RunMode::Live) == placeholder &&
+      livePinned != FormatKeyState(true, urmsg::RunMode::Fabricated) &&
+      livePinned.find(L"verified") == std::wstring::npos;
   lines.push_back(std::format(
       L"  net fmt keystate : {}  fabricated(true|false) == \"Demo model: verified\" | "
-      L"\"Demo model: not verified\" and live(true|false) == \"{}\" (no check runs, so "
-      L"neither result exists) -> \"{}\" | \"{}\" || \"{}\" | \"{}\"",
+      L"\"Demo model: not verified\"; live(true) == \"Live session: pinned\" (says no "
+      L"\"verified\"), live(false) == \"{}\" (the platform route pins nothing) -> \"{}\" | "
+      L"\"{}\" || \"{}\" | \"{}\"",
       Check(keyStateOk), placeholder, FormatKeyState(true, urmsg::RunMode::Fabricated),
       FormatKeyState(false, urmsg::RunMode::Fabricated),
       FormatKeyState(true, urmsg::RunMode::Live), FormatKeyState(false, urmsg::RunMode::Live)));
@@ -819,8 +829,12 @@ NetworkPageView MakeNetworkPage(urmsg::demo::World const& world) {
   // result; an absence gets the muted voice every other unavailable value on this page
   // already uses. The words are unchanged by this and still carry the whole meaning —
   // the colour only ever restates them (contract rule 6).
+  // Live and pinned restates "Live session: pinned" in green; live and unpinned is the placeholder,
+  // muted as every other absence on this page is.
   keyRow.value.Foreground(urmsg::ActiveRunMode() == urmsg::RunMode::Live
-                              ? urnw::colors::MutedBrush()
+                              ? (world.server.keyVerified
+                                     ? urnw::colors::MakeBrush(urnw::colors::kUrGreen)
+                                     : urnw::colors::MutedBrush())
                               : (world.server.keyVerified
                                      ? urnw::colors::MakeBrush(urnw::colors::kUrGreen)
                                      : urnw::colors::DangerBrush()));

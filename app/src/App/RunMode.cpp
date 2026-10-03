@@ -74,7 +74,8 @@ bool ContainsWord(std::wstring const& haystack, std::wstring const& needleLower)
 //   1. Naming the mode is NECESSARY, NOT SUFFICIENT. "Live session: attestation PASSED" names the
 //      mode, differs from its pair and asserts a check nothing ran. Only reading the copy catches
 //      that.
-//   2. A pair whose live arm is the ONE placeholder (AttestationLabel, FormatKeyState) cannot
+//   2. A pair whose live arm is the ONE placeholder (AttestationLabel, and FormatKeyState's
+//      unpinned arm) cannot
 //      satisfy this — "unavailable" names no mode — so those two live with their own gates, in
 //      their own files, where the polarity checks they already had could be extended instead of
 //      duplicated.
@@ -250,12 +251,14 @@ std::wstring RelayDrawerName(RunMode mode) {
 }
 
 std::wstring ServerKeyStateName(bool keyVerified, RunMode mode) {
-  // ONE string for both arms in live mode, and that is the point rather than a shortcut. The live
-  // world hard-codes keyVerified = false (Live/LiveWorld.cpp:352) because this build pins no
-  // server key — so "not verified" would report the RESULT of a check that never ran. "pinning
-  // unavailable" reports that there is no result, which is the true thing and the same thing the
-  // rail's Attestation row says with the one placeholder.
-  if (mode == RunMode::Live) return L"Live session: server key pinning unavailable";
+  // LIVE: the true bit is the PIN (ledger 268) - the URnetwork and direct routes refuse any
+  // endpoint key but the compiled-in one - and the false bit is the platform route, which pins
+  // nothing, so "not verified" would report the RESULT of a check that never ran. "pinning
+  // unavailable" reports that there is no result, the same thing the rail's Attestation row
+  // says with the one placeholder.
+  if (mode == RunMode::Live)
+    return keyVerified ? L"Live session: server key pinned"
+                       : L"Live session: server key pinning unavailable";
   return keyVerified ? L"Demo model: server key verified" : L"Demo model: server key not verified";
 }
 

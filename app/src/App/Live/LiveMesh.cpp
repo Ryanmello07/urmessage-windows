@@ -1489,6 +1489,7 @@ void RunSession() {
     live.serverClientId = kServerClientId;
     live.platformUrl = platformUrl;
     live.host = RouteLabel(s, route);
+    live.keyPinned = s.routeClient;
     if (s.routeClient) {
       if (const std::string line = TakeString(urnet_message_route_client_status(s.client));
           line != lastRouteLine) {
