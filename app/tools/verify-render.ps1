@@ -36,7 +36,9 @@ param(
   # $Args: that shadows PowerShell's automatic $args variable inside the
   # script and the shadowing is silent. Forwarded by SPLAT below, so an empty
   # value passes NOTHING - Start-Process rejects an empty -ArgumentList.
-  [string]$AppArgs = ""
+  [string]$AppArgs = "",
+  # Launch the app LIVE. Off unless given: see the note above Start-Process.
+  [switch]$Live
 )
 
 $ErrorActionPreference = "Stop"
@@ -162,6 +164,15 @@ New-Item -ItemType Directory -Force $env:URMESSAGE_APP_ROOT | Out-Null
 # so the argument has to be ABSENT, not empty, when there is nothing to pass.
 $extra = @{}
 if ($AppArgs) { $extra['ArgumentList'] = $AppArgs }
+
+# NOT LIVE UNLESS -Live. A launch with no arguments is a LIVE launch (LiveMesh.cpp, IsEnabled):
+# it reads the default credential, %LOCALAPPDATA%\URmessage\dev\user1.jwt unless
+# %URMESSAGE_LIVE_JWT% names another, dials the message server and publishes a key package. The
+# state root above is this script's own, so that would be a NEW DEVICE of whoever the credential
+# belongs to, signing in beside the one they already run. A render check has no business doing
+# that, so %URMESSAGE_LIVE% is pinned to 0 for the launch, which the app obeys over everything
+# but an explicit --live.
+$env:URMESSAGE_LIVE = if ($Live) { "1" } else { "0" }
 $proc = Start-Process -FilePath $exe -PassThru @extra
 Write-Host "launched pid $($proc.Id): $exe" -ForegroundColor Cyan
 

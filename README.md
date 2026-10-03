@@ -4,10 +4,20 @@ A private messenger on URnetwork, as a native Windows desktop app. It is meant
 to look and feel like the URnetwork Windows VPN client, and it inherits that
 app's brand layer, component kit and window shell verbatim.
 
-**This is checkpoint 1: a shell.** It builds, launches, and renders the brand.
-There is no protocol, no store, no network, no account and no cryptography — the
-conversation list is ten hard-coded placeholder rows declared in one block at the
-top of `MainWindow.xaml.cpp`. Nothing here sends or receives anything.
+**This is the alpha, and an ordinary launch is live.** The app reaches the
+message server through the URnetwork SDK and sends and receives real end-to-end
+encrypted messages in MLS groups:
+- text, replies and reactions;
+- roles, removal and ownership transfer;
+- delete for everyone;
+- "Delete for me and leave".
+
+Media, recovery, multi-device, receipts and a contact identity layer are not
+here. Where they would be, the app says so rather than pretending.
+
+The design is Spec C, in
+[urnetwork/message-server](https://github.com/urnetwork/message-server)'s
+`docs/specs`.
 
 ## Build
 
@@ -29,28 +39,75 @@ newest Windows SDK that really has `um\windows.h`. Output:
 app\build\x64\Release\URmessage.exe
 ```
 
-## Run, and prove it rendered
+## The SDK
+
+The live path is the URnetwork SDK's messaging C ABI, in `URnetworkSdk.dll`,
+built from [urnetwork/sdk](https://github.com/urnetwork/sdk)'s `cgo` directory.
+Three files of it are committed in `app\third_party\vendor-include`:
+- `urnetwork_sdk.h`;
+- `urnetwork_message.h`;
+- `urnetwork_sdk.def`, the dll's export list.
+
+Copy all three from one SDK build's `cgo\include`, never one without the others.
+
+The build makes the import library from the `.def`, and the dll is delay-loaded,
+so the app builds and runs without it. Only the live path needs it. To go live,
+build the dll from the same SDK commit and stage it where the build copies it
+next to the exe:
+
+```
+cd sdk\cgo
+make build_windows_amd64        (or the go build line it runs, with a mingw-w64 gcc on PATH)
+copy build\windows\amd64\URnetworkSdk.dll <this repo>\app\third_party\urnetwork-sdk\bin\x64\
+```
+
+## Run
+
+**A launch with no arguments is live.**
+1. It reads a URnetwork credential, a `by_client_jwt`, from
+   `%LOCALAPPDATA%\URmessage\dev\user1.jwt`, or from the file
+   `%URMESSAGE_LIVE_JWT%` names. Nothing here mints one.
+2. It reaches the message server and publishes this device's key package.
+
+By default it goes through a URnetwork exit to the server's own pinned endpoint.
+Settings switches that to direct, and `%URMESSAGE_ROUTE%` overrides both for one
+launch.
+
+To join a group, copy this device's join code to whoever is setting the group up.
+When they add you, paste back the invitation they send.
+
+**Any argument other than `--live`, or `%URMESSAGE_LIVE%=0`, keeps a launch
+offline.** That is how a development build runs beside a real one. Two live
+clients under one credential are two devices of one person, and the alpha
+supports one. `--demo` draws a fabricated world instead; `--demo=thread`,
+`=chats`, `=inspect` and `=network` open on one screen.
+
+`%URMESSAGE_APP_ROOT%` moves the per-user state root, which defaults to
+`%LOCALAPPDATA%\URmessage\app`. Give each concurrent run its own, and its own
+credential.
+
+To prove it rendered:
 
 ```
 powershell -ExecutionPolicy Bypass -File app\tools\verify-render.ps1
 ```
 
-That launches the exe, finds its window, captures it, probes the brand colours
-and writes `.verify\*.png`. It is DPI-aware, finds windows with
+That launches the exe offline (`-Live` launches it live), finds its window,
+captures it, probes the brand colours and writes `.verify\*.png`. It is DPI-aware, finds windows with
 `EnumWindows` + `GetClassNameW` rather than `FindWindow`, and selects processes
 by **executable path**. Read the header of that file before changing it; each of
 those is a trap this project has already paid for.
 
-A fast smoke test that needs no window:
+A fast smoke test that needs no window, and the one CI gates on:
 
 ```
 app\build\x64\Release\URmessage.exe --diagnose
 ```
 
 It prints the App Runtime path, `resources.pri`, the fonts, the single-instance
-key, and whether MRT actually **resolves** a string — the last one is the
-difference between "resources.pri exists" and "the UI will not render its own
-key ids".
+key, whether MRT actually **resolves** a string, and the app's PASS/FAIL
+assertions. MRT matters because "resources.pri exists" and "the UI will not
+render its own key ids" can both be true at once.
 
 ## Layout
 
@@ -69,8 +126,16 @@ app/
     WindowShell.*           size, placement, caption colours. NO backdrop.
     WindowReveal.*          the open animation
     MainWindow.xaml*        written fresh: title bar, nav, conversation panes
+    Views/                  the conversation list, thread, inspector rail, status
+                            strip, and the settings and network pages
+    Live/                   the live path: the SDK worker (LiveMesh) and the
+                            world it builds for the views (LiveWorld)
+    Demo/                   the fabricated demo world (--demo) and developer switches
   tools/                    build-local.ps1, verify-render.ps1
-  third_party/vendor-include/nlohmann/
+  third_party/vendor-include/
+    nlohmann/
+    urnetwork_sdk.h, urnetwork_message.h, urnetwork_sdk.def   the SDK's ABI
+  third_party/urnetwork-sdk/bin/x64/   URnetworkSdk.dll, staged, not committed
 ```
 
 ## Things that will bite you
