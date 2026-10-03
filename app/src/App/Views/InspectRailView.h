@@ -71,6 +71,10 @@ InspectRailView MakeInspectRail();
 // (design 9.1). The density is the rail's own current density - see
 // SetInspectRailAdvanced, which is the one function that changes it.
 void SetInspectRailConversation(InspectRailView& v, demo::Conversation const& c);
+// NO SUBJECT: the rail as MakeInspectRail leaves it, body empty. What a window draws after this
+// device LEAVES its group (ledger 273); an empty conversation would draw a "Direct message" card
+// for a conversation that does not exist.
+void ClearInspectRail(InspectRailView& v);
 
 // Message mode: the lock header, the failure block when the row failed, design
 // 6.3's fields, and the delivered-by / read-by device lists. Called on a bubble
@@ -140,6 +144,13 @@ struct RosterVerb {
   // Delete every one of THIS DEVICE'S OWN lines named, for everyone (the per-message delete,
   // each queued on its own). Answers how many were queued. Gated like a send: `enabled`.
   std::function<int(std::vector<std::wstring> rowIds)> deleteMine;
+  // LEAVE: "delete for me and leave" (ledger 273). `transferToIdentityHex` is "" for a plain
+  // leave, or the one member ownership goes to first. Answers whether the host took it. A plain
+  // leave is NOT gated by `enabled`: a device whose group is closed, or that was removed, can still
+  // erase its own copy. A hand-over is a commit and the host refuses one without a session.
+  std::function<bool(std::wstring transferToIdentityHex)> leave;
+  // Whether a leave is in flight; the button is hidden while one is (re-check R4).
+  std::function<bool()> leaveInFlight;
   bool enabled = false;
 };
 void SetInspectRailRosterVerb(RosterVerb verb);

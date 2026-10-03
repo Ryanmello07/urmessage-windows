@@ -61,6 +61,10 @@ ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
                       std::function<bool(std::wstring, std::wstring, std::wstring)> onSend,
                       std::function<bool(std::wstring, std::wstring, bool)> onReact);
 void SetThreadConversation(ThreadView& v, urmsg::demo::Conversation const& c);
+// NO CONVERSATION OPEN: the thread as MakeThread leaves it, with its no-selection empty state
+// showing and an empty header. What a window draws after this device LEAVES its group (ledger
+// 273); SetThreadConversation with an empty conversation would label nothing "Direct message".
+void ClearThreadConversation(ThreadView& v);
 void SetThreadSelectedMessage(ThreadView& v, std::wstring const& id);
 // Can the host send RIGHT NOW? The composer's Send button is live only when this is true AND the
 // box holds something AND MakeThread was given an onSend; a failed bubble's [ Try again ] is live

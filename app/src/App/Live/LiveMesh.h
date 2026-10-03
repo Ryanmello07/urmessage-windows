@@ -155,6 +155,26 @@ bool QueueTransferOwnership(std::string identityPubHex);
 // and the alpha's one-credential peer cannot mint a second one at all.
 bool QueueRemoveMember(std::string identityPubHex);
 
+// LEAVE THE GROUP: "delete for me and leave" (the owner's ruling of 2026-10-02; msgrepo ledger
+// 273). On the worker: when `transferToIdentityHex` names a member, ownership moves to them FIRST
+// (urnet_message_group_transfer_ownership) and nothing else happens if that is refused; then
+// urnet_message_device_forget_group erases this device's whole copy of the conversation, the
+// worker publishes an empty world, and it goes back to waiting for an invitation exactly as a
+// device that never had a group does. NOBODY IS TOLD: the others keep their copies, and this device
+// stays on their member list until somebody removes it (ruling 48). Answers false, having queued
+// nothing, when a leave is already in flight, when there is no group, or when a hand-over is asked
+// for and the group cannot take a commit (CanSend() false) or the identity is not hex. A plain
+// leave needs no session: a device whose group was closed under it, or that was removed, can
+// still erase its own copy. While a leave is in flight CanSend() answers false.
+//
+// THE CONFIRMATION AND THE OWNER'S CASE ARE THE CALLER'S. The library refuses an owner who is the
+// last of its identity's leaves while anybody else is in the group (MASTER section 11), so the
+// rail reads the roster first and either names the member it hands over to or says to hand over.
+bool QueueLeave(std::string transferToIdentityHex = {});
+
+// Is a leave queued or under way right now? The rail hides its button while one is.
+bool LeaveInFlight();
+
 // ── getting into a group at all (the onboarding half) ─────────────────────────
 //
 // WHY THIS EXISTS. Until now the only way into a group was a FILE HANDSHAKE with sdk/livepeer

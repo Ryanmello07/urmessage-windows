@@ -1109,6 +1109,113 @@ Border MakeDeleteMineButtonRow(std::vector<std::wstring> ids) {
   return row;
 }
 
+// DELETE FOR ME AND LEAVE (the owner's ruling of 2026-10-02; msgrepo ledger 273). One button, and
+// what its confirmation says is ONE question asked of the roster at populate time: would leaving
+// strand anybody? The library refuses an owner who is the last of its identity's leaves while
+// somebody else is in the group (MASTER section 11), so the rail asks first and offers the way out:
+//   - not the owner, alone, or another device of mine still in it: a plain leave;
+//   - the owner with exactly one other person and a session: hand it to them, then leave;
+//   - the owner otherwise: say to make someone else the owner under Members first.
+struct LeavePlan {
+  enum class Kind { Plain, HandOver, Blocked } kind = Kind::Plain;
+  std::wstring transferTo;  // identity_pub hex, HandOver only
+  std::wstring name;        // what the dialog calls them, HandOver only
+};
+
+LeavePlan PlanLeave(demo::Conversation const& conv) {
+  LeavePlan plan;
+  if (conv.myRole != demo::kRoleOwner) return plan;
+  std::wstring mine;
+  for (auto const& m : conv.members)
+    if (m.mine) mine = m.identityPubHex;
+  std::vector<demo::MemberRef const*> others;
+  for (auto const& m : conv.members) {
+    if (m.mine) continue;
+    // ANOTHER DEVICE OF MINE: the identity stays in the group, and so does its ownership.
+    if (!mine.empty() && m.identityPubHex == mine) return plan;
+    bool seen = false;
+    for (auto const* o : others) seen = seen || o->identityPubHex == m.identityPubHex;
+    if (!seen) others.push_back(&m);
+  }
+  if (others.empty()) return plan;
+  auto const& host = MutableRosterVerb();
+  if (others.size() == 1 && host.enabled && !others.front()->identityPubHex.empty()) {
+    auto const& other = *others.front();
+    plan.kind = LeavePlan::Kind::HandOver;
+    plan.transferTo = other.identityPubHex;
+    plan.name = !other.localName.empty() ? other.localName
+                : (!other.displayName.empty() && other.displayName != demo::kUnavailable)
+                    ? other.displayName
+                    : std::wstring(L"the other person");
+    return plan;
+  }
+  plan.kind = LeavePlan::Kind::Blocked;
+  return plan;
+}
+
+Border MakeLeaveButtonRow(demo::Conversation const& conv) {
+  Border row;
+  row.Padding(ThicknessHelper::FromLengths(12, 0, 12, 6));
+  Button b;
+  if (auto style = kit::StyleByKey(L"UrPaneActionSecondaryStyle")) b.Style(style);
+  b.Height(30);
+  b.MinHeight(30);
+  b.Padding(ThicknessHelper::FromLengths(10, 0, 10, 0));
+  b.FontSize(12);
+  b.HorizontalAlignment(HorizontalAlignment::Left);
+  b.Content(winrt::box_value(H(LeaveButtonLabel())));
+  automation::AutomationProperties::SetName(
+      b, H(L"Delete this conversation from this computer and leave it"));
+  b.Click([plan = PlanLeave(conv)](winrt::Windows::Foundation::IInspectable const& sender,
+                                   auto const&) {
+    auto button = sender.try_as<Button>();
+    if (!button) return;
+    ContentDialog dialog;
+    dialog.XamlRoot(button.XamlRoot());
+    TextBlock body;
+    body.TextWrapping(TextWrapping::Wrap);
+    switch (plan.kind) {
+      case LeavePlan::Kind::Plain:
+        dialog.Title(winrt::box_value(H(LeaveConfirmTitle())));
+        body.Text(H(LeaveConfirmBody()));
+        dialog.PrimaryButtonText(H(LeaveConfirmPrimary()));
+        break;
+      case LeavePlan::Kind::HandOver:
+        dialog.Title(winrt::box_value(H(LeaveHandOverTitle(plan.name))));
+        body.Text(H(LeaveHandOverBody(plan.name)));
+        dialog.PrimaryButtonText(H(LeaveHandOverPrimary()));
+        break;
+      case LeavePlan::Kind::Blocked:
+        // NO PRIMARY: there is nothing here to confirm, only the way out to name.
+        dialog.Title(winrt::box_value(H(LeaveOwnerBlockedTitle())));
+        body.Text(H(LeaveOwnerBlockedBody()));
+        break;
+    }
+    dialog.Content(body);
+    dialog.CloseButtonText(H(plan.kind == LeavePlan::Kind::Blocked ? LeaveOwnerBlockedClose()
+                                                                   : DeleteConfirmClose()));
+    dialog.DefaultButton(ContentDialogButton::Close);
+    dialog.Background(urnw::colors::SheetBrush());
+    auto op = dialog.ShowAsync();
+    op.Completed([plan](auto const& async, auto const& status) {
+      if (status != winrt::Windows::Foundation::AsyncStatus::Completed) return;
+      if (plan.kind == LeavePlan::Kind::Blocked ||
+          async.GetResults() != ContentDialogResult::Primary) {
+        urnw::LogInfo("rail: leave NOT confirmed; nothing queued");
+        return;
+      }
+      auto const& host = MutableRosterVerb();
+      if (!host.leave) return;
+      const bool handOver = plan.kind == LeavePlan::Kind::HandOver;
+      const bool queued = host.leave(handOver ? plan.transferTo : std::wstring());
+      urnw::LogInfo("rail: leave{} confirmed and {} by the host", handOver ? " with a hand-over" : "",
+                    queued ? "taken" : "REFUSED");
+    });
+  });
+  row.Child(b);
+  return row;
+}
+
 // ONE LABEL BUTTON, for a member's expansion and for the conversation's header alike.
 Border MakeLocalNameButtonRow(bool conversation, bool named, std::wstring key, std::wstring current,
                               double indent) {
@@ -1529,6 +1636,17 @@ void PopulateConversation(InspectRailView& v, demo::Conversation const& conv,
         urmsg::ActiveRunMode() == urmsg::RunMode::Live)
       body.Append(MakeDeleteMineButtonRow(mine));
   }
+  // DELETE FOR ME AND LEAVE, live only (ledger 273), and under the bulk delete because that is the
+  // order a person who wants their lines gone for everyone has to take them in. Not gated by
+  // `enabled` for a plain leave: a device whose group is closed, or that was removed, can still
+  // erase its own copy. PlanLeave decides what the confirmation offers.
+  {
+    auto const& host = MutableRosterVerb();
+    const bool inFlight = host.leaveInFlight && host.leaveInFlight();
+    if (host.leave && !inFlight && !conv.groupIdHex.empty() &&
+        urmsg::ActiveRunMode() == urmsg::RunMode::Live)
+      body.Append(MakeLeaveButtonRow(conv));
+  }
 
   // The caption meta is WORDS, not a bare count (design d4 §2), summed by the
   // pure table from the same OnlineDeviceCount the rows report - so the caption
@@ -1756,6 +1874,15 @@ kit::PaneListRow MakeDeviceRow(demo::DeviceRef const& device, bool showOwner,
       row.root, H(title + L", " + (device.online ? L"online" : L"offline") + L", " +
                   device.lastSeenLabel));
   return row;
+}
+
+void ClearInspectRail(InspectRailView& v) {
+  if (!v.root) return;
+  v.expandedMemberIds.clear();
+  if (auto panel = BodyOf(v.conversationScroll)) panel.Children().Clear();
+  SetRailSubject(v, L"", L"");
+  PresentMode(v, /*messageMode=*/false);
+  urnw::LogInfo("rail: cleared - no conversation is open");
 }
 
 void SetInspectRailConversation(InspectRailView& v, demo::Conversation const& c) {

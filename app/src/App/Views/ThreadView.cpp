@@ -3333,6 +3333,23 @@ void RunThreadEntrance(std::shared_ptr<ThreadParts> const& parts) {
 
 }  // namespace
 
+void ClearThreadConversation(ThreadView& v) {
+  // the rows go exactly as a switch to a conversation with none takes them
+  SetThreadConversation(v, demo::Conversation{});
+  auto parts = Find(v.root);
+  if (!parts) return;
+  parts->convId.clear();
+  if (parts->headerTitle) parts->headerTitle.Text(winrt::hstring{});
+  if (parts->headerMeta) parts->headerMeta.Text(winrt::hstring{});
+  // and the empty state SetThreadConversation collapsed is the one thing that is true now
+  if (parts->emptyState) parts->emptyState.Visibility(Visibility::Visible);
+  // a draft for the conversation that is gone does not follow the person into the next one
+  if (parts->composerBox) {
+    parts->composerBox.Text(winrt::hstring{});
+    UpdateComposerSend(parts);
+  }
+}
+
 void SetThreadConversation(ThreadView& v, demo::Conversation const& c) {
   auto parts = Find(v.root);
   if (!parts) return;

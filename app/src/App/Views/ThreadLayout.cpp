@@ -215,14 +215,58 @@ std::wstring DeleteAllConfirmTitle(std::size_t count) {
 
 std::wstring DeleteAllConfirmBody() {
   // Spec C's explainer first, character for character (DeleteConfirmBody), then the one fact this
-  // larger action adds: it is only ever your own lines.
+  // larger action adds: it is only ever the lines THIS COMPUTER sent. That is the per-device rule
+  // (Spec A 7.4; ledger 275): a line this person sent from another device is not one this
+  // computer can retract, and "your own messages" would claim it could.
   return DeleteConfirmBody() +
-         L" Only your own messages are deleted: everybody else's stay where they are.";
+         L" Only the messages this computer sent are deleted: everybody else's stay where they "
+         L"are.";
 }
 
 std::wstring DeleteAllConfirmPrimary(std::size_t count) {
   return count == 1 ? std::wstring(L"Delete 1 message")
                     : std::format(L"Delete {} messages", count);
+}
+
+std::wstring LeaveButtonLabel() { return L"Delete for me and leave"; }
+
+std::wstring LeaveConfirmTitle() { return L"Delete this conversation and leave?"; }
+
+std::wstring LeaveConfirmBody() {
+  // WHAT IT DOES NOT DO IS MOST OF THE PARAGRAPH, because each clause is something a person would
+  // otherwise assume: the others are not told (no content kind says so, ruling 48), they keep their
+  // copies, and their member list keeps this device until somebody removes it. "The conversation and
+  // its keys", not "everything": the names this person gave people stay (review M4). And a deletion
+  // for everyone is described exactly as its own explainer describes it, MASTER 12.3 and 12.4.
+  return L"This deletes the conversation and its keys from this computer. The others are not "
+         L"told. They keep their copies, and you stay on their member list until they remove you. "
+         L"To take your messages off their devices too, delete them for everyone first: that "
+         L"reaches devices that are online and honest, not anyone who has already read them.";
+}
+
+std::wstring LeaveConfirmPrimary() { return L"Delete and leave"; }
+
+std::wstring LeaveHandOverTitle(std::wstring const& name) {
+  return std::format(L"Hand this conversation to {} and leave?", name);
+}
+
+std::wstring LeaveHandOverBody(std::wstring const& name) {
+  // The hand-over first, then the plain body word for word: everything the plain leave says is
+  // still true once ownership has moved.
+  return std::format(L"You own this conversation, so {} becomes its owner first. ", name) +
+         LeaveConfirmBody();
+}
+
+std::wstring LeaveHandOverPrimary() { return L"Hand over and leave"; }
+
+std::wstring LeaveOwnerBlockedTitle() { return L"Hand this group over first"; }
+
+// The Blocked dialog has nothing to confirm, so its one button is not "Cancel".
+std::wstring LeaveOwnerBlockedClose() { return L"OK"; }
+
+std::wstring LeaveOwnerBlockedBody() {
+  return L"You own this group, and an owner cannot simply leave: nobody else could ever remove "
+         L"you. Make someone else the owner under Members, and then you can leave.";
 }
 
 std::size_t Utf8Octets(std::wstring_view text) {

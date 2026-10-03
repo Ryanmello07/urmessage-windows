@@ -20,7 +20,7 @@
 // protocol carries that the struct has no slot for is still rendered through a slot it DOES have,
 // using a component that already exists:
 //
-//   * a DELETED message      -> a System line saying it was deleted by its sender
+//   * a DELETED message      -> a System line, Spec C's "This message was deleted.", and its time
 //   * a GAP                  -> a System line naming the reason (the ABI's "closed placeholder")
 //   * a REPLY's parent link  -> a System line above the bubble naming the parent
 //   * the REACTIONS standing -> MessageRow::reactions, drawn as a strip under the bubble
@@ -350,7 +350,11 @@ urmsg::demo::World BuildWorld(LiveGroup const& group) {
     // A DELETED MESSAGE. The record keeps its body and the ABI hands it back; showing it would
     // ignore the tombstone, and dropping the row would lose the fact that a line was here.
     if (m.deleted) {
-      conv.rows.push_back(MakeSystemRow(wideId, L"This message was deleted by its sender."));
+      // SPEC C'S WORDS (5.1, 5.2a, 8.2; ledger 275), and the line's ORIGINAL time under them, which
+      // 5.2a asks for beside the sender's name. The name is not drawn: a system line carries no
+      // sender for the local-names overlay to label, and the protocol carries no names.
+      conv.rows.push_back(MakeSystemRow(
+          wideId, std::format(L"This message was deleted.\n{}", FormatClock(m.sentAtMs))));
       continue;
     }
 
@@ -522,6 +526,12 @@ urmsg::demo::World BuildWorld(LiveGroup const& group) {
     row.inspect.readBy.clear();
     conv.rows.push_back(std::move(row));
   }
+
+  // A LEAVE THAT WAS REFUSED (ledger 273), at the foot and in the library's own words: the person
+  // pressed a button, and without this line its whole effect would be nothing at all.
+  if (!group.leaveError.empty())
+    conv.rows.push_back(MakeSystemRow(
+        L"leave-refused", L"This computer did not leave: " + urnw::Widen(group.leaveError)));
 
   // The preview is the newest real body. ALWAYS NON-EMPTY is the struct's own contract, so an
   // empty conversation says so rather than drawing a blank line. AN OUTBOX ENTRY IS DELIBERATELY

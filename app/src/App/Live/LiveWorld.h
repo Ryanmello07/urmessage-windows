@@ -209,6 +209,9 @@ struct LiveGroup {
   // And the role changes this device asked for that have not landed; each lands on the member
   // row it names.
   std::vector<LiveRoleOutboxEntry> roleOutbox;
+  // A LEAVE THIS DEVICE ASKED FOR AND WAS REFUSED (ledger 273), as the library said it, or "".
+  // A granted one is never here: the worker publishes an empty world instead.
+  std::string leaveError;
 };
 
 // ── the one placeholder ───────────────────────────────────────────────────────

@@ -633,6 +633,12 @@ void MainWindow::BuildOnboardDialog() {
   panel.Children().Append(onboardStatus_);
 
   onboardDialog_ = ContentDialog();
+  onboardDialog_.Opened([weak = get_weak()](auto const&, auto const&) {
+    if (auto self = weak.get()) self->onboardOpen_ = true;
+  });
+  onboardDialog_.Closed([weak = get_weak()](auto const&, auto const&) {
+    if (auto self = weak.get()) self->onboardOpen_ = false;
+  });
   onboardDialog_.Title(box_value(hstring{L"Join a group"}));
   onboardDialog_.Content(panel);
   onboardDialog_.PrimaryButtonText(hstring{L"Join"});
@@ -709,6 +715,9 @@ void MainWindow::ApplyOnboard() {
       onboardStatus_ = nullptr;
       urnw::LogInfo("window: the onboarding dialog closed \u2014 this device is in a group");
     }
+    // AND IT MAY BE SHOWN AGAIN: a device that leaves its group (ledger 273) is back on the join
+    // road, and a flag left true would keep that dialog shut for the rest of the run.
+    onboardShown_ = false;
     return;
   }
 
@@ -779,9 +788,30 @@ void MainWindow::ApplyOnboard() {
   // SHOWN ONCE. ShowAsync on a dialog that is already open throws, so the open-ness is the flag:
   // a beat that arrives while it is up only re-points the text.
   if (!onboardShown_) {
-    onboardShown_ = true;
-    onboardDialog_.ShowAsync();
-    urnw::LogInfo("window: the onboarding dialog is up \u2014 this device holds no group");
+    // THE FLAG IS SET ONLY ONCE ShowAsync HAS TAKEN (re-check R4). It throws while another
+    // ContentDialog is open, and a flag set first would keep this dialog away for the rest of the
+    // run. On a throw it is asked again in a second, from a fresh draw.
+    try {
+      onboardDialog_.ShowAsync();
+      onboardShown_ = true;
+      urnw::LogInfo("window: the onboarding dialog is up \u2014 this device holds no group");
+    } catch (winrt::hresult_error const& e) {
+      urnw::LogWarn("window: the onboarding dialog could not open yet ({}); asking again in a second",
+                    winrt::to_string(e.message()));
+      if (!onboardRetry_) {
+        onboardRetry_ =
+            winrt::Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread().CreateTimer();
+        onboardRetry_.IsRepeating(false);
+        onboardRetry_.Interval(winrt::Windows::Foundation::TimeSpan{std::chrono::seconds(1)});
+        onboardRetry_.Tick([weak = get_weak()](auto const&, auto const&) {
+          if (auto self = weak.get()) {
+            self->onboardDrawn_ = 0;
+            self->ApplyOnboard();
+          }
+        });
+      }
+      onboardRetry_.Start();
+    }
   }
 }
 
@@ -835,7 +865,10 @@ void MainWindow::ApplyLiveWorld() {
     // CLEARED IN THE SAME BREATH AS THE MODE LATCHES, which is the only moment at which both
     // are true: there is a live world on screen, so the empty one is gone and "no group yet"
     // has stopped being the fact about this run.
-    urmsg::views::SetThreadNoSession(thread_, false);
+    //
+    // AND SET AGAIN WHEN THE WORLD IS EMPTY: a device that LEFT its group (ledger 273) is back to
+    // having none, and the caption says so.
+    urmsg::views::SetThreadNoSession(thread_, liveWorld_->conversations.empty());
   }
   // AND THE SEND BUTTON, on the same beat and for the same reason the caption is: the composer bar
   // is built once and is not among the surfaces rebuilt below.
@@ -898,7 +931,24 @@ void MainWindow::ApplyLiveWorld() {
   urmsg::views::SetStatusStripAdvanced(statusStrip_, advanced_);
 
   const int open = OpenConversationIndex();
-  if (first || open < 0) {
+  if (liveWorld_->conversations.empty()) {
+    // NO CONVERSATION: this device LEFT its group (ledger 273) and the worker published the empty
+    // world. Nothing is open any more, so the thread and the rail go back to what a live launch
+    // with no group draws, and the onboarding dialog (ApplyOnboard) is the next thing on screen.
+    openConversationId_.clear();
+    selectedMessageId_.clear();
+    urmsg::views::ClearThreadConversation(thread_);
+    urmsg::views::ClearInspectRail(rail_);
+    // AND THE JOIN DIALOG COMES BACK (review M2), whoever this device was: a founder never sees
+    // Joined, so its "shown" flag was never cleared. Re-armed only when the dialog is not on screen,
+    // because ShowAsync on an open dialog throws, and drawn once more now in case the worker's
+    // next onboarding state was already drawn while the flag still said "shown".
+    if (!onboardOpen_) {
+      onboardShown_ = false;
+      onboardDrawn_ = 0;
+      ApplyOnboard();
+    }
+  } else if (first || open < 0) {
     // SelectConversation is a no-op on the conversation that is already open, and the live
     // conversation's id is the group id and never changes — so this opens it once and every later
     // beat falls through to the refresh below.
@@ -1336,6 +1386,15 @@ void MainWindow::BuildDemoViews() {
     for (auto const& id : rowIds)
       if (urmsg::live::QueueDelete(urnw::Narrow(id))) ++queued;
     urnw::LogInfo("window: delete-all-mine queued {} of {} deletion(s)", queued, rowIds.size());
+    return queued;
+  };
+  roster.leaveInFlight = [] { return urmsg::live::LeaveInFlight(); };
+  // DELETE FOR ME AND LEAVE (ledger 273): the hand-over, when there is one, rides with it.
+  roster.leave = [](std::wstring transferToIdentityHex) -> bool {
+    const bool queued = urmsg::live::QueueLeave(urnw::Narrow(transferToIdentityHex));
+    urnw::LogInfo("window: leave{} {} by the live worker",
+                  transferToIdentityHex.empty() ? "" : " with a hand-over",
+                  queued ? "taken" : "REFUSED");
     return queued;
   };
   roster.nameRefusal = [](std::wstring const& typed) -> std::wstring {

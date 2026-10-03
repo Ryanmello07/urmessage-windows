@@ -107,6 +107,11 @@ struct MainWindow : MainWindowT<MainWindow> {
 
   uint64_t onboardDrawn_ = 0;
   bool onboardShown_ = false;
+  // Whether the dialog is ON SCREEN right now, which onboardShown_ is not once it has been
+  // dismissed: kept by its Opened and Closed events (review M2).
+  bool onboardOpen_ = false;
+  // A second's retry for a ShowAsync that threw because another dialog was open (re-check R4).
+  winrt::Microsoft::UI::Dispatching::DispatcherQueueTimer onboardRetry_{nullptr};
   winrt::Microsoft::UI::Xaml::Controls::ContentDialog onboardDialog_{nullptr};
   winrt::Microsoft::UI::Xaml::Controls::TextBox onboardCodeBox_{nullptr};
   winrt::Microsoft::UI::Xaml::Controls::TextBox onboardPasteBox_{nullptr};

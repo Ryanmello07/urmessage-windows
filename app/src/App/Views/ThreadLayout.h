@@ -617,6 +617,22 @@ std::wstring DeleteAllConfirmTitle(std::size_t count);
 std::wstring DeleteAllConfirmBody();
 std::wstring DeleteAllConfirmPrimary(std::size_t count);
 
+// ---- delete for me and leave (the owner's ruling of 2026-10-02; msgrepo ledger 273) ---------
+// The device half of leaving: this computer's whole copy of the conversation is erased and
+// nobody is told (ruling 48). An OWNER cannot simply leave (MASTER section 11): with one other
+// person the confirmation hands the conversation to them first; with more, it says to hand it
+// over under Members first. Close is the DEFAULT in every variant, so Enter leaves nothing.
+std::wstring LeaveButtonLabel();
+std::wstring LeaveConfirmTitle();
+std::wstring LeaveConfirmBody();
+std::wstring LeaveConfirmPrimary();
+std::wstring LeaveHandOverTitle(std::wstring const& name);
+std::wstring LeaveHandOverBody(std::wstring const& name);
+std::wstring LeaveHandOverPrimary();
+std::wstring LeaveOwnerBlockedTitle();
+std::wstring LeaveOwnerBlockedClose();
+std::wstring LeaveOwnerBlockedBody();
+
 // ---- the text limit (ledger 266, item 6) -------------------------------------------------
 // The longest text the sealer takes, in UTF-8 OCTETS and not characters, and the longest a
 // reply takes, which spends 32 of them naming its parent. ThreadLayout.cpp static_asserts both

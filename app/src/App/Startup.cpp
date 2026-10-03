@@ -662,7 +662,8 @@ std::vector<std::wstring> ReplyReactDiagnostics() {
     const bool words = DeleteAllConfirmTitle(3).find(L"3") != std::wstring::npos &&
                        DeleteAllConfirmPrimary(3).find(L"3") != std::wstring::npos &&
                        DeleteAllConfirmBody().starts_with(DeleteConfirmBody()) &&
-                       DeleteAllConfirmBody().find(L"Only your own messages") != std::wstring::npos;
+                       DeleteAllConfirmBody().find(L"Only the messages this computer sent") !=
+                           std::wstring::npos;
     std::wstring listing;
     for (auto const& id : ids) listing += id + L" ";
     out.push_back(std::format(
@@ -670,6 +671,33 @@ std::vector<std::wstring> ReplyReactDiagnostics() {
         L"words name the count and open with Spec C's explainer {}   [query: OwnDeletableMessageIds "
         L"names exactly this device's outgoing Message rows in Sent, Delivered or Read]",
         Verdict(named && words), listing, words ? L"yes" : L"NO"));
+  }
+
+  // DELETE FOR ME AND LEAVE (ledger 273): the hand-over confirmation names its person and ends with
+  // the plain one word for word, and neither says the conversation is gone anywhere but from this
+  // computer, nor that anybody is told.
+  {
+    const std::wstring body = LeaveConfirmBody();
+    const std::wstring handOver = LeaveHandOverBody(L"Ada");
+    // SPEC C 12's QUOTED COPY, transcribed here by hand, so the check has a second copy to disagree
+    // with and not only the function it checks
+    const std::wstring specC =
+        L"This deletes the conversation and its keys from this computer. The others are not told. "
+        L"They keep their copies, and you stay on their member list until they remove you. To take "
+        L"your messages off their devices too, delete them for everyone first: that reaches devices "
+        L"that are online and honest, not anyone who has already read them.";
+    const bool words = body == specC &&
+                       handOver.find(L"Ada") != std::wstring::npos && handOver.ends_with(body) &&
+                       body.find(L"from this computer") != std::wstring::npos &&
+                       body.find(L"not told") != std::wstring::npos &&
+                       body.find(L"forever") == std::wstring::npos &&
+                       LeaveHandOverTitle(L"Ada").find(L"Ada") != std::wstring::npos;
+    out.push_back(std::format(
+        L"  leave words      : {}  the body is Spec C 12's, the hand-over names its person and ends with "
+        L"the plain body; "
+        L"the body says \"from this computer\" and \"not told\" and never \"forever\"   "
+        L"[query: LeaveConfirmBody, LeaveHandOverBody(L\"Ada\")]",
+        Verdict(words)));
   }
 
   // THE DELETE CONFIRMATION, against Spec C's string table TRANSCRIBED HERE (the kSpecC511
