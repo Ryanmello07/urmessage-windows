@@ -1329,6 +1329,15 @@ void MainWindow::BuildDemoViews() {
     if (!self) return false;
     return self->NameFromRail(true, std::move(groupIdHex), std::move(typed));
   };
+  // DELETE ALL MY MESSAGES: the per-message delete, queued once per line (the owner's ruling of
+  // 2026-10-02: a person may delete their own messages at any time).
+  roster.deleteMine = [](std::vector<std::wstring> rowIds) -> int {
+    int queued = 0;
+    for (auto const& id : rowIds)
+      if (urmsg::live::QueueDelete(urnw::Narrow(id))) ++queued;
+    urnw::LogInfo("window: delete-all-mine queued {} of {} deletion(s)", queued, rowIds.size());
+    return queued;
+  };
   roster.nameRefusal = [](std::wstring const& typed) -> std::wstring {
     return urmsg::live::LocalNameRefusal(urmsg::live::CheckLocalName(typed));
   };

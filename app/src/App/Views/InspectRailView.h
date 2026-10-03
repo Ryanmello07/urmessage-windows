@@ -137,6 +137,9 @@ struct RosterVerb {
   // What the store would say about `typed`: "" when it would take it, else the sentence. The
   // rule lives with the store (the views take no dependency on Live/), and the dialog asks it.
   std::function<std::wstring(std::wstring const& typed)> nameRefusal;
+  // Delete every one of THIS DEVICE'S OWN lines named, for everyone (the per-message delete,
+  // each queued on its own). Answers how many were queued. Gated like a send: `enabled`.
+  std::function<int(std::vector<std::wstring> rowIds)> deleteMine;
   bool enabled = false;
 };
 void SetInspectRailRosterVerb(RosterVerb verb);

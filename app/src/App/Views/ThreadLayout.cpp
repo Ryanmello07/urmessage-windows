@@ -195,6 +195,36 @@ std::wstring DeleteConfirmPrimary() { return L"Delete for everyone"; }
 
 std::wstring DeleteConfirmClose() { return L"Cancel"; }
 
+std::vector<std::wstring> OwnDeletableMessageIds(urmsg::demo::Conversation const& c) {
+  std::vector<std::wstring> ids;
+  for (auto const& r : c.rows) {
+    if (r.kind != urmsg::demo::RowKind::Message || !r.outgoing) continue;
+    if (r.state != urmsg::demo::DeliveryState::Sent &&
+        r.state != urmsg::demo::DeliveryState::Delivered &&
+        r.state != urmsg::demo::DeliveryState::Read)
+      continue;
+    ids.push_back(r.id);
+  }
+  return ids;
+}
+
+std::wstring DeleteAllConfirmTitle(std::size_t count) {
+  return count == 1 ? std::wstring(L"Delete your message for everyone?")
+                    : std::format(L"Delete all {} of your messages for everyone?", count);
+}
+
+std::wstring DeleteAllConfirmBody() {
+  // Spec C's explainer first, character for character (DeleteConfirmBody), then the one fact this
+  // larger action adds: it is only ever your own lines.
+  return DeleteConfirmBody() +
+         L" Only your own messages are deleted: everybody else's stay where they are.";
+}
+
+std::wstring DeleteAllConfirmPrimary(std::size_t count) {
+  return count == 1 ? std::wstring(L"Delete 1 message")
+                    : std::format(L"Delete {} messages", count);
+}
+
 std::size_t Utf8Octets(std::wstring_view text) {
   std::size_t octets = 0;
   for (std::size_t at = 0; at < text.size(); ++at) {

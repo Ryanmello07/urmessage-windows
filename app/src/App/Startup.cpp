@@ -638,6 +638,40 @@ std::vector<std::wstring> ReplyReactDiagnostics() {
         offenders.empty() ? L"(none)" : offenders, listing));
   }
 
+  // DELETE ALL MY MESSAGES: which lines it names. A synthetic conversation holding one of each
+  // kind of row, and the ids it must and must not name, printed beside the verdict.
+  {
+    urmsg::demo::Conversation c;
+    auto row = [&](urmsg::demo::RowKind kind, wchar_t const* id, bool outgoing, urmsg::demo::DeliveryState state) {
+      urmsg::demo::MessageRow r{};
+      r.kind = kind;
+      r.id = id;
+      r.outgoing = outgoing;
+      r.state = state;
+      c.rows.push_back(r);
+    };
+    row(urmsg::demo::RowKind::Message, L"sent", true, urmsg::demo::DeliveryState::Sent);
+    row(urmsg::demo::RowKind::Message, L"read", true, urmsg::demo::DeliveryState::Read);
+    row(urmsg::demo::RowKind::Message, L"theirs", false, urmsg::demo::DeliveryState::Sent);
+    row(urmsg::demo::RowKind::Message, L"pending", true, urmsg::demo::DeliveryState::Pending);
+    row(urmsg::demo::RowKind::Message, L"failed", true, urmsg::demo::DeliveryState::Failed);
+    row(urmsg::demo::RowKind::System, L"system", true, urmsg::demo::DeliveryState::Sent);
+    row(urmsg::demo::RowKind::DaySeparator, L"day", true, urmsg::demo::DeliveryState::Sent);
+    const auto ids = OwnDeletableMessageIds(c);
+    const bool named = ids == std::vector<std::wstring>{L"sent", L"read"};
+    const bool words = DeleteAllConfirmTitle(3).find(L"3") != std::wstring::npos &&
+                       DeleteAllConfirmPrimary(3).find(L"3") != std::wstring::npos &&
+                       DeleteAllConfirmBody().starts_with(DeleteConfirmBody()) &&
+                       DeleteAllConfirmBody().find(L"Only your own messages") != std::wstring::npos;
+    std::wstring listing;
+    for (auto const& id : ids) listing += id + L" ";
+    out.push_back(std::format(
+        L"  delete all mine  : {}  names [{}] of sent, read, theirs, pending, failed, system, day; "
+        L"words name the count and open with Spec C's explainer {}   [query: OwnDeletableMessageIds "
+        L"names exactly this device's outgoing Message rows in Sent, Delivered or Read]",
+        Verdict(named && words), listing, words ? L"yes" : L"NO"));
+  }
+
   // THE DELETE CONFIRMATION, against Spec C's string table TRANSCRIBED HERE (the kSpecC511
   // pattern: an independent copy, so a paraphrase in the app fails the launch). The owner's ruling
   // of 2026-10-02 removed the 24-hour window and kept this explainer.

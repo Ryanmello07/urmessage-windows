@@ -1061,6 +1061,54 @@ void AskLocalName(XamlRoot const& xamlRoot, bool conversation, std::wstring key,
   dialog.ShowAsync();
 }
 
+// DELETE ALL MY MESSAGES: one button under the conversation's subject, behind a confirmation whose
+// default is Cancel and which names the count. The ids are captured at populate time: a line
+// that arrives while the dialog is open is not in the count the person agreed to.
+Border MakeDeleteMineButtonRow(std::vector<std::wstring> ids) {
+  Border row;
+  row.Padding(ThicknessHelper::FromLengths(12, 0, 12, 6));
+  Button b;
+  if (auto style = kit::StyleByKey(L"UrPaneActionSecondaryStyle")) b.Style(style);
+  b.Height(30);
+  b.MinHeight(30);
+  b.Padding(ThicknessHelper::FromLengths(10, 0, 10, 0));
+  b.FontSize(12);
+  b.HorizontalAlignment(HorizontalAlignment::Left);
+  b.Content(winrt::box_value(H(std::format(L"Delete all my messages ({})", ids.size()))));
+  automation::AutomationProperties::SetName(
+      b, H(std::format(L"Delete all {} of your messages in this conversation for everyone", ids.size())));
+  b.Click([ids](winrt::Windows::Foundation::IInspectable const& sender, auto const&) {
+    auto button = sender.try_as<Button>();
+    if (!button) return;
+    ContentDialog dialog;
+    dialog.XamlRoot(button.XamlRoot());
+    dialog.Title(winrt::box_value(H(DeleteAllConfirmTitle(ids.size()))));
+    TextBlock body;
+    body.TextWrapping(TextWrapping::Wrap);
+    body.Text(H(DeleteAllConfirmBody()));
+    dialog.Content(body);
+    dialog.PrimaryButtonText(H(DeleteAllConfirmPrimary(ids.size())));
+    dialog.CloseButtonText(H(DeleteConfirmClose()));
+    dialog.DefaultButton(ContentDialogButton::Close);
+    dialog.Background(urnw::colors::SheetBrush());
+    auto op = dialog.ShowAsync();
+    op.Completed([ids](auto const& async, auto const& status) {
+      if (status != winrt::Windows::Foundation::AsyncStatus::Completed) return;
+      if (async.GetResults() != ContentDialogResult::Primary) {
+        urnw::LogInfo("rail: delete-all-mine NOT confirmed; nothing queued");
+        return;
+      }
+      auto const& host = MutableRosterVerb();
+      if (!host.enabled || !host.deleteMine) return;
+      const int queued = host.deleteMine(ids);
+      urnw::LogInfo("rail: delete-all-mine confirmed; {} of {} deletion(s) taken by the host", queued,
+                    ids.size());
+    });
+  });
+  row.Child(b);
+  return row;
+}
+
 // ONE LABEL BUTTON, for a member's expansion and for the conversation's header alike.
 Border MakeLocalNameButtonRow(bool conversation, bool named, std::wstring key, std::wstring current,
                               double indent) {
@@ -1471,6 +1519,16 @@ void PopulateConversation(InspectRailView& v, demo::Conversation const& conv,
   if (!conv.groupIdHex.empty() && CanNameLocally(true))
     body.Append(MakeLocalNameButtonRow(true, !conv.localName.empty(), conv.groupIdHex,
                                        conv.localName, 0));
+  // DELETE ALL MY MESSAGES, live only and only while a deletion can be sent: the session is up
+  // and this device is not an observer (ruling 19 refuses an observer every sendable kind,
+  // TOMBSTONE included). Absent rather than dark when there is nothing of mine to delete.
+  {
+    auto const& host = MutableRosterVerb();
+    const auto mine = OwnDeletableMessageIds(conv);
+    if (!mine.empty() && host.deleteMine && host.enabled && conv.myRole != demo::kRoleObserver &&
+        urmsg::ActiveRunMode() == urmsg::RunMode::Live)
+      body.Append(MakeDeleteMineButtonRow(mine));
+  }
 
   // The caption meta is WORDS, not a bare count (design d4 §2), summed by the
   // pure table from the same OnlineDeviceCount the rows report - so the caption

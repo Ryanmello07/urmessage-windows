@@ -608,6 +608,15 @@ std::wstring DeleteConfirmBody();
 std::wstring DeleteConfirmPrimary();
 std::wstring DeleteConfirmClose();
 
+// ---- delete ALL of my messages for everyone (the per-message delete, applied to every one) ----
+// The ids of THIS DEVICE'S OWN lines in `c` that a delete can name: outgoing MESSAGE rows the
+// server has taken (Sent, Delivered or Read). Never somebody else's line, never a line still
+// Pending or Failed (it is not a record yet), never a system row or a day separator.
+std::vector<std::wstring> OwnDeletableMessageIds(urmsg::demo::Conversation const& c);
+std::wstring DeleteAllConfirmTitle(std::size_t count);
+std::wstring DeleteAllConfirmBody();
+std::wstring DeleteAllConfirmPrimary(std::size_t count);
+
 // ---- the text limit (ledger 266, item 6) -------------------------------------------------
 // The longest text the sealer takes, in UTF-8 OCTETS and not characters, and the longest a
 // reply takes, which spends 32 of them naming its parent. ThreadLayout.cpp static_asserts both
