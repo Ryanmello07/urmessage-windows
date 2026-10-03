@@ -352,9 +352,21 @@ bool MainWindow::ContentShell() const {
 //
 // A function-local static, like GetWorld's own: it is immutable, it outlives every reference the
 // views take, and it costs one zeroed struct for the life of the process.
+// THE WORLD A LIVE-ONLY LAUNCH DRAWS BEFORE THE MESH HAS ANSWERED. It was World{}, whose
+// connectState is the enum's FIRST value, Connected - so the status strip said "Connected" for
+// the whole of the dial, and for ever on a computer with no credential (measured 2026-10-02: a
+// plain launch with none drew "Connected" beside a dialog saying nothing could connect).
+urmsg::demo::World MakeEmptyWorld(urmsg::demo::ConnectState state) {
+  urmsg::demo::World world{};
+  world.connectState = state;
+  return world;
+}
+
 urmsg::demo::World const& EmptyWorld() {
-  static const urmsg::demo::World empty{};
-  return empty;
+  static const urmsg::demo::World dialling = MakeEmptyWorld(urmsg::demo::ConnectState::Connecting);
+  static const urmsg::demo::World stuck = MakeEmptyWorld(urmsg::demo::ConnectState::Offline);
+  auto onboard = urmsg::live::OnboardSnapshot();
+  return onboard && onboard->step == urmsg::live::OnboardStep::NoCredential ? stuck : dialling;
 }
 
 urmsg::demo::World const& MainWindow::ActiveWorld() const {
@@ -367,8 +379,9 @@ urmsg::demo::World const& MainWindow::ActiveWorld() const {
 }
 
 void MainWindow::ArmLiveWorldUpdates() {
-  // OFF BY DEFAULT AND THIS IS THE GATE. Without --live / %URMESSAGE_LIVE% nothing here runs, no
-  // callback is registered, and the window draws exactly what it drew before this existed.
+  // THIS IS THE GATE. On a launch that is not live (LiveMesh.h: an argument and no --live, or
+  // %URMESSAGE_LIVE%=0) nothing here runs, no callback is registered, and the window draws
+  // exactly what it drew before this existed.
   if (!urmsg::live::IsEnabled()) return;
 
   liveBridge_ = std::make_shared<LiveWorldBridge>();
@@ -435,12 +448,12 @@ void MainWindow::BuildOnboardDialog() {
   StackPanel panel;
   panel.Spacing(14);
 
-  TextBlock intro;
-  intro.TextWrapping(TextWrapping::Wrap);
-  intro.Text(
+  onboardIntro_ = TextBlock();
+  onboardIntro_.TextWrapping(TextWrapping::Wrap);
+  onboardIntro_.Text(
       L"This device is connected but is not in a group yet. A group is opened by somebody who is "
       L"already in one: send them the join code below, and paste the invitation they send back.");
-  panel.Children().Append(intro);
+  panel.Children().Append(onboardIntro_);
 
   // THE JOIN CONTROLS AS ONE PANEL, so ApplyOnboard can hide them in a breath once this device
   // has founded a group: somebody looking at "paste the invitation they send back" while holding
@@ -520,13 +533,11 @@ void MainWindow::BuildOnboardDialog() {
   // does. Two roads, each whole, the shorter one first.
   panel.Children().Append(onboardFoundButton_);
 
-  {
-    TextBlock orElse;
-    orElse.TextWrapping(TextWrapping::Wrap);
-    orElse.Text(L"Or join a group somebody else has already made:");
-    orElse.Opacity(0.75);
-    panel.Children().Append(orElse);
-  }
+  onboardOrElse_ = TextBlock();
+  onboardOrElse_.TextWrapping(TextWrapping::Wrap);
+  onboardOrElse_.Text(L"Or join a group somebody else has already made:");
+  onboardOrElse_.Opacity(0.75);
+  panel.Children().Append(onboardOrElse_);
   panel.Children().Append(onboardJoinPanel_);
 
   // ── ADDING SOMEBODY: their code in, an invitation out ──────────────────────────────────────
@@ -665,6 +676,27 @@ void MainWindow::ApplyOnboard() {
   if (generation == onboardDrawn_) return;
   auto state = urmsg::live::OnboardSnapshot();
   if (!state) return;
+  // A DIALOG NEEDS A XamlRoot, AND THE WINDOW'S CONTENT HAS NONE UNTIL IT IS IN THE TREE. A state
+  // published before then is left UNCONSUMED and asked for again when the content loads, rather
+  // than shown into nothing. Measured 2026-10-02: a plain launch with no credential publishes
+  // NoCredential within milliseconds, this ran inside the window's constructor, ShowAsync threw
+  // "This element does not have a XamlRoot", and the whole window failed to construct.
+  if (state->step != urmsg::live::OnboardStep::Joined) {
+    auto content = Content();
+    if (!content || !content.XamlRoot()) {
+      if (!onboardRetryArmed_) {
+        if (auto element = content.try_as<FrameworkElement>()) {
+          onboardRetryArmed_ = true;
+          element.Loaded([weak = get_weak()](auto const&, auto const&) {
+            if (auto self = weak.get()) self->ApplyOnboard();
+          });
+          urnw::LogInfo("window: an onboarding state arrived before the window could host a "
+                        "dialog; it is shown when the window has loaded");
+        }
+      }
+      return;
+    }
+  }
   onboardDrawn_ = generation;
 
   if (state->step == urmsg::live::OnboardStep::Joined) {
@@ -696,22 +728,35 @@ void MainWindow::ApplyOnboard() {
   const bool founded = state->step == urmsg::live::OnboardStep::Founded ||
                        state->step == urmsg::live::OnboardStep::Invited;
   const bool haveInvite = !state->inviteCode.empty();
+  // NO CREDENTIAL: neither road can be taken, so neither is drawn - only the sentence that says
+  // where the file goes. A join panel with an empty code in it would ask for a step that cannot
+  // work yet.
+  const bool stuck = state->step == urmsg::live::OnboardStep::NoCredential;
   if (onboardJoinPanel_)
-    onboardJoinPanel_.Visibility(founded ? Visibility::Collapsed : Visibility::Visible);
+    onboardJoinPanel_.Visibility(founded || stuck ? Visibility::Collapsed : Visibility::Visible);
   if (onboardFoundButton_)
-    onboardFoundButton_.Visibility(founded ? Visibility::Collapsed : Visibility::Visible);
+    onboardFoundButton_.Visibility(founded || stuck ? Visibility::Collapsed : Visibility::Visible);
   if (onboardAddPanel_)
-    onboardAddPanel_.Visibility(founded ? Visibility::Visible : Visibility::Collapsed);
+    onboardAddPanel_.Visibility(founded && !stuck ? Visibility::Visible : Visibility::Collapsed);
   if (onboardInvitePanel_)
-    onboardInvitePanel_.Visibility(haveInvite ? Visibility::Visible : Visibility::Collapsed);
+    onboardInvitePanel_.Visibility(haveInvite && !stuck ? Visibility::Visible
+                                                        : Visibility::Collapsed);
   if (onboardInviteBox_ && haveInvite)
     onboardInviteBox_.Text(winrt::to_hstring(state->inviteCode));
   // THE PRIMARY BUTTON IS THE JOIN, so it has no job on the founder's road: an owner adds people
   // with the button inside the add panel, and a Join here would try to join a group with an empty
   // box. Hidden rather than disabled, because a dark button invites a person to look for what
   // would light it.
+  // The opening paragraph says "This device is connected", which a computer with no credential
+  // is not; and "Or join a group..." introduces the join panel, so it goes where the panel goes.
+  if (onboardIntro_)
+    onboardIntro_.Visibility(stuck ? Visibility::Collapsed : Visibility::Visible);
+  if (onboardOrElse_)
+    onboardOrElse_.Visibility(founded || stuck ? Visibility::Collapsed : Visibility::Visible);
   if (onboardDialog_) {
-    onboardDialog_.PrimaryButtonText(founded ? hstring{} : hstring{L"Join"});
+    onboardDialog_.Title(box_value(stuck ? hstring{L"URmessage needs its credential"}
+                                         : hstring{L"Join a group"}));
+    onboardDialog_.PrimaryButtonText(founded || stuck ? hstring{} : hstring{L"Join"});
     // AND THE CLOSE BUTTON SAYS WHAT CLOSING MEANS, which changes with the road. "Not now" is
     // right for somebody who has not joined anything: they are putting it off. It is WRONG for a
     // founder whose group is open and whose invitation has been copied - they are finished, and a
@@ -721,8 +766,14 @@ void MainWindow::ApplyOnboard() {
     // OnboardStep::Joined, which is the JOINER's end state; a founder goes Founded then Invited
     // and stays there, because the invitation is the one thing on this screen they still need to
     // copy and taking it away on a timer would lose it.
-    onboardDialog_.CloseButtonText(founded ? hstring{L"Done"} : hstring{L"Not now"});
+    onboardDialog_.CloseButtonText(stuck     ? hstring{L"Close"}
+                                   : founded ? hstring{L"Done"}
+                                             : hstring{L"Not now"});
   }
+
+  // THE STRIP IS REBUILT FOR A STUCK LAUNCH: it was built off the dialling world, which says
+  // Connecting, and EmptyWorld() answers Offline from this state on.
+  if (stuck && !liveWorld_) BuildStatusStrip();
 
   // SHOWN ONCE. ShowAsync on a dialog that is already open throws, so the open-ness is the flag:
   // a beat that arrives while it is up only re-points the text.

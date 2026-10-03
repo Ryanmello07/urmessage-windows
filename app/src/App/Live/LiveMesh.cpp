@@ -34,6 +34,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <iterator>
 #include <memory>
@@ -1164,6 +1165,18 @@ const char* KindName(uint8_t kind) {
 // narrowing that makes it acceptable: this runs only under --live, which is off
 // by default and off in CI, and it is the two development accounts talking to
 // each other. It is NOT a pattern for a shipping build.
+//
+// AND THE NARROWING STOPPED HOLDING (ledger 271). The alpha runs live on TESTERS' machines -
+// a plain launch is live now - and its README tells them this log "contains no message text
+// ... it is safe to send on". So the ruling's own scope is kept by a switch rather than by
+// the launch: the text, and a reaction's emoji, are written only when %URMESSAGE_LOG_BODIES%
+// is "1", which the development loop sets and no tester is told about. Without it every line
+// below still says which record, from whom, of what kind and how long, and nothing it said.
+bool LogBodies() {
+  static const bool on = EnvVar(L"URMESSAGE_LOG_BODIES") == L"1";
+  return on;
+}
+
 void LogMessages(urmsg::live::LiveGroup const& live) {
   urnw::LogInfo("live: ---- the conversation: {} message(s) ----", live.messages.size());
   for (size_t i = 0; i < live.messages.size(); ++i) {
@@ -1171,7 +1184,8 @@ void LogMessages(urmsg::live::LiveGroup const& live) {
     std::string reactions;
     for (auto const& r : m.reactions) {
       if (!reactions.empty()) reactions += " ";
-      reactions += r.emoji;
+      // the emoji is content; without the switch a reaction is only its owner
+      reactions += LogBodies() ? r.emoji : std::string("r");
       reactions += r.mine ? "(mine)" : "";
     }
     // A gap is something that IS at this position and cannot be shown. It is
@@ -1184,7 +1198,7 @@ void LogMessages(urmsg::live::LiveGroup const& live) {
           i, m.recordId, m.senderHandle, m.gap, KindName(m.kind));
       continue;
     }
-    std::string text = m.body;
+    std::string text = LogBodies() ? m.body : std::string("(text not logged)");
     // One line per message: a body with a newline in it would otherwise make
     // the log's own structure a thing the sender chooses.
     for (char& c : text) {
@@ -1250,6 +1264,14 @@ void RunSession() {
         "live: no usable credential at {} — the live path needs an operator-minted by_client_jwt "
         "at that path (or %URMESSAGE_LIVE_JWT% pointing at one). Nothing here mints one.",
         Utf8Path(credPath));
+    // AND ON THE SCREEN, in the words the README uses, because a log line is not where a person
+    // who skipped a step will look. The path is the one this launch actually read.
+    PublishOnboard(urmsg::live::OnboardStep::NoCredential, std::string{},
+                   std::format("This computer has no URmessage credential yet. Put the "
+                               "credential file you were sent in {} and name it {}, then start "
+                               "URmessage again.",
+                               Utf8Path(credPath.parent_path()),
+                               Utf8Path(credPath.filename())));
     return;
   }
   urnw::LogInfo("live: credential read from {} ({} bytes; its contents are never logged)",
@@ -1715,12 +1737,14 @@ void RunSession() {
           // itself, which changes the TARGET and adds nothing to the conversation. The entry is
           // dropped, and the change is read off the target on the publish that follows.
           urnw::LogInfo("live: *** {} *** {} on message {} in {} ms: {}",
-                        out.kind == OutboundKind::ReactAdd ? "REACTED" : "UNREACTED", out.emoji,
-                        out.targetHex, tookMs, info);
+                        out.kind == OutboundKind::ReactAdd ? "REACTED" : "UNREACTED",
+                        LogBodies() ? out.emoji : std::string("a reaction"), out.targetHex,
+                        tookMs, info);
           if (at != reactionOutbox.end()) reactionOutbox.erase(at);
         } else {
-          urnw::LogError("live: {} {} on message {} was REFUSED after {} ms: {}", verb, out.emoji,
-                         out.targetHex, tookMs, failure.empty() ? "no reason given" : failure);
+          urnw::LogError("live: {} {} on message {} was REFUSED after {} ms: {}", verb,
+                         LogBodies() ? out.emoji : std::string("a reaction"), out.targetHex,
+                         tookMs, failure.empty() ? "no reason given" : failure);
           if (at != reactionOutbox.end()) {
             at->failed = true;
             at->error = failure.empty()
@@ -1827,7 +1851,22 @@ void RunSession() {
 
 }  // namespace
 
-bool IsEnabled() { return EnvVar(L"URMESSAGE_LIVE") == L"1" || HasCommandLineFlag(L"--live"); }
+// No arguments at all: the launch a person makes by double-clicking the exe. LiveMesh.h says
+// why that launch is live and every other keeps the explicit rule.
+bool IsPlainLaunch() {
+  int argc = 0;
+  wchar_t** argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);
+  if (argv == nullptr) return false;
+  ::LocalFree(argv);
+  return argc <= 1;
+}
+
+bool IsEnabled() {
+  const std::wstring env = EnvVar(L"URMESSAGE_LIVE");
+  if (env == L"1" || HasCommandLineFlag(L"--live")) return true;
+  if (env == L"0") return false;
+  return IsPlainLaunch();
+}
 
 bool RouteThroughUrnetwork() {
   const nlohmann::json prefs = urnw::LoadAppPrefs();
@@ -1846,7 +1885,10 @@ void SetRouteThroughUrnetwork(bool on) {
 
 bool StartIfEnabled() {
   if (!IsEnabled()) return false;
-  urnw::LogInfo("live: --live / %URMESSAGE_LIVE% is set; starting the live mesh worker");
+  urnw::LogInfo("live: this launch is live ({}); starting the live mesh worker",
+                HasCommandLineFlag(L"--live") || EnvVar(L"URMESSAGE_LIVE") == L"1"
+                    ? "--live or %URMESSAGE_LIVE%=1"
+                    : "a plain launch");
 
   // StartGuardedThread gives this thread the per-thread terminate handler MSVC
   // does not inherit across threads, so a death in here is named in the log

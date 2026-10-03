@@ -111,6 +111,10 @@ struct MainWindow : MainWindowT<MainWindow> {
   winrt::Microsoft::UI::Xaml::Controls::TextBox onboardCodeBox_{nullptr};
   winrt::Microsoft::UI::Xaml::Controls::TextBox onboardPasteBox_{nullptr};
   winrt::Microsoft::UI::Xaml::Controls::TextBlock onboardStatus_{nullptr};
+  // The dialog's opening paragraph and the "Or join..." line: members so ApplyOnboard can hide
+  // them when neither road can be taken (no credential) or the join road is gone (founded).
+  winrt::Microsoft::UI::Xaml::Controls::TextBlock onboardIntro_{nullptr};
+  winrt::Microsoft::UI::Xaml::Controls::TextBlock onboardOrElse_{nullptr};
   // THE FOUNDER'S HALF OF THE SAME DIALOG. Three panels, one shown at a time by ApplyOnboard:
   // join (no group), found (a group of one, waiting for somebody's code), invite (an invitation
   // just minted and waiting to be sent). Built once with the dialog and never rebuilt, because
@@ -206,6 +210,8 @@ struct MainWindow : MainWindowT<MainWindow> {
   // --demo-names=expand|dialog: the label surfaces, reached once by the app itself.
   void ShowNamesSurfaceOnce();
   bool namesShown_ = false;
+  // ApplyOnboard's one-time Loaded hook, for a state that arrived before the content had a root.
+  bool onboardRetryArmed_ = false;
 
   std::shared_ptr<LiveWorldBridge> liveBridge_;
   urmsg::live::WorldPtr liveWorld_;

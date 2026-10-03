@@ -283,9 +283,10 @@ int __stdcall wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   // detaches a background thread and returns immediately — it neither blocks
   // this apartment nor gives anyone a handle to block on.
   //
-  // OFF BY DEFAULT. Without --live or %URMESSAGE_LIVE%=1 this is one env-var
-  // read and a return, the SDK dll is never even mapped (it is delay-loaded),
-  // and the launch is byte-for-byte the launch it was before.
+  // OFF FOR EVERY LAUNCH THAT CARRIES AN ARGUMENT WITHOUT --live, AND ON FOR A PLAIN ONE
+  // (LiveMesh.h says why). Off, this is an env-var read, a command-line parse and a return,
+  // the SDK dll is never even mapped (it is delay-loaded), and the launch is byte-for-byte
+  // the launch it was before.
   if (urmsg::live::StartIfEnabled()) {
     urnw::LogInfo("startup: live mesh worker started on a background thread");
   }

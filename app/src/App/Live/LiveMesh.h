@@ -38,14 +38,18 @@
 
 namespace urmsg::live {
 
-// Is the live path switched on for this launch? True only when
-// %URMESSAGE_LIVE% is "1" or the command line carries --live.
+// Is the live path switched on for this launch? True when %URMESSAGE_LIVE% is "1" or the
+// command line carries --live, AND ON A PLAIN LAUNCH - one with no arguments at all - unless
+// %URMESSAGE_LIVE% is "0".
 //
-// THE DEFAULT IS OFF AND THAT IS LOAD BEARING FOR NOW: the diagnostic suite runs
-// on every launch and CI reads its output, so an ordinary launch must behave
-// exactly as it did before this file existed. Nothing here runs, and the SDK
-// dll is not even loaded, unless this answers true (the import is delay-loaded;
-// see App.vcxproj).
+// THE PLAIN LAUNCH IS THE TESTER'S, AND IT USED TO DRAW AN EMPTY SHELL (ledger 271). The alpha's
+// README says "run URmessage.exe", a tester double-clicks it, and until 2026-10-02 that started
+// no worker: the "Join a group" box the README describes never appeared, and the package as
+// staged could not reach a group at all. Every launch the development loop makes carries an
+// argument (--demo..., --diagnose, --live, a capture switch), and a launch with ANY argument
+// keeps the explicit rule, so CI's --diagnose and every demo capture behave exactly as before.
+// Nothing here runs, and the SDK dll is not even loaded, unless this answers true (the import
+// is delay-loaded; see App.vcxproj).
 bool IsEnabled();
 
 // Start the worker on a detached, guarded background thread, if IsEnabled().
@@ -167,6 +171,9 @@ enum class OnboardStep {
   Joining,    // an invite is being parsed and applied
   Joined,     // there is a group; the fetch loop owns the session now
   Refused,    // the last invite or add was refused, and `message` says why
+  // THIS COMPUTER HOLDS NO CREDENTIAL, and `message` says where the file goes. A dead end that
+  // used to be a log line only: a tester who skipped a step saw an empty window and no reason.
+  NoCredential,
   // ── the founder's road, which is the other half of the same screen ──────────
   Founded,    // this device made a group. IT CANNOT SEND YET: a group of one sits at epoch 0 and
               // is not open on the server, and the commit that opens it is the one that adds the
