@@ -3,7 +3,7 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 VisualStudioVersion = 17.11.0.0
 MinimumVisualStudioVersion = 10.0.40219.1
 # URmessage Windows solution. Two projects: a Common static library and the
-# WinUI 3 app. No service, no driver, no installer — see README.md.
+# WinUI 3 app. No service, no driver. The MSI builds apart — see README.md.
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Common", "src\Common\Common.vcxproj", "{C1D2E3F4-0001-4A5B-9C8D-000000000001}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "URmessage", "src\App\App.vcxproj", "{C1D2E3F4-0003-4A5B-9C8D-000000000003}"

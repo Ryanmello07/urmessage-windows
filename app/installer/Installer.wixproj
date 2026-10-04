@@ -1,0 +1,67 @@
+<Project Sdk="WixToolset.Sdk/5.0.2">
+  <!-- URmessage MSI: a per-user install of the Release output folder (see
+       Package.wxs). Build it after the solution, from app:
+         msbuild installer\Installer.wixproj /restore /p:Configuration=Release /p:Platform=x64
+       It lands in installer\bin\<Platform>\<Configuration>\URmessage.msi.
+       Check what is inside with tools\verify-msi-payload.ps1.
+
+       Not in URmessage.sln on purpose: the solution builds the app, and this
+       project packages what that build produced.
+
+       Directory.Build.props is imported here too (every project under app\
+       gets it), and its OutDir is scoped to .vcxproj. That scoping is what
+       keeps this MSI out of the folder it installs; see the note there.
+       SPDX-License-Identifier: MPL-2.0 -->
+  <PropertyGroup>
+    <OutputName>URmessage</OutputName>
+    <OutputType>Package</OutputType>
+    <!-- The folder the app build writes (Directory.Build.props OutDir) and the
+         one Package.wxs installs. Override per arch/config on the command
+         line. -->
+    <BinDir Condition="'$(BinDir)'==''">$(MSBuildThisFileDirectory)..\build\$(Platform)\Release</BinDir>
+    <!-- MSI ProductVersion fields are 8.8.16-bit, so the MSI cannot carry the
+         app's YYYY.M.D-code version; a stamping build passes
+         /p:UrMsiVersion=<major.minor.build> instead. Unstamped, it is 0.0.1,
+         matching the code-0 app build the props defaults describe. Same-version
+         builds still replace each other: MajorUpgrade in Package.wxs allows
+         same-version upgrades, and WiX gives every build a new ProductCode. -->
+    <UrMsiVersion Condition="'$(UrMsiVersion)'==''">0.0.1</UrMsiVersion>
+    <DefineConstants>BinDir=$(BinDir);UrMsiVersion=$(UrMsiVersion)</DefineConstants>
+    <!-- Installer warnings describe install, upgrade and repair correctness,
+         not polish, so every one stops the build, except the two ICEs below.
+         That includes ICE38, ICE64, ICE91 and ICE105, which this per-user
+         package passes rather than suppresses (see the Package.wxs header). -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- ICE03 fails on the harvested Windows App SDK payload, not on anything
+         authored here. Un-suppressed, it reports exactly 8 rows (Windows App
+         SDK 2.2.0, x64), all in the File table's Language column:
+           - String overflow, 2 rows: Microsoft.ui.xaml.dll and
+             Microsoft.UI.Xaml.Phone.dll each declare 86 languages (430
+             characters), too long a list for the column;
+           - Invalid Language Id, 6 rows: the .mui satellites of those two
+             dlls in gd-gb (LCID 1169), mi-NZ (1153) and ug-CN (1152), LCIDs
+             ICE03's reference table does not know.
+         The column is inert here: the package has no transforms or patches,
+         and the OS resource loader never reads MSI metadata. The URnetwork VPN
+         client suppresses ICE03 for the same runtime and records the same
+         reason (its installer/Installer.wixproj). Suppressing ICE03 does not
+         suppress ICE60, which still runs on the fonts (authored as companion
+         files in Package.wxs).
+
+         WiX can suppress an ICE only for the whole package (wix msi validate
+         -sice), not per table or per file, so this also hides ICE03 on what
+         Package.wxs authors by hand: the launch conditions, the shortcut's
+         Target, the registry value. tools\verify-msi-ice03.ps1 runs ICE03 on
+         its own and passes only on exactly the 8 rows above; CI runs it after
+         every MSI build. When a Windows App SDK bump changes the rows, update
+         the list there and here together.
+
+         ICE61 warns that the upgrade row's maximum version includes this
+         package's own version ("The Maximum version is not less than the
+         current product"). That is AllowSameVersionUpgrades in Package.wxs,
+         on purpose: two builds of one version (every unstamped 0.0.1 build,
+         for one) must replace each other rather than install side by side.
+         WiX authors that row; nothing here hand-authors Upgrade rows. -->
+    <SuppressIces>ICE03;ICE61</SuppressIces>
+  </PropertyGroup>
+</Project>
