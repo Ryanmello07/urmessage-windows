@@ -7,9 +7,13 @@
 # and arm64, vendors wintun by sha256 + Authenticode signer, builds a WiX MSI
 # and verifies its payload.
 #
-# URmessage has none of that. No Go, no SDK DLL, no wintun, no driver, no
-# service, no installer — per the demo design, no protocol at all. The build is
-# restore NuGet, msbuild the solution, produce the exe. What is KEPT from the
+# URmessage needs little of that. No Go and no SDK DLL: the app reaches the
+# message server through URnetworkSdk.dll, but it links an import library made
+# from the vendored export list and delay-loads the dll, so this build neither
+# makes nor needs it. No wintun, no driver, no service. The installer is a
+# per-user MSI (app/installer), which this workflow builds and verifies as a
+# check and does not upload (see those steps). The build is restore NuGet,
+# msbuild the solution, produce the exe, package the MSI. What is KEPT from the
 # precedent is its style and its scars: the job shape, the least-privilege
 # permissions block, windows-2022 rather than windows-latest, keeping the
 # msbuild log even on failure, and asserting on the artifact that matters
@@ -198,6 +202,7 @@ jobs:
       # run an ARM64 exe — an ARM64 leg would build-only and would quietly be a
       # weaker gate wearing the same name.
       - name: Build the solution (Release x64)
+        id: build
         shell: pwsh
         working-directory: app
         run: |
@@ -212,6 +217,92 @@ jobs:
             /flp:"LogFile=msbuild-x64.log;Verbosity=detailed"
           if ($LASTEXITCODE -ne 0) {
             Write-Host "::error::msbuild failed with exit code $LASTEXITCODE -- see the msbuild-log-x64 artifact for the detailed log"
+            exit $LASTEXITCODE
+          }
+
+      # The per-user MSI (app/installer), built from the output folder the step
+      # above just wrote, as a BUILD CHECK: WiX compiles it and runs its ICE
+      # validation with every warning an error, except ICE03 and ICE61, which
+      # Installer.wixproj suppresses with its reasons. The next two steps run
+      # ICE03 on its own and read what landed inside. They run before the
+      # diagnose step so that they package exactly what msbuild produced,
+      # never anything a run of the app could leave behind.
+      #
+      # It is NOT uploaded, on purpose, for three reasons. It carries the four
+      # licensed brand typefaces (README, open question 1; the same reason the
+      # upload at the end of this file is just the exe). This build stages no
+      # URnetworkSdk.dll, so an install of it is an app whose ordinary launch
+      # cannot go live. And it is unstamped (MSI version 0.0.1, version code
+      # 0), so it would never update. It shows that the installer still builds
+      # and still carries the app; it is not a client for anyone to install.
+      #
+      # /restore fetches the WiX v5 SDK (WixToolset.Sdk 5.0.2, pinned in
+      # Installer.wixproj) from NuGet, as the solution build fetches the
+      # Windows App SDK.
+      - name: Build the per-user MSI (x64 build check, not uploaded)
+        shell: pwsh
+        working-directory: app
+        run: |
+          msbuild installer\Installer.wixproj `
+            /restore `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /p:BinDir="$env:GITHUB_WORKSPACE\app\build\x64\Release" `
+            /v:minimal `
+            /clp:Summary `
+            /flp:"LogFile=msbuild-msi-x64.log;Verbosity=detailed"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::the MSI build failed with exit code $LASTEXITCODE -- see msbuild-msi-x64.log in the msbuild-log-x64 artifact"
+            exit $LASTEXITCODE
+          }
+
+      # ICE03 is what checks the syntax of the conditions and formatted strings
+      # Package.wxs authors by hand: the launch conditions, the shortcut's
+      # Target, the registry value. The build above suppresses it for the
+      # whole package, because the harvested Windows App SDK payload fails it
+      # on eight File.Language rows (Installer.wixproj names them), and WiX
+      # cannot suppress it for one table. This runs ICE03 alone, with the WiX
+      # SDK the MSI build restored, and passes only on exactly those eight
+      # rows: a new row anywhere fails, and so does a listed row that is gone.
+      # Run under Windows PowerShell 5.1, the way the README runs it.
+      - name: Run ICE03 on its own and allow only the eight known rows
+        shell: pwsh
+        run: |
+          $msi = @(Get-ChildItem app\installer\bin -Recurse -Filter URmessage.msi)
+          if ($msi.Count -ne 1) {
+            Write-Host "::error::expected exactly one URmessage.msi under app\installer\bin, found $($msi.Count)"
+            exit 1
+          }
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\verify-msi-ice03.ps1 -MsiPath $msi[0].FullName
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::the ICE03 check failed (exit code $LASTEXITCODE) -- its output is above"
+            exit $LASTEXITCODE
+          }
+
+      # What landed inside the MSI, and how Windows Installer resolves it (see
+      # the script's header). From the MSI's own tables, read-only: every file
+      # under INSTALLFOLDER and enough of them; ten files the app needs to
+      # start and render (the exe, resources.pri, the compiled XAML, the
+      # Windows App Runtime, the body face and the app-local VC++ runtime),
+      # each at its path; the per-user properties; and the Start-menu
+      # shortcut's Target and AppUserModelID. Then, in Windows Installer
+      # sessions on temporary copies, without installing anything: a default
+      # install requests those files and the shortcut, INSTALLFOLDER resolves
+      # under %LOCALAPPDATA%\Programs, and ALLUSERS=1 or a deleted
+      # MSIINSTALLPERUSER is refused. Run without -Release, which would also
+      # require URnetworkSdk.dll and is for an MSI that ships. Run under
+      # Windows PowerShell 5.1, the way the README runs it.
+      - name: Verify the MSI payload
+        shell: pwsh
+        run: |
+          $msi = @(Get-ChildItem app\installer\bin -Recurse -Filter URmessage.msi)
+          if ($msi.Count -ne 1) {
+            Write-Host "::error::expected exactly one URmessage.msi under app\installer\bin, found $($msi.Count)"
+            exit 1
+          }
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\verify-msi-payload.ps1 -MsiPath $msi[0].FullName
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::the MSI payload check failed (exit code $LASTEXITCODE) -- its output is above"
             exit $LASTEXITCODE
           }
 
@@ -231,7 +322,13 @@ jobs:
       # the diagnostics already emit today (the COM apartment, the MRT loader
       # throwing, the App SDK being unusable) — every one of which is a genuine
       # failure — while never firing on ordinary prose.
+      #
+      # It runs whenever the solution built, even when an MSI step above
+      # failed: those steps package and inspect a copy of the output, and a
+      # failure there must not hide whether the app itself still starts. It
+      # stays after them, so the MSI still packages untouched output.
       - name: Run the --diagnose smoke test
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: pwsh
         env:
           # The app resolves its state root from this (Common/Paths.cpp), else
@@ -379,12 +476,15 @@ jobs:
 
       # The detailed msbuild log is the whole point of a red run, so keep it
       # whether the build passed, failed, or the diagnose step failed after it.
+      # The MSI build's own log comes along when that step ran.
       - name: Upload the msbuild log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: msbuild-log-x64
-          path: app/msbuild-x64.log
+          path: |
+            app/msbuild-x64.log
+            app/msbuild-msi-x64.log
           if-no-files-found: warn
 
       # Same reasoning for the diagnostics: the step already prints them, but a
@@ -409,7 +509,8 @@ jobs:
       # the output directory additionally contains the four licensed commercial
       # typefaces (see README, open question 1) — which building is allowed to
       # do, and which a downloadable artifact on the mainstream repo should not
-      # do casually.
+      # do casually. The MSI built above installs that whole directory, fonts
+      # included, which is one reason it is not uploaded either.
       - name: Upload the built executable
         if: success()
         uses: actions/upload-artifact@v4
