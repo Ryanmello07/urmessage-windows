@@ -1,0 +1,459 @@
+# THROWAWAY install test for urnetwork/message-windows PR B1, "per-user MSI"
+# (branch feat/per-user-msi-upstream). Not for any long-lived branch.
+#
+# How to run it: put this file at .github/workflows/urmessage-msi.yml on a copy
+# of the B1 branch named msi-runner-test/<anything>, and push that branch to
+# the fork (Ryanmello07/urmessage-windows). The push runs it. Delete the branch
+# afterwards. It installs, upgrades and uninstalls ON THE GITHUB RUNNER ONLY.
+#
+# What it proves, in order:
+#   1. A per-machine install is refused (ALLUSERS=1, and MSIINSTALLPERUSER="").
+#      The runner is an administrator, so without the launch condition both
+#      would succeed; here they must fail and leave nothing behind.
+#   2. A plain `msiexec /i` installs per-user: Windows Installer reports the
+#      product as per-user, every file in the MSI is under
+#      %LOCALAPPDATA%\Programs\URmessage, nothing is under Program Files, the
+#      Start-menu shortcut is in the user's Programs menu with the AUMID the
+#      app sets on itself, and there is exactly one Add/Remove Programs entry.
+#   3. The installed copy passes --diagnose: URmessage.exe --diagnose from the
+#      install folder, gated the way build-and-test.yml gates the build
+#      output. --diagnose returns before the app creates its window, so this
+#      does not show that the UI starts.
+#   4. A higher UrMsiVersion (0.0.2 over 0.0.1) upgrades in place: still one
+#      product, now the new one, the old one gone, and the installed
+#      URmessage.exe is B's.
+#   5. A same-version build (0.0.2 again, a new ProductCode) also replaces it
+#      (AllowSameVersionUpgrades), and the installed URmessage.exe is C's.
+#   6. A downgrade (0.0.1 over 0.0.2) is refused and changes nothing.
+#   7. Uninstall removes the folder, the shortcut, the ARP entry and the
+#      shortcut's HKCU key-path value, and leaves the app's own data in
+#      %LOCALAPPDATA%\URmessage (a sentinel file written before it).
+#
+# The app is built three times, once per MSI, each with its own /p:UrVersion.
+# That changes URmessage.exe's version string and so its bytes, while its
+# FILEVERSION stays 0.0.0.0, as in every unstamped build. Windows Installer
+# keeps an installed file whose version equals the new one's, so steps 4 and 5
+# see the new bytes only because Package.wxs removes the old product before it
+# lays down the new files (MajorUpgrade afterInstallInitialize). They compare
+# the installed exe's SHA-256 with the one each MSI packaged.
+#
+# The runner session is elevated, so this cannot show the absence of a UAC
+# prompt; it shows the per-user context Windows Installer chose (step 2), and
+# prints Windows Installer's own "Running product ... with ... privileges" log
+# line for each install.
+#
+# Nothing here uploads an MSI or the app: they carry the four licensed brand
+# typefaces. Only msiexec logs and the diagnose output are uploaded.
+name: URmessage per-user MSI install test (throwaway)
+
+on:
+  push:
+    branches:
+      - 'msi-runner-test/**'
+
+permissions:
+  contents: read
+
+jobs:
+  per-user-msi:
+    name: Per-user MSI install, upgrade and uninstall (x64)
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      URM_UPGRADE_CODE: '{4264EE97-BCAC-4344-AC75-D6648FB372C1}'
+      URM_AUMID: URmessage.Desktop
+
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Runner context
+        shell: powershell
+        run: |
+          $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $admin = ([Security.Principal.WindowsPrincipal]$id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          Write-Host "user: $($id.Name)   administrator token: $admin"
+          Write-Host "LOCALAPPDATA: $env:LOCALAPPDATA"
+          Write-Host "Programs menu: $([Environment]::GetFolderPath('Programs'))"
+          Write-Host "OS: $((Get-CimInstance Win32_OperatingSystem).Caption) $([Environment]::OSVersion.Version)"
+          if (Test-Path (Join-Path $env:LOCALAPPDATA 'Programs\URmessage')) { throw 'the runner already has %LOCALAPPDATA%\Programs\URmessage' }
+
+      # The same toolchain resolution as build-and-test.yml, compressed: the
+      # pinned SDK when the runner has it, else the newest with headers and libs.
+      #
+      # Three MSIs, A = 0.0.1, B = 0.0.2 and C = 0.0.2 again (same version, new
+      # ProductCode), each from its own app build: the app is rebuilt before
+      # each one with its own /p:UrVersion (see the header), and each MSI is
+      # built from a clean installer bin/obj, so no build can be skipped as up
+      # to date. The SHA-256 of the URmessage.exe each MSI packaged is recorded
+      # beside it as <name>.exe.sha256, for the install steps.
+      - name: Build the app and MSIs A (0.0.1), B (0.0.2) and C (0.0.2 again)
+        shell: pwsh
+        working-directory: app
+        run: |
+          $pin = '10.0.22621.0'
+          $roots = @("${env:ProgramFiles(x86)}\Windows Kits\10", "$env:ProgramFiles\Windows Kits\10") | Where-Object { Test-Path -LiteralPath $_ }
+          $usable = @(foreach ($r in $roots) {
+            Get-ChildItem (Join-Path $r 'Include') -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' -and
+                (Test-Path -LiteralPath (Join-Path $r "Include\$($_.Name)\um\windows.h")) -and
+                (Test-Path -LiteralPath (Join-Path $r "Lib\$($_.Name)\um\x64\kernel32.lib")) } |
+              Select-Object -ExpandProperty Name
+          }) | Select-Object -Unique | Sort-Object { [version]$_ }
+          $usable = @($usable)
+          $sdk = if ($usable -contains $pin) { $pin } else { $usable[-1] }
+          Write-Host "windows sdk: $sdk"
+
+          $out = Join-Path $env:RUNNER_TEMP 'msi'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'app\build\x64\Release\URmessage.exe'
+          $builds = @(
+            @{ Name = 'A'; Msi = '0.0.1'; App = '0.0.1-msitest-a' },
+            @{ Name = 'B'; Msi = '0.0.2'; App = '0.0.2-msitest-b' },
+            @{ Name = 'C'; Msi = '0.0.2'; App = '0.0.2-msitest-c' }
+          )
+          foreach ($b in $builds) {
+            msbuild URmessage.sln /restore /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=$sdk `
+              /p:UrVersion=$($b.App) /m /v:minimal /clp:Summary
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $vi = (Get-Item -LiteralPath $exe).VersionInfo
+            $fileVersion = '{0}.{1}.{2}.{3}' -f $vi.FileMajorPart, $vi.FileMinorPart, $vi.FileBuildPart, $vi.FilePrivatePart
+            $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
+            Write-Host "$($b.Name): URmessage.exe FILEVERSION $fileVersion, version string '$($vi.FileVersion)', SHA-256 $hash"
+            if ($fileVersion -ne '0.0.0.0') {
+              Write-Host "::error::$($b.Name): FILEVERSION is $fileVersion, not 0.0.0.0, so this is not the equal-version upgrade the install steps test"
+              exit 1
+            }
+            if ($vi.FileVersion -ne $b.App) {
+              Write-Host "::error::$($b.Name): the version string is '$($vi.FileVersion)', not '$($b.App)', so /p:UrVersion did not reach the exe"
+              exit 1
+            }
+            Remove-Item -Recurse -Force installer\bin, installer\obj -ErrorAction SilentlyContinue
+            msbuild installer\Installer.wixproj /restore /p:Configuration=Release /p:Platform=x64 `
+              /p:BinDir="$env:GITHUB_WORKSPACE\app\build\x64\Release" /p:UrMsiVersion=$($b.Msi) /v:minimal
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Copy-Item installer\bin\x64\Release\URmessage.msi (Join-Path $out "$($b.Name).msi")
+            Set-Content -LiteralPath (Join-Path $out "$($b.Name).exe.sha256") -Value $hash -Encoding ascii
+          }
+          $hashes = @($builds | ForEach-Object { (Get-Content -LiteralPath (Join-Path $out "$($_.Name).exe.sha256") -Raw).Trim() })
+          if (@($hashes | Select-Object -Unique).Count -ne $builds.Count) {
+            Write-Host "::error::the three builds of URmessage.exe are not all different ($($hashes -join ', ')), so the upgrade steps could not tell old bytes from new"
+            exit 1
+          }
+          Get-ChildItem $out | Format-Table Name, Length | Out-String | Write-Host
+
+      # Shared helpers for the test steps (each step is its own process).
+      - name: Write the test helpers
+        shell: powershell
+        run: |
+          $lib = @'
+          $ErrorActionPreference = 'Stop'
+          $script:Failures = 0
+          $MsiDir = Join-Path $env:RUNNER_TEMP 'msi'
+          $LogDir = Join-Path $env:RUNNER_TEMP 'msilogs'
+          $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\URmessage'
+          $ShortcutPath = Join-Path ([Environment]::GetFolderPath('Programs')) 'URmessage.lnk'
+          $InstallerKey = 'HKCU:\Software\URmessage\Installer'
+
+          function Assert([bool]$condition, [string]$what) {
+            if ($condition) { Write-Host "PASS  $what" }
+            else { Write-Host "::error::FAIL  $what"; $script:Failures++ }
+          }
+          function Complete-Step { if ($script:Failures -gt 0) { Write-Host "$($script:Failures) assertion(s) failed"; exit 1 } }
+
+          function ComGet($target, [string]$name, [object[]]$arguments) {
+            $target.GetType().InvokeMember($name, [Reflection.BindingFlags]::GetProperty, $null, $target, $arguments)
+          }
+          function ComCall($target, [string]$name, [object[]]$arguments) {
+            $target.GetType().InvokeMember($name, [Reflection.BindingFlags]::InvokeMethod, $null, $target, $arguments)
+          }
+          $Installer = New-Object -ComObject WindowsInstaller.Installer
+
+          function Get-MsiProperty([string]$msi, [string]$property) {
+            $db = ComCall $Installer 'OpenDatabase' @($msi, 0)
+            $view = ComCall $db 'OpenView' @("SELECT Value FROM Property WHERE Property = '$property'")
+            ComCall $view 'Execute' $null | Out-Null
+            $record = ComCall $view 'Fetch' $null
+            $value = if ($null -eq $record) { $null } else { [string](ComGet $record 'StringData' @(1)) }
+            ComCall $view 'Close' $null | Out-Null
+            [void][Runtime.InteropServices.Marshal]::ReleaseComObject($db)
+            return $value
+          }
+          function Get-MsiFileCount([string]$msi) {
+            $db = ComCall $Installer 'OpenDatabase' @($msi, 0)
+            $view = ComCall $db 'OpenView' @('SELECT File FROM File')
+            ComCall $view 'Execute' $null | Out-Null
+            $n = 0
+            while ($null -ne (ComCall $view 'Fetch' $null)) { $n++ }
+            ComCall $view 'Close' $null | Out-Null
+            [void][Runtime.InteropServices.Marshal]::ReleaseComObject($db)
+            return $n
+          }
+          # Called inline, not through ComGet: a StringList is enumerable, and a
+          # function's output would unroll it (an empty one into $null).
+          function Get-RelatedProducts {
+            $list = $Installer.GetType().InvokeMember('RelatedProducts', [Reflection.BindingFlags]::GetProperty, $null, $Installer, @($env:URM_UPGRADE_CODE))
+            $codes = @()
+            foreach ($code in $list) { $codes += [string]$code }
+            return ,$codes
+          }
+          function Get-ProductInfo([string]$code, [string]$attribute) {
+            try { return [string](ComGet $Installer 'ProductInfo' @($code, $attribute)) } catch { return $null }
+          }
+          function Get-ProductState([string]$code) { return [int](ComGet $Installer 'ProductState' @($code)) }
+
+          function Get-ArpEntries {
+            $roots = @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+                       'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+                       'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall')
+            $hits = @()
+            foreach ($root in $roots) {
+              if (-not (Test-Path $root)) { continue }
+              foreach ($key in Get-ChildItem $root -ErrorAction SilentlyContinue) {
+                $p = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction SilentlyContinue
+                if ($p -and $p.DisplayName -eq 'URmessage') { $hits += [pscustomobject]@{ Key = $key.Name; Version = $p.DisplayVersion } }
+              }
+            }
+            return ,$hits
+          }
+
+          function Get-ShortcutAumid([string]$path) {
+            $shell = New-Object -ComObject Shell.Application
+            $item = $shell.Namespace((Split-Path -Parent $path)).ParseName((Split-Path -Leaf $path))
+            return [string]$item.ExtendedProperty('System.AppUserModel.ID')
+          }
+          function Get-ShortcutTarget([string]$path) {
+            return (New-Object -ComObject WScript.Shell).CreateShortcut($path).TargetPath
+          }
+
+          function Invoke-Msiexec([string[]]$arguments, [string]$name) {
+            New-Item -ItemType Directory -Force $LogDir | Out-Null
+            $log = Join-Path $LogDir "$name.log"
+            $all = @($arguments) + @('/qn', '/norestart', '/l*v', "`"$log`"")
+            Write-Host "msiexec $($all -join ' ')"
+            $p = Start-Process -FilePath msiexec.exe -ArgumentList $all -PassThru
+            $null = $p.Handle
+            $p.WaitForExit()
+            Write-Host "  exit code: $($p.ExitCode)"
+            $privilege = Select-String -LiteralPath $log -Pattern 'Running product' -SimpleMatch -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($privilege) { Write-Host "  log: $($privilege.Line.Trim())" }
+            return [pscustomobject]@{ Code = $p.ExitCode; Log = $log }
+          }
+          function Test-LogContains([string]$log, [string]$text) {
+            return [bool](Select-String -LiteralPath $log -Pattern $text -SimpleMatch -ErrorAction SilentlyContinue)
+          }
+          # The SHA-256 of the URmessage.exe an MSI packaged, recorded when it was built.
+          function Get-PackagedExeHash([string]$msiName) {
+            return (Get-Content -LiteralPath (Join-Path $MsiDir "$msiName.exe.sha256") -Raw).Trim()
+          }
+
+          # Everything that must be true while exactly one URmessage is installed.
+          function Assert-Installed([string]$msiName, [string]$version) {
+            $msi = Join-Path $MsiDir "$msiName.msi"
+            $code = Get-MsiProperty $msi 'ProductCode'
+            $related = Get-RelatedProducts
+            Assert ($related.Count -eq 1) "exactly one product with URmessage's UpgradeCode (found $($related.Count): $($related -join ', '))"
+            Assert ($related -contains $code) "the installed product is $msiName's ($code)"
+            Assert ((Get-ProductInfo $code 'VersionString') -eq $version) "Windows Installer reports version $version (got '$(Get-ProductInfo $code 'VersionString')')"
+            Assert ((Get-ProductInfo $code 'AssignmentType') -eq '0') "installed per-user: AssignmentType 0 (got '$(Get-ProductInfo $code 'AssignmentType')')"
+
+            $expected = Get-MsiFileCount $msi
+            $actual = if (Test-Path -LiteralPath $InstallDir) { @(Get-ChildItem -LiteralPath $InstallDir -Recurse -File).Count } else { 0 }
+            Assert ($actual -eq $expected) "all $expected files of the MSI are under $InstallDir (found $actual)"
+            foreach ($rel in @('URmessage.exe', 'resources.pri', 'App.xbf', 'MainWindow.xbf', 'Microsoft.WindowsAppRuntime.dll',
+                               'Microsoft.ui.xaml.dll', 'Assets\Fonts\pp_neue_montreal_regular.ttf', 'vcruntime140.dll',
+                               'vcruntime140_1.dll', 'msvcp140.dll')) {
+              Assert (Test-Path -LiteralPath (Join-Path $InstallDir $rel)) "installed: $rel"
+            }
+            # Content, not just presence: every build's exe is FILEVERSION 0.0.0.0,
+            # so only the bytes tell which product's exe is installed.
+            $installedExe = Join-Path $InstallDir 'URmessage.exe'
+            $wantHash = Get-PackagedExeHash $msiName
+            $gotHash = if (Test-Path -LiteralPath $installedExe) { (Get-FileHash -LiteralPath $installedExe -Algorithm SHA256).Hash } else { '(no file)' }
+            Assert ($gotHash -eq $wantHash) "the installed URmessage.exe is $msiName's build (SHA-256 $gotHash, want $wantHash)"
+            Assert (-not (Test-Path -LiteralPath (Join-Path $env:ProgramFiles 'URmessage'))) 'nothing at %ProgramFiles%\URmessage'
+            Assert (-not (Test-Path -LiteralPath (Join-Path ${env:ProgramFiles(x86)} 'URmessage'))) 'nothing at %ProgramFiles(x86)%\URmessage'
+
+            Assert (Test-Path -LiteralPath $ShortcutPath) "Start-menu shortcut at $ShortcutPath"
+            if (Test-Path -LiteralPath $ShortcutPath) {
+              $target = Get-ShortcutTarget $ShortcutPath
+              Assert ($target -eq (Join-Path $InstallDir 'URmessage.exe')) "shortcut target is the installed exe (got '$target')"
+              $aumid = Get-ShortcutAumid $ShortcutPath
+              Assert ($aumid -ceq $env:URM_AUMID) "shortcut System.AppUserModel.ID is $env:URM_AUMID (got '$aumid')"
+            }
+            $commonShortcut = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) 'URmessage.lnk'
+            Assert (-not (Test-Path -LiteralPath $commonShortcut)) 'no shortcut in the all-users Programs menu'
+
+            $arp = Get-ArpEntries
+            Assert ($arp.Count -eq 1) "exactly one Add/Remove Programs entry (found $($arp.Count): $(($arp | ForEach-Object { $_.Key }) -join '; '))"
+            if ($arp.Count -eq 1) {
+              # Not asserted: the hive. Run 37209350367 showed Windows Installer
+              # writing a per-user product's Uninstall key under HKLM (the log
+              # said "with user privileges"; AssignmentType was 0). Per-user is
+              # asserted through AssignmentType above, not through the hive.
+              Write-Host "info: ARP entry at $($arp[0].Key)"
+              Assert ($arp[0].Version -eq $version) "ARP DisplayVersion is $version (got '$($arp[0].Version)')"
+            }
+            $value = (Get-ItemProperty -LiteralPath $InstallerKey -ErrorAction SilentlyContinue).StartMenuShortcut
+            Assert ($value -eq 1) "HKCU\Software\URmessage\Installer StartMenuShortcut = 1 (got '$value')"
+            Assert (-not (Test-Path 'HKLM:\Software\URmessage')) 'nothing at HKLM\Software\URmessage'
+          }
+          '@
+          # YAML strips the block's indentation, so the here-string's closing
+          # '@ above lands in column 0, as PowerShell requires.
+          Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'msi-test-lib.ps1') -Value $lib -Encoding UTF8
+          . (Join-Path $env:RUNNER_TEMP 'msi-test-lib.ps1')
+          foreach ($n in 'A', 'B', 'C') {
+            $m = Join-Path $MsiDir "$n.msi"
+            Write-Host ("{0}: ProductVersion {1}  ProductCode {2}  UpgradeCode {3}  ALLUSERS {4}  MSIINSTALLPERUSER {5}  files {6}  URmessage.exe {7}" -f $n,
+              (Get-MsiProperty $m 'ProductVersion'), (Get-MsiProperty $m 'ProductCode'), (Get-MsiProperty $m 'UpgradeCode'),
+              (Get-MsiProperty $m 'ALLUSERS'), (Get-MsiProperty $m 'MSIINSTALLPERUSER'), (Get-MsiFileCount $m), (Get-PackagedExeHash $n))
+          }
+          Assert ((Get-MsiProperty (Join-Path $MsiDir 'A.msi') 'ProductVersion') -eq '0.0.1') 'A is 0.0.1'
+          Assert ((Get-MsiProperty (Join-Path $MsiDir 'B.msi') 'ProductVersion') -eq '0.0.2') 'B is 0.0.2'
+          Assert ((Get-MsiProperty (Join-Path $MsiDir 'C.msi') 'ProductVersion') -eq '0.0.2') 'C is 0.0.2'
+          Assert ((Get-MsiProperty (Join-Path $MsiDir 'B.msi') 'ProductCode') -ne (Get-MsiProperty (Join-Path $MsiDir 'C.msi') 'ProductCode')) 'B and C have different ProductCodes'
+          Assert (@('A', 'B', 'C' | ForEach-Object { Get-PackagedExeHash $_ } | Select-Object -Unique).Count -eq 3) 'A, B and C each packaged a different URmessage.exe'
+          Assert ((Get-MsiProperty (Join-Path $MsiDir 'A.msi') 'UpgradeCode') -eq $env:URM_UPGRADE_CODE) 'the UpgradeCode is the one this test expects'
+          Assert ((Get-RelatedProducts).Count -eq 0) 'nothing with that UpgradeCode is installed yet'
+          Complete-Step
+
+      - name: Payload check on A (the repository's own verifier)
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\verify-msi-payload.ps1 -MsiPath (Join-Path $env:RUNNER_TEMP 'msi\A.msi')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: 1. A per-machine install is refused
+        shell: powershell
+        run: |
+          . (Join-Path $env:RUNNER_TEMP 'msi-test-lib.ps1')
+          $a = Join-Path $MsiDir 'A.msi'
+          foreach ($case in @(@('allusers-1', 'ALLUSERS=1'), @('msiinstallperuser-empty', 'MSIINSTALLPERUSER=""'))) {
+            $r = Invoke-Msiexec @('/i', "`"$a`"", $case[1]) "1-$($case[0])"
+            Assert ($r.Code -ne 0) "$($case[1]): msiexec fails (exit $($r.Code); 1603 expected)"
+            Assert (Test-LogContains $r.Log 'URmessage installs for the current user only.') "$($case[1]): the log names the launch condition's message"
+            Assert ((Get-RelatedProducts).Count -eq 0) "$($case[1]): nothing is installed"
+            Assert (-not (Test-Path -LiteralPath (Join-Path $env:ProgramFiles 'URmessage'))) "$($case[1]): nothing at %ProgramFiles%\URmessage"
+            Assert (-not (Test-Path -LiteralPath $InstallDir)) "$($case[1]): nothing at $InstallDir"
+          }
+          Complete-Step
+
+      - name: 2. Install A (0.0.1) per-user
+        shell: powershell
+        run: |
+          . (Join-Path $env:RUNNER_TEMP 'msi-test-lib.ps1')
+          $r = Invoke-Msiexec @('/i', "`"$(Join-Path $MsiDir 'A.msi')`"") '2-install-A'
+          Assert ($r.Code -eq 0) "install A exits 0 (got $($r.Code))"
+          Assert-Installed 'A' '0.0.1'
+          Complete-Step
+
+      # build-and-test.yml's diagnose gate, compressed, on the INSTALLED exe:
+      # redirected streams (so no modal box can block a headless run), a 120 s
+      # limit, non-empty output, exit 0, and no FAIL line or any of the three
+      # states that gate counts as fatal.
+      - name: 3. The installed app passes --diagnose
+        shell: powershell
+        env:
+          URMESSAGE_APP_ROOT: ${{ runner.temp }}\appstate
+        run: |
+          $exe = Join-Path $env:LOCALAPPDATA 'Programs\URmessage\URmessage.exe'
+          $psi = New-Object System.Diagnostics.ProcessStartInfo $exe
+          $psi.Arguments = '--diagnose'
+          $psi.UseShellExecute = $false
+          $psi.CreateNoWindow = $true
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $psi.StandardOutputEncoding = [Text.Encoding]::UTF8
+          $psi.StandardErrorEncoding = [Text.Encoding]::UTF8
+          $p = [Diagnostics.Process]::Start($psi)
+          $out = $p.StandardOutput.ReadToEnd()
+          $err = $p.StandardError.ReadToEnd()
+          if (-not $p.WaitForExit(120000)) { try { $p.Kill() } catch { }; Write-Host '::error::--diagnose did not exit within 120 s'; exit 1 }
+          $out | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'installed-diagnose.out') -Encoding UTF8
+          Write-Host $out
+          if ($err) { Write-Host '----- stderr -----'; Write-Host $err }
+          $lines = @(($out -split "\r?\n") | Where-Object { $_.Trim() -ne '' })
+          $fails = @($lines | Where-Object { $_ -cmatch 'FAIL' -or $_ -cmatch 'resources \(mrt\)\s*:\s*NOT RESOLVING|resources\.pri\s*:\s*MISSING|app runtime\s*:\s*NOT FOUND' })
+          Write-Host "exit code $($p.ExitCode); lines $($lines.Count); PASS $(@($lines | Where-Object { $_ -cmatch 'PASS' }).Count); FAIL $($fails.Count)"
+          foreach ($f in $fails) { Write-Host "::error::$($f.Trim())" }
+          if ($lines.Count -eq 0 -or $fails.Count -gt 0 -or $p.ExitCode -ne 0) { exit 1 }
+
+      - name: 4. Upgrade to B (0.0.2) in place
+        shell: powershell
+        run: |
+          . (Join-Path $env:RUNNER_TEMP 'msi-test-lib.ps1')
+          $codeA = Get-MsiProperty (Join-Path $MsiDir 'A.msi') 'ProductCode'
+          $r = Invoke-Msiexec @('/i', "`"$(Join-Path $MsiDir 'B.msi')`"") '4-upgrade-to-B'
+          Assert ($r.Code -eq 0) "install B over A exits 0 (got $($r.Code))"
+          Assert ((Get-ProductState $codeA) -eq -1) "A ($codeA) is no longer installed (state $(Get-ProductState $codeA))"
+          Assert-Installed 'B' '0.0.2'
+          Complete-Step
+
+      - name: 5. Same-version build C (0.0.2, new ProductCode) replaces B
+        shell: powershell
+        run: |
+          . (Join-Path $env:RUNNER_TEMP 'msi-test-lib.ps1')
+          $codeB = Get-MsiProperty (Join-Path $MsiDir 'B.msi') 'ProductCode'
+          $r = Invoke-Msiexec @('/i', "`"$(Join-Path $MsiDir 'C.msi')`"") '5-same-version-C'
+          Assert ($r.Code -eq 0) "install C over B exits 0 (got $($r.Code))"
+          Assert ((Get-ProductState $codeB) -eq -1) "B ($codeB) is no longer installed (state $(Get-ProductState $codeB))"
+          Assert-Installed 'C' '0.0.2'
+          Complete-Step
+
+      - name: 6. A downgrade (A, 0.0.1, over C) is refused
+        shell: powershell
+        run: |
+          . (Join-Path $env:RUNNER_TEMP 'msi-test-lib.ps1')
+          $r = Invoke-Msiexec @('/i', "`"$(Join-Path $MsiDir 'A.msi')`"") '6-downgrade-to-A'
+          Assert ($r.Code -ne 0) "install A over C fails (exit $($r.Code); 1603 expected)"
+          Assert (Test-LogContains $r.Log 'A newer version of URmessage is already installed.') 'the log names the downgrade message'
+          Assert-Installed 'C' '0.0.2'
+          Complete-Step
+
+      # The app's own data lives in %LOCALAPPDATA%\URmessage, outside the
+      # install folder, and an uninstall must leave it. Step 3 sent the app's
+      # state elsewhere (URMESSAGE_APP_ROOT), so a sentinel stands in for it:
+      # written before the uninstall, checked after it, then removed.
+      - name: 7. Uninstall removes it, and leaves the app's data
+        shell: powershell
+        run: |
+          . (Join-Path $env:RUNNER_TEMP 'msi-test-lib.ps1')
+          $stateRoot = Join-Path $env:LOCALAPPDATA 'URmessage'
+          $createdRoot = -not (Test-Path -LiteralPath $stateRoot)
+          New-Item -ItemType Directory -Force $stateRoot | Out-Null
+          $sentinel = Join-Path $stateRoot 'sentinel.txt'
+          $token = [guid]::NewGuid().ToString()
+          Set-Content -LiteralPath $sentinel -Value $token -Encoding ascii
+          Write-Host "wrote $sentinel ($token)"
+
+          $codeC = Get-MsiProperty (Join-Path $MsiDir 'C.msi') 'ProductCode'
+          $r = Invoke-Msiexec @('/x', $codeC) '7-uninstall'
+          Assert ($r.Code -eq 0) "uninstall exits 0 (got $($r.Code))"
+          Assert ((Get-RelatedProducts).Count -eq 0) 'no product with the UpgradeCode remains'
+          Assert (-not (Test-Path -LiteralPath $InstallDir)) "$InstallDir is gone"
+          Assert (-not (Test-Path -LiteralPath $ShortcutPath)) "$ShortcutPath is gone"
+          Assert ((Get-ArpEntries).Count -eq 0) 'no Add/Remove Programs entry remains'
+          $value = (Get-ItemProperty -LiteralPath $InstallerKey -ErrorAction SilentlyContinue).StartMenuShortcut
+          Assert ($null -eq $value) 'the HKCU StartMenuShortcut key-path value is gone'
+          Write-Host "info: HKCU\Software\URmessage\Installer key still present: $(Test-Path $InstallerKey)"
+          Write-Host "info: HKCU\Software\URmessage key still present: $(Test-Path 'HKCU:\Software\URmessage')"
+          $kept = if (Test-Path -LiteralPath $sentinel) { (Get-Content -LiteralPath $sentinel -Raw).Trim() } else { '(gone)' }
+          Assert ($kept -eq $token) "the app's data survives the uninstall: $sentinel still holds $token (got '$kept')"
+
+          Remove-Item -LiteralPath $sentinel -Force -ErrorAction SilentlyContinue
+          if ($createdRoot) { Remove-Item -LiteralPath $stateRoot -Recurse -Force -ErrorAction SilentlyContinue }
+          Complete-Step
+
+      - name: Upload msiexec logs and the installed app's diagnose output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: urmessage-msi-install-test-logs
+          path: |
+            ${{ runner.temp }}/msilogs/
+            ${{ runner.temp }}/installed-diagnose.out
+          if-no-files-found: warn
