@@ -41,6 +41,13 @@ void StartupLogInit();
 // by: App Runtime presence + path (the path carries the version), the
 // bootstrap dll, resources.pri, the log file. Logged at startup and printed by
 // --diagnose. Pure Win32 — safe to call before COM/WinRT is up.
+//
+// It also carries the app's PURE surface assertions (one PASS/FAIL line each),
+// because this repo has no test project and --diagnose is the test runner. The
+// bar for adding one here is the bar this function already sets: no COM, no
+// WinRT activation, no Localized(), and nothing that fabricates data into the
+// log of a normal launch. Anything needing the demo world is gated on the demo
+// switch by its own caller instead.
 std::vector<std::wstring> CollectDiagnostics();
 
 // Log every line at info, under the "startup:" prefix the rest of the path uses.
@@ -67,6 +74,25 @@ std::wstring ResourceProbe();
 // double-clicked diagnostic that shows nothing would be its own bug. Returns
 // the process exit code.
 int WriteDiagnosticsToConsole(const std::vector<std::wstring>& lines);
+
+// THE SINGLE-INSTANCE KEY THIS LAUNCH ACTUALLY REGISTERS.
+//
+// Exactly urnw::ids::kSingleInstanceKey for an ordinary launch, and that is not a detail: the key
+// is a per-user-session STRING, so Ids.h's whole argument about never colliding with the VPN
+// client's "URnetwork.Desktop" rests on what this returns by default. An ordinary launch must get
+// a byte-identical answer to the one it got before this function existed.
+//
+// WITH %URMESSAGE_APP_ROOT% SET IT IS SUFFIXED WITH A HASH OF THAT ROOT, and the reason is that
+// the root is the whole of an install: its credential, its device identity, its groups, its log.
+// Two roots are two installs that happen to share an executable, and a single-instance key that
+// does not know about them makes the second launch REDIRECT INTO THE FIRST -- silently, because
+// that is what the mechanism is for. The symptom is "the second window never opens", which is the
+// same symptom Ids.h's header is about, one layer in.
+//
+// IT IS NOT A SECURITY BOUNDARY and must not be read as one. Two roots are still two devices on
+// one machine under two credentials, which is fine; what is NEVER fine is two processes over ONE
+// root, and that is held by the state store's own single-writer lock rather than by this.
+std::wstring EffectiveSingleInstanceKey();
 
 // True when this process was launched to run diagnostics rather than the app:
 // --diagnose, -diagnose, /diagnose or a bare diagnose.

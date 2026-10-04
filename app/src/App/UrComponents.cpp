@@ -28,6 +28,16 @@ namespace {
 // weights. App.xaml carries the same family under UrIconFontFamily.
 Media::FontFamily IconFont() { return Media::FontFamily(L"Segoe Fluent Icons"); }
 
+// A double out of the app dictionary (the pane metrics live there so every pane
+// is one construction), with a fallback for a renamed key.
+double MetricByKey(wchar_t const* key, double fallback) {
+  auto app = Application::Current();
+  if (!app) return fallback;
+  auto boxed = winrt::box_value(winrt::hstring{key});
+  if (!app.Resources().HasKey(boxed)) return fallback;
+  return winrt::unbox_value_or<double>(app.Resources().Lookup(boxed), fallback);
+}
+
 }  // namespace
 
 void SetTextOrCollapse(TextBlock const& line, winrt::hstring const& text) {
@@ -70,11 +80,9 @@ FrameworkElement MakeSectionHeader(winrt::hstring const& glyph, winrt::hstring c
   return row;
 }
 
-namespace {
-
-// A style out of the app dictionary, by key, or null if it is missing. Applying
-// styles by key rather than by hand is what keeps the strip in step with
-// App.xaml; a missing key must not throw a layout away.
+// Declared in UrComponents.h and no longer file-local: two other units had
+// copied these six lines verbatim because they could not reach this one, and
+// both copies are gone. The comment on the declaration names them.
 Style StyleByKey(wchar_t const* key) {
   auto app = Application::Current();
   if (!app) return nullptr;
@@ -82,8 +90,6 @@ Style StyleByKey(wchar_t const* key) {
   if (!app.Resources().HasKey(boxed)) return nullptr;
   return app.Resources().Lookup(boxed).try_as<Style>();
 }
-
-}  // namespace
 
 StatusField MakeStatusField(winrt::hstring const& label, bool withDot,
                             winrt::hstring const& accessibleName) {
@@ -164,7 +170,7 @@ Controls::Border MakePaneRow(double height) {
 }
 
 PaneKeyValueRow MakePaneKeyValueRow(winrt::hstring const& key, winrt::hstring const& value,
-                                    double height) {
+                                    double height, winrt::hstring const& accessibleValue) {
   PaneKeyValueRow out;
   out.root = MakePaneRow(height);
 
@@ -190,10 +196,15 @@ PaneKeyValueRow MakePaneKeyValueRow(winrt::hstring const& key, winrt::hstring co
   // The key names the value; announcing it as its own static-text item beside
   // the value makes one fact into two fragments. Same treatment, same reason, as
   // MakeStatusField's caption.
+  //
+  // ONE writer of this name, and `accessibleValue` is how it stays one - see the
+  // header. Empty falls back to the drawn text, so every call site that does not
+  // pass it is announced exactly as it was before the parameter existed.
   Automation::AutomationProperties::SetAccessibilityView(
       out.key, Automation::Peers::AccessibilityView::Raw);
   Automation::AutomationProperties::SetName(
-      out.value, winrt::hstring{std::wstring{key} + L", " + std::wstring{value}});
+      out.value, winrt::hstring{std::wstring{key} + L", " +
+                                std::wstring{accessibleValue.empty() ? value : accessibleValue}});
 
   out.root.Child(grid);
   return out;
@@ -309,6 +320,157 @@ void SetPaneListRowSelected(PaneListRowButton const& row, bool selected) {
   }
 }
 
+PaneCard MakePaneCard() {
+  PaneCard out;
+  out.root = Controls::Border();
+  out.root.Background(urnw::colors::CardBrush());
+  out.root.CornerRadius(CornerRadiusHelper::FromUniformRadius(8));
+  out.root.BorderBrush(urnw::colors::BorderBrush());
+  out.root.BorderThickness(ThicknessHelper::FromUniformLength(1));
+  out.root.Margin(ThicknessHelper::FromLengths(12, 0, 12, 10));
+  out.body = Controls::StackPanel();
+  out.root.Child(out.body);
+  return out;
+}
+
+void FinalizePaneCard(PaneCard const& card) {
+  if (!card.body) return;
+  auto children = card.body.Children();
+  const uint32_t count = children.Size();
+  for (uint32_t i = 0; i < count; ++i) {
+    auto element = children.GetAt(i);
+    // The last child's hairline would sit flush against the card's own edge;
+    // every other row keeps the rule it was built with (MakePaneRow's 0,0,0,1,
+    // or the button style's). Both shapes are written, never assumed, so a
+    // re-run after a surgical insert/remove restores exactly this state.
+    const Thickness thickness =
+        i + 1 == count ? ThicknessHelper::FromLengths(0, 0, 0, 0)
+                       : ThicknessHelper::FromLengths(0, 0, 0, 1);
+    if (auto border = element.try_as<Controls::Border>()) {
+      border.BorderThickness(thickness);
+    } else if (auto control = element.try_as<Controls::Control>()) {
+      control.BorderThickness(thickness);
+    }
+  }
+}
+
+PanePresenceRow MakePanePresenceRow() {
+  PanePresenceRow out;
+  out.root = Controls::Button();
+  // The ON-CARD variant: UrPaneRowButtonStyle's hover fill IS the card token,
+  // so on a card its hover paints nothing. The comment on the style in
+  // App.xaml carries why a second key exists.
+  if (auto style = StyleByKey(L"UrPaneRowButtonOnCardStyle")) out.root.Style(style);
+  // UrPaneRowTallHeight (44): the explained-row height - the 28px avatar wants
+  // the air. Height, not MinHeight, for the reason MakePaneRow states.
+  const double height = MetricByKey(L"UrPaneRowTallHeight", 44);
+  out.root.Height(height);
+  out.root.MinHeight(height);
+
+  Controls::Grid grid;
+  grid.ColumnSpacing(10);
+  Controls::ColumnDefinition avatarColumn, titleColumn, metaColumn, chevronColumn;
+  avatarColumn.Width(GridLengthHelper::Auto());
+  titleColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
+  metaColumn.Width(GridLengthHelper::Auto());
+  chevronColumn.Width(GridLengthHelper::Auto());
+  grid.ColumnDefinitions().Append(avatarColumn);
+  grid.ColumnDefinitions().Append(titleColumn);
+  grid.ColumnDefinitions().Append(metaColumn);
+  grid.ColumnDefinitions().Append(chevronColumn);
+
+  out.avatarHost = Controls::Grid();
+  out.avatarHost.Width(28);
+  out.avatarHost.Height(28);
+  out.avatarHost.VerticalAlignment(VerticalAlignment::Center);
+  // Decorative beside the row's name: the caller's automation name carries the
+  // identity and the presence WORDS, so the avatar and badge announce nothing.
+  Automation::AutomationProperties::SetAccessibilityView(
+      out.avatarHost, Automation::Peers::AccessibilityView::Raw);
+
+  // The badge reads punched out of the avatar: a 10px disc in the surface the
+  // row rests on (the card token - design d4 said page, but that predates the
+  // card; the punch-out has to be the surface colour or it reads as a dot),
+  // holding the 8px state element. Poked 2px past the corner so it straddles
+  // the edge instead of covering two pattern cells outright.
+  out.badge = winrt::Microsoft::UI::Xaml::Shapes::Ellipse();
+  out.badge.Width(10);
+  out.badge.Height(10);
+  out.badge.Fill(urnw::colors::CardBrush());
+  out.badge.HorizontalAlignment(HorizontalAlignment::Right);
+  out.badge.VerticalAlignment(VerticalAlignment::Bottom);
+  out.badge.Margin(ThicknessHelper::FromLengths(0, 0, -2, -2));
+
+  out.badgeCore = winrt::Microsoft::UI::Xaml::Shapes::Ellipse();
+  out.badgeCore.Width(8);
+  out.badgeCore.Height(8);
+  out.badgeCore.HorizontalAlignment(HorizontalAlignment::Right);
+  out.badgeCore.VerticalAlignment(VerticalAlignment::Bottom);
+  out.badgeCore.Margin(ThicknessHelper::FromLengths(0, 0, -3, -3));
+
+  out.avatarHost.Children().Append(out.badge);
+  out.avatarHost.Children().Append(out.badgeCore);
+  grid.Children().Append(out.avatarHost);
+
+  out.title = TextBlock();
+  if (auto style = StyleByKey(L"UrRowTitleStyle")) out.title.Style(style);
+  Controls::Grid::SetColumn(out.title, 1);
+  grid.Children().Append(out.title);
+
+  out.meta = TextBlock();
+  if (auto style = StyleByKey(L"UrPaneMetaStyle")) out.meta.Style(style);
+  Controls::Grid::SetColumn(out.meta, 2);
+  grid.Children().Append(out.meta);
+
+  out.chevron = FontIcon();
+  if (auto style = StyleByKey(L"UrChevronIconStyle")) out.chevron.Style(style);
+  Controls::Grid::SetColumn(out.chevron, 3);
+  grid.Children().Append(out.chevron);
+  SetPanePresenceExpanded(out, false);
+
+  out.root.Content(grid);
+  // The row's own name is the whole announcement (the caller sets it - a
+  // Button with panel content gets no automatic one); the children would each
+  // be announced again straight after it. avatarHost is already Raw above.
+  Automation::AutomationProperties::SetAccessibilityView(
+      out.title, Automation::Peers::AccessibilityView::Raw);
+  Automation::AutomationProperties::SetAccessibilityView(
+      out.meta, Automation::Peers::AccessibilityView::Raw);
+  SetPanePresenceOnline(out, false);
+  return out;
+}
+
+void SetPanePresenceOnline(PanePresenceRow const& row, bool online) {
+  if (!row.badgeCore) return;
+  if (online) {
+    row.badgeCore.Fill(urnw::colors::MakeBrush(urnw::colors::kUrGreen));
+    row.badgeCore.Stroke(nullptr);
+    row.badgeCore.StrokeThickness(0);
+  } else {
+    // The offline RING: shape, not a dimmer green - "colour is never the only
+    // carrier" applies to absence too, and a faint green disc would still be
+    // a hue-only distinction from the online one. 1.5px, not 1: at 100% the
+    // 1px ring anti-aliased into a ragged speck against the 10px punch-out
+    // (polish B2; the punch-out itself is unchanged). UNREACHABLE FROM THE
+    // FIXTURE, STATED: every member has at least one online device
+    // (InspectRailDeviceProbe asserts onlineDevices == members), so this
+    // branch draws in no shipped capture and is verified by inspection only.
+    row.badgeCore.Fill(urnw::colors::MakeBrush({0, 0, 0, 0}));
+    row.badgeCore.Stroke(urnw::colors::FaintBrush());
+    row.badgeCore.StrokeThickness(1.5);
+  }
+}
+
+void SetPanePresenceExpanded(PanePresenceRow const& row, bool expanded) {
+  if (!row.chevron) return;
+  // Segoe Fluent E70D ChevronDownMed / E70E ChevronUpMed, written as escapes
+  // (the house non-ASCII rule: a pasted PUA glyph renders blank in terminals,
+  // so a dropped one is invisible). Render-verified in the wave-4 captures:
+  // the collapsed member rows show the down chevron at the rail's right edge.
+  row.chevron.Glyph(expanded ? L"\uE70E"   // ChevronUpMed
+                             : L"\uE70D");  // ChevronDownMed
+}
+
 // ---- the pane shell's dynamic GROUPS and rows (R4) -------------------------
 //
 // Additive to the R3 block above. Each of these is the App.xaml style of the
@@ -317,16 +479,6 @@ void SetPaneListRowSelected(PaneListRowButton const& row, bool selected) {
 // hand-built at each of the four Wave-2 call sites.
 
 namespace {
-
-// A double out of the app dictionary (the pane metrics live there so every pane
-// is one construction), with a fallback for a renamed key.
-double MetricByKey(wchar_t const* key, double fallback) {
-  auto app = Application::Current();
-  if (!app) return fallback;
-  auto boxed = winrt::box_value(winrt::hstring{key});
-  if (!app.Resources().HasKey(boxed)) return fallback;
-  return winrt::unbox_value_or<double>(app.Resources().Lookup(boxed), fallback);
-}
 
 // The title/note column shared by the two-line row and its Button twin. Trimmed,
 // never wrapped: a wrapping note would grow the row and break the one thing the
@@ -570,7 +722,11 @@ FrameworkElement MakePaneEmptyLine(winrt::hstring const& text) {
 PaneSearchRow MakePaneSearchRow(winrt::hstring const& placeholder) {
   PaneSearchRow out;
   out.root = MakePaneRow(MetricByKey(L"UrPaneHeaderHeight", 40));
-  out.root.Background(urnw::colors::BackgroundBrush());
+  // Sheet, not page (d3 2.5): the pane header above is already UrSheetBrush,
+  // so this fuses header + search into one 80px chrome slab above the rows -
+  // d1's L1 chrome flanking L0 content, with the row's own bottom hairline
+  // (MakePaneRow) still separating the slab from the list body.
+  out.root.Background(urnw::colors::SheetBrush());
 
   Controls::Grid grid;
   grid.ColumnSpacing(8);
@@ -588,6 +744,7 @@ PaneSearchRow MakePaneSearchRow(winrt::hstring const& placeholder) {
   glyph.VerticalAlignment(VerticalAlignment::Center);
   Automation::AutomationProperties::SetAccessibilityView(
       glyph, Automation::Peers::AccessibilityView::Raw);
+  out.glyph = glyph;  // the focus treatment's only handle on it
   grid.Children().Append(glyph);
 
   out.box = Controls::TextBox();

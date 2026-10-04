@@ -22,6 +22,37 @@
     <UrmWindowsAppSdkVersion>2.2.0</UrmWindowsAppSdkVersion>
   </PropertyGroup>
 
+  <!-- THE VENDORED URnetwork SDK — the C ABI this app reaches the real message
+       mesh through. Directory.Build.props notes that the VPN client's vendored
+       SDK (UrnSdkDir) went "with the tunnel"; this is the messaging half of it
+       coming back, under a name of its own.
+
+       WHAT IS VENDORED AND WHAT IS NOT. The SDK's ABI is three files, and all
+       three are committed in third_party\vendor-include, exactly as
+       nlohmann\json.hpp beside them is: the two headers (already on every
+       project's include path, see Directory.Build.props) and urnetwork_sdk.def,
+       the dll's export list. All three are copied from ONE ..\..\..\sdk\cgo
+       build (its include\ directory), never one without the others. The
+       dll, about 50 MB, is that build's OUTPUT and is NOT committed;
+       .gitignore's [Bb]in/ already excludes it, which is why it sits under
+       bin\$(Platform).
+
+       THE IMPORT LIBRARY IS MADE HERE, FROM THE .def (UrmSdkImportLib, below).
+       An import library is nothing but the export list, so lib.exe /def: makes
+       it without the dll, and with the dll delay-loaded nothing else at link
+       time needs the SDK. That is what lets a clean checkout, and CI, build and
+       run the app with no Go toolchain: everything except the live path works
+       without the dll. It also makes an ARM64 build link. Only amd64 has a dll
+       staged here today, so an ARM64 app cannot go live, and says so.
+
+       $(Platform) rather than a hard-coded x64 because the SDK Makefile builds
+       windows/amd64 and windows/arm64 alike. -->
+  <PropertyGroup>
+    <UrmSdkRoot Condition="'$(UrmSdkRoot)'==''">$(MSBuildProjectDirectory)\..\..\third_party\urnetwork-sdk\</UrmSdkRoot>
+    <UrmSdkBinDir>$(UrmSdkRoot)bin\$(Platform)\</UrmSdkBinDir>
+    <UrmSdkDef>$(MSBuildProjectDirectory)\..\..\third_party\vendor-include\urnetwork_sdk.def</UrmSdkDef>
+  </PropertyGroup>
+
   <!-- SELF-CONTAINED, unconditionally. With WindowsPackageType=None the App SDK
        bootstrapper runs from a CRT INITIALIZER, ahead of wWinMain, and with no
        options set it defaults to show-UI-then-exit(hr): a missing machine-wide
@@ -123,6 +154,20 @@
            C1083. Our hand-authored .cpp do not hit this only because they
            physically sit next to those headers. -->
       <AdditionalIncludeDirectories>$(MSBuildProjectDirectory);$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <!-- NO ObjectFileName HERE, AND IT IS NOT AN OVERSIGHT. Every .obj lands
+           flat in $(IntDir) whatever subdirectory its source came from, so the
+           first Demo\X.cpp / Views\X.cpp pair to share a basename would get
+           MSB8027 or a silently stale object. There is no such pair today. The
+           obvious fix - <ObjectFileName>$(IntDir)%(RelativeDir)</ObjectFileName>
+           in this ItemDefinitionGroup - was tried here and FAILS the build, with
+           two MSB3191 "the given path's format is not supported": the Windows App
+           SDK targets contribute ClCompile items whose Include is an ABSOLUTE
+           path into %USERPROFILE%\.nuget, %(RelativeDir) on those is an absolute
+           directory, and $(IntDir) + that is a path with a drive letter in the
+           middle. An item definition reaches those items too. If a basename
+           collision ever does appear, put <ObjectFileName>$(IntDir)Views\</...>
+           on the individual ClCompile items below, where the Include is known to
+           be relative - not here. -->
       <!-- DISABLE_XAML_GENERATED_MAIN: the markup compiler emits an app
            bootstrap (wWinMain + its winrt module glue, guarded by
            #ifndef DISABLE_XAML_GENERATED_MAIN) into the generated
@@ -147,7 +192,21 @@
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
-      <AdditionalDependencies>shell32.lib;advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>shell32.lib;advapi32.lib;delayimp.lib;$(IntDir)URnetworkSdk.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <!-- DELAY-LOADED, AND THAT IS THE WHOLE POINT OF LINKING IT THIS WAY.
+           URnetworkSdk.dll is about 50 MB of Go runtime: loading it installs Go's
+           exception handlers and sets the process error mode (the VPN client's
+           main.cpp clears SEM_NOGPFAULTERRORBOX again after the Go runtime sets
+           it). A normal import would pay all of that on EVERY launch, including
+           the diagnose run CI reads, for a code path that is off by default.
+           With /DELAYLOAD the dll is not touched until the first ABI call, which
+           only Live\LiveMesh.cpp makes and only when the live switch is on: an
+           ordinary launch never maps it and behaves exactly as it did before.
+           (This comment spells those switches without their leading hyphens on
+           purpose: an XML comment may not contain a double hyphen.)
+           It also means a MISSING dll cannot stop the app from starting — the
+           worker probes for it with LoadLibraryW and says so in one line. -->
+      <DelayLoadDLLs>URnetworkSdk.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
     </Link>
     <Manifest>
       <AdditionalManifestFiles>app.manifest</AdditionalManifestFiles>
@@ -176,23 +235,143 @@
     <ClCompile Include="pch.cpp"><PrecompiledHeader>Create</PrecompiledHeader></ClCompile>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="App.xaml.cpp"><DependentUpon>App.xaml</DependentUpon></ClCompile>
+    <!-- NotUsing is load-bearing, not a preference: pch.h pulls in windows.h and
+         every winrt/ header, and DemoWorld runs before winrt::init_apartment
+         (main.cpp:168 vs :183). Compiling it standalone is what makes "pure C++"
+         a property of the build rather than a comment someone can delete. -->
+    <ClCompile Include="Demo\DemoWorld.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <!-- NotUsing for the same reason as DemoWorld.cpp above: this TU runs
+         before winrt::init_apartment, so it must not pull in the pch's
+         winrt/ headers even though (unlike DemoWorld.cpp) it needs Win32
+         (<windows.h>, <shellapi.h>) for CommandLineToArgvW. -->
+    <ClCompile Include="Demo\DemoSwitches.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <!-- NotUsing for the same reason as Demo\DemoWorld.cpp above: Startup.cpp's
+         `demo stress` line calls this generator from CollectDiagnostics()
+         before winrt::init_apartment, so the TU must not pull in the pch and
+         its winrt/ headers. -->
+    <ClCompile Include="Demo\DemoStress.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <!-- NotUsing for the same reason as Demo\DemoWorld.cpp above: Startup.cpp's
+         `demo autoplay` line asserts this unit's ladder, cadence and derived
+         clock from CollectDiagnostics() before winrt::init_apartment, so the
+         pure half must not pull in the pch and its winrt/ headers. The timer
+         half winrt reaches is DemoAutoplayLoop.cpp below. -->
+    <ClCompile Include="Demo\DemoAutoplay.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <!-- Uses the pch: the whole file is the DispatcherQueueTimer half, exactly
+         the winrt work the pure DemoAutoplay.cpp beside it must not see - the
+         same split StatusStripRules/StatusStripView ships. -->
+    <ClCompile Include="Demo\DemoAutoplayLoop.cpp" />
+    <ClCompile Include="Demo\AdvancedMode.cpp" />
+    <!-- Uses the pch for the same reason Demo\AdvancedMode.cpp beside it does:
+         its diagnostics run from CollectDiagnostics() before
+         winrt::init_apartment, but the one winrt-touching call they make
+         (motion::ShouldAnimate) is only ever reached with the override
+         engaged, which returns before UISettings — the TU states this at the
+         call. -->
+    <ClCompile Include="Demo\DeveloperSwitches.cpp" />
+    <ClCompile Include="Identicon.cpp" />
+    <!-- NotUsing for the same reason as Demo\DemoWorld.cpp above, with a second
+         reason of its own: this TU is Win32 plus the SDK's C ABI and runs on a
+         worker thread that must never touch winrt/ or XAML. Keeping the pch out
+         is what makes that a property of the build rather than a comment. -->
+    <ClCompile Include="Live\LiveMesh.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <!-- NotUsing for the same two reasons as Live\LiveMesh.cpp: it is built on
+         the live worker thread and must never acquire a winrt/ or XAML
+         dependency. It maps what the protocol hands over onto the World the
+         existing views already read. -->
+    <ClCompile Include="Live\LiveWorld.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="Live\LocalNames.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="MainWindow.xaml.cpp"><DependentUpon>MainWindow.xaml</DependentUpon></ClCompile>
     <ClCompile Include="Localization.cpp" />
+    <ClCompile Include="RunMode.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="Startup.cpp" />
     <ClCompile Include="UrComponents.cpp" />
     <ClCompile Include="UrMotion.cpp" />
+    <ClCompile Include="Views\ConversationListView.cpp" />
+    <ClCompile Include="Views\ConversationRowModel.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <!-- NotUsing for the same reason as Demo\DemoWorld.cpp above:
+         WorldDumpDiagnostics() in this unit is called from
+         CollectDiagnostics(), which runs before winrt::init_apartment, so
+         this TU must not pull in the pch and its winrt/ headers. The XAML
+         half of the Developer surface is DeveloperView.cpp below, the same
+         split StatusStripRules/StatusStripView ships. -->
+    <ClCompile Include="Views\DeveloperDump.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <!-- Uses the pch (it builds XAML): the whole file is element-tree work,
+         exactly the reason NetworkPageView.cpp below states. The pure dump
+         half it spends lives in DeveloperDump.cpp. -->
+    <ClCompile Include="Views\DeveloperView.cpp" />
+    <!-- NotUsing for the same reason as Demo\DemoWorld.cpp above: the two
+         probes in this unit are called from CollectDiagnostics(), which runs
+         before winrt::init_apartment (main.cpp:168 vs :183), so this TU must
+         not pull in the pch and its winrt/ headers. -->
+    <ClCompile Include="Views\InspectRailFields.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="Views\InspectRailView.cpp" />
+    <!-- Uses the pch (it builds XAML): only its Format*/CollectNetworkDiagnostics
+         half is pure, and main.cpp calls that half only from the `if (diagnose)`
+         block AFTER winrt::init_apartment (main.cpp:191 vs :202), so the
+         before-init purity rule that NotUsing serves never reaches this TU. -->
+    <ClCompile Include="Views\NetworkPageView.cpp" />
+    <!-- NotUsing for the same reason as Views\StatusStripRules.cpp below:
+         Startup.cpp's `roster` lines assert the role words, the control sets
+         and the outcome notes from CollectDiagnostics(), before
+         winrt::init_apartment. The roster's XAML half - the rows, the buttons,
+         the confirmation - is InspectRailView.cpp, which uses the pch. -->
+    <ClCompile Include="Views\RosterRules.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <!-- Uses the pch (it builds XAML): the whole file is element-tree work,
+         exactly the reason NetworkPageView.cpp above states. -->
+    <ClCompile Include="Views\SettingsView.cpp" />
+    <!-- NotUsing for the same reason as Views\InspectRailFields.cpp above:
+         Startup.cpp's `strip fields` line asserts these functions from
+         CollectDiagnostics(), which runs before winrt::init_apartment
+         (main.cpp:176 vs :191), so this TU must not pull in the pch and its
+         winrt/ headers. The strip's XAML half is StatusStripView.cpp, which
+         uses the pch for the same reason NetworkPageView.cpp does. -->
+    <ClCompile Include="Views\StatusStripRules.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <!-- Uses the pch (it builds XAML): its whole surface is element-tree work,
+         and the pre-apartment purity rule never reaches it for the same reason
+         NetworkPageView.cpp states. The pure half it spends lives in
+         StatusStripRules.cpp. -->
+    <ClCompile Include="Views\StatusStripView.cpp" />
+    <ClCompile Include="Views\ThreadLayout.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="Views\ThreadView.cpp" />
     <ClCompile Include="WindowReveal.cpp" />
     <ClCompile Include="WindowShell.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="pch.h" />
     <ClInclude Include="App.xaml.h"><DependentUpon>App.xaml</DependentUpon></ClInclude>
+    <ClInclude Include="Demo\DemoWorld.h" />
+    <ClInclude Include="Demo\ThreadLayout.h" />
+    <ClInclude Include="Views\ThreadLayout.h" />
+    <ClInclude Include="Views\ThreadView.h" />
+    <ClInclude Include="Demo\DemoSwitches.h" />
+    <ClInclude Include="Demo\DemoStress.h" />
+    <ClInclude Include="Demo\DemoAutoplay.h" />
+    <ClInclude Include="Demo\DemoAutoplayLoop.h" />
+    <ClInclude Include="Demo\AdvancedMode.h" />
+    <ClInclude Include="Demo\DeveloperSwitches.h" />
+    <ClInclude Include="Identicon.h" />
+    <ClInclude Include="Live\LiveMesh.h" />
+    <ClInclude Include="Live\LiveWorld.h" />
+    <ClInclude Include="Live\LocalNames.h" />
     <ClInclude Include="MainWindow.xaml.h"><DependentUpon>MainWindow.xaml</DependentUpon></ClInclude>
     <ClInclude Include="Localization.h" />
+    <ClInclude Include="Demo\DemoShellState.h" />
+    <ClInclude Include="RunMode.h" />
     <ClInclude Include="Startup.h" />
     <ClInclude Include="UrColors.h" />
     <ClInclude Include="UrComponents.h" />
     <ClInclude Include="UrMotion.h" />
+    <ClInclude Include="Views\ConversationListView.h" />
+    <ClInclude Include="Views\ConversationRowModel.h" />
+    <ClInclude Include="Views\DeveloperDump.h" />
+    <ClInclude Include="Views\DeveloperView.h" />
+    <ClInclude Include="Views\InspectRailFields.h" />
+    <ClInclude Include="Views\InspectRailView.h" />
+    <ClInclude Include="Views\NetworkPageView.h" />
+    <ClInclude Include="Views\RosterRules.h" />
+    <ClInclude Include="Views\SettingsView.h" />
+    <ClInclude Include="Views\StatusStripRules.h" />
+    <ClInclude Include="Views\StatusStripView.h" />
     <ClInclude Include="WindowReveal.h" />
     <ClInclude Include="WindowShell.h" />
     <ClInclude Include="resource.h" />
@@ -200,6 +379,32 @@
   <ItemGroup>
     <ResourceCompile Include="App.rc" />
   </ItemGroup>
+
+  <!-- THE SDK DLL, NEXT TO THE EXE. It is delay-loaded, so a missing one does
+       not stop the app starting — but the live path cannot work without it, and
+       LoadLibraryW resolves a bare name out of the exe's own directory first.
+       CopyFileToFolders rather than a PostBuildEvent, matching the fonts and the
+       icon below: it is incremental and it participates in up-to-date checks. -->
+  <ItemGroup>
+    <CopyFileToFolders Include="$(UrmSdkBinDir)URnetworkSdk.dll" Condition="Exists('$(UrmSdkBinDir)URnetworkSdk.dll')">
+      <DestinationFolders>$(OutDir)</DestinationFolders>
+    </CopyFileToFolders>
+  </ItemGroup>
+  <Target Name="UrmWarnMissingSdkDll" AfterTargets="Build" Condition="!Exists('$(UrmSdkBinDir)URnetworkSdk.dll')">
+    <Warning Text="URnetworkSdk.dll is not staged at $(UrmSdkBinDir): the app builds and runs, but its live path, which an ordinary launch takes, will report that it could not load the SDK. Build it with sdk/cgo's build_windows_amd64 target, from the same sdk commit the three files in third_party\vendor-include came from, and copy it there." />
+  </Target>
+
+  <!-- URnetworkSdk.lib, MADE FROM THE VENDORED .def into $(IntDir) (see THE
+       VENDORED URnetwork SDK, above). Inputs/Outputs make it incremental: it
+       runs on a clean build and again whenever the .def is newer than the
+       library, so a re-vendored export list is never linked against a stale
+       one. BeforeTargets="Link" runs it after Link's own dependencies, so PATH
+       already holds this configuration's toolset, and its lib.exe. -->
+  <Target Name="UrmSdkImportLib" BeforeTargets="Link" Inputs="$(UrmSdkDef)" Outputs="$(IntDir)URnetworkSdk.lib">
+    <Error Condition="!Exists('$(UrmSdkDef)')" Text="$(UrmSdkDef) is missing: it is the SDK's export list, committed beside urnetwork_sdk.h, and the import library is made from it." />
+    <MakeDir Directories="$(IntDir)" />
+    <Exec Command="lib.exe /nologo /machine:$(Platform) /def:&quot;$(UrmSdkDef)&quot; /out:&quot;$(IntDir)URnetworkSdk.lib&quot;" />
+  </Target>
 
   <!-- The app icon, copied next to the exe so it is resolvable as
        ms-appx:///Assets/app.ico from the title bar's Image. It is already the
@@ -323,7 +528,24 @@
            references symbols App.g.h never declares. App.xaml.cpp defines the
            global ::winrt_make_URmessage_App() instead, which is the only symbol
            module.g.cpp actually needs from it. -->
-  <Target Name="UrmCompileGeneratedXamlImpl" BeforeTargets="ClCompile" DependsOnTargets="MarkupCompilePass1;MarkupCompilePass2">
+  <!-- BEFORE THE APP SDK'S OWN CONSTANTS TARGET, not merely before ClCompile,
+       and that ordering IS the fix for five warning C4651s
+       ('/DMICROSOFT_WINDOWSAPPSDK_SELFCONTAINED=1' specified for precompiled
+       header but not for current compile) that a -Clean build printed on
+       XamlTypeInfo.g.cpp, XamlTypeInfo.Impl.g.cpp, XamlLibMetadataProvider.g.cpp,
+       XamlMetaDataProvider.cpp and module.g.cpp.
+       WindowsAppSDKSelfContained=true makes the App SDK add that define in
+       WindowsAppSDKSelfContainedCompileTimeConstants, which UPDATES the metadata
+       of the @(ClCompile) items that exist WHEN IT RUNS. Both it and this target
+       are BeforeTargets="ClCompile", this one was imported later, and so the five
+       units added here were added after the define had been handed out: they
+       compiled against a pch built WITH it and without it themselves. Naming the
+       SDK's target here reuses its logic (and its condition) instead of copying
+       the literal define into this file, which would then be a second place to
+       remember. If a future App SDK renames that target, MSBuild ignores the
+       unknown name, the items go back to being added late, and the five
+       warnings return - which is the detector for it. -->
+  <Target Name="UrmCompileGeneratedXamlImpl" BeforeTargets="WindowsAppSDKSelfContainedCompileTimeConstants;ClCompile" DependsOnTargets="MarkupCompilePass1;MarkupCompilePass2">
     <ItemGroup>
       <_UrmGenXamlCpp Include="$(IntDir)*.g.cpp" />
       <_UrmGenXamlCpp Include="$(MSBuildProjectDirectory)\XamlMetaDataProvider.cpp" Condition="Exists('$(MSBuildProjectDirectory)\XamlMetaDataProvider.cpp')" />

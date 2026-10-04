@@ -1,4 +1,4 @@
-﻿// The parts of the component kit a XAML style cannot express.
+// The parts of the component kit a XAML style cannot express.
 //
 // Most of the kit IS markup — UrButton, UrCard, UrLabel, UrTextField, the
 // switch and the snackbar surface are styles in App.xaml, over native WinUI
@@ -94,6 +94,32 @@ inline constexpr double kWideBreakpointDip = 1000.0;
 // Home only, deliberately. The other destinations already spend their width on
 // a table or a form; a third column there would be width for its own sake.
 inline constexpr double kUltraWideDip = 1800.0;
+
+// The third-pane (inspector rail) breakpoint used to be declared here as
+// kMessageThirdPaneDip, duplicating the same 1500 under a different name in a
+// different namespace with nothing enforcing they stayed equal. It was never
+// compared against anything - the only real threshold check lives in
+// urmsg::demo::kRailBreakpointDip (Demo/DemoShellState.h), which
+// urmsg::demo::LayoutFor() and MainWindow::ApplyBreakpoint() actually consume.
+// Removed rather than aliased so there is exactly one name for this number.
+
+// ---- one lookup of an App.xaml style, by key (promoted R2) -----------------
+//
+// A style out of the app dictionary, or null if the key is missing. Applying
+// styles BY KEY is what keeps a pane built in code in step with App.xaml, and a
+// missing key must not throw a layout away.
+//
+// PROMOTED, not written fresh. These six lines existed verbatim in three
+// anonymous namespaces - UrComponents.cpp, Views/ThreadView.cpp and
+// Views/InspectRailView.cpp - each with its own comment explaining that the
+// others were file-local. Three verbatim copies of one lookup is one lookup
+// that can drift three ways, so it lives here now and UrComponents.cpp defines
+// it once. Both copies are gone: InspectRailView.cpp calls kit::StyleByKey, and
+// ThreadView.cpp - which took no other dependency on this header - now includes
+// it for a `using urnw::kit::StyleByKey;`, so its twelve call sites read exactly
+// as they did. A fourth unit wanting this should do one of those two, never a
+// fourth copy.
+winrt::Microsoft::UI::Xaml::Style StyleByKey(wchar_t const* key);
 
 // Set a line's text AND its visibility in one call: an empty string collapses
 // the element instead of leaving a row of nothing behind.
@@ -288,9 +314,39 @@ struct PaneKeyValueRow {
   winrt::Microsoft::UI::Xaml::Controls::TextBlock key{nullptr};
   winrt::Microsoft::UI::Xaml::Controls::TextBlock value{nullptr};
 };
+// `accessibleValue` IS THE SPOKEN VALUE, and it exists because a row can be
+// right on screen and wrong in speech (added by task R3).
+//
+// This row is the ONE writer of its automation name: it composes "<key>, <value>"
+// so a key/value pair reaches a screen reader as one fact rather than as two
+// fragments (see the SetName call in the .cpp). A caller that wanted a different
+// spoken value therefore had exactly one move available - overwrite the name at
+// the call site - which makes the row and the caller two writers of one property.
+// This project has already had to UNDO a fix shaped like that.
+//
+// The measured case: the inspector rail draws a blank field as one em dash, which
+// is right for the eye and useless in the ear ("Received, em dash"). The CALLER is
+// the one that knows the value is absent; only this function can put that in the
+// name. So the substitution is passed in, and there is still one writer.
+//
+// EMPTY MEANS "the same as what is drawn", so a caller that does not pass it is
+// announced exactly as it was before this parameter existed. Check who that is
+// rather than assuming a crowd of them:
+//
+//     git grep -n "MakePaneKeyValueRow" -- app/
+//
+// Today the tree holds exactly ONE invocation - the inspector rail's
+// AppendFieldRows - and it is the one PASSING the parameter. The default is
+// therefore for the callers the plan will add (the Network and Advanced pane
+// surfaces), not for callers it spared.
+//
+// Passing this does NOT change a single drawn pixel - only the name - so it
+// cannot be used to make the row show one thing and say another: what a sighted
+// reader sees is still `value`.
 PaneKeyValueRow MakePaneKeyValueRow(winrt::hstring const& key,
                                     winrt::hstring const& value = {},
-                                    double height = 34);
+                                    double height = 34,
+                                    winrt::hstring const& accessibleValue = {});
 
 // A list row: a leading state dot, a title that trims, and a right-aligned
 // figure. The connections table, the contracts list and the split rules are all
@@ -338,6 +394,60 @@ PaneListRowButton MakePaneListRowButton(double height = 36);
 // which is a SHAPE change and not colour-alone, and the row's automation Name
 // gains its selected state so a screen reader is told rather than shown.
 void SetPaneListRowSelected(PaneListRowButton const& row, bool selected);
+
+// ---- the section card and the presence row (design d4, inspector rail) -------
+//
+// The pane layout's third module species: groups of rows sit on a CARD
+// (kCard, radius 8, 1px border, 12px side margins) under a floating caption,
+// instead of running edge to edge as ruled lines. Radius 8 follows the
+// boxed-tile/identicon radius (UrStatTileStyle, MakeIdenticon) rather than
+// the 12 of page-level hero cards (UrCardStyle) - pane modules are
+// subordinate objects. G3: spends `card` and `border`, adds no resource key.
+struct PaneCard {
+  winrt::Microsoft::UI::Xaml::Controls::Border root{nullptr};
+  winrt::Microsoft::UI::Xaml::Controls::StackPanel body{nullptr};
+};
+PaneCard MakePaneCard();
+
+// Every row in a card carries its bottom hairline from MakePaneRow (or the
+// button style), and the LAST one's line sits flush against the card's own
+// edge - a double rule. This clears the last child's hairline and restores
+// the rest, so it is also the call a surgical insert/remove re-runs to keep
+// the edge honest. Idempotent on purpose.
+void FinalizePaneCard(PaneCard const& card);
+
+// A person row that opens their devices - Session's connected-clients idiom
+// (design d4 §7): a 44 DIP Button (UrPaneRowButtonOnCardStyle, the on-card
+// hover) carrying an avatar slot with a corner presence badge, a title, a
+// meta, and a chevron. The caller appends MakeIdenticon(seed, 28) to
+// avatarHost; the badge seats itself over the avatar's bottom-right corner.
+//
+// The badge is two elements: a 10px disc in the CARD token (so it reads
+// punched out of the avatar against the card the row sits on) holding an 8px
+// state element - online a kUrGreen disc, offline a 1px faint RING. Ring vs
+// disc is a SHAPE channel, the same ring/disc language the delivery glyphs
+// use; the state itself is carried by the meta WORDS, so the badge stays an
+// AccessibilityView Raw restatement. kUrGreen appears here only in its
+// reserved presence role.
+struct PanePresenceRow {
+  winrt::Microsoft::UI::Xaml::Controls::Button root{nullptr};
+  // caller appends MakeIdenticon(seed, 28) here
+  winrt::Microsoft::UI::Xaml::Controls::Grid avatarHost{nullptr};
+  winrt::Microsoft::UI::Xaml::Shapes::Ellipse badge{nullptr};      // the 10px punch-out
+  winrt::Microsoft::UI::Xaml::Shapes::Ellipse badgeCore{nullptr};  // the 8px state element
+  winrt::Microsoft::UI::Xaml::Controls::TextBlock title{nullptr};
+  winrt::Microsoft::UI::Xaml::Controls::TextBlock meta{nullptr};
+  winrt::Microsoft::UI::Xaml::Controls::FontIcon chevron{nullptr};
+};
+PanePresenceRow MakePanePresenceRow();
+
+// badgeCore: green disc vs faint ring. The words in `meta` stay the primary
+// carrier; this only restates them.
+void SetPanePresenceOnline(PanePresenceRow const& row, bool online);
+
+// The chevron alone, swapped instantly in both directions (design d4 §7.2):
+// ChevronDownMed when the row opens downward, ChevronUpMed when it closes.
+void SetPanePresenceExpanded(PanePresenceRow const& row, bool expanded);
 // ---- the pane shell's dynamic GROUPS and rows (R4) -------------------------
 //
 // R3 built Home, whose groups and headers are all declared in MainWindow.xaml.
@@ -424,10 +534,13 @@ winrt::Microsoft::UI::Xaml::FrameworkElement MakePaneEmptyLine(winrt::hstring co
 
 // The search field row at the top of a list pane: a squared-off TextBox on the
 // pane's 40px row metrics with the row's bottom hairline. Returns the row and
-// the box.
+// the box, and the glyph too: the field's focus treatment repaints the glyph
+// (muted -> off-white while focused) and a caller cannot reach it through the
+// box.
 struct PaneSearchRow {
   winrt::Microsoft::UI::Xaml::Controls::Border root{nullptr};
   winrt::Microsoft::UI::Xaml::Controls::TextBox box{nullptr};
+  winrt::Microsoft::UI::Xaml::Controls::FontIcon glyph{nullptr};
 };
 PaneSearchRow MakePaneSearchRow(winrt::hstring const& placeholder);
 

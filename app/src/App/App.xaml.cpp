@@ -73,7 +73,37 @@ void App::OnLaunched(LaunchActivatedEventArgs const&) {
     if (auto native = window_.try_as<::IWindowNative>()) {
       HWND hwnd = nullptr;
       native->get_WindowHandle(&hwnd);
-      if (hwnd) urnw::shell::ApplyNativeShell(window_, hwnd);
+      if (hwnd) {
+        // D7 (fix round 1): demo mode opens at 1560x900 DIP, because the rail
+        // exists only at or above 1500 CONTENT dips and the rail must be live on
+        // launch - it is the only way an agent can see that state without
+        // synthesising input. FORCED THROUGH ApplyNativeShell'S OWN PARAMETERS,
+        // not a second resize issued after it: the first cut here called
+        // ApplyNativeShell with no forced size (one MoveAndResize to the compact
+        // 480x760 default) and then grew the window with a separate
+        // AppWindow::Resize - two MoveAndResize-equivalents before the window is
+        // ever shown. NavigationView's Auto pane-mode latches onto whatever it
+        // sees during that sequence and does not recover even once the final
+        // size is correct: --demo=network rendered icon-only nav at a proven
+        // 1560x900. F7 (one commit before this file existed) called
+        // ApplyNativeShell with forced dims directly - ONE MoveAndResize - and
+        // its `.verify/shot-demo.png` shows fully labelled nav at the identical
+        // 1560x900. Restored that path: the options are READ BACK from the
+        // window that already parsed them (constructed one line above), so the
+        // command line still has exactly one parser; DemoOptions() just has to
+        // be read before ApplyNativeShell now, not after.
+        // THE WIDE SHELL IS NOT THE DEMO'S, it is the CONVERSATION's. The rail exists only at or
+        // above 1500 content dips, and a --live launch has a real roster to put in it -- so the
+        // size is chosen by whether this run draws a conversation at all, exactly as
+        // MainWindow::ContentShell() decides every other surface. Keyed on --demo alone, a live
+        // launch opened at the compact 480x760 with no rail and no status strip.
+        bool wideShell = false;
+        if (auto self = window_.try_as<URmessage::MainWindow>())
+          wideShell = winrt::get_self<MainWindow>(self)->ContentShell();
+        urnw::shell::ApplyNativeShell(window_, hwnd,
+                                      wideShell ? urnw::shell::kDemoWidthDips : 0,
+                                      wideShell ? urnw::shell::kDemoHeightDips : 0);
+      }
     }
 
     window_.Activate();

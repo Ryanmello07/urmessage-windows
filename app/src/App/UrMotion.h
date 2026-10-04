@@ -18,6 +18,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 
 #include <winrt/Microsoft.UI.Composition.h>
 #include <winrt/Microsoft.UI.Xaml.h>
@@ -83,6 +84,23 @@ inline constexpr double kPressScale = 0.97;
 // page-transition code had no gate at all.
 bool ShouldAnimate();
 
+// A TRI-STATE test hook read by ShouldAnimate(): engaged (true/false) it wins,
+// disengaged (nullopt, the default) the OS setting rules. It exists because
+// the reduce-motion branch had never executed on any machine this ran on
+// (SPI_GETCLIENTAREAANIMATION = 1), so a task landing motion needs a way to
+// RENDER that branch without flipping a Windows accessibility setting
+// (d5 §3.8). UI THREAD ONLY, like everything in this file; nothing persists
+// it and no shipped code path engages it — call sites are temporary,
+// inserted to capture the motion-off render and removed in the same session.
+void SetMotionOverride(std::optional<bool> engaged);
+
+// Whether the override is currently engaged. The --diagnose gate for the hook
+// (urmsg::demo::DeveloperSwitchDiagnostics) must PROVE it left nothing engaged
+// behind it — an override left set flips every animation in the app for the
+// rest of the session, which is exactly the failure shape the hook exists to
+// test — and it cannot prove that through a write-only API.
+bool HasMotionOverride();
+
 // ---- TimeSpan / Duration helpers --------------------------------------------
 winrt::Windows::Foundation::TimeSpan Ms(int64_t ms);
 winrt::Microsoft::UI::Xaml::Duration XamlDuration(int64_t ms);
@@ -119,5 +137,17 @@ winrt::Microsoft::UI::Composition::CompositionEasingFunction MakeCompositionEasi
 // with outgoing == incoming (no-ops other than ensuring it is visible).
 void CrossfadePageSwap(winrt::Microsoft::UI::Xaml::FrameworkElement const& outgoing,
                        winrt::Microsoft::UI::Xaml::FrameworkElement const& incoming);
+
+// A 4 DIP rise -> 0 over kBaseMs on the Standard ease (design d4 §12.1): a
+// VERTICAL settle, which reads as material settling rather than the lateral
+// navigation a slide would imply inside a fixed-width column. Composes with
+// CrossfadePageSwap (it owns opacity and visibility; this owns only
+// TranslateY). Attaches a CompositeTransform when the element lacks one, so
+// callers do not each grow a transform-attachment block.
+//
+// No-ops when ShouldAnimate() is false. UNVERIFIED BRANCH, STATED: that gate
+// has never fired on any machine this ran on (SPI_GETCLIENTAREAANIMATION = 1),
+// so the no-motion path is code-inspection only.
+void SettleIn(winrt::Microsoft::UI::Xaml::FrameworkElement const& element);
 
 }  // namespace urnw::motion

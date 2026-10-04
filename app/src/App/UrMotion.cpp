@@ -4,6 +4,7 @@
 #include "UrMotion.h"
 
 #include <winrt/Microsoft.UI.Xaml.Hosting.h>
+#include <winrt/Microsoft.UI.Xaml.Media.h>
 #include <winrt/Windows.UI.ViewManagement.h>
 
 // Two animation families live in this app, on purpose, not by accident:
@@ -30,9 +31,16 @@ namespace anim = winrt::Microsoft::UI::Xaml::Media::Animation;
 using winrt::Microsoft::UI::Xaml::Duration;
 using winrt::Microsoft::UI::Xaml::DurationType;
 using winrt::Windows::Foundation::TimeSpan;
+
+// The SetMotionOverride test hook's state. UI-thread only, so a plain
+// optional with no synchronization — the same single-thread assumption the
+// rest of this file already makes.
+std::optional<bool> g_motionOverride;
 }  // namespace
 
 bool ShouldAnimate() {
+  // The test hook wins when engaged — see its declaration for why it exists.
+  if (g_motionOverride.has_value()) return *g_motionOverride;
   // "Show animations in Windows" off means the user wants motion GONE, not
   // reduced — same reading ConnectCanvas::AnimationsEnabled already used, now
   // the one place every OTHER animation in the app asks too.
@@ -42,6 +50,10 @@ bool ShouldAnimate() {
     return true;
   }
 }
+
+void SetMotionOverride(std::optional<bool> engaged) { g_motionOverride = engaged; }
+
+bool HasMotionOverride() { return g_motionOverride.has_value(); }
 
 TimeSpan Ms(int64_t ms) {
   return std::chrono::duration_cast<TimeSpan>(std::chrono::milliseconds(ms));
@@ -136,6 +148,31 @@ void CrossfadePageSwap(winrt::Microsoft::UI::Xaml::FrameworkElement const& outgo
     return;
   }
   RunCrossfade(outgoing, incoming);
+}
+
+void SettleIn(winrt::Microsoft::UI::Xaml::FrameworkElement const& element) {
+  namespace xaml = winrt::Microsoft::UI::Xaml;
+  if (!element || !ShouldAnimate()) return;
+  auto transform = element.RenderTransform().try_as<xaml::Media::CompositeTransform>();
+  if (!transform) {
+    transform = xaml::Media::CompositeTransform();
+    element.RenderTransform(transform);
+  }
+  // The start pose is written directly and the animation only carries it home:
+  // the first rendered frame already shows TranslateY 4 rather than the settled
+  // pose snapped away a frame later. The other side of that coin, stated
+  // honestly: a storyboard dropped unplayed would REST the element at
+  // TranslateY 4, not 0 — which is why Begin() here is synchronous on an
+  // already-realized element (the callers run inside a live mode swap), so the
+  // board always plays.
+  transform.TranslateY(kDist4);
+  auto rise = MakeSplineDouble(kDist4, 0.0, kBaseMs, 0, kStandardP1, kStandardP2);
+  anim::Storyboard sb;
+  anim::Storyboard::SetTarget(rise, element);
+  anim::Storyboard::SetTargetProperty(
+      rise, L"(UIElement.RenderTransform).(CompositeTransform.TranslateY)");
+  sb.Children().Append(rise);
+  sb.Begin();
 }
 
 }  // namespace urnw::motion

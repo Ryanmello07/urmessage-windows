@@ -1,0 +1,419 @@
+# URmessage Windows client — mainstream CI (urnetwork/message-windows).
+#
+# Adapted from the VPN client's .github/workflows/build-and-test.yml, and the
+# adaptation is almost entirely DELETION. That workflow is 361 lines because
+# most of it is a Go pipeline: it checks out sdk/connect/glog/goidenticons,
+# installs mingw-w64 and llvm-mingw, cross-compiles URnetworkSdk.dll for amd64
+# and arm64, vendors wintun by sha256 + Authenticode signer, builds a WiX MSI
+# and verifies its payload.
+#
+# URmessage has none of that. No Go, no SDK DLL, no wintun, no driver, no
+# service, no installer — per the demo design, no protocol at all. The build is
+# restore NuGet, msbuild the solution, produce the exe. What is KEPT from the
+# precedent is its style and its scars: the job shape, the least-privilege
+# permissions block, windows-2022 rather than windows-latest, keeping the
+# msbuild log even on failure, and asserting on the artifact that matters
+# instead of on a step's exit code.
+#
+# This is the MAINSTREAM workflow: build and test, and nothing more. No release
+# job, no tagging, no version derivation, no release upload. The artifact below
+# is for inspection; an artifact is not a release.
+#
+# SPDX-License-Identifier: MPL-2.0
+name: Build and test - Windows
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Least privilege. Nothing here writes to the repository: no tag, no release,
+# no commit. `contents: read` is the whole requirement — and unlike the VPN
+# workflow there is no `actions: read` either, because that permission existed
+# only to let the version-derive step read the run's created_at, and this
+# workflow derives no version (see the build step).
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and test the Windows app (x64)
+    # NOT windows-latest. That image has moved to Visual Studio 18, whose
+    # toolset set no longer matches what Directory.Build.props pins (v143 +
+    # Windows SDK 10.0.22621.0). windows-2022 IS the reference box those pins
+    # describe, which is the whole reason this workflow uses the pins directly
+    # instead of reusing tools/build-local.ps1's toolset/SDK detection — that
+    # detection exists for developer machines that do not have the pinned
+    # toolchain, and CI is the machine that defines it.
+    runs-on: windows-2022
+    # A hedge, not a gate. The diagnose step below has its own 120s wait and
+    # kills what it waits on, but URmessage.exe is a /SUBSYSTEM:WINDOWS binary
+    # with several MessageBoxW paths, and a modal box on a headless runner is
+    # unattended by definition. Fail in 45 minutes with a log, rather than
+    # burning six hours of the default job timeout.
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      # The pins are the contract, so print a divergence before msbuild trips
+      # over it as an unrelated-looking MSB8036/MSB8020 forty lines into a
+      # build log. This step used to hard-fail when the pin was absent, on the
+      # theory that a CI run building against a different SDK would stop being
+      # the reference -- but the precedent workflow
+      # (upstream-build-and-test.yml, which has actually run green) does the
+      # opposite in its own comment: runner images carry a different SDK set
+      # than the reference box the pins describe, so IT resolves whatever is
+      # installed and overrides with that. A hard fail here teaches nothing
+      # about the demo and blocks every PR on an image detail; a silent
+      # override would make the pin meaningless. The middle path: keep
+      # printing exactly what the runner has, proceed with the build using
+      # whatever it does have, and warn (not fail) when the pin is missing. If
+      # that warning ever fires, the correct response is to change the pin in
+      # app/Directory.Build.props, not to add more detection to CI.
+      - name: Resolve the toolchain, warning if the pin is absent
+        id: toolchain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # Kept in step with app/Directory.Build.props.
+          $sdk = '10.0.22621.0'
+          $toolset = 'v143'
+
+          $kitRoots = @(
+            "${env:ProgramFiles(x86)}\Windows Kits\10",
+            "$env:ProgramFiles\Windows Kits\10"
+          ) | Where-Object { Test-Path -LiteralPath $_ }
+
+          $available = @()
+          foreach ($root in $kitRoots) {
+            $installed = Get-ChildItem (Join-Path $root 'Include') -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' } |
+              Select-Object -ExpandProperty Name
+            Write-Host "$root : $($installed -join ', ')"
+            $available += $installed
+          }
+
+          # Headers AND libs: a headers-only kit compiles and then fails at
+          # link, which reads as an unrelated error.
+          $header = $kitRoots | ForEach-Object { Join-Path $_ "Include\$sdk\um\windows.h" } |
+            Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          $lib = $kitRoots | ForEach-Object { Join-Path $_ "Lib\$sdk\um\x64\kernel32.lib" } |
+            Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          $pinPresent = [bool]($header -and $lib)
+
+          if (-not $header) {
+            Write-Host "::warning::Windows SDK $sdk has no um\windows.h on this runner; app/Directory.Build.props pins it, but this workflow now builds with whatever the runner has instead of failing (see the step comment above)"
+          } else {
+            Write-Host "windows sdk headers: $header"
+          }
+          if (-not $lib) {
+            Write-Host "::warning::Windows SDK $sdk has no Lib\um\x64\kernel32.lib on this runner (headers without libs link-fail)"
+          } else {
+            Write-Host "windows sdk libs   : $lib"
+          }
+
+          # The toolset check is a WARNING: msbuild's own MSB8020 already names
+          # v143 plainly, so a false negative here (an image that stores the
+          # toolset somewhere new) must not fail an otherwise good build. There
+          # is also no override lever for the toolset the way there is for the
+          # SDK version below, so surfacing it is all this step can do.
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path -LiteralPath $vswhere) {
+            $vs = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath
+            if ($vs) {
+              $toolsetDir = Join-Path $vs "MSBuild\Microsoft\VC\v170\Platforms\x64\PlatformToolsets\$toolset"
+              if (Test-Path -LiteralPath $toolsetDir) {
+                Write-Host "platform toolset   : $toolsetDir"
+              } else {
+                Write-Host "::warning::platform toolset $toolset was not found under $vs -- if the build fails with MSB8020, this is why"
+              }
+              $msvc = Get-ChildItem (Join-Path $vs 'VC\Tools\MSVC') -Directory -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty Name
+              Write-Host "msvc versions      : $($msvc -join ', ')"
+            }
+          }
+
+          # Resolve what the build should actually use: the pin when it is
+          # present (the common case -- windows-2022 IS the reference box), or
+          # else the highest installed SDK that has both headers and libs, so
+          # the build proceeds instead of hard-failing on an image detail.
+          $resolvedSdk = $sdk
+          if (-not $pinPresent) {
+            $usable = foreach ($root in $kitRoots) {
+              foreach ($name in ($available | Select-Object -Unique)) {
+                $h = Join-Path $root "Include\$name\um\windows.h"
+                $l = Join-Path $root "Lib\$name\um\x64\kernel32.lib"
+                if ((Test-Path -LiteralPath $h) -and (Test-Path -LiteralPath $l)) { $name }
+              }
+            }
+            # @(...): a single surviving match collapses to a bare string, and
+            # a bare string indexed with [-1] below returns its LAST
+            # CHARACTER, not the element -- silently resolving to "0" for a
+            # version like 10.0.19041.0. Force it to stay an array.
+            $usable = @($usable | Select-Object -Unique | Sort-Object { [version]$_ })
+            if (-not $usable) {
+              throw "no Windows 10 SDK with both headers and x64 libs found on this runner -- there is nothing to fall back to"
+            }
+            $resolvedSdk = $usable[-1]
+            Write-Host "::warning::Windows SDK $sdk (pinned in app/Directory.Build.props) is absent on this runner -- proceeding with the build using $resolvedSdk instead. If this fires on an ordinary run, fix the pin in app/Directory.Build.props; don't add more detection here."
+          }
+          Write-Host "sdk used for build : $resolvedSdk"
+          "sdk_version=$resolvedSdk" >> $env:GITHUB_OUTPUT
+
+      # /restore does the NuGet work (App.vcxproj takes Windows App SDK 2.2.0,
+      # C++/WinRT and the SDK build tools as PackageReferences; Common.vcxproj
+      # takes none). Everything else about the build comes from
+      # app/Directory.Build.props, ON PURPOSE:
+      #
+      #   * no /p:PlatformToolset. There is no override lever for it (see the
+      #     toolchain step above): v143 is what windows-2022 ships, and if that
+      #     ever stops being true msbuild's own MSB8020 already names it
+      #     plainly.
+      #   * /p:WindowsTargetPlatformVersion IS passed, but sourced from the
+      #     toolchain step's resolved value, not hardcoded here. On this
+      #     runner (which the props file's 10.0.22621.0 pin describes) that
+      #     resolves right back to the pin, so this is a no-op in the ordinary
+      #     case — as it was when this workflow overrode nothing here — and it
+      #     only diverges, with a warning already on record above, when the
+      #     pinned SDK is absent. That is what lets the build proceed instead
+      #     of failing on an image detail.
+      #   * no /p:UrVersion*. The mainstream workflow releases nothing, so the
+      #     props defaults (0.0.0-dev, version code 0) are the correct identity
+      #     for a build that is never shipped.
+      #   * no /p:RestorePackagesConfig. There is no packages.config anywhere in
+      #     this repo (the VPN repo has one); the flag would be inert here.
+      #
+      # x64 only. The solution also configures ARM64 and it cross-builds from
+      # this runner, but the test below RUNS the binary, and an x64 host cannot
+      # run an ARM64 exe — an ARM64 leg would build-only and would quietly be a
+      # weaker gate wearing the same name.
+      - name: Build the solution (Release x64)
+        shell: pwsh
+        working-directory: app
+        run: |
+          msbuild URmessage.sln `
+            /restore `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /p:WindowsTargetPlatformVersion=${{ steps.toolchain.outputs.sdk_version }} `
+            /m `
+            /v:minimal `
+            /clp:Summary `
+            /flp:"LogFile=msbuild-x64.log;Verbosity=detailed"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::msbuild failed with exit code $LASTEXITCODE -- see the msbuild-log-x64 artifact for the detailed log"
+            exit $LASTEXITCODE
+          }
+
+      # This repository has no test framework and none may be added. The
+      # runnable check is the app's own --diagnose switch: it prints the App
+      # Runtime path, resources.pri, the fonts, the single-instance key and
+      # whether MRT actually RESOLVES a string, then exits — verified in
+      # app/src/App/main.cpp, where the diagnose branch returns before
+      # AppInstance::FindOrRegisterForKey and before Application::Start, so it
+      # creates no window and registers no single-instance key. That is what
+      # makes it safe on a headless runner.
+      #
+      # The demo plan (docs/superpowers/plans/) adds PASS/FAIL assertion lines
+      # to CollectDiagnostics(). Today there are none, so there are no FAIL
+      # lines and the gate passes; the moment they land it starts biting. The
+      # match is CASE-SENSITIVE on `FAIL`, which also catches the FAILED lines
+      # the diagnostics already emit today (the COM apartment, the MRT loader
+      # throwing, the App SDK being unusable) — every one of which is a genuine
+      # failure — while never firing on ordinary prose.
+      - name: Run the --diagnose smoke test
+        shell: pwsh
+        env:
+          # The app resolves its state root from this (Common/Paths.cpp), else
+          # %LOCALAPPDATA%. Pointing it inside the workspace puts the app log
+          # somewhere the upload step below can collect it.
+          URMESSAGE_APP_ROOT: ${{ github.workspace }}\.ci-appstate
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $app = Join-Path $env:GITHUB_WORKSPACE 'app'
+          $exe = Join-Path $app 'build\x64\Release\URmessage.exe'
+          if (-not (Test-Path -LiteralPath $exe)) {
+            Write-Host "::error::the build reported success but produced no $exe"
+            exit 1
+          }
+          $outFile = Join-Path $app 'diagnose-x64.out'
+          $errFile = Join-Path $app 'diagnose-x64.err'
+
+          # WHY a manually-started Process with redirected streams, and not
+          # `& $exe --diagnose` or Start-Process: URmessage.exe is
+          # /SUBSYSTEM:WINDOWS, and WriteDiagnosticsToConsole
+          # (app/src/App/Startup.cpp) falls back to a MODAL MessageBoxW whenever
+          # it cannot write to a std handle. On a headless runner
+          # AttachConsole(ATTACH_PARENT_PROCESS) may find nothing to attach to,
+          # which is exactly that case — and a modal box nobody can dismiss
+          # would hang this job until a timeout. Redirecting stdout/stderr
+          # (below) hands the process a valid non-console handle: GetConsoleMode
+          # fails on it, the code takes its WriteFile/utf-8 branch, WriteStdout
+          # returns true, and the message box is never reached.
+          #
+          # WHY NOT Start-Process -PassThru: reproduced on this box (Windows
+          # PowerShell 5.1.26100.9168) that combining -PassThru with
+          # -RedirectStandardOutput/-RedirectStandardError makes .ExitCode
+          # unreliable — WaitForExit(120000) returns True, HasExited is True,
+          # and ExitCode is $null, so `if ($code -ne 0)` below would silently
+          # never fire regardless of what the app returned. Constructing the
+          # Process via ProcessStartInfo instead makes THIS object the one that
+          # owns the child's handle, so ExitCode is real.
+          $psi = [System.Diagnostics.ProcessStartInfo]::new($exe)
+          $psi.Arguments = '--diagnose'
+          $psi.UseShellExecute = $false
+          $psi.CreateNoWindow = $true
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError  = $true
+          # WriteStdout writes utf-8 BYTES to the redirected handle (not
+          # utf-16); telling the streams to decode as utf-8 here is what keeps
+          # the non-ascii in the diagnostics from mojibaking below.
+          $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+          $psi.StandardErrorEncoding  = [System.Text.Encoding]::UTF8
+          $p = [System.Diagnostics.Process]::Start($psi)
+
+          # Read both streams to end BEFORE WaitForExit, or a child that fills
+          # a pipe buffer while nothing drains it deadlocks against a
+          # WaitForExit called first.
+          $out = $p.StandardOutput.ReadToEnd()
+          $err = $p.StandardError.ReadToEnd()
+
+          # Belt and braces, because the redirect above does not cover every
+          # path: the catch around StartupLogInit in wWinMain shows a message
+          # box unconditionally before any of the console logic runs. If that
+          # ever fires, fail here in two minutes naming the cause, rather than
+          # hanging on the job timeout with nothing to read.
+          if (-not $p.WaitForExit(120000)) {
+            Write-Host "::error::--diagnose did not exit within 120s; the most likely cause is a modal dialog on a headless runner (see the MessageBoxW paths in app/src/App/main.cpp and Startup.cpp)"
+            try { $p.Kill() } catch { }
+            exit 1
+          }
+          $code = $p.ExitCode
+
+          $text = $out
+          $errText = $err
+
+          # Nothing reads these files back in this job (the streams above are
+          # read directly now), but the "Upload the diagnose output" step
+          # still archives them, so keep writing them for it.
+          Set-Content -LiteralPath $outFile -Value $text -Encoding utf8 -NoNewline
+          Set-Content -LiteralPath $errFile -Value $errText -Encoding utf8 -NoNewline
+
+          Write-Host '----- URmessage.exe --diagnose -----'
+          if ([string]::IsNullOrWhiteSpace($text)) { Write-Host '(no output)' } else { Write-Host $text }
+          if (-not [string]::IsNullOrWhiteSpace($errText)) {
+            Write-Host '----- stderr -----'
+            Write-Host $errText
+          }
+          Write-Host "----- exit code: $code -----"
+
+          $lines = @(($text -split "\r?\n") | Where-Object { $_.Trim() -ne '' })
+
+          # A vacuous pass is the failure mode this gate is most exposed to, so
+          # empty output is itself a failure: the switch always prints at least
+          # its header, and nothing at all means it never got to write.
+          if ($lines.Count -eq 0) {
+            Write-Host "::error::--diagnose exited $code but printed nothing; the diagnostics never reached stdout"
+            exit 1
+          }
+
+          # $failLines also gates -- via the extra -cmatch alternation below --
+          # three states that carry no FAIL token but are just as fatal: each
+          # means the exe that was just built cannot render its own UI, which
+          # is exactly what this job exists to catch. The README calls
+          # "resources (mrt) : NOT RESOLVING" a silent, shipping-grade failure
+          # for that reason: the built exe renders raw key ids instead of
+          # every string in the UI. "resources.pri : MISSING" and "app runtime
+          # : NOT FOUND" are the same class of failure one step earlier.
+          $failLines = @($lines | Where-Object {
+            $_ -cmatch 'FAIL' -or
+            $_ -cmatch 'resources \(mrt\)\s*:\s*NOT RESOLVING|resources\.pri\s*:\s*MISSING|app runtime\s*:\s*NOT FOUND'
+          })
+          $passLines = @($lines | Where-Object { $_ -cmatch 'PASS' })
+          Write-Host "diagnostic lines: $($lines.Count)   PASS: $($passLines.Count)   FAIL: $($failLines.Count)"
+
+          # The rest are not gates, but worth surfacing: the diagnostics word
+          # several other real problems without the token FAIL, and a warning
+          # annotation costs nothing. (The three states gated above are
+          # excluded here so each is reported once, as an error, not twice.)
+          # Widening the gate further to the rest is the plan's job, via the
+          # PASS/FAIL assertion lines it adds to CollectDiagnostics().
+          foreach ($line in $lines) {
+            if ($line -cmatch 'MISSING|NOT FOUND|NOT RESOLVING|COULD NOT BE OPENED' -and
+                $line -notmatch 'resources \(mrt\)\s*:\s*NOT RESOLVING|resources\.pri\s*:\s*MISSING|app runtime\s*:\s*NOT FOUND') {
+              Write-Host "::warning::--diagnose: $($line.Trim())"
+            }
+          }
+
+          if ($failLines.Count -gt 0) {
+            foreach ($line in $failLines) {
+              Write-Host "::error::--diagnose reported a failure: $($line.Trim())"
+            }
+            exit 1
+          }
+
+          # Checked after the FAIL scan so the log carries the reason before the
+          # code. Note that the diagnose path returns 0 even for a COM apartment
+          # failure — it reports that as a FAILED line instead — so the exit code
+          # alone is not a sufficient gate, and neither is the FAIL scan alone.
+          if ($code -ne 0) {
+            Write-Host "::error::--diagnose exited with code $code"
+            exit $code
+          }
+
+          if ($passLines.Count -eq 0) {
+            Write-Host "note: no PASS/FAIL assertion lines in this build -- the demo plan adds them to CollectDiagnostics(); until then this step gates on the diagnostics' own FAILED lines only"
+          }
+          Write-Host '--diagnose OK'
+
+      # The detailed msbuild log is the whole point of a red run, so keep it
+      # whether the build passed, failed, or the diagnose step failed after it.
+      - name: Upload the msbuild log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: msbuild-log-x64
+          path: app/msbuild-x64.log
+          if-no-files-found: warn
+
+      # Same reasoning for the diagnostics: the step already prints them, but a
+      # file survives log truncation and can be diffed run to run. The app's own
+      # log comes along because URMESSAGE_APP_ROOT put it in the workspace.
+      - name: Upload the diagnose output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnose-output-x64
+          path: |
+            app/diagnose-x64.out
+            app/diagnose-x64.err
+            .ci-appstate/logs/
+          if-no-files-found: warn
+
+      # For inspection only — an artifact is not a release, and this workflow
+      # publishes nothing. Deliberately JUST the exe, not the whole output
+      # directory the VPN workflow uploads: that repo's artifact is the source
+      # of a shipped portable zip, so dropping Assets\Fonts from it was a real
+      # bug. Here the artifact answers "what did this commit compile to", and
+      # the output directory additionally contains the four licensed commercial
+      # typefaces (see README, open question 1) — which building is allowed to
+      # do, and which a downloadable artifact on the mainstream repo should not
+      # do casually.
+      - name: Upload the built executable
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: urmessage-windows-x64-exe
+          path: app/build/x64/Release/URmessage.exe
+          if-no-files-found: error

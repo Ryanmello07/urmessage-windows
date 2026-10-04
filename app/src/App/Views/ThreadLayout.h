@@ -1,0 +1,765 @@
+// The thread's layout DECISIONS, as pure data.
+//
+// PURE C++. No winrt/ include here, and none may be added: CollectDiagnostics()
+// calls PlanThreadRows() from wWinMain BEFORE winrt::init_apartment(), which is
+// the same reason DemoWorld.h is pure (CONTRACT-V2 §1). Keeping the decisions
+// here and the pixels in ThreadView.cpp is what makes a --diagnose assertion
+// about this surface possible at all; a builder that decided inline could only
+// ever be checked by looking at it.
+//
+// NOT the same header as Demo/ThreadLayout.h. That one holds T1's row RULES
+// (ShowsSenderHeader, DeliveryWord, AuditDaySeparators, ...); this one holds
+// the row PLANNER. BOTH are namespace urmsg::views - only the PATH differs.
+// Do not write demo::ShowsSenderHeader: it does not compile, and that mistake
+// has already been made once. Both are always included WITH their directory prefix -
+// "Demo/ThreadLayout.h" and "Views/ThreadLayout.h" - and $(MSBuildProjectDirectory)
+// is on AdditionalIncludeDirectories (App.vcxproj:125), so the two resolve
+// unambiguously. Do not merge them: one is what the demo world means, the
+// other is what this surface draws.
+//
+// SPDX-License-Identifier: MPL-2.0
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "Demo/DemoWorld.h"
+#include "Demo/ThreadLayout.h"  // the ROW RULES (also urmsg::views, also pure)
+
+namespace urmsg::views {
+
+enum class ThreadRowShape {
+  IncomingBubble,
+  OutgoingBubble,
+  DaySeparator,
+  SystemLine,             // centred, muted, NOT a bubble (design §6.2)
+  SystemPermanentRecord,  // Spec C §7.4: 2px UrDangerBrush left rule, non-dismissible
+  // Spec C §5.6 + §5.1's "Observer message hidden" row (item 242 R4, ruling 16).
+  // HIDE, NOT DROP: the record OPENED, its body is intact and still in
+  // Conversation::rows, and this shape draws it COLLAPSED to §5.1's system line
+  // with the content one expansion away. It is NOT a gap and must not read like
+  // one — a gap is a record this device could not open, this one it could — and
+  // it is not an eighth GapReason: that set is closed at seven. A row dropped
+  // is indistinguishable from a record that never arrived, which is the one
+  // thing this build's whole gap design exists to refuse.
+  HiddenObserverRecord,
+};
+
+// ---- run-shape geometry (design d2 §1) -------------------------------------
+// A THIRD notion of "run", beside showSenderHeader (same SENDER, delegated to
+// ShowsSenderHeader in Demo/ThreadLayout.h) and endsOutgoingRun (same
+// DIRECTION, a position hint no renderer consumes). This one is the GEOMETRIC
+// run a reader's eye actually uses: same speaker, adjacent Message rows,
+// nothing between. Its boundary is exactly where the sender header and
+// identicon already appear, which is why the corner language and the header
+// rule can never disagree about where a run starts.
+enum class BubbleRunPos { Single, First, Middle, Last };
+
+// Both Message rows, same direction, and — incoming only — the same senderKey.
+// Outgoing rows are one speaker ("You"), so outgoing runs unify: the same
+// assumption the direction-only code already makes everywhere else.
+// Symmetric, so the "is the row above/below in my run" questions share one
+// predicate.
+inline bool ContinuesBubbleRun(demo::MessageRow const& a, demo::MessageRow const& b) {
+  if (a.kind != demo::RowKind::Message || b.kind != demo::RowKind::Message) return false;
+  if (a.outgoing != b.outgoing) return false;
+  if (a.outgoing) return true;  // one speaker: "You"
+  return a.senderKey == b.senderKey;
+}
+
+// Where `cur` sits in its geometric run. `prev`/`next` are the rows
+// immediately above/below in Conversation::rows, or nullptr at an end. A day
+// separator or a system row breaks a run (ContinuesBubbleRun is false for
+// one), which is exactly what DemoWorld does when it clears previousSender.
+BubbleRunPos RunPosFor(demo::MessageRow const* prev, demo::MessageRow const& cur,
+                       demo::MessageRow const* next);
+
+// The corner table, as TL,TR,BR,BL in `out`. Base radius 12 — the card radius
+// used app-wide — with the corners that face an adjacent same-speaker bubble
+// tightened to 4. The tightened corner is always on the spine (left for
+// incoming, right for outgoing); Single stays fully round so DMs, which are
+// almost all singles, do not get a harsh look. Asymmetric corners instead of
+// tails because they flow through UrBubbleButtonStyle's CornerRadius
+// template-binding to EdgeLayer and SelectEdge with no template fork — a tail
+// would be a second painter of the direction fill and would break press-dim,
+// the selection outline and the one-writer edge invariant (d2 §1).
+void BubbleCornerDip(BubbleRunPos runPos, bool outgoing, double out[4]);
+
+// The vertical rhythm that replaced stack.Spacing(6): 10 above a run
+// start/single, 2 above a continuation, so runs read as blocks. Non-bubble
+// rows keep their own margins and never consult this.
+double GapAboveDip(BubbleRunPos runPos);
+
+struct ThreadRowPlan {
+  std::size_t rowIndex = 0;      // index into Conversation::rows
+  ThreadRowShape shape = ThreadRowShape::SystemLine;
+
+  // The GEOMETRIC run position above, computed for Message rows in the
+  // PlanThreadRows loop from the same prev/next the loop already knows.
+  // Meaningless (and left Single) on every other shape — day separators,
+  // system lines and the record draw no bubble corners.
+  BubbleRunPos runPos = BubbleRunPos::Single;
+
+  // First bubble of a run, INCOMING, in a GROUP. Delegated verbatim to
+  // ShowsSenderHeader() in Demo/ThreadLayout.h, so there is exactly ONE
+  // definition of "starts a run" for the sender name in this app. That rule
+  // breaks a run on the SENDER (it compares senderKey); computing it here from
+  // direction alone would merge Mira-then-Tobias into one incoming run and drop
+  // Tobias's name - 5 bubbles in the shipped world, gated by "T4 sender
+  // headers" in CollectDiagnostics().
+  bool showSenderHeader = false;
+
+  // Last MESSAGE row of a same-DIRECTION outgoing stretch. A position hint, and
+  // deliberately a different rule from the one above.
+  //
+  // T5: DO NOT hang the delivery cluster on this field. Use
+  // CarriesDeliveryGlyph() from Demo/ThreadLayout.h, which additionally fires on
+  // ANY Failed row wherever it sits. The shipped world contains exactly that
+  // case - DemoWorld.cpp:277 is an outgoing Failed row followed at :279 by an
+  // outgoing Pending row - so endsOutgoingRun is FALSE there while the row must
+  // still show its reading. It is the red circle and the words "Not sent" on
+  // 12:09 row in the capture; hanging the cluster on this field alone deletes
+  // it, and a silently swallowed failure is the one delivery state this surface
+  // must never lose. endsOutgoingRun is not a substitute for that rule.
+  bool endsOutgoingRun = false;
+};
+
+// One entry per row, in order, always. Never throws.
+std::vector<ThreadRowPlan> PlanThreadRows(demo::Conversation const& c);
+
+// ---- the delivery badge (T5) --------------------------------------------
+// What the cluster under the last outgoing bubble of a run DRAWS, as data.
+// Pure, so --diagnose can walk the whole closed set of Spec C §5.3 rather
+// than a screenshot having to be believed.
+//
+// THE table of what a state draws. Demo/ThreadLayout.h keeps only the WORDS
+// now (DeliveryWord, for the automation name); its six-distinct-GLYPH table was
+// deleted in T5 fix round 1 rather than left orphaned, because this one gives
+// Sent and Delivered the same glyph on purpose and tells them apart by how many
+// of it there are — so the two tables could not both be true.
+enum class DeliveryCue { Clock, OneCheck, TwoOutlineChecks, TwoFilledChecks, Alert, Timer };
+
+struct DeliveryBadge {
+  DeliveryCue cue;
+  wchar_t const* glyph;  // ONE Segoe Fluent codepoint, never empty
+  int repeat;            // 1 or 2 — "two checks" (Spec C §5.3) is a COUNT
+  wchar_t const* word;   // the non-colour channel: the state says itself
+  bool danger;           // UrDangerBrush
+  bool solid;            // UrTextBrush rather than UrTextMutedBrush
+};
+
+// Total over the closed set of Spec C §5.3. Pure, so --diagnose can walk it.
+DeliveryBadge BadgeFor(demo::DeliveryState s);
+
+// -1 when `id` is empty or matches nothing. Deselection is a real state and
+// must not fall through to bubble 0 — which is what an index of 0 for "no
+// match" would do, and it would be invisible in every screenshot where bubble 0
+// happened to be the selected one.
+int SelectedBubbleIndex(std::vector<std::wstring> const& ids, std::wstring const& id);
+
+// ---- motion, as numbers rather than as code (T6) -------------------------
+// design §7, "Bubble entrance": fade + 10 DIP rise + 0.96 -> 1.0 scale at
+// motion::kBaseMs on the standard curve. The numbers live here rather than in
+// the builder so --diagnose can read them without an apartment.
+inline constexpr double kBubbleRiseDip = 10.0;
+inline constexpr double kBubbleFromScale = 0.96;
+
+// design §7, "Typing indicator": three dots at kPulseMs, 140 ms phase offset.
+// 140 is an OFFSET between three copies of one timeline, not a new duration.
+inline constexpr int kTypingDots = 3;
+inline constexpr int64_t kTypingPhaseMs = 140;
+
+// 0, 140, 280. -1 for a dot outside [0, kTypingDots).
+int64_t TypingDotPhaseMs(int dot);
+
+// ---- the timelines themselves, as data (T6 fix round 1) ------------------
+// ONE timeline of one effect. The builders in ThreadView.cpp own no list of
+// their own: RunBubbleEntrance and SetThreadTyping ITERATE these vectors and
+// hand each entry to motion::MakeSplineDouble. That is the whole point of
+// keeping them here.
+//
+// The first version of this counted with `return animate ? 4 : 0;` beside a
+// builder that wrote out four add() calls by hand, and the --diagnose line
+// compared that literal against the literal 4. Deleting the ScaleY timeline
+// from the builder left the gate printing PASS. A count is only worth
+// asserting if it is the count the render actually spends.
+//
+// `ms` is NOT here: a duration is a motion token and UrMotion.h pulls in winrt,
+// which this header may never do (CollectDiagnostics runs before
+// winrt::init_apartment). Both effects run every one of their timelines at one
+// duration, so the caller passes it once.
+struct TimelineSpec {
+  wchar_t const* path;  // Storyboard::SetTargetProperty path, never empty
+  double from;
+  double to;
+  int64_t beginMs;   // stagger; 0 for none
+  bool autoReverse;  // out and back within one repeat
+  bool forever;      // RepeatBehavior::Forever
+};
+
+// design §7, "Bubble entrance". FOUR timelines — opacity, TranslateY, ScaleX,
+// ScaleY — and EMPTY when `animate` is false, because "off" means the motion is
+// gone rather than shortened. The empty half is the one worth asserting: a
+// table that is the same length either way is not a gate.
+//
+// `staggerMs` delays the WHOLE entrance (every timeline begins together at
+// staggerMs); it is how design d2 §8.2's conversation-open stagger reuses one
+// table. The default keeps the append path's shape, and the "T6 bubble
+// entrance" gate asserts the staggerMs=0 shape exactly as before.
+std::vector<TimelineSpec> EntranceTimelines(bool animate, int64_t staggerMs = 0);
+
+// design §7, "Typing indicator". One per dot, in dot order, each offset by
+// TypingDotPhaseMs. Empty when `animate` is false.
+std::vector<TimelineSpec> TypingTimelines(bool animate);
+
+// == EntranceTimelines(animate).size() / TypingTimelines(animate).size().
+int EntranceTimelineCount(bool animate);
+int TypingTimelineCount(bool animate);
+
+// ---- the whole-THREAD open entrance (the unit the stagger plays over) ------
+// design d2 §8.2's open made coherent. The stagger caps at kMaxStaggerSteps
+// rows, so row-by-row it CANNOT cover a tall viewport: on a switch's first
+// frame every non-staggered row rendered at full opacity above six invisible
+// ones (the "pre-rendered pop" the owner reported, captured in
+// .verify-switchentrance's before/ frames). The fix animates the thread's
+// CONTENT CONTAINER — the scroller, which carries every row and neither the
+// composer nor the typing row — as ONE unit under the stagger: fade 0 -> 1
+// plus a small rise over kBaseMs on the standard curve, on a true open/switch
+// only (the caller's runEntrance, ShouldRunEntrance below). The per-bubble
+// stagger keeps playing on top; opacity multiplies down the tree, so the
+// cascade survives the shared fade.
+//
+// TWO timelines — opacity, TranslateY — and EMPTY when `animate` is false
+// (the EntranceTimelines rule: off means gone). The rise is kDist8, read off
+// UrMotion.h textually in the .cpp (the OpenStaggerTailMs arrangement), and
+// kDist8 rather than kDist4 because the surface is ~1000 dip tall: 4 dip on
+// it does not read as a gesture, while 8 stays under the bubbles' own 10
+// (kBubbleRiseDip) so the foot cascade keeps the lead over the shared settle.
+// No stagger parameter: the container is one element, there is nothing to
+// cascade it against.
+std::vector<TimelineSpec> ThreadEntranceTimelines(bool animate);
+int ThreadEntranceTimelineCount(bool animate);
+
+// ---- conversation-open stagger (design d2 §8.2) -----------------------------
+// A freshly built thread used to pop in whole while the conversation list
+// beside it staggers. Now only the visible FOOT animates: the last
+// min(kMaxStaggerSteps, bubbleCount) bubble rows, kStaggerMs apart,
+// oldest-to-newest so the newest settles last. Only the foot animates because
+// rows above the fold animating invisibly would be waste, and 6 is the cap the
+// list already uses (ConversationRowDelayMs, gated by demo.list.stagger).
+// Per-ROW motion, that is — the container's own one-unit entrance is
+// ThreadEntranceTimelines above, and the two compose on a true open.
+//
+// Returns -1 for "does not animate" (every row above the foot) and a begin
+// delay >= 0 for a foot row — the SelectedBubbleIndex precedent: 0 is a valid
+// begin (the foot's oldest), so "skip me" cannot also be 0. The delay is
+// 0-based within the foot, matching the list's convention (its index 0 also
+// starts at 0 ms). d2's sketch signed this as a function of the count alone;
+// a count cannot answer a per-row question, so the row's index among bubble
+// rows is the first parameter.
+//
+// kStaggerMs/kMaxStaggerSteps live in UrMotion.h, which pulls in winrt — the
+// .cpp reads them off it textually, the ConversationRowModel.cpp pattern; this
+// header stays winrt-free.
+int64_t OpenStaggerBeginMs(std::size_t bubbleIndex, std::size_t bubbleCount);
+
+// ---- open vs refresh: who gets the entrance ---------------------------------
+// The open stagger is how a thread ANNOUNCES a conversation — it belongs to an
+// open/switch and to nothing else. Re-setting the SAME conversation is
+// autoplay's delivery-advance refresh (RefreshOpenThread): the foot re-renders
+// because a glyph changed, and replaying the entrance there re-pops bubbles
+// the reader is already looking at (the animfix2 audit's defect B1 — old
+// messages visibly re-entering on a delivery tick). The view's ONLY signal for
+// open-vs-refresh is the id pair — a refresh IS a re-set of the open
+// conversation, so there is no third parameter to pass: `openConvId` is the
+// conversation the thread currently shows (empty before the first open), and
+// the entrance runs exactly when this call opens a DIFFERENT one. The empty
+// first-open case answers true because a real id never equals "".
+bool ShouldRunEntrance(std::wstring const& openConvId, std::wstring const& nextConvId);
+
+// The open's motion, end to end: the last animating bubble begins at
+// (kMaxStaggerSteps - 1) * kStaggerMs and runs kBaseMs, so their sum is the
+// entrance's TAIL — the moment no open storyboard is still moving (450 ms at
+// today's tokens). The hydration fill's FIRST beat waits this out on a true
+// open (SetThreadConversation): a Low-priority beat still runs on the UI
+// thread between frames, and a multi-row insert burst inside the entrance
+// window starves the storyboard ticks it shares that thread with. Derived
+// from the tokens rather than restated, so a token change moves the delay.
+int64_t OpenStaggerTailMs();
+
+// ---- what an APPEND does to the row above it (T6) -------------------------
+// Appending a row does not only ADD a cluster. It can also TAKE one away, and
+// that half is the one an append-only implementation silently drops.
+//
+// CarriesDeliveryGlyph() (Demo/ThreadLayout.h) is a function of a row AND the
+// row after it. The row that was newest was evaluated with next == nullptr, so
+// an outgoing one carried a cluster because it was last of its run. Put another
+// outgoing row under it and it is no longer last of its run: the SAME rule now
+// says it must not carry one, and unless something removes it the thread shows
+// two readings of one run. Design §6.2 gives a run exactly ONE reading.
+//
+// The Failed exception is why this is a re-EVALUATION and not "clear the
+// previous cluster": CarriesDeliveryGlyph fires on any Failed row wherever it
+// sits, so a Failed row keeps its cluster when a newer row lands under it, and
+// blanket removal would delete the one delivery state this surface must never
+// swallow.
+//
+// Pure, and returning DATA rather than doing the removal, for the reason every
+// other decision on this surface is: --diagnose runs before
+// winrt::init_apartment() and can only assert what it can call.
+struct AppendClusterPlan {
+  bool appendedCarries = false;  // CarriesDeliveryGlyph(appended, nullptr)
+  bool prevCarried = false;      // what prev drew BEFORE, i.e. with next == nullptr
+  bool prevCarriesNow = false;   // CarriesDeliveryGlyph(prev, &appended)
+  bool prevMustLose = false;     // prevCarried && !prevCarriesNow  -> REMOVE
+
+  // UNSATISFIABLE under today's rule, and kept deliberately. The proof is one
+  // line: CarriesDeliveryGlyph(x, nullptr) reduces to "x is an outgoing message
+  // row", so prevCarried is TRUE whenever prevCarriesNow can be, and
+  // !prevCarried && prevCarriesNow cannot hold. It is here so that
+  // SetRowCluster stays a total "make this row match the rule" rather than a
+  // one-way "clear it" — the difference matters the day CarriesDeliveryGlyph
+  // grows a clause that can turn a reading ON. `T6 append cluster` asserts the
+  // zero rather than printing it, so this comment cannot quietly go stale.
+  bool prevMustGain = false;     // !prevCarried && prevCarriesNow  -> ADD
+};
+
+// `prev` is the last row already in the column, or nullptr for an append into
+// an empty thread. Never throws.
+AppendClusterPlan PlanAppendCluster(demo::MessageRow const* prev,
+                                    demo::MessageRow const& appended);
+
+// ---- the sliding window over the backlog (T8) ------------------------------
+// A conversation renders AT MOST the 500 most-relevant rows. Older history
+// materializes in 100-row chunks as the scroller nears the top of the loaded
+// range, and the window slides back down in 100-row chunks at the foot end as
+// the reader scrolls home. Under 500 rows the window covers the whole
+// conversation and the render is exactly what it was before this wave — the
+// window is a VIEW concern over the full world plan, so every decision about
+// it is pure arithmetic here and --diagnose can walk it.
+//
+// All ranges are half-open [start, end) indices into Conversation::rows. After
+// the window exists the world only ever grows at the FOOT (ambient appends),
+// so a window's start index names the same row for the window's whole life.
+inline constexpr std::size_t kThreadWindowMaxRows = 500;
+inline constexpr std::size_t kThreadWindowChunkRows = 100;
+
+// The near-edge trigger, in VIEWPORTS of remaining distance. 1.5 rather than
+// 1.0 so the chunk lands before the reader can outrun it (a fast flick covers
+// a viewport in one gesture), and rather than 2.0 so a reader who only dips
+// toward the edge does not pay for a 100-row build they may never look at.
+inline constexpr double kWindowEdgeViewports = 1.5;
+
+struct ThreadWindow {
+  std::size_t start = 0;  // first world row index rendered
+  std::size_t end = 0;    // one past the last
+};
+
+std::size_t WindowRowCount(ThreadWindow w);
+// True when the window trims anything at all: at or under the cap every row
+// renders and this wave's code paths must be indistinguishable from before it.
+bool WindowActive(std::size_t totalRows);
+bool WindowCovers(ThreadWindow w, std::size_t rowIndex);
+
+// The window at conversation open: the NEWEST min(500, total) rows. A thread
+// opens at its foot, so relevance starts at the newest row and walks back.
+ThreadWindow InitialWindow(std::size_t totalRows);
+
+// One chunk OLDER: start moves up by min(chunk, start); if that leaves more
+// than 500 rendered, the FOOT is trimmed back to 500 (the newest rows leave
+// the tree; sliding back down re-covers them). Idempotent once start == 0.
+ThreadWindow SlideWindowUp(ThreadWindow w);
+
+// One chunk NEWER: end moves down by min(chunk, total - end); if that leaves
+// more than 500 rendered, the HEAD is trimmed back to 500. Idempotent once
+// end == total.
+ThreadWindow SlideWindowDown(ThreadWindow w, std::size_t totalRows);
+
+// The edge proximity tests the scroller feeds. `scrollableDip` is the loaded
+// extent minus the viewport (ScrollableHeight), so "near the foot of the
+// loaded range" is a distance of scrollable - offset, symmetric with the top.
+bool NearTopOfLoaded(double offsetDip, double viewportDip);
+bool NearFootOfLoaded(double offsetDip, double scrollableDip, double viewportDip);
+
+// The offset that keeps ONE surviving row at the same viewport position across
+// a slide: the row's Y in the extent moves by (anchorAfter - anchorBefore), so
+// the offset must move by exactly that. The view feeds it the per-mutation
+// EXTENT delta as the anchor travel (a prepend moves every old row down by the
+// inserted extent; a head trim pulls them up by the trimmed extent) — measured
+// across the mutation's own layout pass, because UseLayoutRounding snaps each
+// arranged row to the physical pixel grid and a per-row height sum loses the
+// accumulated rounding (39.2 dip over a 100-row chunk at 125% DPI, caught by
+// the A/B capture as a one-row drift).
+double OffsetAfterSlide(double oldOffsetDip, double anchorBeforeDip, double anchorAfterDip);
+// ScrollViewer clamps offsets into [0, ScrollableHeight] on its own; the pure
+// math states the clamp so the gate can walk it too.
+double ClampScrollOffset(double offsetDip, double scrollableDip);
+
+// What an ambient arrival means for the window. `newRowIndex` is where the
+// appended row landed in Conversation::rows (rows.size() - 1 at the call
+// site). The row is rendered exactly when the window covers the world's foot
+// (end == newRowIndex); a reader deep in history gets NO tree change — the
+// row is a world row and the window re-covers it as it slides home. When the
+// row renders, `after` grows the window by one at the foot and trims the head
+// back to <= 500, so the cap holds through ambient traffic too.
+struct AmbientAppendPlan {
+  bool render = false;
+  ThreadWindow after;
+};
+AmbientAppendPlan PlanAmbientAppend(ThreadWindow w, std::size_t newRowIndex);
+
+// What re-setting the SAME conversation means for the window (autoplay's
+// delivery-advance refresh). A reader at the foot gets today's behaviour — the
+// window re-bases at the newest rows and the pin lands. A reader deep in
+// history keeps their place: start still names the same row (the world grows
+// at the foot only), so the refreshed window is re-clamped AROUND it rather
+// than re-based at the foot — re-basing would be the yank design 9.2 forbids.
+struct RefreshWindowPlan {
+  ThreadWindow window;
+  bool pinToFoot = false;
+};
+RefreshWindowPlan PlanRefreshWindow(ThreadWindow w, std::size_t totalAfter, bool readerAtFoot);
+
+// ---- progressive window hydration (T9) --------------------------------------
+// Opening or switching to a conversation over the 500-row window cap used to
+// parent ALL 500 window rows in one synchronous turn — measured at 190-240 ms
+// to the first presented frame on the 2024-row stress world on this machine,
+// 600-1000 ms on the owner's. Hydration splits the open in two: a
+// synchronous INITIAL SET covering what the viewport shows plus headroom, and
+// BACKGROUND BEATS that materialize the rest of the window above it, one
+// frame-budgeted slice per dispatcher turn, silent (no fade, no marker —
+// off-viewport work). On a true open the FIRST beat also waits out the open
+// stagger's tail (OpenStaggerTailMs), so the fill's UI-thread bursts never
+// share a frame with the entrance's storyboard ticks.
+//
+// The residency truth is the window itself and there is exactly ONE: both the
+// beats and the scroll-triggered slides move window.start, and each computes
+// its insert range from the LIVE window.start in its own dispatcher turn, so
+// a scroll-prepend mid-fill cannot double-materialize a beat's rows or vice
+// versa — the scripted scenarios are walked in --diagnose ("T9 hydrate
+// coalesce").
+
+// The initial set covers the viewport plus ~one viewport of headroom. The
+// thread opens pinned at its FOOT, so all the headroom is upward: the cover
+// target is 2.0 viewport heights of estimated content walking back from the
+// window's newest row.
+inline constexpr double kHydrateViewportCover = 2.0;
+// …with a floor: an estimate is a guess, and a guess must never leave the
+// first frame sparse. 32 rows of mostly-bubbles is ~1.5-2 viewports of real
+// content at typical heights, so the floor binds only on tiny viewports.
+inline constexpr std::size_t kHydrateFloorRows = 32;
+// The viewport is 0 on an unrealized tree (the constructor path); size the
+// initial set against a typical window instead of the floor alone.
+inline constexpr double kHydrateFallbackViewportDip = 800.0;
+// The fill's per-turn slice, frame-budgeted. A beat runs ON the UI thread (Low
+// priority only decides WHEN, not which thread), and the 100-row slice this
+// used to share with the scroll chunk measured 40-56 ms per turn on this
+// machine (the "thread: hydrate beat" stress lines) — a burst that starves any
+// storyboard mid-flight on the same thread. At ~0.4-0.6 ms/row, 18 rows is a
+// ~7-10 ms turn: inside one 60fps frame's budget beside the frame's own work.
+// The fill simply re-queues until the range is covered — the beat COUNT is
+// free, the per-turn TIME is what is budgeted. The scroll-triggered chunk
+// keeps its own 100-row size: that one is a user-waiting backfill with a
+// marker, not background fill.
+inline constexpr std::size_t kHydrateFillBeatRows = 18;
+
+// Estimated rendered height per row SHAPE, in dip — for initial-set SIZING
+// ONLY. An underestimate is corrected by the fill within a beat or two, an
+// overestimate by the cap; neither is worth simulating wrapped text for.
+// What must NEVER happen is an initial set that leaves the viewport
+// under-filled, and that is the floor's job, not the estimate's.
+double EstimatedRowDip(ThreadRowShape shape);
+
+// How many of the window's NEWEST rows render synchronously at open: walk
+// back from the window's foot accumulating EstimatedRowDip until
+// kHydrateViewportCover * viewportDip is covered, then clamp into
+// [min(kHydrateFloorRows, windowRows), windowRows]. The clamp at the TOP end
+// is the under-cap guarantee: at or under 500 rows the initial set IS the
+// whole window and the open is pixel-identical to the pre-hydration path.
+std::size_t InitialViewportRows(double viewportDip, std::vector<ThreadRowPlan> const& plan,
+                                ThreadWindow window);
+
+// The fill's one decision, per beat. `cursor` is the oldest RESIDENT row
+// (the live window.start), `target` the window.start the fill walks down to
+// (the initial window's start — a row index, so it names the same row for
+// the fill's whole life: the world grows at the foot only).
+struct HydrateBeatPlan {
+  bool run = false;         // insert [newStart, cursor) above, this turn
+  bool reschedule = false;  // queue the next beat after this one
+  std::size_t newStart = 0; // valid when run
+};
+HydrateBeatPlan PlanHydrateBeat(std::size_t cursor, std::size_t target,
+                                std::uint64_t beatGeneration,
+                                std::uint64_t currentGeneration);
+
+// Whether a fill from `cursor` down to `target` has work left. Also the
+// coalescing rule for a scroll slide that jumps PAST the target mid-fill:
+// cursor < target means the slide already covered the remainder (and more),
+// so the fill is DONE rather than owed a negative-size beat.
+bool HydrateFillActive(std::size_t cursor, std::size_t target);
+
+// ---- the per-message send affordances -----------------------------------
+// Declared with the composer's own ComposerState, below, because they take it.
+// See "the four per-message send affordances" after the composer's block.
+
+// ---- OBSERVER read-only: the four strings, and where each one is allowed ------
+// Item 242 R4. Every one of these is Spec C's own copy, quoted at the line it
+// comes from, and each is pinned character for character by --diagnose so a
+// tidy-up cannot paraphrase a sentence the spec fixed.
+//
+// RULING 22 IS WHY THERE ARE TWO OBSERVER SENTENCES AND NOT ONE. The COMPOSER
+// sentence is about THIS app's own behaviour, which after R4 is true
+// unqualified — this client will not seal an application record for a group it
+// holds OBSERVER in — so it carries NO caveat. The CAVEAT is about other
+// people's clients (OBSERVER is enforced in the client and by proposal rules,
+// never at the server: Spec C §5.6, §9.2, §11), and it belongs where the group
+// is CONFIGURED — the rail's roster, on an observer's row — and not above the
+// box a person types in.
+
+// Spec C §5.6, line 511, VERBATIM: the reason an observer's composer is
+// disabled. Shown three ways on that one control — the box's placeholder (seen),
+// the box's and the Send button's automation names (spoken) — because a reason a
+// reader cannot perceive is not a reason.
+inline constexpr wchar_t kObserverComposerReason[] =
+    L"You can read this group but not send to it.";
+
+// Spec C §5.1, line 377, VERBATIM: the collapsed row. One line ABOVE the gap
+// row in that table, and deliberately not one of its reasons.
+inline constexpr wchar_t kHiddenObserverLine[] = L"A message from an observer was hidden.";
+
+// Spec C §5.6 line 512 says "Expanding shows the content WITH A WARNING" and
+// does not write the warning; this is it. It says the two things the reader
+// needs and stops: who sent it, and why the app kept it instead of dropping it.
+// U+2014 EM DASH as an escape (the house non-ASCII rule).
+inline constexpr wchar_t kHiddenObserverWarning[] =
+    L"This was sent by an observer \u2014 someone this group does not let write to it. It is kept "
+    L"rather than dropped, because a dropped message looks exactly like one that never arrived.";
+
+// Spec C §5.6, line 513, VERBATIM: the caveat, on the roster's observer row.
+inline constexpr wchar_t kObserverSettingsCaveat[] =
+    L"Observers are asked not to send. Someone who modifies their app can still send, and this "
+    L"version of URmessage cannot stop it at the server \u2014 it can only hide the result.";
+
+// The disclosure control's two names. It is a TOGGLE over one row, so both arms
+// name the same thing and differ only in the verb.
+wchar_t const* HiddenObserverToggleName(bool expanded);
+
+// ---- the composer's THREE states (item 242 R4 step 6) -----------------------
+// TWO INDEPENDENT FACTS, KEPT INDEPENDENT, because they fail independently and
+// a reader has to be told WHICH one applies:
+//
+//   sessionCanSend — can this SESSION send at all? urmsg::live::CanSend(), the
+//                    worker's own answer, re-read off urnet_message_group_is_open
+//                    every poll. UNCHANGED by R4.
+//   mayRoleSend    — does this device's ROLE in THIS conversation permit it?
+//                    demo::RoleMaySend(Conversation::myRole), which the app
+//                    already carries in both worlds (urnet_message_group_my_role
+//                    since item 242 R3 — R4 needs NO new ABI). The rule is spelled
+//                    in that ONE function and nowhere else, because --diagnose's
+//                    `run mode send` clause drives it to decide which composer
+//                    note an observer is shown.
+//
+// THE ORDER IS SESSION FIRST AND THAT IS LOAD BEARING. A --live launch whose
+// mesh has not answered draws the FABRICATED world, whose conversations carry
+// fabricated roles; reading the role first would announce "You can read this
+// group but not send to it" about a group there is no session for. That is
+// exactly R3's pending-arm defect — a true-sounding sentence read out at the one
+// moment it does not describe — and Startup.cpp's `roster names` clause exists
+// because this app has now paid for it twice.
+//
+// An observer's session, by contrast, is PROVABLY LIVE: the role could only be
+// read off an open group. So the two existing no-session strings stay exactly as
+// they were and the observer arm must never borrow one.
+enum class ComposerState {
+  NoSession,    // no live session: nothing can be sent for a reason that is not the role
+  ObserverOnly, // a live session, and this device may not write to this group
+  MaySend,      // a live session and a role that permits sending
+};
+
+// Total over the two booleans. Session first; see above.
+ComposerState ComposerStateFor(bool sessionCanSend, bool mayRoleSend);
+
+// The Send button's automation name. `hasText` and `replying` refine only the
+// MaySend arm — an empty box and a reply strip are states OF a composer that can
+// send — and are ignored by the other two, whose reason does not depend on them.
+std::wstring ComposerSendName(ComposerState state, bool hasText, bool replying);
+
+// The message box's automation name, and its visible placeholder. The
+// placeholder is the SEEN half of the observer reason; the name is the spoken
+// half. Only the observer arm changes the placeholder from "Message".
+std::wstring ComposerBoxName(ComposerState state, bool replying);
+std::wstring ComposerBoxPlaceholder(ComposerState state);
+
+// Is the box itself dead? Spec C §5.6 says an observer's composer is DISABLED,
+// so the observer arm disables the box as well as the button. The no-session arm
+// leaves the box live on purpose: a person may type while the mesh is dialling,
+// and the text is still there when it answers.
+bool ComposerBoxEnabled(ComposerState state);
+
+// ---- delete for everyone (Spec C 8.2; the owner's ruling of 2026-10-02: at any time) ------
+// The confirmation a Delete press opens. Close is the DEFAULT, so Enter keeps the message. The
+// body is msg_delete_for_everyone_explainer, character for character: it says what a deletion
+// reaches and what it cannot.
+std::wstring DeleteConfirmTitle();
+std::wstring DeleteConfirmBody();
+std::wstring DeleteConfirmPrimary();
+std::wstring DeleteConfirmClose();
+
+// ---- delete ALL of my messages for everyone (the per-message delete, applied to every one) ----
+// The ids of THIS DEVICE'S OWN lines in `c` that a delete can name: outgoing MESSAGE rows the
+// server has taken (Sent, Delivered or Read). Never somebody else's line, never a line still
+// Pending or Failed (it is not a record yet), never a system row or a day separator.
+std::vector<std::wstring> OwnDeletableMessageIds(urmsg::demo::Conversation const& c);
+std::wstring DeleteAllConfirmTitle(std::size_t count);
+std::wstring DeleteAllConfirmBody();
+std::wstring DeleteAllConfirmPrimary(std::size_t count);
+
+// ---- delete for me and leave (the owner's ruling of 2026-10-02; msgrepo ledger 273) ---------
+// The device half of leaving: this computer's whole copy of the conversation is erased and
+// nobody is told (ruling 48). An OWNER cannot simply leave (MASTER section 11): with one other
+// person the confirmation hands the conversation to them first; with more, it says to hand it
+// over under Members first. Close is the DEFAULT in every variant, so Enter leaves nothing.
+std::wstring LeaveButtonLabel();
+std::wstring LeaveConfirmTitle();
+std::wstring LeaveConfirmBody();
+std::wstring LeaveConfirmPrimary();
+std::wstring LeaveHandOverTitle(std::wstring const& name);
+std::wstring LeaveHandOverBody(std::wstring const& name);
+std::wstring LeaveHandOverPrimary();
+std::wstring LeaveOwnerBlockedTitle();
+std::wstring LeaveOwnerBlockedClose();
+std::wstring LeaveOwnerBlockedBody();
+
+// ---- the text limit (ledger 266, item 6) -------------------------------------------------
+// The longest text the sealer takes, in UTF-8 OCTETS and not characters, and the longest a
+// reply takes, which spends 32 of them naming its parent. ThreadLayout.cpp static_asserts both
+// against the SDK header's URNET_MESSAGE_MAX_TEXT_OCTETS and _REPLY_, which sdk/cgo/gen holds
+// against the sealer's own constants. They are checked BEFORE a send, because the sealer refuses
+// a longer text and a refusal after the box has emptied is a lost message: that was the bug.
+inline constexpr std::size_t kMaxTextOctets = 65333;
+inline constexpr std::size_t kMaxReplyTextOctets = 65301;
+
+// What the box holds, as the UTF-8 it will be sent as, counted from the UTF-16 without converting
+// it: a surrogate pair is four octets, and a lone surrogate the three of the U+FFFD it narrows to.
+std::size_t Utf8Octets(std::wstring_view text);
+
+// The limit that applies: a reply's while the reply strip is up.
+std::size_t ComposerTextLimit(bool replying);
+
+// The caption while the box holds more than the limit, in the unit the limit is in.
+std::wstring ComposerTooLongNote(std::size_t octets, std::size_t limit);
+
+// The Send button's name with the limit in it: past the limit the button is dark for a reason a
+// screen reader has to hear, as a sighted user reads it in the caption. Only the MaySend arm
+// changes; the other two states are dark for reasons of their own, which come first.
+std::wstring ComposerSendNameAt(ComposerState state, bool hasText, bool replying, bool overLimit);
+
+// ---- the four per-message send affordances ----------------------------------
+// What the controls that act on ONE MESSAGE ROW say, as data, so --diagnose can
+// check every arm of every name from a launch that can reach none of them.
+//
+// THEY TAKE THE COMPOSER'S OWN ComposerState, AND ITEM 242 R4'S FOLLOW-UP IS WHY.
+// Until it they took the SESSION fact alone (Views/ThreadView.h's CanRetrySend)
+// and the ROLE reached only the composer — so a live observer was shown a dead
+// composer reading "You can read this group but not send to it." with 39 LIVE
+// Reply and React buttons and a live [ Try again ] on the same screen, and the
+// only thing that stopped a click was the library refusing the send. Ruling 19
+// refuses REPLY and REACTION_ADD by name; ruling 23 says this app does not infer
+// sendability from a send failing, it reads the role. An affordance that reads
+// half of what the composer reads is that inference wearing a button.
+//
+// NOT off the run mode, which is a different question and keeps its old answer:
+// a --live launch whose mesh has not answered yet draws the fabricated world
+// with no session, and "there is no live session" is the true sentence there
+// while the mode latch still says fabricated. That is ComposerState::NoSession,
+// and ComposerStateFor's session-first order is what delivers it.
+//
+// RailRetry IS THE SAME FAILED MESSAGE'S SECOND [ Try again ] — the inspect
+// rail's (Views/InspectRailView.cpp), drawn in another file for the same row. It
+// is in this table because it asks the same question and must never answer it
+// differently. Its wording keeps the COMMAS it shipped with, character for
+// character, where the thread's keeps its colons; the difference is old copy
+// preserved, not a rule.
+// Delete is on THIS DEVICE'S OWN sent lines only: the library refuses a tombstone over anybody
+// else's message, so the control is never offered where it could only fail.
+enum class BubbleAction { Reply, React, Retry, RailRetry, Delete };
+
+// The automation name for `action` in composer state `state`. Never empty; an
+// action's three arms differ; the NoSession arm carries "no live session" and
+// the ObserverOnly arm NEVER does — an observer's session is provably live (the
+// role could only have been read off an open group), so borrowing the session
+// sentence there would deny a session at the one moment it is certain, which is
+// the defect item 242 R3 shipped on the roster's controls. The ObserverOnly arm
+// names the control and then carries Spec C §5.6 line 511 character for
+// character, the shape ComposerBoxName already uses on the composer's box.
+//
+// A LATER KIND EXCEPTION IS A LIST EDIT, NOT A REWRITE (ruling 19). The four
+// sendable kinds are refused as one set, so the day an observer is allowed to
+// send one of them, the change is to WHICH affordances ask this function — not
+// to what any arm of it says.
+std::wstring BubbleActionName(BubbleAction action, ComposerState state);
+
+// Whether the affordance ACTS: drawn live, wired to a verb, focusable.
+//
+// TWO HALVES, AND BOTH ARE REQUIRED. `targetable` is the ROW's own half — a
+// Pending or Failed row has no message_id for a reply or a reaction to name, and
+// the two retries substitute their own precondition (the row failed; the rail
+// also holds a body to resend). `state` is the SESSION-AND-ROLE half. The view
+// derives its `canAct` from this and from nothing else, so this line is the
+// whole decision and --diagnose walks its table.
+bool BubbleActionCanAct(ComposerState state, bool targetable);
+
+// ---- the hidden row, as a decision ------------------------------------------
+// The ONE predicate behind ThreadRowShape::HiddenObserverRecord, so the planner,
+// the append path and --diagnose cannot disagree about which rows collapse.
+// A row qualifies when it is a MESSAGE row whose sender held OBSERVER AT THE
+// EPOCH IT WAS SEALED AT (demo::MessageRow::senderRoleAtSend, the ABI's
+// sender_role_at_send). NOT the roster's current role: a line written before a
+// demotion was written under the role its sender held THEN, and joining the row
+// to today's roster would relabel history at every role change.
+bool IsHiddenObserverRow(demo::MessageRow const& row);
+
+// THE PICKER, as the closed set it is. The protocol accepts any valid UTF-8 of
+// 1..64 octets and folds nothing - two spellings of one emoji are two
+// reactions - so what the picker offers is a UI decision and this is it: six
+// single-grapheme, single-spelling marks that cover the six sentiments a quick
+// reaction is for (approve, love, laugh, surprise, sad, celebrate), each a
+// single code point plus at most a VS16, none with a skin tone or a ZWJ
+// sequence. A fixed spelling is what makes an unreact from this picker cancel
+// exactly the react it made. 👍 and 🎉 are also what sdk/livepeer seals, so this
+// app's own reaction lands beside the peer's on the same line and the two are
+// told apart by `mine` alone. Wide strings, because the view is wchar_t;
+// ReactionPickerOctets says what each one costs the ABI.
+inline constexpr std::size_t kReactionPickerCount = 6;
+inline constexpr wchar_t const* kReactionPicker[kReactionPickerCount] = {
+    L"\U0001F44D",        // thumbs up
+    L"\u2764\uFE0F",      // red heart (heavy black heart + VS16, the emoji presentation)
+    L"\U0001F602",        // face with tears of joy
+    L"\U0001F62E",        // face with open mouth
+    L"\U0001F622",        // crying face
+    L"\U0001F389",        // party popper
+};
+
+// The UTF-8 octet count of one picker entry - what urnet_message_group_react
+// checks against its 1..64 rule. 0 when the entry is empty or fails to encode.
+std::size_t ReactionPickerOctets(std::size_t index);
+
+// What a reaction chip's WORD is - the non-colour channel beside the emoji,
+// the same rule the delivery cluster follows. Standing and mine -> "you";
+// standing and not mine -> "" (the emoji alone is the whole statement); an
+// attempt in flight -> "Sending" / "Removing"; a refused attempt -> "Not sent"
+// / "Not removed". Total over the closed set; pure, so --diagnose walks it.
+wchar_t const* ReactionChipWord(demo::MessageReaction const& r);
+
+// What one picker button is called for a given row. `standing` is whether
+// this device's reaction with that emoji is a record it holds (mine and Sent);
+// `lastFailed` whether the newest attempt with that emoji was refused. The
+// verb the button performs follows `standing` alone: standing -> unreact,
+// otherwise react - a failed react retried is a react, and a failed unreact
+// retried is an unreact, because the standing state is the library's truth.
+std::wstring ReactionPickerItemName(std::wstring const& emoji, bool standing, bool lastFailed);
+
+}  // namespace urmsg::views

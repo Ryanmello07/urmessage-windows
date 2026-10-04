@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "Paths.h"
 
+// GUARDED, for the reason Common/Strings.cpp gives: Directory.Build.props already defines this
+// on the command line, so an unguarded #define is warning C4005 'macro redefinition'.
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 #include <shlobj.h>
 

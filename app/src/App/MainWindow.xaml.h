@@ -15,13 +15,34 @@
 // UrmCompileGeneratedXamlImpl adds to the build, not from this header.
 #include "MainWindow.g.h"
 
+#include <memory>
 #include <string>
 #include <string_view>
 
+#include "Demo/AdvancedMode.h"
+#include "Demo/DemoAutoplayLoop.h"
+#include "Demo/DemoShellState.h"
+#include "Demo/DemoSwitches.h"
+#include "Live/LiveWorld.h"
 #include "UrComponents.h"
+#include "Views/ConversationListView.h"
+#include "Views/DeveloperView.h"
+#include "Views/InspectRailView.h"
+#include "Views/NetworkPageView.h"
+#include "Views/SettingsView.h"
+#include "Views/StatusStripView.h"
+#include "Views/ThreadView.h"
 #include "WindowReveal.h"
 
 namespace winrt::URmessage::implementation {
+
+// Everything the live worker needs in order to wake this window, defined in MainWindow.xaml.cpp.
+// A struct of its own, held by shared_ptr, because the notification fires on a BACKGROUND thread
+// and the window may be gone by the time it lands: the bridge outlives the window, holds a weak
+// reference to it, and the beat that resolves to nothing simply dies. The pattern is
+// ThreadView.cpp's QueueHydrateBeat (:2173) — shared_ptr capture, generation counter, checked
+// TryEnqueue — and the reasons are stated there.
+struct LiveWorldBridge;
 
 struct MainWindow : MainWindowT<MainWindow> {
   MainWindow();
@@ -37,6 +58,18 @@ struct MainWindow : MainWindowT<MainWindow> {
   // composed frame) and started here.
   void StartReveal();
 
+  // Read back by App::OnLaunched to choose the launch size, so the command line
+  // is parsed EXACTLY ONCE. Not in MainWindow.idl: App.xaml.cpp already reaches
+  // the implementation through winrt::get_self for StartReveal().
+  urmsg::demo::DemoOptions const& DemoOptions() const { return options_; }
+
+  // TRUE WHEN THIS RUN BUILDS THE FULL CONVERSATION SHELL - --demo or --live. Every structural
+  // surface is keyed on this; only the fabricated flavour stays keyed on options_.enabled. PUBLIC
+  // beside DemoOptions() and for the same reason: App.xaml.cpp reads it to choose the window size
+  // BEFORE the window is shown, off the instance that already parsed the command line, so there
+  // stays exactly one parser.
+  bool ContentShell() const;
+
  private:
   // Every label in the window, from the localization store. One place, so a
   // missing key is one line to find rather than a hunt through the markup.
@@ -47,25 +80,301 @@ struct MainWindow : MainWindowT<MainWindow> {
   // in a comment somewhere else.
   void BuildConversationList();
 
-  // The ONE desktop breakpoint (urnw::kit::kWideBreakpointDip). Below it the
-  // list pane fills the window and the thread pane does not exist; at or above,
-  // the two panes sit side by side with a 1px rule between them. One function
-  // at window level: there is exactly one place where this app decides what
-  // "wide" means.
+  // The click graph (design doc 9.1) and the demo's three content views.
+  // BuildDemoViews is the SOLE builder of list_, thread_ and rail_ (the d7
+  // audit's W5 Step-0 override: the placeholder-era BuildThread /
+  // BuildInspectRail / OnConversationSelected are deleted, not kept as second
+  // writers). Demo-only for the same reason the old builders were: a normal
+  // launch is 480x760 and must behave exactly as it does today (design D7),
+  // and building the views would build the demo world on the shipping path.
+  //
+  // Every one of the Select*/Clear* entry points is reached through a callback
+  // a view was CONSTRUCTED with, so MainWindow never walks a view's element
+  // tree looking for something to attach to.
+  void BuildDemoViews();
+  // TRUE WHEN THIS RUN DRAWS THE MESH AND NOTHING ELSE: --live was asked for and --demo was not.
+  // The one predicate that separates the three launches this window now has, and every use of it
+  // below is a place where "fabricated" and "nothing yet" are different answers.
+  bool LiveOnlyLaunch() const;
+
+  // THE WAY IN. A live launch that holds no group has nothing to draw and nothing a person can do
+  // about it from the main window, so the onboarding state gets a dialog: the join code to send,
+  // and a box for the invitation that comes back. Driven by the same beat as the live world -
+  // ApplyLiveWorld calls this first - so there is one bridge, one queue and one set of
+  // marshalling rules rather than two.
+  void ApplyOnboard();
+  void BuildOnboardDialog();
+
+  uint64_t onboardDrawn_ = 0;
+  bool onboardShown_ = false;
+  // Whether the dialog is ON SCREEN right now, which onboardShown_ is not once it has been
+  // dismissed: kept by its Opened and Closed events (review M2).
+  bool onboardOpen_ = false;
+  // A second's retry for a ShowAsync that threw because another dialog was open (re-check R4).
+  winrt::Microsoft::UI::Dispatching::DispatcherQueueTimer onboardRetry_{nullptr};
+  winrt::Microsoft::UI::Xaml::Controls::ContentDialog onboardDialog_{nullptr};
+  winrt::Microsoft::UI::Xaml::Controls::TextBox onboardCodeBox_{nullptr};
+  winrt::Microsoft::UI::Xaml::Controls::TextBox onboardPasteBox_{nullptr};
+  winrt::Microsoft::UI::Xaml::Controls::TextBlock onboardStatus_{nullptr};
+  // The dialog's opening paragraph and the "Or join..." line: members so ApplyOnboard can hide
+  // them when neither road can be taken (no credential) or the join road is gone (founded).
+  winrt::Microsoft::UI::Xaml::Controls::TextBlock onboardIntro_{nullptr};
+  winrt::Microsoft::UI::Xaml::Controls::TextBlock onboardOrElse_{nullptr};
+  // THE FOUNDER'S HALF OF THE SAME DIALOG. Three panels, one shown at a time by ApplyOnboard:
+  // join (no group), found (a group of one, waiting for somebody's code), invite (an invitation
+  // just minted and waiting to be sent). Built once with the dialog and never rebuilt, because
+  // rebuilding takes the focus out of the box somebody is pasting into.
+  winrt::Microsoft::UI::Xaml::Controls::StackPanel onboardJoinPanel_{nullptr};
+  winrt::Microsoft::UI::Xaml::Controls::StackPanel onboardAddPanel_{nullptr};
+  winrt::Microsoft::UI::Xaml::Controls::StackPanel onboardInvitePanel_{nullptr};
+  winrt::Microsoft::UI::Xaml::Controls::Button onboardFoundButton_{nullptr};
+  winrt::Microsoft::UI::Xaml::Controls::TextBox onboardTheirCodeBox_{nullptr};
+  winrt::Microsoft::UI::Xaml::Controls::TextBox onboardInviteBox_{nullptr};
+  void RebuildConversationList();
+  void SelectConversation(int index);
+  // By value, not string_view: this is called with selectedMessageId_ and it
+  // writes selectedMessageId_. A view aliasing the member it is about to change
+  // is a use-after-free one edit away, with no compiler warning.
+  void SelectMessage(std::wstring id);
+  void ClearMessageSelection();
+  // -1 when nothing is open. Derived from the world every time rather than
+  // cached: a Conversation const* into World::conversations is invalidated by
+  // anything that appends, and ambient activity appends.
+  int OpenConversationIndex() const;
+
+  // The ONE subscriber of urmsg::OnAdvancedModeChanged (contract v2 section
+  // 5, the d7 distillation's 1.2 ruling: N6/S4/A4 only SEED at their build
+  // sites; this is the single registration). No view reads the preference;
+  // they are all told, from here, in one order. Private, matching the
+  // wiring.md:533 and advanced.md:986 declarations.
+  void ApplyAdvanced(bool on);
+
+  // ---- WHICH WORLD THIS WINDOW IS DRAWING -------------------------------------------------
+  //
+  // THE ONE READER OF THE MODEL, and every site in the .cpp goes through it. It answers the LIVE
+  // world — real messages, off the real mesh, built by Live\LiveWorld.cpp — as soon as one has
+  // been published, and the fabricated demo world before that and on a launch with the live path
+  // off.
+  //
+  // WHY A FUNCTION AND NOT A MEMBER SWAPPED ONCE: a site left calling urmsg::demo::GetWorld()
+  // directly does not fail to compile and does not log anything. It silently draws the fabricated
+  // world beside real messages, in the same window, and the reader cannot tell which row is which.
+  // So there is one accessor, it is private, and demo::GetWorld() appears in this file ONLY inside
+  // it.
+  //
+  // THE REFERENCE IS STABLE FOR AS LONG AS THE CALLER HOLDS IT. liveWorld_ is a shared_ptr to an
+  // IMMUTABLE snapshot; a newer publish replaces the pointer and cannot mutate the world a caller
+  // is already walking.
+  urmsg::demo::World const& ActiveWorld() const;
+
+  // Subscribe to the live worker's publications and marshal them onto this thread. Called once,
+  // from the constructor, and only when the live path is switched on.
+  void ArmLiveWorldUpdates();
+  // The UI-thread half: pick up the newest snapshot and redraw. Runs on this thread, always.
+  void ApplyLiveWorld();
+
+  // THE COMPOSER'S VERB, and the ONLY place in this window that asks the mesh to send anything.
+  // Handed to MakeThread, and reached from the two [ Try again ] buttons through the same
+  // std::function. Answers TRUE when the worker has taken the octets — NOT when they arrived
+  // anywhere; the outcome comes back as a published world like everything else the mesh says.
+  //
+  // `replacesRowId` is the failed row a retry supersedes, empty for a fresh send. It is the
+  // thread's row id, which for an unsent message is "outbox-<n>" (Live\LiveWorld.cpp); the prefix
+  // is stripped here rather than in the view, because the view must not know what an outbox is.
+  //
+  // NEVER BLOCKS. urmsg::live::QueueSend hands the body to the live worker and returns; the ABI's
+  // send does a round trip to the message server and this is the UI thread of a single-threaded
+  // apartment, where a blocking call is a frozen window for exactly that long.
+  bool SendFromComposer(std::wstring text, std::wstring replacesRowId, std::wstring replyToRowId);
+  // THE COMPOSER'S TWO FACTS, assembled in ONE place (item 242 R4): the SESSION's answer
+  // (urmsg::live::CanSend) and the open conversation's ROLE. Every caller of
+  // views::SetThreadSendEnabled in this window goes through here, so the pair cannot be assembled
+  // two ways; called on a live publish, on a conversation switch, and nowhere else. Idempotent, and
+  // a no-op before the thread exists.
+  void ArmComposer();
+  // Does the open conversation's myRole permit writing to it? The role half is demo::RoleMaySend,
+  // the one place that rule is spelled and the one --diagnose's `run mode send` clause drives.
+  // TRUE when nothing is open, which is the library's own reading of an identity the group's
+  // policy does not name (item 242 ruling 20) and the half of this function no pure gate reaches.
+  bool OpenConversationMaySend() const;
+  // The other bubble verb: put `emoji` on the row, or take it off. Same shape and the same
+  // no-blocking rule; the outcome is a redrawn thread. In a live world the row id IS the record's
+  // message_id, which is what urnet_message_group_react / _unreact name.
+  bool ReactFromBubble(std::wstring rowId, std::wstring emoji, bool remove);
+  // The roster's two verbs (item 242 R3), reached from the inspect rail's role controls through
+  // views::RosterVerb the way the composer reaches SendFromComposer. `identityPubHex` is the
+  // member's identity key exactly as the roster row carries it; `role` is one of "admin",
+  // "member", "observer". Same no-blocking rule; the outcome is a redrawn roster or a note on
+  // the member the request named.
+  bool RoleChangeFromRail(std::wstring identityPubHex, std::wstring role);
+  bool TransferOwnershipFromRail(std::wstring identityPubHex);
+  bool RemoveMemberFromRail(std::wstring identityPubHex);
+  // A label typed in the rail's dialog (Live/LocalNames.h): checked, stored under the key, and
+  // the live world redrawn with it. "" removes. True when the file on disk now says so.
+  bool NameFromRail(bool conversation, std::wstring key, std::wstring typed);
+  // --demo-names=expand|dialog: the label surfaces, reached once by the app itself.
+  void ShowNamesSurfaceOnce();
+  bool namesShown_ = false;
+  // ApplyOnboard's one-time Loaded hook, for a state that arrived before the content had a root.
+  bool onboardRetryArmed_ = false;
+
+  std::shared_ptr<LiveWorldBridge> liveBridge_;
+  urmsg::live::WorldPtr liveWorld_;
+  // The generation this window has already drawn. A publish that lands while an earlier beat is
+  // still queued collapses into one redraw rather than N.
+  std::uint64_t liveDrawn_ = 0;
+
+  urmsg::views::ThreadView thread_{};
+  urmsg::views::InspectRailView rail_{};
+  std::wstring openConversationId_;
+  std::wstring selectedMessageId_;
+
+  // Ambient activity (design doc 9.2). Off unless --demo-autoplay. None of
+  // these may change destination, move the selection, or open or close the
+  // rail or the drawer - and none of them can, because none of them calls
+  // anything that does.
+  void StartAmbientActivity();
+  // Re-sets the open thread from the world. Called ONLY when the loop has
+  // moved a delivery state, because contract v2's ThreadView has no per-row
+  // delivery setter and this is the one API that redraws the glyph.
+  void RefreshOpenThread();
+
+  std::unique_ptr<urmsg::demo::Autoplay> autoplay_;
+
+  // The Network destination's whole content, built in code into NetworkHost
+  // (MainWindow.xaml:282 — the d7 audit's N3 override; there is no
+  // NetworkBody). Demo-gated: a normal
+  // launch must behave exactly as it does today (design D7/D8), and building
+  // the page would build the demo world on the shipping path.
+  void BuildNetworkPage();
+
+  urmsg::views::NetworkPageView network_{};
+
+  // The Settings destination's whole content, built in code into SettingsHost
+  // (MainWindow.xaml:284 — the d7 audit's A3 override: mount into the existing
+  // host, do NOT add a SettingsPage Grid). Demo-gated for the same reason
+  // BuildNetworkPage is: the page reads the demo world, so building it on a
+  // normal launch would construct that world on the shipping path (design
+  // D7/D8).
+  void BuildSettings();
+
+  urmsg::views::SettingsView settings_{};
+
+  // The Developer destination's whole content, built in code into
+  // DeveloperHost (MainWindow.xaml:286 — the d7 audit's A5 override: mount
+  // into the existing host, do NOT add a DeveloperPage Grid). Demo-gated for
+  // the same reason BuildSettings is: the page reads the demo world, so
+  // building it on a normal launch would construct that world on the
+  // shipping path (design D7/D8). Built ONCE here: contract §4 gives the
+  // view no Set*Advanced, and the live rebuild on a mode toggle belongs to
+  // the ONE OnAdvancedModeChanged registration in EnterDemoMode (W7, the
+  // d7 distillation's §1.2 ruling).
+  void BuildDeveloper();
+
+  urmsg::views::DeveloperView developer_{};
+
+  // The connect indicator (design 6.5, D4). Built ONCE and never rebuilt: the
+  // strip is window chrome, so it outlives every destination change. Returns
+  // without building anything when the demo is off — design 8: "Without it
+  // the app behaves exactly as it does today", and a build with no protocol
+  // must not show a message-server hostname as chrome on every launch
+  // (design 2, 11). The d7 audit's ownership ruling (resolution alpha) gives
+  // the strip group — not the wiring task — the member, the mount and the
+  // toggle; the member name stays `statusStrip_`.
+  void BuildStatusStrip();
+
+  // Raise or dismiss the strip's preview drawer. The ONLY thing that opens it
+  // is an activation of the strip — design 9.2: the autoplay loop "never
+  // opens or closes the rail or the drawer", and everything in the demo that
+  // is not ambient activity happens because a person clicked it.
+  //
+  // Click-outside and Escape dismissal are deliberately NOT built, and that
+  // is a decision rather than an omission: the strip is a toggle, so the same
+  // control both raises and dismisses, it is reachable by Tab and invoked by
+  // Enter or Space, and the drawer is chrome rather than a modal — nothing
+  // behind it is blocked while it stands. ApplyBreakpoint closes it when the
+  // strip collapses, which is the one case where the toggle would otherwise
+  // become unreachable. Click-outside would be a RevealRoot-level pointer
+  // handler and belongs to whoever owns RevealRoot's input, not to this
+  // surface.
+  void ToggleStatusDrawer();
+
+  urmsg::views::StatusStripView statusStrip_{};
+
+  // Reads search_.box and applies it to list_. One place, so the box's text and
+  // the pane header's count cannot disagree.
+  void ApplyConversationFilter();
+
+  // The search empty state's one visibility writer (d3 2.5): fade in at
+  // kBaseMs on the standard curve, out at kFastMs on the exit curve (exits
+  // one step faster), an instant swap when motion::ShouldAnimate() is false.
+  void SetSearchEmptyVisible(bool show);
+
+  // The ONE window-level layout function. It consumes
+  // urmsg::demo::LayoutFor(), which answers all three content-dip thresholds
+  // (wide at kWideBreakpointDip, rail at kRailBreakpointDip, strip at
+  // kStripMinHeightDip) - there is exactly one place where this app decides
+  // what "wide", "rail" and "strip" mean.
   void ApplyBreakpoint();
 
   void ShowDestination(std::wstring_view tag);
 
+  // The demo composer. Everything below is inert without --demo: the hosts stay
+  // collapsed and the window draws what it drew before.
+  void EnterDemoMode();
+  void SelectNavTag(std::wstring_view tag);
+  // The deep link runs LATE, not from the constructor: EnterDemoMode runs before
+  // any layout pass (Content().ActualWidth() is 0, so ApplyBreakpoint has never
+  // written the layout) and before App::OnLaunched resizes to 1560x900, and
+  // NavigationView re-asserts the markup's IsSelected when it loads. Draining it
+  // from the first SizeChanged puts it after all three.
+  void DrainDeepLink();
+
+  urmsg::demo::DemoOptions options_{};
+  bool advanced_ = false;
+  std::wstring currentTag_ = L"chats";
+  winrt::Microsoft::UI::Xaml::FrameworkElement currentPage_{nullptr};
+  urmsg::demo::DeepLink pendingLink_{};
+  bool pendingLinkArmed_ = false;
+  // The demo's Developer nav item. BUILT in code (EnterDemoMode), never
+  // declared in markup: ApplyAdvanced inserts/removes it from the footer
+  // collection because a Visibility flip triggers the WASDK 2.2.0 Auto-mode
+  // corruption that no runtime PaneDisplayMode cycle recovers from. Null on
+  // a normal launch.
+  winrt::Microsoft::UI::Xaml::Controls::NavigationViewItem developerNavItem_{nullptr};
+
   urnw::WindowReveal reveal_;
   urnw::kit::PaneSearchRow search_{};
-  bool wide_ = false;
+  // The search empty state (d3 2.5), built only under --demo where the filter
+  // is wired; null on a normal launch and SetSearchEmptyVisible no-ops.
+  // searchEmptyShown_ is the TARGET state, so a late exit-fade Completed
+  // handler never collapses a module that was re-shown mid-fade.
+  winrt::Microsoft::UI::Xaml::Controls::Grid searchEmpty_{nullptr};
+  bool searchEmptyShown_ = false;
+  // RebuildConversationList registers the search box's TextChanged handler, and it is now called
+  // again on every live world that changes. Without this guard each rebuild would add ANOTHER
+  // handler to the same box and the filter would run once per rebuild since the window opened.
+  bool searchWired_ = false;
+  // Empty on a non-demo launch: BuildDemoViews only fills it under --demo.
+  urmsg::views::ConversationListView list_{};
+  // The whole layout answer, not one bool: three thresholds now (list beside
+  // thread at 1000, rail at 1500, strip at 560 of HEIGHT), all in CONTENT-root
+  // dips, which is what ActualWidth/ActualHeight of Content() report.
+  urmsg::demo::Layout layout_{};
+  // The two layout decisions LayoutFor does not carry: the list-width step
+  // stays OUT of the gate-asserted Layout struct (d3 section 4) and the nav
+  // pane's docked/overlay state is the platform's own threshold, not a demo
+  // constant. Tracked beside layout_ so ApplyBreakpoint's early-out cannot
+  // skip a real change in either.
+  double listWidth_ = 0.0;
+  bool navDocked_ = false;
   // Whether ApplyBreakpoint has ever actually WRITTEN the layout. Without it,
-  // the first pass early-outs whenever the initial width is narrow (wide_
-  // already being false), and the window is only correct because the markup
-  // defaults happen to spell the narrow state. That is an invariant nothing
-  // enforces, living in two files — the VPN client carries the same flag for
-  // the same reason. The early-out has to test every state it applies.
-  bool breakpointApplied_ = false;
+  // the first pass early-outs whenever the initial size is narrow (layout_ is
+  // already all-false), and the window is only correct because the markup
+  // defaults happen to spell the narrow state - an invariant nothing enforces,
+  // living in two files. The VPN client carries the same flag for the same
+  // reason. It is also what DrainDeepLink waits on.
+  bool layoutApplied_ = false;
 };
 
 }  // namespace winrt::URmessage::implementation

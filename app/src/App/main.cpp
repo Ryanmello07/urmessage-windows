@@ -31,16 +31,26 @@
 #include <vector>
 
 #include "App.xaml.h"
+#include "Demo/AdvancedMode.h"
+#include "Demo/DemoSwitches.h"
 #include "Ids.h"
+#include "Live/LiveMesh.h"
 #include "Log.h"
 #include "Startup.h"
 #include "Strings.h"
+#include "Views/NetworkPageView.h"
 
 using namespace winrt::Microsoft::Windows::AppLifecycle;
 
 namespace {
 
-constexpr const wchar_t* kInstanceKey = urnw::ids::kSingleInstanceKey;
+// NOT the constant directly: see Startup.h's EffectiveSingleInstanceKey. An ordinary launch gets
+// exactly urnw::ids::kSingleInstanceKey; a launch with %URMESSAGE_APP_ROOT% set gets that plus a
+// hash of the root, so two installs on one machine do not redirect into each other.
+const std::wstring& InstanceKey() {
+  static const std::wstring key = urnw::EffectiveSingleInstanceKey();
+  return key;
+}
 
 // How long a second launch waits for the running instance to accept its
 // activation. This wait must never be INFINITE: if the primary is wedged — or
@@ -138,7 +148,7 @@ std::wstring InstanceProbe() {
   try {
     for (auto const& instance : AppInstance::GetInstances()) {
       const winrt::hstring key = instance.Key();
-      if (std::wstring_view(key) == kInstanceKey)
+      if (std::wstring_view(key) == InstanceKey())
         return L"  app instance     : another instance holds the key — the app is running";
     }
     return L"  app instance     : no instance holds the key — the app is not running";
@@ -165,6 +175,11 @@ int __stdcall wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     // means the Windows App SDK initializer could not resolve a usable Windows
     // App Runtime (it runs from a CRT initializer, ahead of everything here).
     urnw::StartupLogInit();
+    // Here, and not in OnLaunched: --diagnose returns before OnLaunched ever
+    // runs, so initialising there would leave the diagnostic reporting a
+    // state the app never entered. It touches only the filesystem, so it is
+    // safe before init_apartment.
+    urmsg::InitAdvancedMode(urmsg::demo::ParseDemoOptions().advanced);
     diagnostics = urnw::CollectDiagnostics();
     urnw::LogDiagnostics(diagnostics);
     diagnose = urnw::WantsDiagnose();
@@ -198,6 +213,13 @@ int __stdcall wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     // a probe that failed early would make the whole UI render key ids.
     diagnostics.push_back(urnw::ResourceProbe());
     diagnostics.push_back(InstanceProbe());
+    // The Network surface's own invariants. HERE and not in CollectDiagnostics()
+    // (:176), which runs on EVERY launch — building the demo world on a normal
+    // startup contradicts design §8 and puts demo code on the shipping path.
+    // After ResourceProbe() on purpose: Localized() caches its loader on the
+    // first call, and ResourceProbe is deliberately that caller.
+    for (auto& line : urmsg::views::CollectNetworkDiagnostics())
+      diagnostics.push_back(std::move(line));
     return urnw::WriteDiagnosticsToConsole(diagnostics);
   }
 
@@ -209,7 +231,7 @@ int __stdcall wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   bool isPrimary = false;
   try {
     args = AppInstance::GetCurrent().GetActivatedEventArgs();
-    primary = AppInstance::FindOrRegisterForKey(kInstanceKey);
+    primary = AppInstance::FindOrRegisterForKey(InstanceKey());
     isPrimary = primary.IsCurrent();
   } catch (winrt::hresult_error const& e) {
     urnw::FailVisible(
@@ -219,7 +241,7 @@ int __stdcall wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     return 1;
   }
   urnw::LogInfo("startup: single instance key '{}': this process {}",
-                urnw::Narrow(std::wstring{kInstanceKey}),
+                urnw::Narrow(InstanceKey()),
                 isPrimary ? "owns the key" : "is a second launch");
 
   // The first launch owns the key; every later launch redirects its activation
@@ -244,6 +266,29 @@ int __stdcall wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
       FAILED(hr)) {
     urnw::LogWarn("startup: SetCurrentProcessExplicitAppUserModelID failed: 0x{:08X}",
                   static_cast<uint32_t>(hr));
+  }
+
+  // THE LIVE MESH WORKER, and its position here is the whole of its safety.
+  //
+  // HERE AND NOT EARLIER, because a second launch must never start one. The
+  // same client_id connected twice — or two state directories descended from
+  // one — is two devices at one MLS leaf: one sender_handle, one stream
+  // counter, and so a reused (epoch, sender_handle, stream_index), which is a
+  // reused nonce under a reused record key. Past this point the non-primary
+  // launches have already redirected and returned, so exactly one process in
+  // this user's session can reach this line.
+  //
+  // HERE AND NOT LATER, because it must be running while the UI is, not after
+  // it: Application::Start does not return until the app exits. The call
+  // detaches a background thread and returns immediately — it neither blocks
+  // this apartment nor gives anyone a handle to block on.
+  //
+  // OFF FOR EVERY LAUNCH THAT CARRIES AN ARGUMENT WITHOUT --live, AND ON FOR A PLAIN ONE
+  // (LiveMesh.h says why). Off, this is an env-var read, a command-line parse and a return,
+  // the SDK dll is never even mapped (it is delay-loaded), and the launch is byte-for-byte
+  // the launch it was before.
+  if (urmsg::live::StartIfEnabled()) {
+    urnw::LogInfo("startup: live mesh worker started on a background thread");
   }
 
   urnw::LogInfo("startup: Application::Start (XAML)");
