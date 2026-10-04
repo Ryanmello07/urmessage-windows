@@ -384,14 +384,51 @@
        not stop the app starting — but the live path cannot work without it, and
        LoadLibraryW resolves a bare name out of the exe's own directory first.
        CopyFileToFolders rather than a PostBuildEvent, matching the fonts and the
-       icon below: it is incremental and it participates in up-to-date checks. -->
+       icon below: it is incremental and it participates in up-to-date checks.
+
+       A missing dll is a WARNING by default, so a clean checkout and upstream
+       CI build and run without it. /p:UrmRequireSdkDll=true makes it an ERROR,
+       for a build that is going to ship. Nothing else in the build stops on
+       the gap: the MSI (installer\Package.wxs) installs whatever is in
+       $(OutDir), and the diagnose switch never loads the dll, so without this
+       an install whose live path cannot load the SDK builds green.
+       tools\verify-msi-payload.ps1 -Release catches it afterwards, on the
+       finished MSI. -->
   <ItemGroup>
     <CopyFileToFolders Include="$(UrmSdkBinDir)URnetworkSdk.dll" Condition="Exists('$(UrmSdkBinDir)URnetworkSdk.dll')">
       <DestinationFolders>$(OutDir)</DestinationFolders>
     </CopyFileToFolders>
   </ItemGroup>
-  <Target Name="UrmWarnMissingSdkDll" AfterTargets="Build" Condition="!Exists('$(UrmSdkBinDir)URnetworkSdk.dll')">
-    <Warning Text="URnetworkSdk.dll is not staged at $(UrmSdkBinDir): the app builds and runs, but its live path, which an ordinary launch takes, will report that it could not load the SDK. Build it with sdk/cgo's build_windows_amd64 target, from the same sdk commit the three files in third_party\vendor-include came from, and copy it there." />
+  <Target Name="UrmCheckSdkDll" AfterTargets="Build" Condition="!Exists('$(UrmSdkBinDir)URnetworkSdk.dll')">
+    <Warning Condition="'$(UrmRequireSdkDll)'!='true'" Text="URnetworkSdk.dll is not staged at $(UrmSdkBinDir): the app builds and runs, but its live path, which an ordinary launch takes, will report that it could not load the SDK. Build it with sdk/cgo's build_windows_amd64 target, from the same sdk commit the three files in third_party\vendor-include came from, and copy it there." />
+    <Error Condition="'$(UrmRequireSdkDll)'=='true'" Text="URnetworkSdk.dll is not staged at $(UrmSdkBinDir), and UrmRequireSdkDll=true says this build ships. Without it the app's live path, which an ordinary launch takes, cannot load the SDK. Build it with sdk/cgo's build_windows_amd64 or build_windows_arm64 target, from the same sdk commit the three files in third_party\vendor-include came from, and copy it there." />
+  </Target>
+
+  <!-- THE VC++ RUNTIME, APP-LOCAL, NEXT TO THE EXE. Both projects link the DLL
+       CRT (RuntimeLibrary above), so URmessage.exe imports the VC++ runtime
+       dlls, and nothing in this repository installs the VC++ Redistributable
+       that would otherwise provide them. Copy the CRT dlls of the Visual
+       Studio installation's default redist into $(OutDir): the exe's own
+       directory is searched first, and it is the folder the MSI installs.
+       $(VCToolsRedistInstallDir) is that default redist, the installation's
+       latest (VCToolsRedistVersion); it is shared by every side-by-side
+       toolset and is not keyed to $(PlatformToolset), so a build with an
+       older toolset still gets the newest, ABI-compatible runtime the
+       installation carries. This is the URnetwork VPN client's
+       UrnStageVCRuntime target (its Service.vcxproj, urnetwork/windows commit
+       e348084), added when its MSI failed with error 1920 on machines without
+       the Redistributable. Release only: the debug CRT is not redistributable. -->
+  <PropertyGroup>
+    <UrmVCRuntimeArch Condition="'$(Platform)'=='x64'">x64</UrmVCRuntimeArch>
+    <UrmVCRuntimeArch Condition="'$(Platform)'=='ARM64'">arm64</UrmVCRuntimeArch>
+  </PropertyGroup>
+  <Target Name="UrmStageVCRuntime" AfterTargets="Build" Condition="'$(Configuration)'=='Release'">
+    <ItemGroup>
+      <UrmVCRuntime Include="$(VCToolsRedistInstallDir)$(UrmVCRuntimeArch)\Microsoft.VC*.CRT\*.dll" />
+    </ItemGroup>
+    <Error Condition="'@(UrmVCRuntime)'==''"
+           Text="VC++ runtime dlls not found under $(VCToolsRedistInstallDir)$(UrmVCRuntimeArch)\Microsoft.VC*.CRT (install the MSVC toolset's redistributable for $(Platform)). Without them URmessage.exe cannot start on a machine that lacks the VC++ Redistributable." />
+    <Copy SourceFiles="@(UrmVCRuntime)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
   </Target>
 
   <!-- URnetworkSdk.lib, MADE FROM THE VENDORED .def into $(IntDir) (see THE
