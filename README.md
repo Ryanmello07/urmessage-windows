@@ -61,6 +61,65 @@ make build_windows_amd64        (or the go build line it runs, with a mingw-w64 
 copy build\windows\amd64\URnetworkSdk.dll <this repo>\app\third_party\urnetwork-sdk\bin\x64\
 ```
 
+A build that is going to ship passes `/p:UrmRequireSdkDll=true`, which turns
+the build's "URnetworkSdk.dll is not staged" warning into an error.
+
+## Installer
+
+`app\installer` packages the Release output folder as a per-user MSI with WiX
+v5, which `/restore` fetches from NuGet. Build the solution first, then, with
+`msbuild` on PATH (a Developer PowerShell):
+
+```
+cd app
+msbuild installer\Installer.wixproj /restore /p:Configuration=Release /p:Platform=x64
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\verify-msi-payload.ps1 -MsiPath installer\bin\x64\Release\URmessage.msi
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\verify-msi-ice03.ps1 -MsiPath installer\bin\x64\Release\URmessage.msi
+```
+
+It installs for the current user only, into `%LOCALAPPDATA%\Programs\URmessage`;
+Microsoft documents that a per-user install of this kind shows no UAC prompt. A
+launch condition refuses a per-machine install. The MSI is version 0.0.1 unless
+`/p:UrMsiVersion=` stamps it, and two builds of one version replace each other.
+
+What an install puts on the machine:
+- The package adds the app folder, one Start-menu shortcut, and the
+  `HKCU\Software\URmessage\Installer` value Windows Installer tracks that
+  shortcut by.
+- Windows Installer itself also registers the product for Settings > Apps, under
+  `HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\{ProductCode}`, and
+  caches the package in `C:\Windows\Installer`, even for this per-user install.
+  That was measured on a GitHub-hosted windows-2022 runner, installing as an
+  elevated administrator. A second user installing the same build on the same
+  machine has not been tested.
+- An uninstall removes the app folder, the shortcut, the HKCU value and the
+  Settings > Apps entry. The app keeps its state in `%LOCALAPPDATA%\URmessage`,
+  which is not part of the install, so an uninstall leaves it alone.
+
+The VC++ runtime is app-local. A Release build copies the CRT dlls of the
+Visual Studio installation's default redist (`$(VCToolsRedistInstallDir)`; in
+CI, VS 2022's 14.44.35112) next to `URmessage.exe`, and the MSI installs them
+with the app, so it needs neither admin rights nor the VC++ Redistributable.
+Windows Update does not service these copies. They are not KnownDLLs, so Windows
+loads them from the app's folder first, even where a newer Redistributable is
+installed system-wide. A runtime fix reaches users only through a new URmessage
+build.
+
+The MSI installs whatever the build left in `app\build\<platform>\Release`.
+`verify-msi-payload.ps1` fails an MSI that lacks any of ten files the app
+needs, at their paths (the exe, `resources.pri`, the compiled XAML, the Windows
+App Runtime, the body face and the app-local VC++ runtime), and it asks Windows
+Installer how the package resolves, without installing it: that a default
+install installs those files and the shortcut, into a folder under
+`%LOCALAPPDATA%\Programs`, and that a per-machine install is refused.
+`verify-msi-ice03.ps1` runs ICE03, which the MSI build suppresses for the
+harvested runtime (see `Installer.wixproj`), on its own, and fails on any row
+but the eight known ones. Without a staged `URnetworkSdk.dll` the app's
+ordinary launch cannot go live, and `verify-msi-payload.ps1 -Release` fails such
+an MSI. CI builds the x64 MSI and runs both checks, the first without
+`-Release`, and does not upload it: it carries the four brand faces (open
+question 1, below), it has no SDK dll, and it is unstamped.
+
 ## Run
 
 **A launch with no arguments is live.**
@@ -114,7 +173,8 @@ render its own key ids" can both be true at once.
 ```
 app/
   Directory.Build.props     C++20, version tokens, /utf-8
-  URmessage.sln             two projects, no service, no driver, no installer
+  URmessage.sln             two projects, no service, no driver
+  installer/                the per-user MSI (WiX v5), built apart; see Installer
   src/Common/               identities, paths, logging, prefs (static lib)
     Ids.h                   READ THIS FIRST — the identities that must not
                             collide with the VPN client
@@ -131,7 +191,8 @@ app/
     Live/                   the live path: the SDK worker (LiveMesh) and the
                             world it builds for the views (LiveWorld)
     Demo/                   the fabricated demo world (--demo) and developer switches
-  tools/                    build-local.ps1, verify-render.ps1
+  tools/                    build-local.ps1, verify-render.ps1, verify-msi-payload.ps1,
+                            verify-msi-ice03.ps1
   third_party/vendor-include/
     nlohmann/
     urnetwork_sdk.h, urnetwork_message.h, urnetwork_sdk.def   the SDK's ABI

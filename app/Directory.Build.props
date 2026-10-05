@@ -4,9 +4,8 @@
   Imported automatically by MSBuild from the solution directory.
 
   Adapted from the URnetwork Windows VPN client's app/Directory.Build.props.
-  Gone with the tunnel: the vendored URnetwork SDK (UrnSdkDir), wintun, and the
-  WiX installer's OutDir scoping. Kept, because each one is a bug someone
-  already paid for:
+  Gone with the tunnel: the vendored URnetwork SDK (UrnSdkDir) and wintun.
+  Kept, because each one is a bug someone already paid for:
 
     * C++20 in an ItemDefinitionGroup, NOT a PropertyGroup.
     * BARE version tokens, stringized in a header, never \"-escaped literals.
@@ -26,8 +25,9 @@
          Scoped to .vcxproj because this file is imported by EVERY project under
          app\; the VPN repo learned that the hard way when an unconditional
          OutDir redirected its WiX MSI into the directory the portable packager
-         zips. There is no third project here yet, and the scoping stays anyway:
-         the day one appears is not the day to rediscover this. -->
+         zips. The third project here is installer\Installer.wixproj, whose MSI
+         installs everything in this directory: unscoped, this OutDir would put
+         each MSI in the folder the next MSI harvests. -->
     <OutDir Condition="'$(MSBuildProjectExtension)'=='.vcxproj'">$(UrmRepoRoot)build\$(Platform)\$(Configuration)\</OutDir>
     <WindowsTargetPlatformVersion>10.0.22621.0</WindowsTargetPlatformVersion>
     <WindowsTargetPlatformMinVersion>10.0.19041.0</WindowsTargetPlatformMinVersion>
