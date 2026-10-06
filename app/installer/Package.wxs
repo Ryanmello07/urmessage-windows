@@ -1,0 +1,188 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- URmessage MSI (WiX v5). A PER-USER install of the self-contained,
+     unpackaged WinUI 3 app: the whole Release output folder (URmessage.exe,
+     the Windows App Runtime it carries, resources.pri, the compiled XAML,
+     Assets and the locale folders), one Start-menu shortcut, and nothing else.
+     No service, no custom action, no registry beyond the shortcut's key path.
+     The app keeps its state in %LOCALAPPDATA%\URmessage (Common/Paths.cpp),
+     outside the install folder, so an uninstall never touches it.
+
+     PER-USER, THE WAY MICROSOFT DOCUMENTS IT. Scope="perUserOrMachine" makes
+     WiX author ALLUSERS=2 and MSIINSTALLPERUSER=1, a dual-purpose package
+     (Windows Installer 5.0, "Single Package Authoring") whose default is the
+     per-user context. In that context Windows Installer redirects
+     ProgramFiles64Folder to the user's own Programs folder, so INSTALLFOLDER
+     is %LOCALAPPDATA%\Programs\URmessage, and it shows no UAC prompt. The
+     launch condition below refuses the per-machine context, so this package
+     never puts a per-machine copy beside a per-user one.
+
+     Not Scope="perUser" under LocalAppDataFolder. That puts every harvested
+     file in a user-profile directory, where ICE38 wants an HKCU key path that
+     <Files> cannot author (an error per file), ICE64 wants a RemoveFolder row
+     per directory and ICE91 warns per file. Under ProgramFiles64Folder those
+     ICEs have nothing to flag. Installer.wixproj treats every warning as an
+     error and suppresses only ICE03 and ICE61, each with its reason.
+
+     The payload is harvested with WiX v5's <Files> from $(var.BinDir), the
+     folder the app build writes, rather than listed by hand: a hand list rots
+     the moment the Windows App SDK version moves. Whatever the build staged is
+     installed, which includes URnetworkSdk.dll only when it was staged; see
+     tools\verify-msi-payload.ps1 and its -Release switch.
+     SPDX-License-Identifier: MPL-2.0 -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+
+  <!-- The UpgradeCode is this product's identity across versions, and it must
+       never be the URnetwork VPN client's, a7c1e2d3-4b5f-6081-9c2d-3e4f50617283:
+       Windows Installer treats products that share one as versions of a single
+       product. Keep it constant across releases.
+       Version: see UrMsiVersion in Installer.wixproj.
+       InstallerVersion 500: MSIINSTALLPERUSER and the MsiShortcutProperty
+       table (the shortcut's AppUserModelID below) need Windows Installer 5.0.
+       It is WiX v5's default; it is spelled out because both depend on it. -->
+  <Package Name="URmessage" Manufacturer="URnetwork" Version="$(var.UrMsiVersion)"
+           UpgradeCode="4264ee97-bcac-4344-ac75-d6648fb372c1"
+           Scope="perUserOrMachine" InstallerVersion="500" Compressed="yes">
+
+    <!-- afterInstallInitialize: RemoveExistingProducts runs inside this
+         install's transaction, so a failure anywhere later rolls the removal
+         back and the previous version is still installed. WiX's default,
+         afterInstallValidate, commits the removal first, and a later failure
+         leaves neither version.
+         Never afterInstallExecute or afterInstallFinalize. Both lay the new
+         files over the old product before removing it, and Windows
+         Installer's file-version rules keep an installed file whose version
+         is equal to the new one: every unstamped build is FILEVERSION
+         0.0.0.0 (App.rc), so the old URmessage.exe would stay.
+         AllowSameVersionUpgrades: see the ICE61 note in Installer.wixproj. -->
+    <MajorUpgrade Schedule="afterInstallInitialize" AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of URmessage is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Per-user only. ALLUSERS=1, or MSIINSTALLPERUSER="" with ALLUSERS=2, on
+         an msiexec command line selects the per-machine context: an elevated
+         install into Program Files, beside any per-user copy and out of sight
+         of a per-user install or update.
+         Windows Installer deletes MSIINSTALLPERUSER unless it resolves
+         ALLUSERS=2 plus MSIINSTALLPERUSER=1 to the per-user context (msiexec
+         logs it before any action runs). So MSIINSTALLPERUSER = "1" alone
+         already refuses every per-machine request, and it also refuses
+         ALLUSERS="", the legacy per-user context, which does not redirect
+         ProgramFiles64Folder and would install into Program Files.
+         NOT (ALLUSERS = "1") is defence in depth.
+         Installed: never block the repair or removal of what is installed.
+         A malformed condition evaluates as an error, which LaunchConditions
+         passes: tools\verify-msi-payload.ps1 checks the refusal by behaviour,
+         in Windows Installer sessions, and tools\verify-msi-ice03.ps1 checks
+         the syntax. -->
+    <Launch Condition='Installed OR (MSIINSTALLPERUSER = "1" AND NOT (ALLUSERS = "1"))'
+            Message="URmessage installs for the current user only." />
+
+    <!-- The Add/Remove Programs icon. From the SOURCE tree, not $(var.BinDir),
+         so it does not depend on what the app build staged. It is still the
+         placeholder that src\App\Assets\README.md warns about. -->
+    <Icon Id="AppIcon.ico" SourceFile="$(sys.SOURCEFILEDIR)..\src\App\Assets\app.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
+    <!-- One feature and nothing to choose, so Settings offers no Modify. -->
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="URmessage">
+
+        <!-- The exe, authored by hand so it has a known File id: the fonts
+             below are its companions. -->
+        <Component Id="AppExe" Guid="*">
+          <File Id="URmessageExe" Source="$(var.BinDir)\URmessage.exe" KeyPath="yes" />
+        </Component>
+
+        <!-- The four brand faces (src\App\Assets\README.md): private app
+             assets, not system fonts. OpenType metadata gives each file a
+             version but no language, so harvested as independently versioned
+             files they fail ICE60. As companions of the versioned exe, their
+             repair and upgrade decisions follow URmessage.exe, with no
+             invented language and no Font table rows.
+             Subdirectory is allowed on a Component, not on its File children.
+             The directory itself is the key path, because a companion file
+             cannot be one. The fixed GUID is this product's own (the VPN
+             client's PrivateFonts component has a different one); the files
+             and their target path are the same in the x64 and ARM64
+             packages. This is how the URnetwork VPN client authors the same
+             four files. -->
+        <Component Id="PrivateFonts" Guid="d5de90a3-a11f-43c3-a48a-6daf3a8f0c2e"
+                   Subdirectory="Assets\Fonts" KeyPath="yes">
+          <File Source="$(var.BinDir)\Assets\Fonts\abcgravity_extended.otf"
+                CompanionFile="URmessageExe" />
+          <File Source="$(var.BinDir)\Assets\Fonts\abcgravity_extra_condensed.otf"
+                CompanionFile="URmessageExe" />
+          <File Source="$(var.BinDir)\Assets\Fonts\pp_neue_bit_bold.ttf"
+                CompanionFile="URmessageExe" />
+          <File Source="$(var.BinDir)\Assets\Fonts\pp_neue_montreal_regular.ttf"
+                CompanionFile="URmessageExe" />
+        </Component>
+
+      </Directory>
+    </StandardDirectory>
+
+    <!-- The Start-menu shortcut, directly in the per-user Programs menu (no
+         subfolder, so no RemoveFolder row). Its own component, with an HKCU
+         value as key path: a non-advertised shortcut must have one (ICE43).
+         Its key is its own, Software\URmessage\Installer, apart from the app's
+         window-placement key (Common/Ids.h).
+         Not advertised: an advertised shortcut runs Windows Installer's
+         resiliency check on every launch and starts a repair, which needs the
+         original MSI, whenever a key file is missing.
+         Target names the exe by directory, not by [#URmessageExe]: a file
+         reference that crosses into another component is an ICE69 warning,
+         which this build treats as an error.
+         System.AppUserModel.ID must equal the explicit AppUserModelID the app
+         sets on itself at startup (Common/Ids.h kAppUserModelId, main.cpp);
+         without it, taskbar pinning and grouping use an ID derived from the
+         shortcut, which does not match the running window.
+         tools\verify-msi-payload.ps1 checks the two stay equal, and that the
+         Target is exactly [INSTALLFOLDER]URmessage.exe. -->
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenu" Guid="*">
+        <Shortcut Id="StartMenuShortcut" Name="URmessage"
+                  Target="[INSTALLFOLDER]URmessage.exe" WorkingDirectory="INSTALLFOLDER">
+          <ShortcutProperty Key="System.AppUserModel.ID" Value="URmessage.Desktop" />
+        </Shortcut>
+        <RegistryValue Root="HKCU" Key="Software\URmessage\Installer" Name="StartMenuShortcut"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <!-- Everything else the app needs to start: the self-contained Windows
+         App Runtime and WinUI 3 (Microsoft.*.dll and .winmd, the per-locale
+         .mui satellites), the app's own compiled XAML (App.xbf,
+         MainWindow.xbf), resources.pri, Assets\app.ico, the app-local VC++
+         runtime of a Release build, and URnetworkSdk.dll when it was staged.
+         Exclude is a CHILD element in WiX 5.0.2, not an attribute of Files.
+         Excluded: the files the components above author by hand (WiX rejects
+         two components installing one target path); build by-products that
+         do not run (a Release build leaves URmessage.pdb, Common.pdb,
+         Common.lib, URmessage.lib and URmessage.exp here); and any installer
+         output, should one ever land here (Directory.Build.props keeps it out
+         today; without that, each MSI would carry the previous one). -->
+    <ComponentGroup Id="RuntimeFiles" Directory="INSTALLFOLDER">
+      <Files Include="$(var.BinDir)\**">
+        <Exclude Files="$(var.BinDir)\URmessage.exe" />
+        <Exclude Files="$(var.BinDir)\Assets\Fonts\abcgravity_extended.otf" />
+        <Exclude Files="$(var.BinDir)\Assets\Fonts\abcgravity_extra_condensed.otf" />
+        <Exclude Files="$(var.BinDir)\Assets\Fonts\pp_neue_bit_bold.ttf" />
+        <Exclude Files="$(var.BinDir)\Assets\Fonts\pp_neue_montreal_regular.ttf" />
+        <Exclude Files="$(var.BinDir)\**\*.pdb" />
+        <Exclude Files="$(var.BinDir)\**\*.lib" />
+        <Exclude Files="$(var.BinDir)\**\*.exp" />
+        <Exclude Files="$(var.BinDir)\**\*.ilk" />
+        <Exclude Files="$(var.BinDir)\**\*.msi" />
+        <Exclude Files="$(var.BinDir)\**\*.wixpdb" />
+      </Files>
+    </ComponentGroup>
+
+    <Feature Id="Main" Title="URmessage" Level="1">
+      <ComponentRef Id="AppExe" />
+      <ComponentRef Id="PrivateFonts" />
+      <ComponentRef Id="StartMenu" />
+      <ComponentGroupRef Id="RuntimeFiles" />
+    </Feature>
+  </Package>
+</Wix>

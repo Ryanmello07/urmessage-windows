@@ -42,6 +42,8 @@
 *.manifest          text eol=lf
 *.vcxproj           text eol=lf
 *.vcxproj.filters   text eol=lf
+*.wixproj           text eol=lf
+*.wxs               text eol=lf
 *.props             text eol=lf
 *.targets           text eol=lf
 *.config            text eol=lf
