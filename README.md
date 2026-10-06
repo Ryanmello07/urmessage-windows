@@ -85,9 +85,9 @@ The script's header lists all eleven checks. CI runs the same script, in the
 To move a pin, change its line in `composition.txt` and run the script with
 `-Vendor`, which copies the composition's three files into `vendor-include`.
 Commit the pin and the three files together. Every pin other than message must
-be the commit that message's own `.github/siblings.txt` pins at that message
+be the commit that message's own `scripts/siblings.txt` pins at that message
 commit. The script refuses anything else, so the dll is always a combination
-that message's CI tests. `-CheckDll <path>` holds a dll you already have to the
+that message's `test.sh` tests. `-CheckDll <path>` holds a dll you already have to the
 vendored `.def`.
 
 A build that is going to ship passes `/p:UrmRequireSdkDll=true`, which turns

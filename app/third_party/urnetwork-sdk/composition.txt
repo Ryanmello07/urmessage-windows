@@ -20,21 +20,21 @@
 # A line is: name url commit. The commit is a full SHA; the url is under
 # https://github.com/urnetwork/. The names other than message are exactly the sibling checkouts
 # message's sdk/cgo/go.mod replaces by path (../../../<name>), and each commit must equal the one
-# message's own .github/siblings.txt pins at the message commit, so this builds the combination
-# message's CI tested. build-sdk-dll.ps1 refuses all of these otherwise.
+# message's own scripts/siblings.txt pins at the message commit, so this builds the combination
+# message's test.sh tests. build-sdk-dll.ps1 refuses all of these otherwise.
 #
 # message: sdk/cgo, the messaging half, its .def and its header.
-message https://github.com/urnetwork/message.git f3f8f2bdd95cf6440935d1c29986c4510c64a534
+message https://github.com/urnetwork/message.git cdd30926eb9f4cd77f9eba697d3cac9083cf0655
 #
 # sdk: the core SDK, at the head of the pull request that removes messaging from it. compose.sh
 # refuses a core that still carries the messaging half, which would export every messaging
 # function twice.
-sdk https://github.com/urnetwork/sdk.git 701fa391e160e0a4898535ce09e6a1ea03c00d4b
+sdk https://github.com/urnetwork/sdk.git 1945759a611657e7f7c51177a7fa6feeba28da9e
 #
 # connect: the transport, at the head of the pull request that removes messaging from it and adds
 # connect.NewOperatorClientSettings. A connect that still registers message.proto beside
 # message's copy panics the dll at load.
-connect https://github.com/urnetwork/connect.git 5c281069a94949189dcabe09d465f5a2028ad9f8
+connect https://github.com/urnetwork/connect.git 360dac9eab0077bcb13b608ee2174abf973ccae6
 #
 # glog, gvisor and goidenticons: what connect and the core SDK replace by path. gvisor's commit
 # is on urnetwork/gvisor's default branch, go.
