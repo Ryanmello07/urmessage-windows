@@ -27,13 +27,13 @@
 #   2. each checkout is at its pin, made with core.autocrlf=false, with no local change.
 #   3. the pinned names other than message are exactly the sibling checkouts message's
 #      sdk/cgo/go.mod replaces by path (../../../<name>), both ways.
-#   4. each of those commits is the one message's own .github/siblings.txt pins at the message
-#      commit, so this builds the combination message's CI builds. A placeholder there is a
+#   4. each of those commits is the one message's own scripts/siblings.txt pins at the message
+#      commit, so this builds the combination message's test.sh builds. A placeholder there is a
 #      refusal: no composition at that message commit has been tested with any core.
 #   5. message's sdk/cgo/compose.sh composes, go mod verify passes, and gen regenerates the
 #      committed .def byte for byte.
 #   6. the composed module's vet and tests pass (package main's C ABI tests, and gen's).
-#   7. the c-shared build, and message's .github/scripts/native-exports.sh on it: the exports
+#   7. the c-shared build, and message's scripts/native-exports.sh on it: the exports
 #      cgo declares are exactly the .def's names, none is the loopback harness's, and none is a
 #      generated messaging export the split retired.
 #   8. the dll's own export table (dumpbin /exports) is exactly the vendored .def's names, both
@@ -148,7 +148,7 @@ function Write-Utf8([string]$path, [string]$text) {
 
 # ---- parsers (pure: text in, data out; -SelfTest drives each of them) ---------------------------
 
-# composition.txt and message's .github/siblings.txt share one format: name url commit. Every row
+# composition.txt and message's scripts/siblings.txt share one format: name url commit. Every row
 # is returned, with Problem set when it is not a usable pin, so a caller can say which.
 function Read-PinRows([string]$text) {
   $rows = New-Object System.Collections.Generic.List[object]
@@ -566,17 +566,17 @@ if ($diff.OnlyLeft.Count -eq 0 -and $diff.OnlyRight.Count -eq 0 -and $replaces.O
 }
 
 # 4. the message commit's own sibling pins
-$theirsPath = Join-Path $messageDir '.github\siblings.txt'
+$theirsPath = Join-Path $messageDir 'scripts\siblings.txt'
 if (-not (Test-Path -LiteralPath $theirsPath)) {
-  Fail '4' "message has no .github/siblings.txt at $($pin['message'].Commit)"
+  Fail '4' "message has no scripts/siblings.txt at $($pin['message'].Commit)"
 } else {
   $theirs = @{}
   foreach ($row in (Read-PinRows ([IO.File]::ReadAllText($theirsPath)))) { $theirs[$row.Name] = $row }
   foreach ($name in $pinnedSiblings) {
     $mine = $pin[$name]
-    if (-not $theirs.ContainsKey($name)) { Fail '4' "${name}: message's .github/siblings.txt does not pin it"; continue }
+    if (-not $theirs.ContainsKey($name)) { Fail '4' "${name}: message's scripts/siblings.txt does not pin it"; continue }
     $t = $theirs[$name]
-    if ($t.Problem) { Fail '4' "${name}: message's .github/siblings.txt at $($pin['message'].Commit.Substring(0, 12)) is not a usable pin ($($t.Problem)); move the message pin to the commit that fills it"; continue }
+    if ($t.Problem) { Fail '4' "${name}: message's scripts/siblings.txt at $($pin['message'].Commit.Substring(0, 12)) is not a usable pin ($($t.Problem)); move the message pin to the commit that fills it"; continue }
     if ($t.Url -ne $mine.Url -or $t.Commit -ne $mine.Commit) { Fail '4' "${name}: composition.txt pins $($mine.Url) $($mine.Commit), message pins $($t.Url) $($t.Commit)"; continue }
     Pass '4' "${name}: the same commit message pins"
   }
@@ -632,7 +632,7 @@ try {
     if ($build.Code -ne 0 -or -not (Test-Path -LiteralPath $dll)) {
       Fail '7' "go build -buildmode=c-shared failed (exit $($build.Code))"
     } else {
-      $exportsGate = Invoke-Native -File $bash -Arguments @('.github/scripts/native-exports.sh', 'sdk/cgo', (To-Posix $header), (To-Posix $dll)) -Directory $messageDir
+      $exportsGate = Invoke-Native -File $bash -Arguments @('scripts/native-exports.sh', 'sdk/cgo', (To-Posix $header), (To-Posix $dll)) -Directory $messageDir
       if ($exportsGate.Code -ne 0) { Fail '7' "message's native-exports.sh refused the library (exit $($exportsGate.Code))" }
       else { Pass '7' "built $dll; message's native-exports.sh holds its exports to the .def" }
     }
