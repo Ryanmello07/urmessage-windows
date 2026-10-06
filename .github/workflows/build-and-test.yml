@@ -474,6 +474,34 @@ jobs:
           }
           Write-Host '--diagnose OK'
 
+      # The SDK's vendored ABI, held together and against what the exe imports.
+      # The import library is made from the vendored .def and the dll is
+      # delay-loaded, so nothing above opens the dll, and a .def, a header and
+      # an exe that disagree all build green. verify-sdk-imports.ps1 checks
+      # that every function the exe imports from URnetworkSdk.dll (dumpbin's
+      # reading of its delay-import table) is in the .def; that the .def's
+      # urnet_message_* exports and urnetwork_message.h's declarations are one
+      # set, both ways; and that the exe's OWN reading of that table, which the
+      # live path asks the dll for before its first call and which the
+      # diagnose step above printed, equals dumpbin's. Its -SelfTest runs
+      # first, over fixtures that each check must fail, so a check that can no
+      # longer fail cannot pass. Run under Windows PowerShell 5.1, the way the
+      # README runs it.
+      - name: Check the SDK imports against the vendored .def and header
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\verify-sdk-imports.ps1 -SelfTest
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::the SDK import check's self-test failed (exit code $LASTEXITCODE) -- its output is above"
+            exit $LASTEXITCODE
+          }
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\verify-sdk-imports.ps1 -ExePath app\build\x64\Release\URmessage.exe -DiagnoseOutput app\diagnose-x64.out
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::the SDK import check failed (exit code $LASTEXITCODE) -- its output is above"
+            exit $LASTEXITCODE
+          }
+
       # The detailed msbuild log is the whole point of a red run, so keep it
       # whether the build passed, failed, or the diagnose step failed after it.
       # The MSI build's own log comes along when that step ran.

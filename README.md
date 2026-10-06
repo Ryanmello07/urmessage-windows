@@ -64,6 +64,27 @@ copy build\windows\amd64\URnetworkSdk.dll <this repo>\app\third_party\urnetwork-
 A build that is going to ship passes `/p:UrmRequireSdkDll=true`, which turns
 the build's "URnetworkSdk.dll is not staged" warning into an error.
 
+Nothing in the build opens the dll, so three files from two different builds
+compile and link green. CI holds them together with
+`app\tools\verify-sdk-imports.ps1`, after the build:
+- every function `URmessage.exe` imports from `URnetworkSdk.dll` is in the `.def`;
+- the `.def`'s `urnet_message_*` exports and `urnetwork_message.h`'s
+  declarations are the same set, checked both ways;
+- the exe's own reading of its imports, the `sdk imports` line of `--diagnose`,
+  equals dumpbin's reading.
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\verify-sdk-imports.ps1 -SelfTest
+powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\verify-sdk-imports.ps1 -ExePath app\build\x64\Release\URmessage.exe
+```
+
+The live path checks the dll itself. Right after loading it, the app asks the
+dll for every function the exe imports from it, by the names in the exe's own
+delay-import table (`Live\SdkImports.h`). If any is missing, the log names each
+one and no session starts. A dll built from a different SDK commit than the
+three files therefore fails at load, with the missing names in the log, instead
+of crashing at the first call to a missing function.
+
 ## Installer
 
 `app\installer` packages the Release output folder as a per-user MSI with WiX
@@ -188,11 +209,12 @@ app/
     MainWindow.xaml*        written fresh: title bar, nav, conversation panes
     Views/                  the conversation list, thread, inspector rail, status
                             strip, and the settings and network pages
-    Live/                   the live path: the SDK worker (LiveMesh) and the
-                            world it builds for the views (LiveWorld)
+    Live/                   the live path: the SDK worker (LiveMesh), the
+                            world it builds for the views (LiveWorld), and the
+                            reading of the exe's SDK imports (SdkImports)
     Demo/                   the fabricated demo world (--demo) and developer switches
   tools/                    build-local.ps1, verify-render.ps1, verify-msi-payload.ps1,
-                            verify-msi-ice03.ps1
+                            verify-msi-ice03.ps1, verify-sdk-imports.ps1
   third_party/vendor-include/
     nlohmann/
     urnetwork_sdk.h, urnetwork_message.h, urnetwork_sdk.def   the SDK's ABI
