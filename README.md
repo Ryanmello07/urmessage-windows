@@ -41,25 +41,54 @@ app\build\x64\Release\URmessage.exe
 
 ## The SDK
 
-The live path is the URnetwork SDK's messaging C ABI, in `URnetworkSdk.dll`,
-built from [urnetwork/sdk](https://github.com/urnetwork/sdk)'s `cgo` directory.
-Three files of it are committed in `app\third_party\vendor-include`:
-- `urnetwork_sdk.h`;
-- `urnetwork_message.h`;
-- `urnetwork_sdk.def`, the dll's export list.
+The live path is the URnetwork messaging C ABI, in `URnetworkSdk.dll`. That
+dll is [urnetwork/message](https://github.com/urnetwork/message)'s native
+composition. Message's `sdk/cgo/compose.sh` lays the core SDK's cgo package
+main ([urnetwork/sdk](https://github.com/urnetwork/sdk)'s `cgo`) beside the
+messaging exports, and one c-shared build makes the one library.
+`app\third_party\urnetwork-sdk\composition.txt` pins the commit of each
+repository it is built from: message, sdk, connect, glog, gvisor and
+goidenticons.
 
-Copy all three from one SDK build's `cgo\include`, never one without the others.
+Three files of its ABI are committed in `app\third_party\vendor-include`:
+- `urnetwork_sdk.h`, the core SDK's header;
+- `urnetwork_message.h`, the messaging header;
+- `urnetwork_sdk.def`, the dll's export list, with both halves' exports.
+
+All three are copied from that one composition, never one without the others.
 
 The build makes the import library from the `.def`, and the dll is delay-loaded,
 so the app builds and runs without it. Only the live path needs it. To go live,
-build the dll from the same SDK commit and stage it where the build copies it
-next to the exe:
+build the dll from the pinned composition and stage it where the build copies
+it next to the exe:
 
 ```
-cd sdk\cgo
-make build_windows_amd64        (or the go build line it runs, with a mingw-w64 gcc on PATH)
-copy build\windows\amd64\URnetworkSdk.dll <this repo>\app\third_party\urnetwork-sdk\bin\x64\
+powershell -ExecutionPolicy Bypass -File app\tools\build-sdk-dll.ps1 -Workspace C:\urm-sdk -Stage
 ```
+
+That needs Go, a mingw-w64 gcc (on PATH, or `-MingwBin <dir>`) and Visual
+Studio's dumpbin. Give it a short workspace path, because some files in the
+pinned repositories have long paths. It checks out each pinned commit under
+the workspace, composes and builds. It stages the dll only if every check
+passes:
+- the composition's own checks pass: gen reproduces message's `.def`, the
+  composed module's tests pass, and the exports cgo declares are the `.def`'s
+  names;
+- the dll's export table is exactly the vendored `.def`'s names, both ways;
+- the dll imports only what Windows provides;
+- a fresh process loads it and finds every name;
+- the three vendored files are the composition's, byte for byte.
+
+The script's header lists all eleven checks. CI runs the same script, in the
+`sdk-composition` job of `build-and-test.yml`.
+
+To move a pin, change its line in `composition.txt` and run the script with
+`-Vendor`, which copies the composition's three files into `vendor-include`.
+Commit the pin and the three files together. Every pin other than message must
+be the commit that message's own `.github/siblings.txt` pins at that message
+commit. The script refuses anything else, so the dll is always a combination
+that message's CI tests. `-CheckDll <path>` holds a dll you already have to the
+vendored `.def`.
 
 A build that is going to ship passes `/p:UrmRequireSdkDll=true`, which turns
 the build's "URnetworkSdk.dll is not staged" warning into an error.
@@ -191,12 +220,14 @@ app/
     Live/                   the live path: the SDK worker (LiveMesh) and the
                             world it builds for the views (LiveWorld)
     Demo/                   the fabricated demo world (--demo) and developer switches
-  tools/                    build-local.ps1, verify-render.ps1, verify-msi-payload.ps1,
-                            verify-msi-ice03.ps1
+  tools/                    build-local.ps1, build-sdk-dll.ps1, verify-render.ps1,
+                            verify-msi-payload.ps1, verify-msi-ice03.ps1
   third_party/vendor-include/
     nlohmann/
     urnetwork_sdk.h, urnetwork_message.h, urnetwork_sdk.def   the SDK's ABI
-  third_party/urnetwork-sdk/bin/x64/   URnetworkSdk.dll, staged, not committed
+  third_party/urnetwork-sdk/
+    composition.txt         the commits the dll and the ABI are built from
+    bin/x64/                URnetworkSdk.dll, staged, not committed
 ```
 
 ## Things that will bite you
