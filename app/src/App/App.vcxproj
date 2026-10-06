@@ -31,9 +31,13 @@
        three are committed in third_party\vendor-include, exactly as
        nlohmann\json.hpp beside them is: the two headers (already on every
        project's include path, see Directory.Build.props) and urnetwork_sdk.def,
-       the dll's export list. All three are copied from ONE ..\..\..\sdk\cgo
-       build (its include\ directory), never one without the others. The
-       dll, about 50 MB, is that build's OUTPUT and is NOT committed;
+       the dll's export list. They are urnetwork/message's native composition:
+       the core SDK's cgo package main with message's messaging exports laid
+       beside it, built as one library, at the commits
+       third_party\urnetwork-sdk\composition.txt pins. All three are copied
+       from that ONE composition (tools\build-sdk-dll.ps1 with -Vendor), never
+       one without the others, and CI holds them to it byte for byte. The
+       dll, about 50 MB, is the composition's build OUTPUT and is NOT committed;
        .gitignore's [Bb]in/ already excludes it, which is why it sits under
        bin\$(Platform).
 
@@ -45,8 +49,9 @@
        without the dll. It also makes an ARM64 build link. Only amd64 has a dll
        staged here today, so an ARM64 app cannot go live, and says so.
 
-       $(Platform) rather than a hard-coded x64 because the SDK Makefile builds
-       windows/amd64 and windows/arm64 alike. -->
+       $(Platform) rather than a hard-coded x64 because Go builds the
+       composition for windows/arm64 as well as windows/amd64;
+       tools\build-sdk-dll.ps1 builds and checks the amd64 one. -->
   <PropertyGroup>
     <UrmSdkRoot Condition="'$(UrmSdkRoot)'==''">$(MSBuildProjectDirectory)\..\..\third_party\urnetwork-sdk\</UrmSdkRoot>
     <UrmSdkBinDir>$(UrmSdkRoot)bin\$(Platform)\</UrmSdkBinDir>
@@ -400,8 +405,8 @@
     </CopyFileToFolders>
   </ItemGroup>
   <Target Name="UrmCheckSdkDll" AfterTargets="Build" Condition="!Exists('$(UrmSdkBinDir)URnetworkSdk.dll')">
-    <Warning Condition="'$(UrmRequireSdkDll)'!='true'" Text="URnetworkSdk.dll is not staged at $(UrmSdkBinDir): the app builds and runs, but its live path, which an ordinary launch takes, will report that it could not load the SDK. Build it with sdk/cgo's build_windows_amd64 target, from the same sdk commit the three files in third_party\vendor-include came from, and copy it there." />
-    <Error Condition="'$(UrmRequireSdkDll)'=='true'" Text="URnetworkSdk.dll is not staged at $(UrmSdkBinDir), and UrmRequireSdkDll=true says this build ships. Without it the app's live path, which an ordinary launch takes, cannot load the SDK. Build it with sdk/cgo's build_windows_amd64 or build_windows_arm64 target, from the same sdk commit the three files in third_party\vendor-include came from, and copy it there." />
+    <Warning Condition="'$(UrmRequireSdkDll)'!='true'" Text="URnetworkSdk.dll is not staged at $(UrmSdkBinDir): the app builds and runs, but its live path, which an ordinary launch takes, will report that it could not load the SDK. Build and stage it with app\tools\build-sdk-dll.ps1 -Stage, which builds it from the composition app\third_party\urnetwork-sdk\composition.txt pins, the one the three files in third_party\vendor-include came from." />
+    <Error Condition="'$(UrmRequireSdkDll)'=='true'" Text="URnetworkSdk.dll is not staged at $(UrmSdkBinDir), and UrmRequireSdkDll=true says this build ships. Without it the app's live path, which an ordinary launch takes, cannot load the SDK. Build and stage it with app\tools\build-sdk-dll.ps1 -Stage (the x64 dll), from the composition app\third_party\urnetwork-sdk\composition.txt pins, the one the three files in third_party\vendor-include came from." />
   </Target>
 
   <!-- THE VC++ RUNTIME, APP-LOCAL, NEXT TO THE EXE. Both projects link the DLL

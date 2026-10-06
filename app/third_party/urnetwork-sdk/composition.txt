@@ -1,0 +1,43 @@
+# What URnetworkSdk.dll is built from, and what the three ABI files in
+# app/third_party/vendor-include are copied from: urnetwork/message's native composition, at ONE
+# commit of each repository below.
+#
+# The library is one dll, URnetworkSdk.dll. Its package main is the core SDK's (urnetwork/sdk
+# cgo/): the handle table, the C-string helpers and the generated exports. The messaging exports
+# the app calls (urnet_message_*) are urnetwork/message's sdk/cgo, and sdk/cgo/compose.sh there
+# lays the core's package main beside them, so that one c-shared build makes the one library.
+#
+#   urnetwork_sdk.def    = message's sdk/cgo/include/urnetwork_sdk.def (both halves' exports)
+#   urnetwork_message.h  = message's sdk/cgo/include/urnetwork_message.h
+#   urnetwork_sdk.h      = sdk's cgo/include/urnetwork_sdk.h (compose.sh lays it beside the other two)
+#
+# app/tools/build-sdk-dll.ps1 reads this file: it checks out each repository at its commit,
+# composes, builds the dll, and holds the three vendored files to the composition byte for byte.
+# CI runs it (build-and-test.yml, job sdk-composition). To move a pin, change the line and run
+# build-sdk-dll.ps1 -Vendor in the same commit, so the three files never come from another
+# composition than the one named here.
+#
+# A line is: name url commit. The commit is a full SHA; the url is under
+# https://github.com/urnetwork/. The names other than message are exactly the sibling checkouts
+# message's sdk/cgo/go.mod replaces by path (../../../<name>), and each commit must equal the one
+# message's own .github/siblings.txt pins at the message commit, so this builds the combination
+# message's CI tested. build-sdk-dll.ps1 refuses all of these otherwise.
+#
+# message: sdk/cgo, the messaging half, its .def and its header.
+message https://github.com/urnetwork/message.git f3f8f2bdd95cf6440935d1c29986c4510c64a534
+#
+# sdk: the core SDK, at the head of the pull request that removes messaging from it. compose.sh
+# refuses a core that still carries the messaging half, which would export every messaging
+# function twice.
+sdk https://github.com/urnetwork/sdk.git 701fa391e160e0a4898535ce09e6a1ea03c00d4b
+#
+# connect: the transport, at the head of the pull request that removes messaging from it and adds
+# connect.NewOperatorClientSettings. A connect that still registers message.proto beside
+# message's copy panics the dll at load.
+connect https://github.com/urnetwork/connect.git 5c281069a94949189dcabe09d465f5a2028ad9f8
+#
+# glog, gvisor and goidenticons: what connect and the core SDK replace by path. gvisor's commit
+# is on urnetwork/gvisor's default branch, go.
+glog https://github.com/urnetwork/glog.git 80a11b434ae90ae2221deb932daa21913919875a
+gvisor https://github.com/urnetwork/gvisor.git c0783dba2eeff7b79692a7f122ffee5f8bd837c1
+goidenticons https://github.com/urnetwork/goidenticons.git 06eb779a691e056be7dc5fa9a0239001c3ea390f
