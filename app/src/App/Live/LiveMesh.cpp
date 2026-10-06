@@ -49,6 +49,7 @@
 
 #include "Live/LiveWorld.h"
 #include "Live/LocalNames.h"
+#include "Live/SdkImports.h"
 #include "Log.h"
 #include "AppPrefs.h"
 #include "Paths.h"
@@ -1383,6 +1384,43 @@ bool LeaveGroup(Session& s, std::string const& transferTo, std::string& refusal)
   return true;
 }
 
+// EVERY FUNCTION THIS EXE IMPORTS FROM THE SDK DLL, ASKED OF THE LOADED DLL (see RunSession). The
+// names are the linker's, read from this exe's own delay-import table (Live/SdkImports.h), so a call
+// added anywhere is covered with no list to keep. Logs every function the dll lacks, by name, and
+// answers false. It answers false too when the table cannot be read: a probe that cannot see the
+// imports checks nothing, and --diagnose fails CI on that same reading.
+bool SdkExportsEveryImport(HMODULE sdk) {
+  const DelayImports imports = ReadOwnSdkImports();
+  const size_t total = imports.names.size() + imports.ordinals.size();
+  if (!imports.readable || !imports.found || total == 0) {
+    const std::string why = !imports.readable
+                                ? std::format("could not be read ({})", imports.problem)
+                            : !imports.found ? std::string("has no entry for URnetworkSdk.dll")
+                                             : std::string("names no function from URnetworkSdk.dll");
+    urnw::LogError(
+        "live: this exe's delay-import table {}, so URnetworkSdk.dll cannot be checked before its "
+        "first call. Not starting the live session.",
+        why);
+    return false;
+  }
+  const std::vector<std::string> missing = MissingExports(sdk, imports);
+  if (!missing.empty()) {
+    std::string list;
+    for (const std::string& name : missing) {
+      if (!list.empty()) list += ", ";
+      list += name;
+    }
+    urnw::LogError(
+        "live: URnetworkSdk.dll lacks {} of the {} functions this exe imports from it: {}. It is "
+        "not the dll the three files in app/third_party/vendor-include describe; build it from the "
+        "sdk commit they came from. Not starting the live session.",
+        missing.size(), total, list);
+    return false;
+  }
+  urnw::LogInfo("live: URnetworkSdk.dll exports all {} functions this exe imports from it", total);
+  return true;
+}
+
 void RunSession() {
   const int64_t startedMs = NowMs();
   urnw::LogInfo("live: ==== live mesh session starting ====");
@@ -1391,13 +1429,20 @@ void RunSession() {
   // a missing dll would otherwise surface as a structured exception at the first
   // ABI call — on a worker thread, with no useful text. Probing it here turns
   // that into one honest line naming the file and the Win32 error.
-  if (::LoadLibraryW(L"URnetworkSdk.dll") == nullptr) {
+  const HMODULE sdk = ::LoadLibraryW(L"URnetworkSdk.dll");
+  if (sdk == nullptr) {
     urnw::LogError(
         "live: URnetworkSdk.dll could not be loaded (GetLastError {}). It must sit next to "
         "URmessage.exe; App.vcxproj copies it there from app/third_party/urnetwork-sdk/bin/x64.",
         ::GetLastError());
     return;
   }
+  // THEN EVERY FUNCTION IN IT, BY HAND, for the same reason one step further on. A dll that loads
+  // can still lack a function this exe calls, when it was built from another sdk commit than the
+  // three files in app/third_party/vendor-include that the import library was made from. That
+  // surfaces as the same structured exception, at the first call to the missing function, in the
+  // middle of a session. Asked here, it is one line naming every missing function, and no session.
+  if (!SdkExportsEveryImport(sdk)) return;
   urnw::LogInfo("live: URnetworkSdk.dll loaded; sdk version {}", TakeString(urnet_version()));
 
   // The leak check this used to close with is gone WITH THE ONE-SHOT SESSION:

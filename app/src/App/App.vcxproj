@@ -280,6 +280,11 @@
          existing views already read. -->
     <ClCompile Include="Live\LiveWorld.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="Live\LocalNames.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <!-- NotUsing for the same reasons as Live\LiveMesh.cpp, which calls it on the live
+         worker: it reads this exe's own delay-import table, so the worker can ask the SDK
+         dll for every import before the first call. The diagnose switch prints the same
+         reading, for CI to hold against dumpbin's. -->
+    <ClCompile Include="Live\SdkImports.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="MainWindow.xaml.cpp"><DependentUpon>MainWindow.xaml</DependentUpon></ClCompile>
     <ClCompile Include="Localization.cpp" />
     <ClCompile Include="RunMode.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
@@ -353,6 +358,7 @@
     <ClInclude Include="Live\LiveMesh.h" />
     <ClInclude Include="Live\LiveWorld.h" />
     <ClInclude Include="Live\LocalNames.h" />
+    <ClInclude Include="Live\SdkImports.h" />
     <ClInclude Include="MainWindow.xaml.h"><DependentUpon>MainWindow.xaml</DependentUpon></ClInclude>
     <ClInclude Include="Localization.h" />
     <ClInclude Include="Demo\DemoShellState.h" />

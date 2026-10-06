@@ -39,6 +39,7 @@
 #include "Views/ThreadView.h"  // ShouldPinToBottom, for the scroll-pin line below
 #include "Live/LiveWorld.h"    // BuildWorld, for the reply/reaction mapping gate below (pure)
 #include "Live/LocalNames.h"   // the labels gate below (pure)
+#include "Live/SdkImports.h"   // the sdk imports line below (reads this exe, never the dll)
 #include "Demo/DemoSwitches.h"
 #include "Demo/DemoStress.h"
 
@@ -1842,6 +1843,33 @@ std::wstring StatusStripFieldsAssertion() {
       offline, connecting, connected, code(lockOn), code(lockOff), epoch, records);
 }
 
+// THE SDK IMPORTS, READ EXACTLY AS THE LIVE WORKER READS THEM before its first ABI call
+// (Live/SdkImports.h). The worker asks the dll for every one of them, and that probe is only as good
+// as this reading of the exe's own delay-import table; a run that never goes live exercises it
+// nowhere else. CI holds the count and the digest against dumpbin's reading of the same exe
+// (tools/verify-sdk-imports.ps1). Nothing here loads the dll.
+std::wstring SdkImportsDiagnostic() {
+  const urmsg::live::DelayImports imports = urmsg::live::ReadOwnSdkImports();
+  if (!imports.readable)
+    return std::format(L"  sdk imports      : FAIL this exe's delay-import table could not be read ({})",
+                       Widen(imports.problem));
+  if (!imports.found)
+    return L"  sdk imports      : FAIL this exe's delay-import table has no entry for URnetworkSdk.dll, "
+           L"so the live path cannot check the dll before its first call";
+  if (!imports.ordinals.empty())
+    return std::format(L"  sdk imports      : FAIL {} function(s) imported from URnetworkSdk.dll by "
+                       L"ordinal, which the vendored .def never declares",
+                       imports.ordinals.size());
+  if (imports.names.empty())
+    return L"  sdk imports      : FAIL the delay-import entry for URnetworkSdk.dll names no function";
+  const std::string digest = urmsg::live::SortedNamesSha256(imports.names);
+  if (digest.empty())
+    return L"  sdk imports      : FAIL the SHA-256 of the import names could not be computed";
+  return std::format(L"  sdk imports      : PASS {} functions delay-loaded from URnetworkSdk.dll, "
+                     L"sha256 of their sorted names {}; the dll is not loaded here",
+                     imports.names.size(), Widen(digest));
+}
+
 }  // namespace
 
 void StartupLogInit() {
@@ -1899,6 +1927,7 @@ std::vector<std::wstring> CollectDiagnostics() {
   lines.push_back(std::format(L"  fonts            : {}",
                               Presence(dir / L"Assets" / L"Fonts" /
                                        L"pp_neue_bit_bold.ttf")));
+  lines.push_back(SdkImportsDiagnostic());
   {
     const urmsg::demo::DemoOptions o = urmsg::demo::ParseDemoOptions();
     constexpr const wchar_t* kScreens[] = {L"none", L"chats", L"thread", L"inspect",
