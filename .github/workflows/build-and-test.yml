@@ -526,7 +526,8 @@ jobs:
   # import library made from the vendored .def and delay-loads the dll. This job
   # builds that dll, from urnetwork/message's native composition at the commits
   # app/third_party/urnetwork-sdk/composition.txt pins: the core SDK's cgo
-  # package main with message's messaging exports laid beside it, one library.
+  # package main with message's messaging exports laid beside it, one library,
+  # built by message's own sdk/cgo/build.sh under the toolchain message pins.
   # It holds the three vendored ABI files to that composition byte for byte,
   # and the dll to the vendored .def both ways, then loads the dll in a fresh
   # process, which runs every package init, the place a second registration of
@@ -573,12 +574,17 @@ jobs:
             exit $LASTEXITCODE
           }
 
-      # The Go the composition's own go.mod names. No cache: every run builds
-      # the dll from nothing but the pinned commits and the module proxy.
+      # A go command, from message's root go.mod, where message pins its
+      # toolchain. Which release this step installs does not decide what
+      # builds the dll: a go.mod toolchain line is a minimum, so the script
+      # forces message's pin on every go command (GOTOOLCHAIN), the go command
+      # fetches that release when it is not the one installed, and the dll is
+      # asked which toolchain built it. No cache: every run builds the dll
+      # from nothing but the pinned commits and the module proxy.
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: ${{ runner.temp }}/sdk/message/sdk/cgo/go.mod
+          go-version-file: ${{ runner.temp }}/sdk/message/go.mod
           cache: false
 
       - name: Build the dll and hold the vendored ABI to it

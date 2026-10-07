@@ -69,11 +69,18 @@ powershell -ExecutionPolicy Bypass -File app\tools\build-sdk-dll.ps1 -Workspace 
 That needs Go, a mingw-w64 gcc (on PATH, or `-MingwBin <dir>`) and Visual
 Studio's dumpbin. Give it a short workspace path, because some files in the
 pinned repositories have long paths. It checks out each pinned commit under
-the workspace, composes and builds. It stages the dll only if every check
-passes:
+the workspace, composes, and builds with message's own `sdk/cgo/build.sh`.
+
+The Go toolchain is message's pin, the `toolchain` line of its root `go.mod`,
+whatever go command the machine has. The script forces it on every go command
+(`GOTOOLCHAIN`), and the go command downloads that release when yours is
+another.
+
+It stages the dll only if every check passes:
 - the composition's own checks pass: gen reproduces message's `.def`, the
   composed module's tests pass, and the exports cgo declares are the `.def`'s
   names;
+- the dll records the toolchain message pins;
 - the dll's export table is exactly the vendored `.def`'s names, both ways;
 - the dll imports only what Windows provides;
 - a fresh process loads it and finds every name;
