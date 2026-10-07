@@ -10,8 +10,8 @@
 #                       next to URmessage.exe.
 #   ... -Vendor         after moving a pin: copy the composition's three ABI files into
 #                       vendor-include first, then check as usual. Commit them with the pin.
-#   ... -CheckoutOnly   check the pins and check out the commits, and stop (CI reads the Go
-#                       version from the checked-out go.mod before it builds).
+#   ... -CheckoutOnly   check the pins and check out the commits, and stop (CI sets up its go
+#                       command from message's checked-out go.mod before it builds).
 #   ... -CheckDll <path>  no build: hold a dll you already have (a staged one, say) to the
 #                       vendored .def, with checks 8 to 10 below.
 #   ... -SelfTest       no build: run each check's mechanism over fixtures it must pass and
@@ -21,6 +21,11 @@
 # string urnet_version() answers (default 0.0.0-composition.<message>.<sdk>, both commits cut to
 # 12). The workspace wants a short path: some of gvisor's paths are long.
 #
+# THE GO TOOLCHAIN IS MESSAGE'S PIN, whatever go command this machine has: the toolchain line of
+# message's root go.mod, which message's scripts/toolchain.sh reads. A go.mod toolchain line is a
+# minimum, so a newer go command would build with itself and say nothing. Every go command here
+# runs with GOTOOLCHAIN set to the pin, and the dll is asked which toolchain built it.
+#
 # WHAT IT CHECKS. Every check runs, each failure is named, and the exit code is 1 if any failed.
 #   1. composition.txt: each line is a name, a url under https://github.com/urnetwork/ and a full
 #      commit SHA; no name twice; message is pinned.
@@ -29,13 +34,18 @@
 #      sdk/cgo/go.mod replaces by path (../../../<name>), both ways.
 #   4. each of those commits is the one message's own scripts/siblings.txt pins at the message
 #      commit, so this builds the combination message's test.sh builds. A placeholder there is a
-#      refusal: no composition at that message commit has been tested with any core.
-#   5. message's sdk/cgo/compose.sh composes, go mod verify passes, and gen regenerates the
-#      committed .def byte for byte.
+#      refusal: no composition at that message commit has been tested with any core. The pin is
+#      the commit: where message names another url to fetch the same commit from (a pull request
+#      head on a fork, until it merges), the line says so.
+#   5. this machine's go command can run the toolchain message pins (message's
+#      scripts/toolchain.sh --check), message's sdk/cgo/compose.sh composes, go mod verify
+#      passes, and gen regenerates the committed .def byte for byte.
 #   6. the composed module's vet and tests pass (package main's C ABI tests, and gen's).
-#   7. the c-shared build, and message's scripts/native-exports.sh on it: the exports
-#      cgo declares are exactly the .def's names, none is the loopback harness's, and none is a
-#      generated messaging export the split retired.
+#   7. message's own sdk/cgo/build.sh builds the library (the core SDK's release recipe, c-shared,
+#      under the pinned toolchain), the dll records that toolchain (scripts/toolchain.sh
+#      --artefact), and message's scripts/native-exports.sh accepts it: the exports cgo declares
+#      are exactly the .def's names, none is the loopback harness's, and none is a generated
+#      messaging export the split retired.
 #   8. the dll's own export table (dumpbin /exports) is exactly the vendored .def's names, both
 #      ways. The import library is made from that .def, so this is what the app links against.
 #   9. the dll imports only what Windows itself provides (API sets, and dlls in System32 that are
@@ -150,7 +160,13 @@ function Write-Utf8([string]$path, [string]$text) {
 
 # composition.txt and message's scripts/siblings.txt share one format: name url commit. Every row
 # is returned, with Problem set when it is not a usable pin, so a caller can say which.
-function Read-PinRows([string]$text) {
+#
+# -AnySource reads message's file, and only there is the url free. This script fetches from
+# composition.txt's urls and from no other, so those are held to https://github.com/urnetwork/.
+# message's file is read for its commits: where message fetches a commit from is message's rule
+# (its scripts/siblings.sh lists the forks a pull request head may come from), and a commit id
+# names its content wherever it was fetched.
+function Read-PinRows([string]$text, [switch]$AnySource) {
   $rows = New-Object System.Collections.Generic.List[object]
   $n = 0
   foreach ($raw in ($text -split "`n")) {
@@ -166,7 +182,7 @@ function Read-PinRows([string]$text) {
       $row.Commit = $fields[2]
       if ($row.Name -cnotmatch '^[a-z][a-z0-9-]*$') {
         $row.Problem = "line ${n}: '$($row.Name)' is not a sibling name"
-      } elseif ($row.Url -cnotmatch '^https://github\.com/urnetwork/[A-Za-z0-9_-][A-Za-z0-9_.-]*\.git$' -or $row.Url.Contains('..')) {
+      } elseif (-not $AnySource -and ($row.Url -cnotmatch '^https://github\.com/urnetwork/[A-Za-z0-9_-][A-Za-z0-9_.-]*\.git$' -or $row.Url.Contains('..'))) {
         $row.Problem = "line ${n}: '$($row.Name)' fetches from $($row.Url), outside https://github.com/urnetwork/"
       } elseif ($row.Commit -cnotmatch '^[0-9a-f]{40}$') {
         $row.Problem = "line ${n}: '$($row.Name)' is pinned to '$($row.Commit)', not a full commit SHA"
@@ -188,6 +204,49 @@ function Test-PinSet($rows) {
   }
   if (-not $seen.ContainsKey('message')) { $problems.Add("message is not pinned") }
   return ,$problems
+}
+
+# Check 4, as data: each sibling composition.txt pins ($mine), against the rows of message's own
+# scripts/siblings.txt ($theirs, read with -AnySource). One result per sibling. THE PIN IS THE
+# COMMIT: a sibling message does not pin, pins twice, or pins to anything but a full SHA is
+# refused, and so is another commit. The same commit under another url is accepted, and the
+# result carries that url in OtherSource so that the caller prints it.
+function Compare-SiblingPins($mine, $theirs, [string]$messageShort) {
+  $byName = @{}
+  foreach ($row in $theirs) {
+    if (-not $byName.ContainsKey($row.Name)) { $byName[$row.Name] = New-Object System.Collections.Generic.List[object] }
+    $byName[$row.Name].Add($row)
+  }
+  $results = New-Object System.Collections.Generic.List[object]
+  foreach ($m in $mine) {
+    $result = [pscustomobject]@{ Name = $m.Name; Ok = $false; Text = ''; OtherSource = '' }
+    if (-not $byName.ContainsKey($m.Name)) {
+      $result.Text = "message's scripts/siblings.txt does not pin it"
+    } elseif ($byName[$m.Name].Count -ne 1) {
+      $result.Text = "message's scripts/siblings.txt pins it $($byName[$m.Name].Count) times (lines $(@($byName[$m.Name] | ForEach-Object { $_.Line }) -join ', '))"
+    } else {
+      $t = $byName[$m.Name][0]
+      if ($t.Problem) {
+        $result.Text = "message's scripts/siblings.txt at $messageShort is not a usable pin ($($t.Problem)); move the message pin to the commit that fills it"
+      } elseif ($t.Commit -cne $m.Commit) {
+        $result.Text = "composition.txt pins $($m.Commit), message pins $($t.Commit)"
+      } else {
+        $result.Ok = $true
+        $result.Text = 'the same commit message pins'
+        if ($t.Url -cne $m.Url) { $result.OtherSource = $t.Url }
+      }
+    }
+    $results.Add($result)
+  }
+  return ,$results
+}
+
+# What message's scripts/toolchain.sh prints for the pin: one line, a Go release name. Anything
+# else (nothing, two lines, an error's text) is not a toolchain to force.
+function Read-ToolchainPin([string[]]$lines) {
+  $said = @($lines | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
+  if ($said.Count -eq 1 -and $said[0] -cmatch '^go[0-9]+(\.[0-9]+)*([a-z]+[0-9]+)?$') { return $said[0] }
+  return ''
 }
 
 # The sibling checkouts a go.mod replaces by path: the first element after ../../../ of every
@@ -425,6 +484,42 @@ function Invoke-SelfTest {
     Expect "pins: refused, '$($case[1])'" (@($problems | Where-Object { $_ -like "*$($case[1])*" }).Count -gt 0)
   }
 
+  # message's own file: the url is free there, and nothing else is.
+  $forkUrl = 'https://github.com/Ryanmello07/connect.git'
+  Expect "message's pins: a pull request head on a fork is a usable pin in message's file" (-not (Read-PinRows "connect $forkUrl $sha" -AnySource)[0].Problem)
+  Expect "message's pins: the same line is refused in composition.txt" ((Read-PinRows "connect $forkUrl $sha")[0].Problem -like '*outside https://github.com/urnetwork/*')
+  Expect "message's pins: a placeholder commit is no pin there either" ((Read-PinRows "connect $forkUrl FILL_IN_THE_HEAD" -AnySource)[0].Problem -like '*not a full commit SHA*')
+
+  # check 4: the pin is the commit
+  $other = '0123456789abcdef0123456789abcdef01234567'
+  $mine = Read-PinRows "connect https://github.com/urnetwork/connect.git $sha`nglog https://github.com/urnetwork/glog.git $sha`n"
+  $theirGlog = "glog https://github.com/urnetwork/glog.git $sha`n"
+  $connectOf = {
+    param([string]$theirConnect)
+    $all = Compare-SiblingPins $mine (Read-PinRows ($theirGlog + $theirConnect) -AnySource) 'f3f8f2bdd95c'
+    return @($all | Where-Object { $_.Name -eq 'connect' })[0]
+  }
+  $r = & $connectOf "connect https://github.com/urnetwork/connect.git $sha"
+  Expect 'check 4: the same commit from the same url is accepted, with no other source to name' ($r.Ok -and -not $r.OtherSource)
+  $r = & $connectOf "connect $forkUrl $sha"
+  Expect 'check 4: the same commit from another url is accepted, and that url is named' ($r.Ok -and $r.OtherSource -ceq $forkUrl)
+  $r = & $connectOf "connect https://github.com/urnetwork/connect.git $other"
+  Expect 'check 4: another commit is refused, and both commits are named' ((-not $r.Ok) -and $r.Text -like "*$sha*" -and $r.Text -like "*$other*")
+  $r = & $connectOf "connect $forkUrl $other"
+  Expect 'check 4: another commit is refused from another url too' (-not $r.Ok)
+  $r = & $connectOf "connect https://github.com/urnetwork/connect.git FILL_IN_THE_CONNECT_REMOVAL_PR_HEAD_SHA"
+  Expect 'check 4: a placeholder is refused' ((-not $r.Ok) -and $r.Text -like '*not a usable pin*')
+  $r = & $connectOf ''
+  Expect 'check 4: a sibling message does not pin is refused' ((-not $r.Ok) -and $r.Text -like '*does not pin it*')
+  $r = & $connectOf "connect https://github.com/urnetwork/connect.git $sha`nconnect https://github.com/urnetwork/connect.git $other"
+  Expect 'check 4: a sibling message pins twice is refused, though one of the two matches' ((-not $r.Ok) -and $r.Text -like '*pins it 2 times*')
+  $all = Compare-SiblingPins $mine (Read-PinRows ($theirGlog + "connect https://github.com/urnetwork/connect.git $other") -AnySource) 'f3f8f2bdd95c'
+  Expect 'check 4: one refused sibling does not hide the other' (($all.Count -eq 2) -and (@($all | Where-Object { $_.Ok } | ForEach-Object { $_.Name }) -join ',') -eq 'glog')
+
+  # the toolchain message's scripts/toolchain.sh names
+  Expect 'toolchain: one release name is the pin, with or without a CR' (((Read-ToolchainPin @('go1.26.5')) -ceq 'go1.26.5') -and ((Read-ToolchainPin @("go1.26.5`r", '')) -ceq 'go1.26.5'))
+  Expect 'toolchain: nothing, two names, or the text of an error is no pin' ((-not (Read-ToolchainPin @())) -and (-not (Read-ToolchainPin @('go1.26.5', 'go1.27.1'))) -and (-not (Read-ToolchainPin @("toolchain: go.mod must hold exactly one 'toolchain goX.Y.Z' line"))))
+
   $goMod = "module m`nreplace github.com/urnetwork/message => ../..`nreplace github.com/urnetwork/connect => ../../../connect`nreplace github.com/pion/sctp => ../../../connect/sctp // a comment`nreplace (`n  gvisor.dev/gvisor v0.0.1 => ../../../gvisor`n)`n"
   $sib = Get-ReplaceSiblings $goMod
   Expect 'siblings: line and block replaces, a nested target, an internal target' ((($sib.Siblings -join ',') -eq 'connect,gvisor') -and $sib.Odd.Count -eq 0)
@@ -570,35 +665,67 @@ $theirsPath = Join-Path $messageDir 'scripts\siblings.txt'
 if (-not (Test-Path -LiteralPath $theirsPath)) {
   Fail '4' "message has no scripts/siblings.txt at $($pin['message'].Commit)"
 } else {
-  $theirs = @{}
-  foreach ($row in (Read-PinRows ([IO.File]::ReadAllText($theirsPath)))) { $theirs[$row.Name] = $row }
-  foreach ($name in $pinnedSiblings) {
-    $mine = $pin[$name]
-    if (-not $theirs.ContainsKey($name)) { Fail '4' "${name}: message's scripts/siblings.txt does not pin it"; continue }
-    $t = $theirs[$name]
-    if ($t.Problem) { Fail '4' "${name}: message's scripts/siblings.txt at $($pin['message'].Commit.Substring(0, 12)) is not a usable pin ($($t.Problem)); move the message pin to the commit that fills it"; continue }
-    if ($t.Url -ne $mine.Url -or $t.Commit -ne $mine.Commit) { Fail '4' "${name}: composition.txt pins $($mine.Url) $($mine.Commit), message pins $($t.Url) $($t.Commit)"; continue }
-    Pass '4' "${name}: the same commit message pins"
+  $theirRows = Read-PinRows ([IO.File]::ReadAllText($theirsPath)) -AnySource
+  $mineRows = @($rows | Where-Object { $_.Name -ne 'message' })
+  $compared = Compare-SiblingPins $mineRows $theirRows $pin['message'].Commit.Substring(0, 12)
+  foreach ($result in $compared) {
+    if (-not $result.Ok) { Fail '4' "$($result.Name): $($result.Text)"; continue }
+    if ($result.OtherSource) { Pass '4' "$($result.Name): the same commit message pins; message fetches it from $($result.OtherSource), this file from $($pin[$result.Name].Url)" }
+    else { Pass '4' "$($result.Name): the same commit message pins" }
   }
-  $unused = @($theirs.Keys | Where-Object { $pinnedSiblings -notcontains $_ } | Sort-Object)
+  # What comparing the commit alone leaves out, by name, every run: the siblings message fetches
+  # from another url than this file does.
+  $elsewhere = @($compared | Where-Object { $_.Ok -and $_.OtherSource } | ForEach-Object { $_.Name })
+  $elsewhereText = 'none'
+  if ($elsewhere.Count -gt 0) { $elsewhereText = $elsewhere -join ', ' }
+  Write-Host "     (the pin is the commit; message names another fetch source for $($elsewhere.Count) of the $($compared.Count): $elsewhereText)"
+  $unused = @($theirRows | ForEach-Object { $_.Name } | Where-Object { $pinnedSiblings -notcontains $_ } | Sort-Object -Unique)
   if ($unused.Count -gt 0) { Write-Host "     (message also pins $($unused -join ', '): not a build input of the composition)" }
 }
 
-# 5. compose, verify, regenerate the .def
+# 5. the pinned toolchain, compose, verify, regenerate the .def
 $dll = ''
 $envSaved = @{}
-foreach ($k in @('PATH', 'CGO_ENABLED', 'GOOS', 'GOARCH', 'GOFLAGS')) { $envSaved[$k] = [Environment]::GetEnvironmentVariable($k, 'Process') }
+foreach ($k in @('PATH', 'CGO_ENABLED', 'GOOS', 'GOARCH', 'GOFLAGS', 'GOWORK', 'GOTOOLCHAIN', 'WARP_VERSION')) { $envSaved[$k] = [Environment]::GetEnvironmentVariable($k, 'Process') }
 try {
   if ($MingwBin) { $env:PATH = "$MingwBin;$env:PATH" }
-  $env:CGO_ENABLED = '1'; $env:GOOS = 'windows'; $env:GOARCH = 'amd64'; $env:GOFLAGS = ''
+  $env:CGO_ENABLED = '1'; $env:GOOS = 'windows'; $env:GOARCH = 'amd64'; $env:GOFLAGS = ''; $env:GOWORK = 'off'
   $gcc = Get-Command gcc -ErrorAction SilentlyContinue | Select-Object -First 1
   if (-not $gcc) { throw "no gcc on PATH: cgo needs a mingw-w64 gcc (pass -MingwBin <dir>)" }
   Write-Host "gcc: $($gcc.Source) -- $((Invoke-Native -File $gcc.Source -Arguments @('--version') -Capture).Lines | Select-Object -First 1)"
-  Write-Host "go : $((Invoke-Native -File 'go' -Arguments @('version') -Capture).Lines -join ' ')"
+  $ownGo = (Invoke-Native -File 'go' -Arguments @('version') -Capture).Lines -join ' '
 
-  $composed = Invoke-Native -File $bash -Arguments @($compose, (To-Posix (Join-Path $Workspace 'sdk')))
-  if ($composed.Code -ne 0) { Fail '5' "compose.sh refused to compose (exit $($composed.Code))" }
-  else {
+  # The toolchain message pins, read by message's own script and forced on every go command
+  # below. --check says whether this machine's go command can run it (the go command downloads
+  # the release when it may) and names the fix when it cannot.
+  $toolchain = ''
+  if (-not (Test-Path -LiteralPath (Join-Path $messageDir 'scripts\toolchain.sh'))) {
+    Fail '5' "message has no scripts/toolchain.sh at $($pin['message'].Commit), so the toolchain it pins cannot be read"
+  } else {
+    $said = Invoke-Native -File $bash -Arguments @('scripts/toolchain.sh') -Directory $messageDir -Capture
+    $named = Read-ToolchainPin $said.Lines
+    if ($said.Code -ne 0 -or -not $named) {
+      Fail '5' "message's scripts/toolchain.sh named no one toolchain (exit $($said.Code)): $(@($said.Lines | Where-Object { $_ }) -join ' ')"
+    } else {
+      $env:GOTOOLCHAIN = $named
+      $canRun = Invoke-Native -File $bash -Arguments @('scripts/toolchain.sh', '--check') -Directory $messageDir
+      # The go command this process runs is asked too: checks 5 and 6 run it from here, not from
+      # message's scripts. A "go: downloading ..." line is not its answer.
+      $asked = (Invoke-Native -File 'go' -Arguments @('env', 'GOVERSION') -Capture).Lines
+      $answer = Read-ToolchainPin @($asked | Where-Object { "$_" -cnotmatch '^go: ' })
+      if ($canRun.Code -ne 0) { Fail '5' "this machine's go command cannot run $named, the toolchain message pins; message's scripts/toolchain.sh --check, above, names the fix" }
+      elseif ($answer -cne $named) { Fail '5' "the go command this script runs answers '$(@($asked | Where-Object { $_ }) -join ' ')' with GOTOOLCHAIN=$named, not $named, the toolchain message pins" }
+      else { $toolchain = $named }
+    }
+  }
+  if ($toolchain) { Write-Host "go : $ownGo is this machine's own; every go command below runs as $toolchain, forced with GOTOOLCHAIN" }
+  else { Write-Host "go : $ownGo is this machine's own; nothing is composed or built with it" }
+
+  # Nothing is composed or built under another toolchain: the failure above is the reason.
+  $composed = $null
+  if ($toolchain) { $composed = Invoke-Native -File $bash -Arguments @($compose, (To-Posix (Join-Path $Workspace 'sdk'))) }
+  if ($composed -and $composed.Code -ne 0) { Fail '5' "compose.sh refused to compose (exit $($composed.Code))" }
+  elseif ($composed) {
     $verify = Invoke-Native -File 'go' -Arguments @('mod', 'verify') -Directory $cgoDir
     $gen = Invoke-Native -File 'go' -Arguments @('run', './gen') -Directory $cgoDir
     $same = Invoke-Native -File $git -Arguments @('-C', $messageDir, 'diff', '--quiet', '--', 'sdk/cgo/include/urnetwork_sdk.def')
@@ -609,7 +736,7 @@ try {
       Fail '5' "gen does not reproduce message's committed sdk/cgo/include/urnetwork_sdk.def with this core"
       Invoke-Native -File $git -Arguments @('-C', $messageDir, 'checkout', '--', 'sdk/cgo/include/urnetwork_sdk.def') | Out-Null
     }
-    if ($verify.Code -eq 0 -and $gen.Code -eq 0 -and $same.Code -eq 0) { Pass '5' "composed; go mod verify passes; gen reproduces the committed .def" }
+    if ($verify.Code -eq 0 -and $gen.Code -eq 0 -and $same.Code -eq 0) { Pass '5' "this machine's go command runs $toolchain, the toolchain message pins; composed; go mod verify passes; gen reproduces the committed .def" }
 
     # 6. the composed module's own tests, with the host's GOOS/GOARCH (windows/amd64 here)
     $vet = Invoke-Native -File 'go' -Arguments @('vet', './...') -Directory $cgoDir
@@ -617,7 +744,10 @@ try {
     if ($vet.Code -ne 0 -or $test.Code -ne 0) { Fail '6' "the composed module: go vet exit $($vet.Code), go test exit $($test.Code)" }
     else { Pass '6' "the composed module's vet and tests pass" }
 
-    # 7. the library, the way the core SDK's Makefile builds its windows dll
+    # 7. the library, built by message's own sdk/cgo/build.sh: the one place the recipe is written
+    # (the core SDK's release recipe, c-shared), and the build message's test.sh tests. build.sh
+    # forces the pinned toolchain itself. The dll is then asked which toolchain built it, here
+    # too, the way message's test.sh asks after its own build.
     if (-not $Version) {
       $sdkPart = 'nosdk'
       if ($pin.ContainsKey('sdk')) { $sdkPart = $pin['sdk'].Commit.Substring(0, 12) }
@@ -628,13 +758,20 @@ try {
     $dll = Join-Path $outDir 'URnetworkSdk.dll'
     $header = Join-Path $outDir 'URnetworkSdk.h'
     Remove-Item -LiteralPath $dll, $header -Force -ErrorAction SilentlyContinue
-    $build = Invoke-Native -File 'go' -Arguments @('build', '-trimpath', '-buildmode=c-shared', '-ldflags', "-s -w -X github.com/urnetwork/sdk.Version=$Version -buildid=", '-o', $dll, '.') -Directory $cgoDir
-    if ($build.Code -ne 0 -or -not (Test-Path -LiteralPath $dll)) {
-      Fail '7' "go build -buildmode=c-shared failed (exit $($build.Code))"
+    if (-not (Test-Path -LiteralPath (Join-Path $cgoDir 'build.sh'))) {
+      Fail '7' "message has no sdk/cgo/build.sh at $($pin['message'].Commit)"
     } else {
-      $exportsGate = Invoke-Native -File $bash -Arguments @('scripts/native-exports.sh', 'sdk/cgo', (To-Posix $header), (To-Posix $dll)) -Directory $messageDir
-      if ($exportsGate.Code -ne 0) { Fail '7' "message's native-exports.sh refused the library (exit $($exportsGate.Code))" }
-      else { Pass '7' "built $dll; message's native-exports.sh holds its exports to the .def" }
+      $env:WARP_VERSION = $Version
+      $build = Invoke-Native -File $bash -Arguments @('sdk/cgo/build.sh', (To-Posix $dll)) -Directory $messageDir
+      if ($build.Code -ne 0 -or -not (Test-Path -LiteralPath $dll)) {
+        Fail '7' "message's sdk/cgo/build.sh did not build the library (exit $($build.Code))"
+      } else {
+        $recorded = Invoke-Native -File $bash -Arguments @('scripts/toolchain.sh', '--artefact', (To-Posix $dll)) -Directory $messageDir
+        $exportsGate = Invoke-Native -File $bash -Arguments @('scripts/native-exports.sh', 'sdk/cgo', (To-Posix $header), (To-Posix $dll)) -Directory $messageDir
+        if ($recorded.Code -ne 0) { Fail '7' "the dll does not record $toolchain, the toolchain message pins (message's scripts/toolchain.sh --artefact, above)" }
+        if ($exportsGate.Code -ne 0) { Fail '7' "message's native-exports.sh refused the library (exit $($exportsGate.Code))" }
+        if ($recorded.Code -eq 0 -and $exportsGate.Code -eq 0) { Pass '7' "message's build.sh built $dll; it records $toolchain; message's native-exports.sh holds its exports to the .def" }
+      }
     }
   }
 } finally {
