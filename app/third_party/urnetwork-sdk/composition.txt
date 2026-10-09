@@ -27,28 +27,37 @@
 # the commit below. build-sdk-dll.ps1 forces it on every go command, whatever go command the
 # machine has, and the dll is asked which toolchain built it.
 #
-# MESSAGE, SDK AND CONNECT ARE PULL REQUEST HEADS. The three pull requests are built and tested as
-# a set, and none had merged when these lines were written. Each commit is fetched by its SHA
-# from the urnetwork repository all the same: a pull request's head is in that repository's fork
-# network, and GitHub serves a commit to a fetch by its SHA from any repository of the network.
-# Once a pull request has merged with a merge commit, the same SHA is in the repository's own
-# history. Until then message's scripts/siblings.txt names the fork each of sdk and connect is
-# pushed to as its own fetch source. The pin is the commit, so build-sdk-dll.ps1 compares the
-# commit, and prints message's fetch source beside it where it is not the url below.
+# SDK AND CONNECT ARE PINNED WHERE MESSAGING LEFT THEM, AND MESSAGE WHERE IT PINS THOSE TWO.
+# Messaging moved out of urnetwork/sdk and urnetwork/connect into urnetwork/message as a set of
+# pull requests, built and tested together, and until they merged, the first three lines below
+# pinned a commit of each of their branches. They merged on 2026-10-09, each with a merge commit.
+# sdk and connect are now pinned to the merge commits of the two removals, on those repositories'
+# main branches, and message to a commit of urnetwork/message that pins the same two. At that
+# commit message's scripts/siblings.txt fetches each sibling from the url its line has here. The
+# pin is the commit all the same: build-sdk-dll.ps1 compares the commit, and prints message's
+# fetch source beside it wherever that is not the url below.
+#
+# A PIN IS A COMMIT, NOT A BRANCH: the one the dll and the three files were last built and
+# checked at. A branch that moves on is ahead of its pin, and the pin stays until it is moved.
 #
 # message: sdk/cgo, the messaging half, its .def, its header, and the scripts that compose, build
-# and check the library. The head of the pull request that imports messaging, with its history,
-# from connect and the core SDK.
+# and check the library. Pinned to the head of urnetwork/message's pull request 3, which moves
+# message's own pins to the two merge commits below and regenerates its .def for that core.
+# urnetwork/message holds a pull request's head under that pull request's ref and serves it to a
+# fetch by its SHA from the url below, and merging it with a merge commit puts that same commit
+# in main's history.
 message https://github.com/urnetwork/message.git 2e859f73b20dd5f78c5c1ffe0b262cbedb3d2080
 #
-# sdk: the core SDK, at the head of the pull request that removes messaging from it. compose.sh
-# refuses a core that still carries the messaging half, which would export every messaging
-# function twice.
+# sdk: the core SDK. Pinned to urnetwork/sdk main as the removal of messaging merged there
+# (b8209d9d, 2026-10-09 12:25 UTC). compose.sh refuses a core that still carries the messaging
+# half, which would export every messaging function twice. sdk main has moved on since, and this
+# pin stays where message pins it.
 sdk https://github.com/urnetwork/sdk.git b8209d9d7f6d858b2171cd92d4203bdadb758260
 #
-# connect: the transport, at the head of the pull request that removes messaging from it and adds
-# connect.NewOperatorClientSettings. A connect that still registers message.proto beside
-# message's copy panics the dll at load.
+# connect: the transport. Pinned to urnetwork/connect main as the removal of messaging merged
+# there (847460bb, 2026-10-09 13:44 UTC). That merge took message.proto out of connect and added
+# connect.NewOperatorClientSettings, which message's SDK calls. A connect that still registers
+# message.proto beside message's copy panics the dll at load.
 connect https://github.com/urnetwork/connect.git 847460bba8aa31fb2e86ce007e9d5443d884544b
 #
 # glog, gvisor and goidenticons: what connect and the core SDK replace by path. gvisor's commit
