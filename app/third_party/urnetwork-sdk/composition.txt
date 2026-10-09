@@ -39,17 +39,17 @@
 # message: sdk/cgo, the messaging half, its .def, its header, and the scripts that compose, build
 # and check the library. The head of the pull request that imports messaging, with its history,
 # from connect and the core SDK.
-message https://github.com/urnetwork/message.git 4d365abfdb1ab1666def8bd0fdf708625b190e39
+message https://github.com/urnetwork/message.git 2e859f73b20dd5f78c5c1ffe0b262cbedb3d2080
 #
 # sdk: the core SDK, at the head of the pull request that removes messaging from it. compose.sh
 # refuses a core that still carries the messaging half, which would export every messaging
 # function twice.
-sdk https://github.com/urnetwork/sdk.git 0f03e27e1482a4e77811c5982005c853b5a7b1ca
+sdk https://github.com/urnetwork/sdk.git b8209d9d7f6d858b2171cd92d4203bdadb758260
 #
 # connect: the transport, at the head of the pull request that removes messaging from it and adds
 # connect.NewOperatorClientSettings. A connect that still registers message.proto beside
 # message's copy panics the dll at load.
-connect https://github.com/urnetwork/connect.git 0f2ff66907f2c5fae735c45f687e598568ae85c4
+connect https://github.com/urnetwork/connect.git 847460bba8aa31fb2e86ce007e9d5443d884544b
 #
 # glog, gvisor and goidenticons: what connect and the core SDK replace by path. gvisor's commit
 # is on urnetwork/gvisor's default branch, go.
