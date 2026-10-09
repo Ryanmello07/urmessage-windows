@@ -1,0 +1,58 @@
+# What URnetworkSdk.dll is built from, and what the three ABI files in
+# app/third_party/vendor-include are copied from: urnetwork/message's native composition, at ONE
+# commit of each repository below.
+#
+# The library is one dll, URnetworkSdk.dll. Its package main is the core SDK's (urnetwork/sdk
+# cgo/): the handle table, the C-string helpers and the generated exports. The messaging exports
+# the app calls (urnet_message_*) are urnetwork/message's sdk/cgo, and sdk/cgo/compose.sh there
+# lays the core's package main beside them, so that one c-shared build makes the one library.
+#
+#   urnetwork_sdk.def    = message's sdk/cgo/include/urnetwork_sdk.def (both halves' exports)
+#   urnetwork_message.h  = message's sdk/cgo/include/urnetwork_message.h
+#   urnetwork_sdk.h      = sdk's cgo/include/urnetwork_sdk.h (compose.sh lays it beside the other two)
+#
+# app/tools/build-sdk-dll.ps1 reads this file: it checks out each repository at its commit,
+# composes, builds the dll with message's own sdk/cgo/build.sh, and holds the three vendored files
+# to the composition byte for byte. CI runs it (build-and-test.yml, job sdk-composition). To move
+# a pin, change the line and run build-sdk-dll.ps1 -Vendor in the same commit, so the three files
+# never come from another composition than the one named here.
+#
+# A line is: name url commit. The commit is a full SHA; the url is under
+# https://github.com/urnetwork/. The names other than message are exactly the sibling checkouts
+# message's sdk/cgo/go.mod replaces by path (../../../<name>), and each commit must equal the one
+# message's own scripts/siblings.txt pins at the message commit, so this builds the combination
+# message's test.sh tests. build-sdk-dll.ps1 refuses all of these otherwise.
+#
+# THE GO TOOLCHAIN IS NOT PINNED HERE: it is message's, the toolchain line of its root go.mod at
+# the commit below. build-sdk-dll.ps1 forces it on every go command, whatever go command the
+# machine has, and the dll is asked which toolchain built it.
+#
+# MESSAGE, SDK AND CONNECT ARE PULL REQUEST HEADS. The three pull requests are built and tested as
+# a set, and none had merged when these lines were written. Each commit is fetched by its SHA
+# from the urnetwork repository all the same: a pull request's head is in that repository's fork
+# network, and GitHub serves a commit to a fetch by its SHA from any repository of the network.
+# Once a pull request has merged with a merge commit, the same SHA is in the repository's own
+# history. Until then message's scripts/siblings.txt names the fork each of sdk and connect is
+# pushed to as its own fetch source. The pin is the commit, so build-sdk-dll.ps1 compares the
+# commit, and prints message's fetch source beside it where it is not the url below.
+#
+# message: sdk/cgo, the messaging half, its .def, its header, and the scripts that compose, build
+# and check the library. The head of the pull request that imports messaging, with its history,
+# from connect and the core SDK.
+message https://github.com/urnetwork/message.git 4d365abfdb1ab1666def8bd0fdf708625b190e39
+#
+# sdk: the core SDK, at the head of the pull request that removes messaging from it. compose.sh
+# refuses a core that still carries the messaging half, which would export every messaging
+# function twice.
+sdk https://github.com/urnetwork/sdk.git 0f03e27e1482a4e77811c5982005c853b5a7b1ca
+#
+# connect: the transport, at the head of the pull request that removes messaging from it and adds
+# connect.NewOperatorClientSettings. A connect that still registers message.proto beside
+# message's copy panics the dll at load.
+connect https://github.com/urnetwork/connect.git 0f2ff66907f2c5fae735c45f687e598568ae85c4
+#
+# glog, gvisor and goidenticons: what connect and the core SDK replace by path. gvisor's commit
+# is on urnetwork/gvisor's default branch, go.
+glog https://github.com/urnetwork/glog.git 80a11b434ae90ae2221deb932daa21913919875a
+gvisor https://github.com/urnetwork/gvisor.git c0783dba2eeff7b79692a7f122ffee5f8bd837c1
+goidenticons https://github.com/urnetwork/goidenticons.git 06eb779a691e056be7dc5fa9a0239001c3ea390f
