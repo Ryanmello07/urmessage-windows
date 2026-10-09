@@ -7,17 +7,20 @@
 # and arm64, vendors wintun by sha256 + Authenticode signer, builds a WiX MSI
 # and verifies its payload.
 #
-# URmessage needs little of that. No Go and no SDK DLL: the app reaches the
-# message server through URnetworkSdk.dll, but it links an import library made
-# from the vendored export list and delay-loads the dll, so this build neither
-# makes nor needs it. No wintun, no driver, no service. The installer is a
-# per-user MSI (app/installer), which this workflow builds and verifies as a
-# check and does not upload (see those steps). The build is restore NuGet,
-# msbuild the solution, produce the exe, package the MSI. What is KEPT from the
-# precedent is its style and its scars: the job shape, the least-privilege
-# permissions block, windows-2022 rather than windows-latest, keeping the
-# msbuild log even on failure, and asserting on the artifact that matters
-# instead of on a step's exit code.
+# URmessage needs little of that. The app build needs no Go and no SDK DLL:
+# the app reaches the message server through URnetworkSdk.dll, but it links an
+# import library made from the vendored export list and delay-loads the dll,
+# so the build-and-test job neither makes nor needs it. The sdk-composition
+# job makes the dll separately, from urnetwork/message's native composition at
+# the commits app/third_party/urnetwork-sdk/composition.txt pins, and holds
+# the vendored export list and headers to it. No wintun, no driver, no
+# service. The installer is a per-user MSI (app/installer), which this
+# workflow builds and verifies as a check and does not upload (see those
+# steps). The build is restore NuGet, msbuild the solution, produce the exe,
+# package the MSI. What is KEPT from the precedent is its style and its scars:
+# the job shape, the least-privilege permissions block, windows-2022 rather
+# than windows-latest, keeping the msbuild log even on failure, and asserting
+# on the artifact that matters instead of on a step's exit code.
 #
 # This is the MAINSTREAM workflow: build and test, and nothing more. No release
 # job, no tagging, no version derivation, no release upload. The artifact below
@@ -518,3 +521,77 @@ jobs:
           name: urmessage-windows-x64-exe
           path: app/build/x64/Release/URmessage.exe
           if-no-files-found: error
+
+  # THE SDK DLL. The job above builds the app with no Go and no dll: it links an
+  # import library made from the vendored .def and delay-loads the dll. This job
+  # builds that dll, from urnetwork/message's native composition at the commits
+  # app/third_party/urnetwork-sdk/composition.txt pins: the core SDK's cgo
+  # package main with message's messaging exports laid beside it, one library,
+  # built by message's own sdk/cgo/build.sh under the toolchain message pins.
+  # It holds the three vendored ABI files to that composition byte for byte,
+  # and the dll to the vendored .def both ways, then loads the dll in a fresh
+  # process, which runs every package init, the place a second registration of
+  # message.proto panics. app/tools/build-sdk-dll.ps1 does all of it and lists
+  # its eleven checks in its header; a failed check prints a FAIL line naming
+  # itself, and every check runs. The dll is not uploaded: this workflow
+  # publishes nothing, and an artifact is not a release.
+  #
+  # No `needs`: it shares nothing with the job above, so a red app build does
+  # not hide whether the dll still builds, nor the other way round.
+  sdk-composition:
+    name: Build URnetworkSdk.dll from its pinned composition (x64)
+    # windows-2022, like the job above: dumpbin comes from its Visual Studio
+    # 2022, and cgo uses the mingw-w64 gcc the image puts on PATH (the build
+    # step prints which).
+    runs-on: windows-2022
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      # Every check's mechanism over fixtures it must pass and fixtures it must
+      # refuse, before any of them is trusted with the real composition. A check
+      # that can no longer fail would pass every run below.
+      - name: Self-test the composition checks
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\build-sdk-dll.ps1 -SelfTest
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::the composition checks' self-test failed (exit code $LASTEXITCODE) -- its output is above"
+            exit $LASTEXITCODE
+          }
+
+      # Each pinned commit, fetched by its SHA into its own directory with
+      # core.autocrlf=false. RUNNER_TEMP is a short root, and some of the
+      # sibling repositories' paths are long.
+      - name: Check out the pinned commits
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\build-sdk-dll.ps1 -Workspace "$env:RUNNER_TEMP\sdk" -CheckoutOnly
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::the pinned commits could not be checked out (exit code $LASTEXITCODE) -- the FAIL lines above name each"
+            exit $LASTEXITCODE
+          }
+
+      # A go command, from message's root go.mod, where message pins its
+      # toolchain. Which release this step installs does not decide what
+      # builds the dll: a go.mod toolchain line is a minimum, so the script
+      # forces message's pin on every go command (GOTOOLCHAIN), the go command
+      # fetches that release when it is not the one installed, and the dll is
+      # asked which toolchain built it. No cache: every run builds the dll
+      # from nothing but the pinned commits and the module proxy.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ runner.temp }}/sdk/message/go.mod
+          cache: false
+
+      - name: Build the dll and hold the vendored ABI to it
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\build-sdk-dll.ps1 -Workspace "$env:RUNNER_TEMP\sdk"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::the composition build or one of its checks failed (exit code $LASTEXITCODE) -- the FAIL lines above name each"
+            exit $LASTEXITCODE
+          }
