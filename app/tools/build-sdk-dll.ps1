@@ -36,7 +36,9 @@
 #      commit, so this builds the combination message's test.sh builds. A placeholder there is a
 #      refusal: no composition at that message commit has been tested with any core. The pin is
 #      the commit: where message names another url to fetch the same commit from (a pull request
-#      head on a fork, until it merges), the line says so.
+#      head on a fork, until it merges), the line says so. Message did for sdk and connect while
+#      the pull requests that moved messaging were open; at the commit pinned since they merged,
+#      it does for none.
 #   5. this machine's go command can run the toolchain message pins (message's
 #      scripts/toolchain.sh --check), message's sdk/cgo/compose.sh composes, go mod verify
 #      passes, and gen regenerates the committed .def byte for byte.
@@ -164,8 +166,9 @@ function Write-Utf8([string]$path, [string]$text) {
 # -AnySource reads message's file, and only there is the url free. This script fetches from
 # composition.txt's urls and from no other, so those are held to https://github.com/urnetwork/.
 # message's file is read for its commits: where message fetches a commit from is message's rule
-# (its scripts/siblings.sh lists the forks a pull request head may come from), and a commit id
-# names its content wherever it was fetched.
+# (its scripts/siblings.sh lists the forks a pull request head may come from, and at the commit
+# pinned since the pull requests that moved messaging merged, that list is empty), and a commit
+# id names its content wherever it was fetched.
 function Read-PinRows([string]$text, [switch]$AnySource) {
   $rows = New-Object System.Collections.Generic.List[object]
   $n = 0
