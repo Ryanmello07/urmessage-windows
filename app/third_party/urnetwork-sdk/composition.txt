@@ -41,12 +41,14 @@
 # checked at. A branch that moves on is ahead of its pin, and the pin stays until it is moved.
 #
 # message: sdk/cgo, the messaging half, its .def, its header, and the scripts that compose, build
-# and check the library. Pinned to the head of urnetwork/message's pull request 3, which moves
-# message's own pins to the two merge commits below and regenerates its .def for that core.
-# urnetwork/message holds a pull request's head under that pull request's ref and serves it to a
-# fetch by its SHA from the url below, and merging it with a merge commit puts that same commit
-# in main's history.
-message https://github.com/urnetwork/message.git 2e859f73b20dd5f78c5c1ffe0b262cbedb3d2080
+# and check the library. Pinned to 0bb2128f, the merge commit of urnetwork/message's pull request
+# 4 on its main (2026-10-11). That pull request moved message's pinned toolchain, and so this
+# dll's, from go1.26.5 to go1.27.2, and golang.org/x/net to v0.61.0 in the modules that require it,
+# sdk/cgo's among them. Its own pins are the two merge commits below. The pin before it,
+# 2e859f73, is an ancestor of it. Between the two, sdk/cgo's .def and header did not change, and
+# of the scripts that compose, build and check the library only scripts/toolchain.sh did, in its
+# comments.
+message https://github.com/urnetwork/message.git 0bb2128fdf146b7580c8ca21d112966053126703
 #
 # sdk: the core SDK. Pinned to urnetwork/sdk main as the removal of messaging merged there
 # (b8209d9d, 2026-10-09 12:25 UTC). compose.sh refuses a core that still carries the messaging
