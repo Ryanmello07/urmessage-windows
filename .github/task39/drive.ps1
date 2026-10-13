@@ -60,6 +60,7 @@ while (-not (Test-Path -LiteralPath $endpointFile)) {
   if ((Get-Date) -gt $deadline -or $rigProc.HasExited) { throw "the rig did not publish its endpoint (exited: $($rigProc.HasExited))" }
   Start-Sleep -Milliseconds 500
 }
+Set-Content -LiteralPath (Join-Path $rigDir 'gate-open') -Value 'open'
 $endpointLines = @(Get-Content -LiteralPath $endpointFile | Where-Object { $_ -ne '' })
 $endpoint = $endpointLines[0]; $pin = $endpointLines[1]
 Note "rig serving $endpoint, pin $pin"
@@ -201,22 +202,34 @@ try {
       Check ((Get-Item -LiteralPath $meta[0].FullName).Length -eq $half.Length) "B: the record is cut from $($bytes.Length) to $($half.Length) octets"
     }
     'notrestored' {
-      $groupDir = (Get-Item -LiteralPath (Join-Path $stateDir '.')).FullName
+      # NOTHING IS CHANGED ON THE DISK HERE. The store walks its whole directory when it opens, so
+      # a directory it cannot list stops the app there; the listing is taken away in C, after the
+      # store is open and before the first restore, while the rig's gate holds the connect back.
       $named = Get-ChildItem -LiteralPath $stateDir -Recurse -Directory | Where-Object { $_.Name -eq $name } | Select-Object -First 1
       $groupDir = $named.Parent.FullName
-      $who = "$($env:USERDOMAIN)\$($env:USERNAME)"
-      & icacls $groupDir /deny "${who}:(RD)" | ForEach-Object { Note "icacls: $_" }
-      $listed = $true
-      try { [void][IO.Directory]::GetDirectories($groupDir); } catch { $listed = $false }
-      Check (-not $listed) "B: $groupDir cannot be listed"
-      $readable = $true
-      try { [void][IO.File]::ReadAllBytes((Join-Path $named.FullName 'meta')) } catch { $readable = $false }
-      Check $readable 'B: the group record itself still reads'
+      $groupMeta = Join-Path $named.FullName 'meta'
+      Check (Test-Path -LiteralPath $groupMeta) "B: the group's record is at $groupMeta"
+      Remove-Item -LiteralPath (Join-Path $rigDir 'gate-open') -Force
+      Note 'B: the rig''s gate is shut'
     }
   }
 
   # ---- C: the app again, the invitation, the refusal, the leave --------------------------------
   $app = StartApp
+  if ($Leg -eq 'notrestored') {
+    Check (WaitLog 'device built; durable state in' 2 120) 'C: the app opened its state store (and is held at connect)'
+    $who = "$($env:USERDOMAIN)\$($env:USERNAME)"
+    & icacls $groupDir /deny "${who}:(RD)" | ForEach-Object { Note "icacls: $_" }
+    $listed = $true
+    try { [void][IO.Directory]::GetDirectories($groupDir) } catch { $listed = $false }
+    Check (-not $listed) "C: $groupDir cannot be listed"
+    $readable = $true
+    try { [void][IO.File]::ReadAllBytes($groupMeta) } catch { $readable = $false }
+    Check $readable 'C: the group record itself still reads'
+    Check ((CountIn (LogText) 'CONNECTED to the alpha mesh') -eq 1) 'C: the app has not connected yet in this launch'
+    Set-Content -LiteralPath (Join-Path $rigDir 'gate-open') -Value 'open'
+    Note 'C: the rig''s gate is open'
+  }
   Check (WaitLog 'published this device''s key package' 2 240) 'C: the app holds no live group and waits for an invitation'
   if ($Leg -eq 'notrestored') {
     # THE SAME INVITATION AS IN A: the gate refuses before the Welcome is opened

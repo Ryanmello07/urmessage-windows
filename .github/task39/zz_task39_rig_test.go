@@ -19,8 +19,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,11 +72,49 @@ func TestTask39Rig(t *testing.T) {
 	if err := founder.Connect(ctx); err != nil {
 		t.Fatalf("RIG the founder's Connect: %v", err)
 	}
-	endpointFile := fmt.Sprintf("%s\n%s\n", world.url, hex.EncodeToString(world.pin))
+	// THE APP'S DOOR IS GATED: a second loopback port that forwards to the endpoint only while
+	// rigDir/gate-open exists, and otherwise drops the connection, so a driver can hold an app's
+	// connect back (it retries) while it does something to the disk between the app opening its
+	// state store and its first restore. TCP is forwarded as it is: the TLS session, and the pin
+	// the app checks, are the endpoint's own.
+	gateFile := filepath.Join(rigDir, "gate-open")
+	gated, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("RIG listening for the gated door: %v", err)
+	}
+	t.Cleanup(func() { gated.Close() })
+	target := world.listener.Addr().String()
+	go func() {
+		for {
+			conn, err := gated.Accept()
+			if err != nil {
+				return
+			}
+			if _, err := os.Stat(gateFile); err != nil {
+				conn.Close()
+				continue
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				upstream, err := net.Dial("tcp", target)
+				if err != nil {
+					return
+				}
+				defer upstream.Close()
+				done := make(chan struct{}, 2)
+				go func() { io.Copy(upstream, conn); done <- struct{}{} }()
+				go func() { io.Copy(conn, upstream); done <- struct{}{} }()
+				<-done
+			}(conn)
+		}
+	}()
+	appUrl := strings.Replace(world.url, target, gated.Addr().String(), 1)
+	endpointFile := fmt.Sprintf("%s\n%s\n", appUrl, hex.EncodeToString(world.pin))
 	if err := task39WriteAtomic(filepath.Join(rigDir, "endpoint.txt"), []byte(endpointFile)); err != nil {
 		t.Fatalf("RIG writing the endpoint: %v", err)
 	}
-	t.Logf("RIG serving %s, pin %s; founder connected; once=%v", world.url, hex.EncodeToString(world.pin), once)
+	t.Logf("RIG serving %s (the app's gated door %s), pin %s; founder connected; once=%v",
+		world.url, appUrl, hex.EncodeToString(world.pin), once)
 
 	stop := filepath.Join(rigDir, "stop")
 	keyPackagePath := filepath.Join(handshake, "app.keypackage")
