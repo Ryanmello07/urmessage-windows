@@ -1,0 +1,114 @@
+# THROWAWAY, NEVER MERGE, NEVER IN AN UPSTREAM PULL REQUEST. Hardening plan Task 39, Step 2.
+#
+# Builds the app on T1a's library (composition.txt pins urnetwork/message 73669fe1 on this branch
+# only), runs urnetwork/message's own loopback server and a founder beside it
+# (.github/task39/zz_task39_rig_test.go, copied into sdk/cp3b), and drives the app through a join,
+# a damaged state directory, the refused invitation and the leave, with UI Automation's Invoke
+# only, capturing each step with PrintWindow (.github/task39/drive.ps1). Nothing is published: the
+# artifact is the screenshots, the app's logs and the rig's output, and no invitation file.
+name: Task 39 screenshots (throwaway)
+
+on:
+  push:
+    branches:
+      - 'ci/task39-shots**'
+
+permissions:
+  contents: read
+
+jobs:
+  shots:
+    name: Task 39 shots (${{ matrix.leg }})
+    runs-on: windows-2022
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [epoch, record, notrestored]
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Check out the pinned commits
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\build-sdk-dll.ps1 -Workspace "$env:RUNNER_TEMP\sdk" -CheckoutOnly
+          exit $LASTEXITCODE
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ runner.temp }}/sdk/message/go.mod
+          cache: false
+
+      - name: Build the dll from the composition and stage it
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\build-sdk-dll.ps1 -Workspace "$env:RUNNER_TEMP\sdk" -Stage
+          exit $LASTEXITCODE
+
+      - name: Build the app (Release x64, the dll required)
+        shell: pwsh
+        working-directory: app
+        run: |
+          $pin = '10.0.22621.0'
+          $roots = @("${env:ProgramFiles(x86)}\Windows Kits\10", "$env:ProgramFiles\Windows Kits\10") | Where-Object { Test-Path -LiteralPath $_ }
+          $usable = @(foreach ($r in $roots) {
+            Get-ChildItem (Join-Path $r 'Include') -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' -and
+                (Test-Path -LiteralPath (Join-Path $r "Include\$($_.Name)\um\windows.h")) -and
+                (Test-Path -LiteralPath (Join-Path $r "Lib\$($_.Name)\um\x64\kernel32.lib")) } |
+              Select-Object -ExpandProperty Name
+          }) | Select-Object -Unique | Sort-Object { [version]$_ }
+          $usable = @($usable)
+          $sdk = if ($usable -contains $pin) { $pin } else { $usable[-1] }
+          msbuild URmessage.sln /restore /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=$sdk /p:UrmRequireSdkDll=true /m /v:minimal /clp:Summary
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path -LiteralPath build\x64\Release\URnetworkSdk.dll)) { Write-Host '::error::no URnetworkSdk.dll beside the exe'; exit 1 }
+          Get-Item build\x64\Release\URmessage.exe, build\x64\Release\URnetworkSdk.dll | Format-Table Name, Length | Out-String | Write-Host
+
+      - name: Check out message-server beside message, and build the rig
+        shell: pwsh
+        run: |
+          $ws = Join-Path $env:RUNNER_TEMP 'sdk'
+          $line = Get-Content (Join-Path $ws 'message\scripts\siblings.txt') | Where-Object { $_ -match '^message-server\s' } | Select-Object -First 1
+          $parts = $line -split '\s+'
+          Write-Host "message-server: $($parts[1]) $($parts[2])"
+          git init -q (Join-Path $ws 'message-server')
+          git -C (Join-Path $ws 'message-server') -c core.autocrlf=false fetch -q --depth 1 $parts[1] $parts[2]
+          git -C (Join-Path $ws 'message-server') -c core.autocrlf=false checkout -q FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "message: $(git -C (Join-Path $ws 'message') rev-parse HEAD)"
+          Copy-Item .github\task39\zz_task39_rig_test.go (Join-Path $ws 'message\sdk\cp3b\zz_task39_rig_test.go')
+          $toolchain = (Select-String -Path (Join-Path $ws 'message\go.mod') -Pattern '^toolchain\s+(\S+)').Matches[0].Groups[1].Value
+          $env:GOTOOLCHAIN = $toolchain
+          $env:GOWORK = 'off'
+          Write-Host "toolchain $toolchain"
+          Push-Location (Join-Path $ws 'message\sdk\cp3b')
+          go version
+          go test -c -o (Join-Path $env:RUNNER_TEMP 'rig.exe') .
+          $code = $LASTEXITCODE
+          Pop-Location
+          exit $code
+
+      - name: Drive the app (${{ matrix.leg }})
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github\task39\drive.ps1 -Leg ${{ matrix.leg }} `
+            -Exe "$env:GITHUB_WORKSPACE\app\build\x64\Release\URmessage.exe" `
+            -Rig "$env:RUNNER_TEMP\rig.exe" `
+            -RigWorkDir "$env:RUNNER_TEMP\sdk\message\sdk\cp3b" `
+            -Work "$env:RUNNER_TEMP\t39" `
+            -Out "$env:GITHUB_WORKSPACE\t39out"
+          exit $LASTEXITCODE
+
+      - name: Upload the screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task39-${{ matrix.leg }}
+          path: t39out/
+          if-no-files-found: warn

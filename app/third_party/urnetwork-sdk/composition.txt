@@ -48,7 +48,10 @@
 # 2e859f73, is an ancestor of it. Between the two, sdk/cgo's .def and header did not change, and
 # of the scripts that compose, build and check the library only scripts/toolchain.sh did, in its
 # comments.
-message https://github.com/urnetwork/message.git 0bb2128fdf146b7580c8ca21d112966053126703
+# CI ONLY, NEVER MERGED (ci/task39-shots): T1a's head on the owner's fork, 73669fe1, the head of
+# urnetwork/message#6 while it is open, fetched by its SHA from the pull request. Its siblings are
+# 0bb2128f's, and its sdk/cgo .def and header are byte for byte the vendored ones.
+message https://github.com/urnetwork/message.git 73669fe1185b27097d0675782f9b1f8a0ba6a7c4
 #
 # sdk: the core SDK. Pinned to urnetwork/sdk main as the removal of messaging merged there
 # (b8209d9d, 2026-10-09 12:25 UTC). compose.sh refuses a core that still carries the messaging
