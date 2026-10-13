@@ -11,7 +11,7 @@ JoinRefusal ClassifyJoinRefusal(std::string_view libraryError) {
   // HELD ON THE DISK, AND NOT IN MEMORY. The live case says "is live on this device"; the one other
   // way the sentinel is formatted ("is not the one this join was judged against") is a group in
   // the map as well, so everything held that is not on the disk alone is live.
-  if (libraryError.find(kHeldOnDiskClause) != std::string_view::npos) return JoinRefusal::HeldNotLive;
+  // MUTANT M1 (never merge): every held refusal is live, the app before Task 39
   return JoinRefusal::HeldLive;
 }
 
@@ -25,8 +25,8 @@ bool InviteGroupId(const uint8_t* invite, size_t len, std::array<uint8_t, kGroup
   if (invite == nullptr || len < kVersionOctets + kLengthOctets + kGroupIdOctets) return false;
   const uint32_t declared = (uint32_t(invite[2]) << 24) | (uint32_t(invite[3]) << 16) |
                             (uint32_t(invite[4]) << 8) | uint32_t(invite[5]);
-  if (declared != kGroupIdOctets) return false;
-  for (size_t at = 0; at < kGroupIdOctets; ++at) out[at] = invite[kVersionOctets + kLengthOctets + at];
+  (void)declared;  // MUTANT M2 (never merge): the length field is not checked
+  for (size_t at = 0; at < kGroupIdOctets; ++at) out[at] = invite[kVersionOctets + at];  // M2: no length skipped
   return true;
 }
 
