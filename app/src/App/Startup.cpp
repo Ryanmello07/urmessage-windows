@@ -8,7 +8,10 @@
 #include <shellapi.h>  // CommandLineToArgvW
 
 #include <algorithm>  // sort/unique, for the T5 badge-table assertion
+#include <array>
 #include <atomic>
+#include <iterator>
+#include <vector>
 #include <cmath>
 #include <filesystem>
 #include <format>
@@ -39,6 +42,7 @@
 #include "Views/ThreadView.h"  // ShouldPinToBottom, for the scroll-pin line below
 #include "Live/LiveWorld.h"    // BuildWorld, for the reply/reaction mapping gate below (pure)
 #include "Live/LocalNames.h"   // the labels gate below (pure)
+#include "Live/HeldGroupRules.h"  // the held-group lines below (pure; Task 39)
 #include "Demo/DemoSwitches.h"
 #include "Demo/DemoStress.h"
 
@@ -1842,6 +1846,170 @@ std::wstring StatusStripFieldsAssertion() {
       offline, connecting, connected, code(lockOn), code(lockOff), epoch, records);
 }
 
+// ---- an invitation refused over a held group, and the leave that answers it (Task 39) --------
+//
+// PURE on the same terms as the lines above: every function asked is Live/HeldGroupRules.h's, no
+// SDK is loaded and no XAML is touched. The library's sentences below are QUOTED from
+// urnetwork/message sdk/urmessage (errors.go declares each sentinel, heldgroup.go and forget.go
+// format the clause after it), at T1a's head 73669fe1, so a sentence that moves there moves the
+// verdict here rather than the app's behaviour in silence. Each line prints PASS or FAIL, the
+// QUERY, and every case it asked, so the complement is on the page beside the verdict.
+std::vector<std::wstring> HeldGroupDiagnostics() {
+  using namespace urmsg::live;
+  std::vector<std::wstring> out;
+  const std::string hex(64, 'a');
+  const std::string otherHex = std::string(63, 'a') + "b";
+  const std::string held = std::string(kHeldRefusalSentence) +
+                           "; leave it first with ForgetGroup to join it again: ";
+
+  // 1. which refusal: the gate's four spellings of ErrGroupAlreadyHeld, and the refusals beside it
+  //    that are NOT a held group, among them the one that names a held group and is not the
+  //    sentinel (a store that could not answer).
+  {
+    struct Case {
+      const wchar_t* name;
+      std::string text;
+      JoinRefusal want;
+    };
+    const Case cases[] = {
+        {L"live", held + "group " + hex + " is live on this device", JoinRefusal::HeldLive},
+        {L"judged", held + "the group this device holds under " + hex +
+                        " is not the one this join was judged against",
+         JoinRefusal::HeldLive},
+        {L"on-disk", held + "group " + hex + " has a record on this device's disk",
+         JoinRefusal::HeldNotLive},
+        {L"damaged", held + "group " + hex +
+                         " has a record on this device's disk that does not read: urmessage: a "
+                         "group record on this device's disk does not read, so that group cannot "
+                         "be restored; ForgetGroup leaves it, and it can then be joined again: the "
+                         "record in 0f: short",
+         JoinRefusal::HeldNotLive},
+        {L"unanswered", "urmessage: whether this device already holds group " + hex +
+                            " could not be read, so the invite into it is refused: io",
+         JoinRefusal::Other},
+        {L"join-refused", "urmessage: this invite was refused before anything was written, and "
+                          "the join code is not spent: x",
+         JoinRefusal::Other},
+        {L"no-join-code", "urmessage: this device holds no join code this invitation was made "
+                          "for; make a new join code: x",
+         JoinRefusal::Other},
+        {L"not-restored", std::string(kNotRestoredSentence) +
+                              "; call Restore, and if it does not come back, ForgetGroup leaves "
+                              "it: " + hex,
+         JoinRefusal::Other},
+        {L"empty", std::string(), JoinRefusal::Other},
+    };
+    auto word = [](JoinRefusal r) {
+      return r == JoinRefusal::HeldLive ? L"live" : r == JoinRefusal::HeldNotLive ? L"not-live" : L"other";
+    };
+    std::wstring table;
+    int right = 0;
+    for (auto const& c : cases) {
+      const JoinRefusal got = ClassifyJoinRefusal(c.text);
+      if (got == c.want) ++right;
+      if (!table.empty()) table += L", ";
+      table += std::format(L"{}->{}{}", c.name, word(got), got == c.want ? L"" : L"(WRONG)");
+    }
+    const int total = static_cast<int>(std::size(cases));
+    out.push_back(std::format(
+        L"  held refusal     : {}  {}/{} classified: {}   [query: ErrGroupAlreadyHeld's sentence "
+        L"with \"has a record on this device's disk\" after it is a group that is not live and "
+        L"is offered the leave; with any other clause it is live; every sentence without it is "
+        L"neither, including a store that could not say whether the group is held]",
+        Verdict(right == total), right, total, table));
+  }
+
+  // 2. the group id: the invitation's first field at version 2 and at version 3, refused when its
+  //    length is not 32 or the octets stop short; and the refusal must name that id.
+  {
+    auto invite = [](uint16_t version, uint32_t declared, size_t idOctets) {
+      std::vector<uint8_t> v = {static_cast<uint8_t>(version >> 8), static_cast<uint8_t>(version)};
+      for (int shift = 24; shift >= 0; shift -= 8) v.push_back(static_cast<uint8_t>(declared >> shift));
+      for (size_t i = 0; i < idOctets; ++i) v.push_back(static_cast<uint8_t>(0xA0 + i));
+      // the next field's length, so a reader that ran past the id would read something
+      for (int i = 0; i < 4; ++i) v.push_back(0x00);
+      return v;
+    };
+    std::array<uint8_t, kGroupIdOctets> want{};
+    for (size_t i = 0; i < kGroupIdOctets; ++i) want[i] = static_cast<uint8_t>(0xA0 + i);
+    const std::string wantHex = GroupIdHex(want);
+    std::array<uint8_t, kGroupIdOctets> got2{}, got3{}, untouched{};
+    untouched.fill(0x5A);
+    auto shortOut = untouched;
+    auto badLenOut = untouched;
+    const auto v2 = invite(2, 32, 32);
+    const auto v3 = invite(3, 32, 32);
+    const auto badLen = invite(2, 31, 32);
+    const auto cut = invite(2, 32, 31);
+    const bool read2 = InviteGroupId(v2.data(), v2.size(), got2) && got2 == want;
+    const bool read3 = InviteGroupId(v3.data(), v3.size(), got3) && got3 == want;
+    const bool refusedLen = !InviteGroupId(badLen.data(), badLen.size(), badLenOut) && badLenOut == untouched;
+    // 6 + 31 octets of id: shorter than the field, whatever follows it
+    const bool refusedShort = !InviteGroupId(cut.data(), 6 + 31, shortOut) && shortOut == untouched;
+    const bool hexOk = wantHex.size() == 64 && wantHex.rfind("a0a1a2", 0) == 0 &&
+                       wantHex.find_first_of("ABCDEF") == std::string::npos;
+    const std::string disk = held + "group " + wantHex + " has a record on this device's disk";
+    const bool names = RefusalNamesGroup(disk, wantHex);
+    const bool namesNotOther = !RefusalNamesGroup(disk, otherHex);
+    const bool namesNotPrefix = !RefusalNamesGroup(held + "group " + wantHex + "ff is live", wantHex);
+    const bool namesNotShort = !RefusalNamesGroup(disk, wantHex.substr(0, 62));
+    const bool ok = read2 && read3 && refusedLen && refusedShort && hexOk && names &&
+                    namesNotOther && namesNotPrefix && namesNotShort;
+    out.push_back(std::format(
+        L"  held group id    : {}  v2 {} | v3 {} | length 31 refused {} | 31 octets refused {} | "
+        L"hex {} ({}) | names its own id {} | not another {} | not a longer hex {} | not a short "
+        L"one {}   [query: the id is the 32 octets after two version octets and a big-endian "
+        L"length that must read 32, at invite version 2 and 3 alike, and a refusal is answered by "
+        L"a leave only when it names exactly that id]",
+        Verdict(ok), read2, read3, refusedLen, refusedShort, hexOk, Widen(wantHex.substr(0, 12)), names,
+        namesNotOther, namesNotPrefix, namesNotShort));
+  }
+
+  // 3. the leave's own refusal: ErrGroupNotRestored, and the leave's other answers beside it.
+  {
+    const bool notRestored = IsNotRestoredRefusal(
+        std::string(kNotRestoredSentence) +
+        "; call Restore, and if it does not come back, ForgetGroup leaves it: " + hex);
+    const bool notHeld = !IsNotRestoredRefusal("urmessage: this device holds no such group: " + hex);
+    const bool unfinished = !IsNotRestoredRefusal(
+        "urmessage: this device has left the group, but its copy on the disk could not be erased "
+        "in full; ForgetGroup again, or the next Restore, finishes the erase: io");
+    const bool heldText = !IsNotRestoredRefusal(held + "group " + hex + " has a record on this device's disk");
+    const bool empty = !IsNotRestoredRefusal("");
+    const bool ok = notRestored && notHeld && unfinished && heldText && empty;
+    out.push_back(std::format(
+        L"  held not-restored: {}  ErrGroupNotRestored {} | ErrGroupNotHeld not it {} | "
+        L"ErrForgetUnfinished not it {} | the held refusal not it {} | empty not it {}   [query: "
+        L"the leave of a group no restore has tried answers ErrGroupNotRestored, and only that "
+        L"answer sends the app to the restore before it offers the leave again]",
+        Verdict(ok), notRestored, notHeld, unfinished, heldText, empty));
+  }
+
+  // 4. the two sentences a person is shown, and the button the second one names.
+  {
+    const std::string live(kHeldLiveSentence);
+    const std::string notLive(kHeldNotLiveSentence);
+    const std::wstring button(kLeaveHeldButton);
+    const std::wstring buttonName(kLeaveHeldButtonName);
+    auto raw = [](std::string const& s) {
+      return s.find("urmessage:") != std::string::npos || s.find("ForgetGroup") != std::string::npos ||
+             s.find("Err") != std::string::npos;
+    };
+    const bool distinct = !live.empty() && !notLive.empty() && live != notLive;
+    const bool noRaw = !raw(live) && !raw(notLive);
+    const bool namesLeave = notLive.find("Leave it") != std::string::npos && button.starts_with(L"Leave") &&
+                            buttonName.starts_with(button);
+    const bool liveOffersNothing = live.find("Leave") == std::string::npos;
+    const bool ok = distinct && noRaw && namesLeave && liveOffersNothing;
+    out.push_back(std::format(
+        L"  held sentences   : {}  live \"{}\" | not live \"{}\" | button \"{}\" (\"{}\")   "
+        L"[query: two distinct sentences, neither the library's words; the not-live one says to "
+        L"leave and the button it sits over is that leave; the live one offers no leave]",
+        Verdict(ok), Widen(live), Widen(notLive), button, buttonName));
+  }
+  return out;
+}
+
 }  // namespace
 
 void StartupLogInit() {
@@ -1956,6 +2124,10 @@ std::vector<std::wstring> CollectDiagnostics() {
   // roster because it is the same surface one rule further along - R3 put the roles on the screen,
   // R4 is the first piece that changes what the APPLICATION RECORD path does with one.
   for (auto& line : ObserverDiagnostics()) lines.push_back(std::move(line));
+  // An invitation refused over a group this device holds, and the leave that answers it (Task 39):
+  // which refusal it is, where the group id comes from, the leave's own refusal, and the two
+  // sentences. Pure, like the roster's lines above.
+  for (auto& line : HeldGroupDiagnostics()) lines.push_back(std::move(line));
   {
     using namespace urmsg::demo;
     World const& w = GetWorld();

@@ -274,6 +274,8 @@
          call. -->
     <ClCompile Include="Demo\DeveloperSwitches.cpp" />
     <ClCompile Include="Identicon.cpp" />
+    <!-- Pure, and asked by the diagnose switch before the apartment: no pch, no winrt/, no SDK (Task 39). -->
+    <ClCompile Include="Live\HeldGroupRules.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <!-- NotUsing for the same reason as Demo\DemoWorld.cpp above, with a second
          reason of its own: this TU is Win32 plus the SDK's C ABI and runs on a
          worker thread that must never touch winrt/ or XAML. Keeping the pch out
@@ -355,6 +357,7 @@
     <ClInclude Include="Demo\AdvancedMode.h" />
     <ClInclude Include="Demo\DeveloperSwitches.h" />
     <ClInclude Include="Identicon.h" />
+    <ClInclude Include="Live\HeldGroupRules.h" />
     <ClInclude Include="Live\LiveMesh.h" />
     <ClInclude Include="Live\LiveWorld.h" />
     <ClInclude Include="Live\LocalNames.h" />
