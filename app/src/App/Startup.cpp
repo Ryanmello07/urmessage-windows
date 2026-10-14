@@ -2056,8 +2056,8 @@ std::vector<std::wstring> HeldGroupDiagnostics() {
 // PURE on the same terms as the held-group lines above: every function asked is
 // Live/RefusalCopy.h's, no SDK is loaded and no XAML is touched. The library's sentences are TYPED
 // HERE WHOLE from urnetwork/message sdk/urmessage/errors.go at the T1 branch's head after its second
-// fix round (e0d16eac75e4), never built from the header's constants, which are only their stable
-// parts (R27). The clauses after them are typed from where that branch formats them (group.go's
+// fix round (e0d16eac75e4), and those of its third round at 907109f1385e (R29, R30, R32), never built
+// from the header's constants, which are only their stable parts (R27). The clauses after them are typed from where that branch formats them (group.go's
 // Join, invite.go's ParseInvite, joinseal.go and rolescommit.go for the adder, device.go's
 // KeyPackage, messagegroup/engine.go's refused key packages, restore.go and statestore_durable.go's
 // GroupRecords and readRecord for a file not read just now, heldgroup.go's heldUnread and forget.go's
@@ -2163,6 +2163,77 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
   const std::string& notReadRestore = restoreRecordHeld;
   const std::string& notReadJoin = joinRecordHeld;
   const std::string& notReadLeave = leaveRecordHeld;
+  // ROUND 3'S SENTENCES (907109f1385e, read there: errors.go, restore.go, heldgroup.go, forget.go,
+  // statestore_durable.go, group.go). A failure this build cannot classify is UNPROVEN (R29; R30
+  // puts a permission among them), each read clause now carries its class's sentence, the leave tries
+  // the group's restore again before it erases anything (R30), and that re-try can find this device
+  // not connected (R32).
+  const std::string unproven =
+      "urmessage: a file of a group on this device's disk could not be read, and this build cannot "
+      "tell whether that will pass, so that group was not restored; nothing of it was changed, and "
+      "it is not left until a Restore reads it or finds it damaged";
+  const std::string notConnected =
+      "urmessage: this device has not said Hello, and every authenticator is a mac over the "
+      "connection's server_nonce";
+  const std::string format = "urmessage: this does not read as a record this store writes";
+  const std::string brokenSum = format + ": the record's checksum is not the hash of the record";
+  const std::string epochFile = groupDir + "\\epoch\\0000000000000001";
+  const std::string metaFile = groupDir + "\\meta";
+  const std::string r3RestoreRecordDenied =
+      restoreSentence + ": " + unproven + ": " + storeState + ": " + metaFile + " could not be read: open " +
+      metaFile + ": " + denied + " (in all, 1 of the 1 group directories on this disk: " + dirName + ")";
+  const std::string r3RestoreEpochDenied =
+      restoreSentence + ": " + unproven + ": group " + hex + ": " + restoreSentence + ": group " + hex +
+      " at epoch 1: " + storeState + ": " + epochFile + " could not be read: open " + epochFile + ": " + denied;
+  const std::string r3RestoreRecordBroken =
+      restoreSentence + ": " + damaged + ": the record in " + dirName + ": " + brokenSum +
+      " (in all, 1 of the 1 group directories on this disk: " + dirName + ")";
+  const std::string r3RestoreEpochBroken =
+      restoreSentence + ": group " + hex + " at epoch 1: " + brokenSum;
+  const std::string r3FreshEpochHeld = restoreSentence + ": group " + hex + " at epoch 1: " + storeState +
+                                       ": " + epochFile + " could not be read: open " + epochFile + ": " + sharing;
+  const std::string r3FreshEpochDenied = restoreSentence + ": group " + hex + " at epoch 1: " + storeState +
+                                         ": " + epochFile + " could not be read: open " + epochFile + ": " + denied;
+  const std::string r3LeaveFreshHeld = notReadNow + "; so nothing was left: group " + hex + ": " + r3FreshEpochHeld;
+  const std::string r3LeaveFreshDenied = unproven + "; so nothing was left: group " + hex + ": " + r3FreshEpochDenied;
+  const std::string r3LeaveRecordHeld =
+      "urmessage: whether this device holds group " + hex + " on its disk could not be read, so nothing "
+      "was left: " + notReadNow + ": " + storeState + ": " + metaFile + " could not be read: open " +
+      metaFile + ": " + sharing;
+  const std::string r3LeaveRecordDenied =
+      "urmessage: whether this device holds group " + hex + " on its disk could not be read, so nothing "
+      "was left: " + unproven + ": " + storeState + ": " + metaFile + " could not be read: open " +
+      metaFile + ": " + denied;
+  const std::string r3LeaveReadAgain =
+      "urmessage: group " + hex + "'s record could not be read again for the leave, so nothing was left: " +
+      unproven + ": " + storeState + ": " + metaFile + " could not be read: open " + metaFile + ": " + denied;
+  const std::string r3LeaveNotTried =
+      "urmessage: group " + hex + "'s restore could not be tried again for the leave, so nothing was left: " +
+      notConnected;
+  const std::string r3LeaveMarkUnwritten =
+      "urmessage: the leave could not be recorded on the disk, so nothing was left: " + storeState + ": " +
+      groupDir + "\\forgetting could not be written: open " + groupDir + "\\forgetting: " + denied;
+  const std::string r3NotRestored =
+      "urmessage: this group is on this device's disk and has not been restored; call Restore, and if "
+      "it does not come back, ForgetGroup leaves it: " + hex;
+  const std::string r3OwnerMustTransfer =
+      "urmessage: you own this group and somebody else is in it, so hand it over first with "
+      "TransferOwnership; leaving now would leave them with an owner nobody can remove: 1 other "
+      "leaf/leaves";
+  const std::string r3JoinRecordHeld =
+      "urmessage: whether this device already holds group " + hex +
+      " could not be read, so the invite into it is refused: " + notReadNow + ": " + storeState + ": " +
+      metaFile + " could not be read: open " + metaFile + ": " + sharing;
+  const std::string r3JoinRecordDenied =
+      "urmessage: whether this device already holds group " + hex +
+      " could not be read, so the invite into it is refused: " + unproven + ": " + storeState + ": " +
+      metaFile + " could not be read: open " + metaFile + ": " + denied;
+  const std::string r3JoinRecordBroken =
+      heldWhole + ": group " + hex + " has a record on this device's disk that does not read: " + damaged +
+      ": the record in " + dirName + ": " + brokenSum;
+  const std::string r3JoinRecordReads = heldWhole + ": group " + hex + " has a record on this device's disk";
+  const std::string r3TakeBroken = noCode + ": " + engineNoCode + takeTail + format +
+                                   ": the record under this name is not the key package of " + hex;
 
   // 1. which row a refusal of the join road is, and the order that decides it.
   {
@@ -2354,6 +2425,14 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
         {L"ErrGroupRecordNotReadNow", JoinCopySentence(JoinCopy::GroupRecordNotReadNow),
          "This conversation could not be read just now. Close anything else that may be using "
          "URmessage's folder, then try again."},
+        // R29
+        {L"ErrGroupReadUnproven", JoinCopySentence(JoinCopy::GroupReadUnproven),
+         "This conversation could not be read on this device, and nothing was changed. Check that "
+         "URmessage can read its folder, then open URmessage again."},
+        // R32
+        {L"ErrNotConnected", LeaveStopCopy(HeldLeaveStep::NotConnected).sentence,
+         "This device is not connected right now, and nothing was changed. Try again when it is "
+         "connected."},
     };
     int verbatim = 0, raw = 0;
     std::wstring wrong;
@@ -2483,6 +2562,11 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
         {L"predates", "urmessage: restore: group " + hex + " at epoch 1: " + predates, 0,
          kSayGroupPredatesJoinSeal},
         {L"not-read", notReadRestore, 0, kSayGroupRecordNotReadNow},
+        {L"unproven", r3RestoreRecordDenied, 0, kSayGroupReadUnproven},
+        {L"unproven-epoch", r3RestoreEpochDenied, 0, kSayGroupReadUnproven},
+        {L"unproven-one-back", r3RestoreRecordDenied, 1, {}},
+        {L"damaged-epoch", r3RestoreEpochBroken, 0, {}},
+        {L"not-connected", notConnected, 0, {}},
         {L"not-read-one-back", notReadRestore, 1, {}},
         {L"predates-one-back", "urmessage: restore: group " + hex + " at epoch 1: " + predates, 1, {}},
         {L"damaged",
@@ -2500,7 +2584,10 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
       if (hit) ++right;
       if (!table.empty()) table += L", ";
       table += std::format(L"{}->{}{}", c.name,
-                           got.empty() ? L"none" : got == kSayGroupRecordNotReadNow ? L"not-read" : L"predates",
+                           got.empty()                      ? L"none"
+                           : got == kSayGroupRecordNotReadNow ? L"not-read"
+                           : got == kSayGroupReadUnproven     ? L"unproven"
+                                                              : L"predates",
                            hit ? L"" : L"(WRONG)");
     }
     const int total = static_cast<int>(std::size(cases));
@@ -2545,7 +2632,7 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
   //     header's constants, so a constant that matched a whole sentence again turns the reworded
   //     case FAIL. The sentence R26's round reworded is asked a third way, in 09018b10dd23's words.
   {
-    enum class Ask { Join, Add, WrapKey, Leave, Sentinel };
+    enum class Ask { Join, Add, WrapKey, Leave, Sentinel, NotConnected };
     struct Case {
       const wchar_t* name;
       std::string whole;
@@ -2608,6 +2695,17 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
          "urmessage: this device holds no x-wing seed for the leaf it publishes, and it publishes no "
          "join code",
          Ask::WrapKey, JoinCopy::Other, AddCopy::Other},
+        // round 3 (907109f): R29's sentinel, and R32's not connected, bare and in the leave's clause
+        {L"ErrGroupReadUnproven", r3RestoreRecordDenied,
+         restoreSentence + ": urmessage: a file of a group on this device's disk could not be read, and "
+                           "this build cannot tell whether that will pass; it is kept as it was: x",
+         Ask::Join, JoinCopy::GroupReadUnproven, AddCopy::Other},
+        {L"ErrNotConnected", notConnected,
+         "urmessage: this device has not said Hello, so nothing that needs the connection can run",
+         Ask::NotConnected, JoinCopy::Other, AddCopy::Other},
+        {L"leave-not-tried", r3LeaveNotTried,
+         "urmessage: group " + hex + "'s restore could not be tried again for the leave; it is kept: x",
+         Ask::NotConnected, JoinCopy::Other, AddCopy::Other},
     };
     auto right = [](Case const& c, std::string const& text) {
       switch (c.ask) {
@@ -2616,6 +2714,7 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
         case Ask::WrapKey: return IsNoDeviceWrapKey(text);
         case Ask::Leave: return IsLeaveNotReadNow(text);
         case Ask::Sentinel: return IsGroupRecordNotReadNow(text);
+        case Ask::NotConnected: return IsNotConnected(text);
       }
       return false;
     };
@@ -2648,7 +2747,7 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
     const bool rDamaged = RestoreNote(restoreRecordDenied, 0).empty() &&
                           StepAfterRestoreFirst(false, restoreRecordDenied) == HeldLeaveStep::Forget &&
                           ClassifyJoinRefusal(heldOverDenied) == JoinRefusal::HeldNotLive &&
-                          HeldNotLiveCopy(IsGroupRecordNotReadNow(restoreRecordDenied)).offerLeave;
+                          HeldNotLiveCopy(RestoreReadClass(restoreRecordDenied)).offerLeave;
     const bool lHeld = IsLeaveNotReadNow(leaveRecordHeld) && ClassifyJoinCopy(leaveRecordHeld) == JoinCopy::Other &&
                        !IsGroupRecordNotReadNow(leaveRecordHeld);
     const bool jHeld = ClassifyJoinCopy(joinRecordHeld) == JoinCopy::GroupRecordNotReadNow &&
@@ -2672,38 +2771,144 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
         Verdict(ok), rRecord, rEpoch, rDamaged, lHeld, jHeld, cHeld, cNever, cRemoved));
   }
 
-  // 13. R28: the held-group leave after its restore-first, and a held refusal after a restore that
-  //     could not read a file of a group just now.
+  // 13. R28, R29, R32: the held-group leave after its restore-first, and a held refusal after a
+  //     restore that could not read a file of a group.
   {
     const std::string listing = storeState + ": C:\\u\\live\\state\\state\\group could not be "
                                              "read: open C:\\u\\live\\state\\state\\group: " + denied;
     const bool cameBack = StepAfterRestoreFirst(true, restoreEpochHeld) == HeldLeaveStep::CameBack &&
-                          StepAfterRestoreFirst(true, "") == HeldLeaveStep::CameBack;
+                          StepAfterRestoreFirst(true, "") == HeldLeaveStep::CameBack &&
+                          StepAfterRestoreFirst(true, r3RestoreEpochDenied) == HeldLeaveStep::CameBack;
     const bool recordStops = StepAfterRestoreFirst(false, restoreRecordHeld) == HeldLeaveStep::NotReadNow;
     const bool epochStops = StepAfterRestoreFirst(false, restoreEpochHeld) == HeldLeaveStep::NotReadNow;
-    const bool damagedForgets = StepAfterRestoreFirst(false, restoreRecordDenied) == HeldLeaveStep::Forget;
+    const bool unprovenStops = StepAfterRestoreFirst(false, r3RestoreRecordDenied) == HeldLeaveStep::Unproven &&
+                               StepAfterRestoreFirst(false, r3RestoreEpochDenied) == HeldLeaveStep::Unproven;
+    const bool notConnectedStops = StepAfterRestoreFirst(false, notConnected) == HeldLeaveStep::NotConnected;
+    const bool damagedForgets = StepAfterRestoreFirst(false, restoreRecordDenied) == HeldLeaveStep::Forget &&
+                                StepAfterRestoreFirst(false, r3RestoreRecordBroken) == HeldLeaveStep::Forget &&
+                                StepAfterRestoreFirst(false, r3RestoreEpochBroken) == HeldLeaveStep::Forget;
     const bool listingForgets = StepAfterRestoreFirst(false, listing) == HeldLeaveStep::Forget;
     const bool emptyForgets = StepAfterRestoreFirst(false, "") == HeldLeaveStep::Forget;
-    const HeldCopy stop = HeldNotLiveCopy(true);
-    const HeldCopy offer = HeldNotLiveCopy(false);
-    const bool stopSays = stop.sentence == kSayGroupRecordNotReadNow && !stop.offerLeave;
+    const HeldCopy stopQ5 = LeaveStopCopy(HeldLeaveStep::NotReadNow);
+    const HeldCopy stopUnproven = LeaveStopCopy(HeldLeaveStep::Unproven);
+    const HeldCopy stopOffline = LeaveStopCopy(HeldLeaveStep::NotConnected);
+    const HeldCopy heldQ5 = HeldNotLiveCopy(ReadClass::NotReadNow);
+    const HeldCopy heldUnproven = HeldNotLiveCopy(ReadClass::Unproven);
+    const HeldCopy offer = HeldNotLiveCopy(ReadClass::None);
+    const bool q5Says = stopQ5.sentence == kSayGroupRecordNotReadNow && !stopQ5.offerLeave &&
+                        heldQ5.sentence == kSayGroupRecordNotReadNow && !heldQ5.offerLeave;
+    const bool unprovenSays = stopUnproven.sentence == kSayGroupReadUnproven && !stopUnproven.offerLeave &&
+                              heldUnproven.sentence == kSayGroupReadUnproven && !heldUnproven.offerLeave;
+    const bool offlineSays = stopOffline.sentence == kSayNotConnected && stopOffline.offerLeave;
     const bool offerSays = offer.sentence == kHeldNotLiveSentence && offer.offerLeave;
-    // the flag a restore leaves: set by a report that carries the sentinel, and by nothing else
-    const bool flagSet = IsGroupRecordNotReadNow(restoreRecordHeld) && IsGroupRecordNotReadNow(restoreEpochHeld);
-    const bool flagNot = !IsGroupRecordNotReadNow(restoreRecordDenied) && !IsGroupRecordNotReadNow(listing) &&
-                         !IsGroupRecordNotReadNow(joinRecordHeld) && !IsGroupRecordNotReadNow(leaveRecordHeld) &&
-                         !IsGroupRecordNotReadNow("");
-    const bool ok = cameBack && recordStops && epochStops && damagedForgets && listingForgets && emptyForgets &&
-                    stopSays && offerSays && flagSet && flagNot;
+    // the flag a restore leaves: each class by its own sentinel, nothing else, and a restore that was
+    // not tried leaves it as it was
+    const bool flagSet = RestoreReadClass(restoreRecordHeld) == ReadClass::NotReadNow &&
+                         RestoreReadClass(restoreEpochHeld) == ReadClass::NotReadNow &&
+                         RestoreReadClass(r3RestoreRecordDenied) == ReadClass::Unproven &&
+                         RestoreReadClass(r3RestoreEpochDenied) == ReadClass::Unproven;
+    const bool flagNot = RestoreReadClass(restoreRecordDenied) == ReadClass::None &&
+                         RestoreReadClass(r3RestoreRecordBroken) == ReadClass::None &&
+                         RestoreReadClass(listing) == ReadClass::None &&
+                         RestoreReadClass(joinRecordHeld) == ReadClass::None &&
+                         RestoreReadClass(leaveRecordHeld) == ReadClass::None && RestoreReadClass("") == ReadClass::None;
+    const bool flagKept = NextRestoreClass(ReadClass::Unproven, notConnected) == ReadClass::Unproven &&
+                          NextRestoreClass(ReadClass::NotReadNow, notConnected) == ReadClass::NotReadNow &&
+                          NextRestoreClass(ReadClass::Unproven, r3RestoreRecordBroken) == ReadClass::None &&
+                          NextRestoreClass(ReadClass::None, r3RestoreEpochDenied) == ReadClass::Unproven;
+    const bool ok = cameBack && recordStops && epochStops && unprovenStops && notConnectedStops && damagedForgets &&
+                    listingForgets && emptyForgets && q5Says && unprovenSays && offlineSays && offerSays && flagSet &&
+                    flagNot && flagKept;
     out.push_back(std::format(
         L"  held leave       : {}  came back {} | a record held: stop, no forget {} | an epoch file "
-        L"held: stop, no forget {} | damage: forget {} | a listing that failed: forget {} | nothing "
-        L"said: forget {} | stopped: \"{}\", no leave {} | otherwise: Task 39's sentence and the leave "
-        L"{} | the sentinel sets the flag {} | nothing else does {}   [query: R28, a leave whose "
-        L"restore-first could not read a file of a group just now calls no forget_group and says R25 "
-        L"Q5's row, and so does a held refusal after such a restore]",
-        Verdict(ok), cameBack, recordStops, epochStops, damagedForgets, listingForgets, emptyForgets,
-        Widen(stop.sentence), stopSays, offerSays, flagSet, flagNot));
+        L"held: stop, no forget {} | unproven: stop, no forget {} | not connected: stop, no forget {} | "
+        L"damage: forget {} | a listing that failed: forget {} | nothing said: forget {} | Q5's row, no "
+        L"leave {} | the unproven row, no leave {} | the not-connected row, the leave kept {} | "
+        L"otherwise Task 39's sentence and the leave {} | each sentinel sets its class {} | nothing "
+        L"else does {} | a restore not tried keeps the flag {}   [query: R28, R29, R32, a leave whose "
+        L"restore-first decided nothing calls no forget_group and says that row, and so does a held "
+        L"refusal after a restore that could not read a file]",
+        Verdict(ok), cameBack, recordStops, epochStops, unprovenStops, notConnectedStops, damagedForgets,
+        listingForgets, emptyForgets, q5Says, unprovenSays, offlineSays, offerSays, flagSet, flagNot, flagKept));
+  }
+
+  // 14. ROUND 3'S ROADS (907109f): one case per road from its exact text, and what the app does on
+  //     each.
+  {
+    struct Road {
+      const wchar_t* name;
+      bool ok;
+    };
+    auto leave = [](std::string const& text, LeaveRefusal want, std::string_view say, bool offer) {
+      const HeldCopy copy = LeaveRefusalCopy(ClassifyLeaveRefusal(text));
+      return ClassifyLeaveRefusal(text) == want && copy.sentence == say && copy.offerLeave == offer;
+    };
+    const Road roads[] = {
+        {L"restore-record-held", RestoreNote(restoreRecordHeld, 0) == kSayGroupRecordNotReadNow &&
+                                     RestoreReadClass(restoreRecordHeld) == ReadClass::NotReadNow},
+        {L"restore-record-denied", RestoreNote(r3RestoreRecordDenied, 0) == kSayGroupReadUnproven &&
+                                       RestoreReadClass(r3RestoreRecordDenied) == ReadClass::Unproven &&
+                                       StepAfterRestoreFirst(false, r3RestoreRecordDenied) == HeldLeaveStep::Unproven},
+        {L"restore-epoch-denied", RestoreNote(r3RestoreEpochDenied, 0) == kSayGroupReadUnproven &&
+                                      RestoreReadClass(r3RestoreEpochDenied) == ReadClass::Unproven &&
+                                      StepAfterRestoreFirst(false, r3RestoreEpochDenied) == HeldLeaveStep::Unproven},
+        {L"restore-record-broken", RestoreNote(r3RestoreRecordBroken, 0).empty() &&
+                                       StepAfterRestoreFirst(false, r3RestoreRecordBroken) == HeldLeaveStep::Forget},
+        {L"restore-epoch-broken", RestoreNote(r3RestoreEpochBroken, 0).empty() &&
+                                      StepAfterRestoreFirst(false, r3RestoreEpochBroken) == HeldLeaveStep::Forget},
+        {L"restore-not-connected", RestoreNote(notConnected, 0).empty() &&
+                                       StepAfterRestoreFirst(false, notConnected) == HeldLeaveStep::NotConnected},
+        {L"leave-fresh-held", leave(r3LeaveFreshHeld, LeaveRefusal::NotReadNow, kSayGroupRecordNotReadNow, false)},
+        {L"leave-fresh-denied", leave(r3LeaveFreshDenied, LeaveRefusal::Unproven, kSayGroupReadUnproven, false)},
+        {L"leave-record-held", leave(r3LeaveRecordHeld, LeaveRefusal::NotReadNow, kSayGroupRecordNotReadNow, false)},
+        {L"leave-record-denied", leave(r3LeaveRecordDenied, LeaveRefusal::Unproven, kSayGroupReadUnproven, false)},
+        {L"leave-read-again", leave(r3LeaveReadAgain, LeaveRefusal::Unproven, kSayGroupReadUnproven, false)},
+        {L"leave-not-tried", leave(r3LeaveNotTried, LeaveRefusal::NotConnected, kSayNotConnected, true)},
+        {L"leave-mark-unwritten", ClassifyLeaveRefusal(r3LeaveMarkUnwritten) == LeaveRefusal::Other &&
+                                      LeaveRefusalCopy(LeaveRefusal::Other).sentence.empty()},
+        {L"leave-not-restored", ClassifyLeaveRefusal(r3NotRestored) == LeaveRefusal::Other &&
+                                    IsNotRestoredRefusal(r3NotRestored)},
+        {L"leave-owner", ClassifyLeaveRefusal(r3OwnerMustTransfer) == LeaveRefusal::Other},
+        {L"join-record-held", ClassifyJoinCopy(r3JoinRecordHeld) == JoinCopy::GroupRecordNotReadNow &&
+                                  ClassifyJoinRefusal(r3JoinRecordHeld) == JoinRefusal::Other &&
+                                  !OffersNewJoinCode(ClassifyJoinCopy(r3JoinRecordHeld))},
+        {L"join-record-denied", ClassifyJoinCopy(r3JoinRecordDenied) == JoinCopy::GroupReadUnproven &&
+                                    JoinCopySentence(ClassifyJoinCopy(r3JoinRecordDenied)) == kSayGroupReadUnproven &&
+                                    ClassifyJoinRefusal(r3JoinRecordDenied) == JoinRefusal::Other &&
+                                    !OffersNewJoinCode(ClassifyJoinCopy(r3JoinRecordDenied))},
+        {L"join-record-broken", ClassifyJoinRefusal(r3JoinRecordBroken) == JoinRefusal::HeldNotLive &&
+                                    HeldNotLiveCopy(ReadClass::None).offerLeave},
+        {L"held-after-held-restore", ClassifyJoinRefusal(r3JoinRecordReads) == JoinRefusal::HeldNotLive &&
+                                         HeldNotLiveCopy(RestoreReadClass(restoreEpochHeld)).sentence ==
+                                             kSayGroupRecordNotReadNow &&
+                                         !HeldNotLiveCopy(RestoreReadClass(restoreEpochHeld)).offerLeave},
+        {L"held-after-denied-restore", HeldNotLiveCopy(RestoreReadClass(r3RestoreEpochDenied)).sentence ==
+                                           kSayGroupReadUnproven &&
+                                       !HeldNotLiveCopy(RestoreReadClass(r3RestoreEpochDenied)).offerLeave},
+        {L"take-held", ClassifyJoinCopy(joinCodeHeld) == JoinCopy::JoinRefused &&
+                           !OffersNewJoinCode(ClassifyJoinCopy(joinCodeHeld))},
+        {L"take-denied", ClassifyJoinCopy(joinCodeNeverReads) == JoinCopy::NoJoinCodeForInvite &&
+                             OffersNewJoinCode(ClassifyJoinCopy(joinCodeNeverReads))},
+        {L"take-broken", ClassifyJoinCopy(r3TakeBroken) == JoinCopy::NoJoinCodeForInvite &&
+                             OffersNewJoinCode(ClassifyJoinCopy(r3TakeBroken))},
+        {L"take-removed", ClassifyJoinCopy(joinCodeRemoved) == JoinCopy::JoinCodeSpent &&
+                              OffersNewJoinCode(ClassifyJoinCopy(joinCodeRemoved))},
+    };
+    std::wstring table;
+    int right = 0;
+    for (auto const& r : roads) {
+      if (r.ok) ++right;
+      if (!table.empty()) table += L", ";
+      table += std::format(L"{} {}", r.name, r.ok ? L"ok" : L"WRONG");
+    }
+    const int total = static_cast<int>(std::size(roads));
+    out.push_back(std::format(
+        L"  907109f roads    : {}  {}/{}: {}   [query: T1 FIX 3's roads, each typed from 907109f: the "
+        L"unproven row on the restore, the leave's restore-first, the leave's own refusals and the join; "
+        L"Q5's row for the transient class; the not-connected row, with the leave kept, for a leave not "
+        L"tried; Task 39's fallback for a leave mark that could not be written; and a join code's take "
+        L"never \"still good\" unless it was held for a moment]",
+        Verdict(right == total), right, total, table));
   }
   return out;
 }
