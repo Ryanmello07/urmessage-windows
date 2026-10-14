@@ -1929,12 +1929,20 @@ void RunSession() {
   // THE ROUTE (ledger 268). URNETWORK and DIRECT reach the server's own endpoint with its key
   // pinned; the credential is used only by URNETWORK, to mint the tunnel's exit clients.
   const Route route = ChosenRoute();
+  // CI ONLY, NEVER MERGED (message-windows ci/task39-shots, and ci/task58-shots): the runner's loopback message server
+  // and its pin, from the environment, so Task 39's screenshots run against a server on the runner.
+  const std::string ciEndpoint = urnw::Narrow(EnvVar(L"URMESSAGE_CI_ENDPOINT"));
+  const std::string ciPin = urnw::Narrow(EnvVar(L"URMESSAGE_CI_PIN"));
+  const char* const serverEndpoint = ciEndpoint.empty() ? kServerEndpoint : ciEndpoint.c_str();
+  const char* const serverEndpointPin = ciPin.empty() ? kServerEndpointPin : ciPin.c_str();
+  if (!ciEndpoint.empty())
+    urnw::LogWarn("live: CI ONLY: the endpoint is {} from URMESSAGE_CI_ENDPOINT", ciEndpoint);
   if (route == Route::Platform) {
     s.client = urnet_message_client_new(credential.c_str(), kHost, nullptr, nullptr, kAppVersion, &err);
   } else {
     s.routeClient = true;
     s.client = urnet_message_route_client_new(
-        credential.c_str(), kHost, nullptr, kServerEndpoint, kServerEndpointPin,
+        credential.c_str(), kHost, nullptr, serverEndpoint, serverEndpointPin,
         route == Route::Urnetwork ? URNET_MESSAGE_ROUTE_URNETWORK : URNET_MESSAGE_ROUTE_DIRECT,
         kAppVersion, &err);
   }
@@ -1952,8 +1960,8 @@ void RunSession() {
   std::string clientId;
   std::string platformUrl;
   if (s.routeClient) {
-    platformUrl = kServerEndpoint;
-    urnw::LogInfo("live: route {} to {}, key pinned; {}", RouteName(route), kServerEndpoint,
+    platformUrl = serverEndpoint;
+    urnw::LogInfo("live: route {} to {}, key pinned; {}", RouteName(route), serverEndpoint,
                   route == Route::Urnetwork
                       ? "the connection leaves through a URnetwork exit, so the server never sees this computer's address"
                       : "DIRECT, so the message server sees this computer's address");
