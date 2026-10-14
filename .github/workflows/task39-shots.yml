@@ -1,7 +1,7 @@
 # THROWAWAY, NEVER MERGE, NEVER IN AN UPSTREAM PULL REQUEST. Hardening plan Task 39, Step 2.
 #
-# Builds the app on T1a's library (composition.txt pins urnetwork/message 73669fe1 on this branch
-# only), runs urnetwork/message's own loopback server and a founder beside it
+# Builds the app on the merged library (composition.txt pins urnetwork/message 215a0696, the merge
+# of #6, as the pull request branch does), runs urnetwork/message's own loopback server and a founder beside it
 # (.github/task39/zz_task39_rig_test.go, copied into sdk/cp3b), and drives the app through a join,
 # a damaged state directory, the refused invitation and the leave, with UI Automation's Invoke
 # only, capturing each step with PrintWindow (.github/task39/drive.ps1). Nothing is published: the
@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        leg: [epoch, record, notrestored]
+        leg: [epoch, record, notrestored, transient]
     steps:
       - name: Check out the repo
         uses: actions/checkout@v4

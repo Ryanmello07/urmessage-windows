@@ -8,11 +8,15 @@
 #   notrestored  the group's directory cannot be listed, so Restore stops before it tries the
 #                group: the leave answers ErrGroupNotRestored, the app restores first, and the
 #                listing is given back before the leave is pressed, so the group comes back
+#   transient    (review F1) the group's epoch states cannot be READ at the startup restore, so
+#                the group is marked as not restored; the denial is lifted before the leave is
+#                pressed, and the leave's restore-first must bring the group back at its old epoch
+#                with its history, and erase nothing
 #
 # DRIVING: UI Automation patterns only (Invoke). No mouse or keyboard input is synthesized.
 # CAPTURE: PrintWindow(PW_RENDERFULLCONTENT) of the app's own window, found by its process id.
 param(
-  [Parameter(Mandatory = $true)][ValidateSet('epoch', 'record', 'notrestored')][string]$Leg,
+  [Parameter(Mandatory = $true)][ValidateSet('epoch', 'record', 'notrestored', 'transient')][string]$Leg,
   [Parameter(Mandatory = $true)][string]$Exe,
   [Parameter(Mandatory = $true)][string]$Rig,
   [Parameter(Mandatory = $true)][string]$RigWorkDir,
@@ -50,7 +54,7 @@ Set-Content -LiteralPath $cred -Value 'ci-not-a-credential (the DIRECT route rea
 # ---- the rig: the server and the founder --------------------------------------------------------
 $env:TASK39_RIG_DIR = $rigDir
 $env:TASK39_HANDSHAKE_DIR = $handshake
-$env:TASK39_RIG_ONCE = if ($Leg -eq 'notrestored') { '1' } else { '0' }
+$env:TASK39_RIG_ONCE = if ($Leg -eq 'notrestored' -or $Leg -eq 'transient') { '1' } else { '0' }
 $rigProc = Start-Process -FilePath $Rig -ArgumentList '-test.run', '^TestTask39Rig$', '-test.v', '-test.timeout', '0' `
   -WorkingDirectory $RigWorkDir -RedirectStandardOutput (Join-Path $Out 'rig.out.txt') `
   -RedirectStandardError (Join-Path $Out 'rig.err.txt') -PassThru -NoNewWindow
@@ -182,6 +186,7 @@ try {
   Note "group $gidHex is directory $name; $($groupFiles.Count) file(s) under it:"
   $groupFiles | ForEach-Object { Note "  $($_.FullName.Substring($stateDir.Length)) ($($_.Length) octets)" }
   $groupDir = $null
+  $deniedFiles = @()
   switch ($Leg) {
     'epoch' {
       $epochs = @($groupFiles | Where-Object { $_.FullName -like "*\$name\epoch\*" })
@@ -212,6 +217,20 @@ try {
       Remove-Item -LiteralPath (Join-Path $rigDir 'gate-open') -Force
       Note 'B: the rig''s gate is shut'
     }
+    'transient' {
+      # THE EPOCH STATES STAY, AND CANNOT BE READ FOR A WHILE: read-data is denied on each one, so
+      # the startup restore of the group fails ("Access is denied") and the library marks it as
+      # not restored. The store's open only lists the directory, so it is not stopped by this.
+      $deniedFiles = @($groupFiles | Where-Object { $_.FullName -like "*\$name\epoch\*" } | ForEach-Object { $_.FullName })
+      Check ($deniedFiles.Count -ge 1) "B: the group has epoch states to deny ($($deniedFiles.Count))"
+      $who = "$($env:USERDOMAIN)\$($env:USERNAME)"
+      foreach ($f in $deniedFiles) { & icacls $f /deny "${who}:(RD)" | ForEach-Object { Note "icacls: $_" } }
+      $readable = 0
+      foreach ($f in $deniedFiles) { try { [void][IO.File]::ReadAllBytes($f); $readable++ } catch { } }
+      Check ($readable -eq 0) 'B: no epoch state of the group can be read'
+      $meta = @($groupFiles | Where-Object { $_.Name -eq 'meta' -and $_.Directory.Name -eq $name })
+      Check ($meta.Count -eq 1) 'B: the group record is still there, and readable'
+    }
   }
 
   # ---- C: the app again, the invitation, the refusal, the leave --------------------------------
@@ -231,7 +250,10 @@ try {
     Note 'C: the rig''s gate is open'
   }
   Check (WaitLog 'published this device''s key package' 2 240) 'C: the app holds no live group and waits for an invitation'
-  if ($Leg -eq 'notrestored') {
+  if ($Leg -eq 'transient') {
+    Check ((CountIn (LogText) 'device_restore reported') -ge 1) 'C: the startup restore reported a failure'
+  }
+  if ($Leg -eq 'notrestored' -or $Leg -eq 'transient') {
     # THE SAME INVITATION AS IN A: the gate refuses before the Welcome is opened
     $first = [IO.File]::ReadAllBytes((Join-Path $rigDir 'invite1.bin'))
     $partial = Join-Path $handshake 'app.invite.partial'
@@ -253,17 +275,25 @@ try {
     try { [void][IO.Directory]::GetDirectories($groupDir) } catch { $listed = $false }
     Check $listed "C: $groupDir can be listed again"
   }
+  if ($Leg -eq 'transient') {
+    foreach ($f in $deniedFiles) { & icacls $f /remove:d "$($env:USERDOMAIN)\$($env:USERNAME)" | ForEach-Object { Note "icacls: $_" } }
+    $readable = 0
+    foreach ($f in $deniedFiles) { try { [void][IO.File]::ReadAllBytes($f); $readable++ } catch { } }
+    Check ($readable -eq $deniedFiles.Count) "C: the denial is lifted, and every epoch state reads again ($readable of $($deniedFiles.Count))"
+  }
   if ($null -ne $button) {
     $invoke = $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
     $invoke.Invoke()
     Note 'C: the leave button was invoked (InvokePattern)'
   }
-  if ($Leg -eq 'notrestored') {
-    Check (WaitLog 'restoring first' 1 120) 'C: the leave answered ErrGroupNotRestored, and the restore ran'
+  if ($Leg -eq 'notrestored' -or $Leg -eq 'transient') {
+    Check (WaitLog 'restoring first' 1 120) 'C: the leave restored first'
     Check (WaitLog '*** RESTORED ***' 1 120) 'C: the group came back'
+    Check (WaitLog 'came back at epoch 1;' 1 30) 'C: the group came back at its old epoch, 1'
     Start-Sleep -Seconds 4
     Shot $app.Id 'C2-after-leave'
   } else {
+    Check (WaitLog 'restoring first' 1 120) 'C: the leave restored first'
     Check (WaitLog '*** LEFT *** the old copy' 1 120) 'C: the old copy was left'
     Start-Sleep -Seconds 1
     Shot $app.Id 'C2-after-leave'
@@ -272,12 +302,20 @@ try {
   Start-Sleep -Seconds 12
   Shot $app.Id 'C3-in-the-group'
   DumpNames $app.Id 'C3-uia'
+  if ($Leg -eq 'notrestored' -or $Leg -eq 'transient') {
+    $log = LogText
+    Check ((CountIn $log '*** LEFT ***') -eq 0) 'C: nothing was left (no LEFT in the log)'
+    Check ((CountIn $log '*** JOINED the group ***') -eq 1) 'C: no second join (JOINED only from A)'
+    $history = Get-Content -LiteralPath (Join-Path $Out "$Leg-C3-uia.txt") -Raw
+    Check ($history.Contains('From the runner''s founder: invitation 1 is out, at epoch 1.')) 'C: the earlier history line is on screen'
+  }
   CloseApp $app
 } catch {
   Note "DRIVER ERROR: $_"
   $script:failures++
 } finally {
   if ($null -ne $groupDir) { & icacls $groupDir /remove:d "$($env:USERDOMAIN)\$($env:USERNAME)" 2>$null | Out-Null }
+  foreach ($f in $deniedFiles) { & icacls $f /remove:d "$($env:USERDOMAIN)\$($env:USERNAME)" 2>$null | Out-Null }
   Set-Content -LiteralPath (Join-Path $rigDir 'stop') -Value 'stop'
   if (-not $rigProc.WaitForExit(20000)) { Stop-Process -Id $rigProc.Id -Force }
   Get-Process URmessage -ErrorAction SilentlyContinue | Stop-Process -Force
