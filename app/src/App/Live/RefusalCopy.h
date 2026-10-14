@@ -102,8 +102,8 @@ inline constexpr std::string_view kSayNoDeviceWrapKey =
 inline constexpr std::wstring_view kJoinIntro =
     L"This device is connected but is not in a group yet. A group is opened by somebody who is "
     L"already in one: send them the join code below, and paste the invitation they send back.";
-// THE INTRO WHILE THE LEAVE OF A HELD GROUP IS ON OFFER (R20). That device holds a group, so "not
-// in a group yet" is false there; the sentence under it says what it holds and what to do.
+// THE INTRO WHILE THIS DEVICE HOLDS A GROUP: while the leave of a held group is on offer (R20), and
+// on the founder's road. "Not in a group yet" is false there; the sentence under it says the rest.
 inline constexpr std::wstring_view kHeldIntro = L"This device is connected.";
 // The joiner's paste label. IT KEEPS ITS "SECRET" FRAMING (Task 58, Step 3).
 inline constexpr std::wstring_view kJoinerPasteLabel =

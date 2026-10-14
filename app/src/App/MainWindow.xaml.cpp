@@ -803,10 +803,11 @@ void MainWindow::ApplyOnboard() {
   // is not; and "Or join a group..." introduces the join panel, so it goes where the panel goes.
   if (onboardIntro_) {
     onboardIntro_.Visibility(stuck ? Visibility::Collapsed : Visibility::Visible);
-    // WHILE THE LEAVE OF A HELD GROUP IS ON OFFER (R20) this device holds a group, so the intro does
-    // not say it is "not in a group yet"; the sentence under it says what it holds.
-    onboardIntro_.Text(hstring{state->offerLeaveHeldGroup ? urmsg::live::kHeldIntro
-                                                          : urmsg::live::kJoinIntro});
+    // WHILE THIS DEVICE HOLDS A GROUP the intro does not say it is "not in a group yet": with the
+    // leave of a held group on offer (R20), and on the founder's road, where the group it made is
+    // the one it is adding to. The sentence under it says the rest.
+    onboardIntro_.Text(hstring{state->offerLeaveHeldGroup || founded ? urmsg::live::kHeldIntro
+                                                                     : urmsg::live::kJoinIntro});
   }
   if (onboardOrElse_)
     onboardOrElse_.Visibility(founded || stuck ? Visibility::Collapsed : Visibility::Visible);
