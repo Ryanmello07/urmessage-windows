@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        id: [M0, M1, M1b, M2, M3, M4, M5, M6, M7, M8, M9, M10, M11, M12]
+        id: [M0, M1, M1b, M2, M3, M4, M5, M6, M7, M8, M9, M10, M11, M12, M13, M14, M14b, M15, M15b, M16, M16b, M16c, M16d, M16e, M17]
     steps:
       - name: Check out the repo
         uses: actions/checkout@v4
