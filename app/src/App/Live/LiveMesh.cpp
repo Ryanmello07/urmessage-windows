@@ -49,6 +49,7 @@
 #include <nlohmann/json.hpp>
 
 #include "Live/HeldGroupRules.h"
+#include "Live/RefusalCopy.h"
 #include "Live/LiveWorld.h"
 #include "Live/LocalNames.h"
 #include "Log.h"
@@ -697,7 +698,8 @@ std::mutex g_onboardMutex;
 urmsg::live::OnboardPtr g_onboard;          // guarded by g_onboardMutex
 std::string g_pastedInvite;                 // guarded by g_onboardMutex; consumed by the worker
 std::string g_pastedJoinCode;               // guarded by g_onboardMutex; consumed by the worker
-// WHAT THE JOIN DIALOG SAYS FIRST after a leave whose erase did not finish (review H1), or "".
+// WHAT THE JOIN DIALOG SAYS FIRST after a leave whose erase did not finish (review H1), or after a
+// restore that refused a group founded before invitations were sealed (Task 58), or "".
 // Guarded by g_onboardMutex; written by the worker and consumed by the next JoinFromPeer.
 std::string g_afterLeaveNote;
 bool g_createGroupAsked = false;            // guarded by g_onboardMutex; consumed by the worker
@@ -709,13 +711,15 @@ std::atomic<bool> g_heldLeaveOffered{false};
 bool g_heldLeaveAsked = false;
 
 void PublishOnboard(urmsg::live::OnboardStep step, std::string joinCode, std::string message,
-                    std::string inviteCode = {}, bool offerLeaveHeldGroup = false) {
+                    std::string inviteCode = {}, bool offerLeaveHeldGroup = false,
+                    bool addRoad = false) {
   auto next = std::make_shared<urmsg::live::OnboardState>();
   next->step = step;
   next->joinCode = std::move(joinCode);
   next->inviteCode = std::move(inviteCode);
   next->message = std::move(message);
   next->offerLeaveHeldGroup = offerLeaveHeldGroup;
+  next->addRoad = addRoad;
   {
     std::lock_guard<std::mutex> lock(g_onboardMutex);
     g_onboard = std::move(next);
@@ -752,7 +756,8 @@ bool AddMemberFromCode(Session& s, const std::string& theirCode, const std::stri
   if (!DecodeBase64(theirCode, keyPackage)) {
     PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
                    "That join code could not be read. Ask for the whole code again - it is one "
-                   "long line with no spaces inside it.");
+                   "long line with no spaces inside it.",
+                   {}, false, true);
     urnw::LogWarn("live: a pasted join code was not decodable base64; refused");
     return false;
   }
@@ -769,10 +774,18 @@ bool AddMemberFromCode(Session& s, const std::string& theirCode, const std::stri
   }
   if (invite == 0) {
     const std::string why = TakeError(&err);
-    urnw::LogError("live: {} refused the add: {}",
-                   wasOpen ? "add_member_and_publish" : "add_member", why);
+    // THE ADDER'S THREE REFUSALS OF A JOIN CODE (Task 58), each in the person's words and each
+    // made before anything was staged, so the group is where it was. Told apart by the library's
+    // own sentence (Live/RefusalCopy.h); anything else is said as it was before.
+    const urmsg::live::AddCopy row = urmsg::live::ClassifyAddCopy(why);
+    urnw::LogError("live: {} refused the add ({}): {}",
+                   wasOpen ? "add_member_and_publish" : "add_member", urmsg::live::AddCopyName(row),
+                   why);
     PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
-                   "That person could not be added: " + why);
+                   row != urmsg::live::AddCopy::Other
+                       ? std::string(urmsg::live::AddCopySentence(row))
+                       : "That person could not be added: " + why,
+                   {}, false, true);
     return false;
   }
 
@@ -804,7 +817,8 @@ bool AddMemberFromCode(Session& s, const std::string& theirCode, const std::stri
     // add of the same person.
     PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
                    "They were added, but the invitation could not be written out, so there is "
-                   "nothing to send them. Ask them for a fresh join code and add them again.");
+                   "nothing to send them. Ask them for a fresh join code and add them again.",
+                   {}, false, true);
     return true;
   }
 
@@ -816,7 +830,8 @@ bool AddMemberFromCode(Session& s, const std::string& theirCode, const std::stri
       urnw::LogError("live: group_open: {}", why);
       PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
                      "They were added, but the group could not be published to the server: " +
-                         why);
+                         why,
+                     {}, false, true);
       return false;
     }
   }
@@ -825,9 +840,10 @@ bool AddMemberFromCode(Session& s, const std::string& theirCode, const std::stri
                 wasOpen ? "add_member_and_publish" : "add_member + open",
                 urnet_message_group_epoch(s.group),
                 urnet_message_group_is_open(s.group) ? "yes" : "no");
-  PublishOnboard(urmsg::live::OnboardStep::Invited, joinCode,
-                 "Send this invitation to that person. It works once, and whoever has it is in "
-                 "the group - send it the way you would send a password.",
+  // WHAT THE INVITATION IS, the dialog's label says (Live/RefusalCopy.h, kAdderInviteLabel). Since
+  // invite version 3 only the joiner's device can open it, so "whoever has it is in the group" is
+  // no longer true, and it is no longer said.
+  PublishOnboard(urmsg::live::OnboardStep::Invited, joinCode, "Send this invitation to that person.",
                  code);
   return true;
 }
@@ -1000,10 +1016,22 @@ bool JoinFromPeer(Session& s) {
   const std::filesystem::path invitePath = dir / kInviteName;
 
   // Buffer-out: call once with out == NULL to size, allocate, call again.
+  //
+  // A DEVICE THAT CANNOT MAKE A JOIN CODE IS TOLD SO ON THE SCREEN (Task 58). Its store holds no
+  // X-Wing seed (ErrNoDeviceWrapKey), so the library will not publish a join code for it. The
+  // session ends here as it did before, with the reason in the window and not only in the log.
+  auto cannotMakeJoinCode = [](std::string const& why) {
+    if (!urmsg::live::IsNoDeviceWrapKey(why)) return false;
+    urnw::LogError("live: device_key_package refused (ErrNoDeviceWrapKey): {}", why);
+    PublishOnboard(urmsg::live::OnboardStep::NoJoinCode, std::string(),
+                   std::string(urmsg::live::kSayNoDeviceWrapKey));
+    return true;
+  };
   int32_t needed = 0;
   if (!urnet_message_device_key_package(s.device, nullptr, &needed, &err)) {
     const std::string sizing = TakeError(&err);
     if (needed <= 0) {
+      if (cannotMakeJoinCode(sizing)) return false;
       urnw::LogError("live: device_key_package could not be sized: {}",
                      sizing.empty() ? "no reason given" : sizing);
       return false;
@@ -1012,7 +1040,9 @@ bool JoinFromPeer(Session& s) {
   std::vector<uint8_t> keyPackage(static_cast<size_t>(needed));
   int32_t capacity = needed;
   if (!urnet_message_device_key_package(s.device, keyPackage.data(), &capacity, &err)) {
-    urnw::LogError("live: device_key_package: {}", TakeError(&err));
+    const std::string why = TakeError(&err);
+    if (cannotMakeJoinCode(why)) return false;
+    urnw::LogError("live: device_key_package: {}", why);
     return false;
   }
   keyPackage.resize(static_cast<size_t>(capacity));
@@ -1243,10 +1273,18 @@ bool JoinFromPeer(Session& s) {
     const uint64_t invite =
         urnet_message_parse_invite(encoded.data(), static_cast<int32_t>(encoded.size()), &err);
     if (invite == 0) {
-      urnw::LogError("live: parse_invite refused it: {}", TakeError(&err));
+      const std::string why = TakeError(&err);
+      // AN INVITATION FROM AN OLDER URMESSAGE is refused here, by its version (Task 58). Every other
+      // refusal of the parse is said as it was before.
+      const bool older =
+          urmsg::live::ClassifyJoinCopy(why) == urmsg::live::JoinCopy::InviteVersion;
+      urnw::LogError("live: parse_invite refused it ({}): {}", older ? "ErrInviteVersion" : "other",
+                     why);
       PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
-                     "That invitation was refused: it did not survive the journey intact. Ask for "
-                     "a fresh one - an invitation can only be used once.");
+                     older ? std::string(urmsg::live::kSayInviteVersion)
+                           : std::string("That invitation was refused: it did not survive the "
+                                         "journey intact. Ask for a fresh one - an invitation can "
+                                         "only be used once."));
       previous.clear();
       ::Sleep(static_cast<DWORD>(kInvitePollMs));
       continue;
@@ -1304,6 +1342,16 @@ bool JoinFromPeer(Session& s) {
                           urmsg::live::GroupIdHex(held.groupId), why);
             PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
                            std::string(urmsg::live::kHeldNotLiveSentence), {}, true);
+            break;
+          }
+          // THE JOIN SEAL'S REFUSALS (Task 58), each in the person's words and each true about what
+          // it cost: the window's own sentence says the join code is still good, and the one
+          // refusal that does not carry it (ErrNoJoinCodeForInvite) is never said that way (R13).
+          if (const urmsg::live::JoinCopy row = urmsg::live::ClassifyJoinCopy(why);
+              row != urmsg::live::JoinCopy::Other) {
+            urnw::LogWarn("live: device_join refused ({}): {}", urmsg::live::JoinCopyName(row), why);
+            PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
+                           std::string(urmsg::live::JoinCopySentence(row)));
             break;
           }
           urnw::LogError(
@@ -1852,6 +1900,16 @@ void RunSession() {
     urnw::LogInfo("live: restored an existing group from disk — no handshake needed");
   }
   if (restored != 0) urnet_release(restored);
+  // A GROUP FOUNDED BEFORE INVITATIONS WERE SEALED does not restore (ErrGroupPredatesJoinSeal), and
+  // R9 has the app say so in a sentence, never in the library's words (Task 58). The join dialog's
+  // first state opens with it.
+  if (restoredCount == 0 && urmsg::live::ClassifyJoinCopy(restoreError) ==
+                                urmsg::live::JoinCopy::GroupPredatesJoinSeal) {
+    urnw::LogWarn("live: device_restore refused a group (ErrGroupPredatesJoinSeal); the join dialog "
+                  "says so");
+    std::lock_guard<std::mutex> lock(g_onboardMutex);
+    g_afterLeaveNote = std::string(urmsg::live::kSayGroupPredatesJoinSeal);
+  }
 
   // ONE PASS PER GROUP THIS DEVICE HOLDS (ledger 273). A pass ends only when the device LEAVES its
   // group, and then the next one waits for an invitation exactly as a device that never had a

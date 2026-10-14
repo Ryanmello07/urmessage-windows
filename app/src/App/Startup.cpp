@@ -43,6 +43,7 @@
 #include "Live/LiveWorld.h"    // BuildWorld, for the reply/reaction mapping gate below (pure)
 #include "Live/LocalNames.h"   // the labels gate below (pure)
 #include "Live/HeldGroupRules.h"  // the held-group lines below (pure; Task 39)
+#include "Live/RefusalCopy.h"     // the refusal copy lines below (pure; Task 58)
 #include "Demo/DemoSwitches.h"
 #include "Demo/DemoStress.h"
 
@@ -2041,6 +2042,253 @@ std::vector<std::wstring> HeldGroupDiagnostics() {
   return out;
 }
 
+// ---- what the app says for each refusal of a join or an add (Task 58) ------------------------
+//
+// PURE on the same terms as the held-group lines above: every function asked is
+// Live/RefusalCopy.h's, no SDK is loaded and no XAML is touched. The library's sentences are the
+// header's copies of urnetwork/message sdk/urmessage/errors.go at the T1 branch's head
+// (7c4119792c1d), and the clauses after them are typed here from where that branch formats them
+// (group.go's Join, invite.go's ParseInvite, joinseal.go and rolescommit.go for the adder,
+// device.go's KeyPackage). Nothing reads the library: a sentence reworded there leaves these green.
+// THE TABLE'S OWN WORDS ARE TYPED HERE A SECOND TIME, from the plan's Task 58, so a sentence edited
+// in the header is a FAIL here and not a silent change of what a person reads. Each line prints
+// PASS or FAIL, the QUERY, and every case it asked.
+std::vector<std::wstring> RefusalCopyDiagnostics() {
+  using namespace urmsg::live;
+  std::vector<std::wstring> out;
+  const std::string hex(64, 'c');
+  const std::string refused(kLibJoinRefused);
+  const std::string noCode(kLibNoJoinCodeForInvite);
+  const std::string spent(kLibJoinCodeSpent);
+  const std::string predates(kLibGroupPredatesJoinSeal);
+  const std::string engineNoCode =
+      "urmessage: JoinFromWelcomeInto: messagegroup: no key package this store holds is addressed "
+      "by this welcome";
+
+  // 1. which row a refusal of the join road is, and the order that decides it.
+  {
+    struct Case {
+      const wchar_t* name;
+      std::string text;
+      JoinCopy want;
+    };
+    const Case cases[] = {
+        {L"window-seal", refused + ": urmessage: the join seal's authenticator does not verify",
+         JoinCopy::JoinRefused},
+        {L"window-engine", refused + ": urmessage: JoinFromWelcomeInto: mls: welcome",
+         JoinCopy::JoinRefused},
+        {L"window-not-first", "urmessage: the session at epoch 1: " + refused, JoinCopy::Other},
+        {L"no-code", noCode + ": " + engineNoCode, JoinCopy::NoJoinCodeForInvite},
+        {L"no-code-under-window", refused + ": " + noCode + ": " + engineNoCode,
+         JoinCopy::NoJoinCodeForInvite},
+        {L"no-code-over-window", noCode + ": " + refused, JoinCopy::NoJoinCodeForInvite},
+        {L"spent-putback",
+         spent + ": urmessage: JoinFromWelcomeInto: x, and the join code could not be put back: io",
+         JoinCopy::JoinCodeSpent},
+        {L"spent-record",
+         spent + ": this group joined and its record could not be persisted, so a restart would not "
+                 "come back into it: io",
+         JoinCopy::JoinCodeSpent},
+        {L"version",
+         std::string(kLibInviteVersion) + ": it is at version 0x0002, and this build reads only 0x0003",
+         JoinCopy::InviteVersion},
+        {L"predates-join", refused + ": " + predates, JoinCopy::GroupPredatesJoinSeal},
+        {L"predates-restore", "urmessage: restore: group " + hex + " at epoch 1: " + predates,
+         JoinCopy::GroupPredatesJoinSeal},
+        {L"held",
+         "urmessage: this device already holds this group, so an invite into it is refused; leave it "
+         "first with ForgetGroup to join it again: group " + hex + " is live on this device",
+         JoinCopy::Other},
+        {L"shape", "urmessage: this invite's join seal is not the shape an invite carries: x",
+         JoinCopy::Other},
+        {L"our-own-words", std::string(kSayJoinRefused), JoinCopy::Other},
+        {L"empty", std::string(), JoinCopy::Other},
+    };
+    std::wstring table;
+    int right = 0;
+    for (auto const& c : cases) {
+      const JoinCopy got = ClassifyJoinCopy(c.text);
+      if (got == c.want) ++right;
+      if (!table.empty()) table += L", ";
+      table += std::format(L"{}->{}{}", c.name, Widen(JoinCopyName(got)), got == c.want ? L"" : L"(WRONG)");
+    }
+    const int total = static_cast<int>(std::size(cases));
+    out.push_back(std::format(
+        L"  join copy        : {}  {}/{} classified: {}   [query: ErrNoJoinCodeForInvite's sentence "
+        L"anywhere is its own row, then ErrJoinCodeSpent's, ErrGroupPredatesJoinSeal's and "
+        L"ErrInviteVersion's; ErrJoinRefused's is its row only as the text's FIRST words; anything "
+        L"else, our own words included, is the caller's fallback]",
+        Verdict(right == total), right, total, table));
+  }
+
+  // 2. R13, on its own line: no spelling of ErrNoJoinCodeForInvite reaches the row that says the
+  //    join code is still good, and its sentence claims nothing it cannot know (R17).
+  {
+    const std::string spellings[] = {noCode + ": " + engineNoCode,
+                                     refused + ": " + noCode + ": " + engineNoCode,
+                                     noCode + ": " + refused, noCode};
+    int own = 0;
+    for (auto const& text : spellings)
+      if (ClassifyJoinCopy(text) == JoinCopy::NoJoinCodeForInvite) ++own;
+    const std::string_view say = JoinCopySentence(JoinCopy::NoJoinCodeForInvite);
+    const std::string_view good = JoinCopySentence(JoinCopy::JoinRefused);
+    const bool ownSentence = say == kSayNoJoinCodeForInvite && say != good;
+    const bool notStillGood = say.find("still good") == std::string_view::npos;
+    const bool notUsed = say.find("was used") == std::string_view::npos;
+    const bool notNoneHeld = say.find("has no join code") == std::string_view::npos &&
+                             say.find("holds no join code") == std::string_view::npos;
+    const bool windowSaysGood = good.find("still good") != std::string_view::npos;
+    const int total = static_cast<int>(std::size(spellings));
+    const bool ok = own == total && ownSentence && notStillGood && notUsed && notNoneHeld && windowSaysGood;
+    out.push_back(std::format(
+        L"  join copy R13    : {}  {}/{} spellings of ErrNoJoinCodeForInvite are its own row | its own "
+        L"sentence {} | not \"still good\" {} | not \"was used\" {} | does not say the device holds "
+        L"none {} | the window's row says \"still good\" {}   [query: an invitation no join code of "
+        L"this device can be read for is never told its join code is still good, whatever text "
+        L"surrounds the sentence (R13); its copy says neither that the code was used nor that the "
+        L"device has none (R17)]",
+        Verdict(ok), own, total, ownSentence, notStillGood, notUsed, notNoneHeld, windowSaysGood));
+  }
+
+  // 3. which row a refusal of the add is.
+  {
+    struct Case {
+      const wchar_t* name;
+      std::string text;
+      AddCopy want;
+    };
+    const std::string invalid(kLibKeyPackageInvalid);
+    const Case cases[] = {
+        {L"invalid-decode", invalid + ": it does not decode: syntax: short", AddCopy::KeyPackageInvalid},
+        {L"invalid-signature", invalid + ": mls: the key package's signature does not verify",
+         AddCopy::KeyPackageInvalid},
+        {L"invalid-live", invalid + ": key package 1 of 1 does not decode: syntax: short",
+         AddCopy::KeyPackageInvalid},
+        {L"invalid-no-key", invalid + ": its leaf publishes no key a join seal can be made to: x",
+         AddCopy::KeyPackageInvalid},
+        {L"cannot-open", std::string(kLibJoinerCannotOpenSealedInvite),
+         AddCopy::JoinerCannotOpenSealedInvite},
+        {L"has-a-leaf", std::string(kLibJoinerAlreadyHasALeaf) + ": urmessage: this identity is claimed",
+         AddCopy::JoinerAlreadyHasALeaf},
+        {L"role", "urmessage: a member may not add a new identity to this group", AddCopy::Other},
+        {L"join-text", refused + ": x", AddCopy::Other},
+        {L"our-own-words", std::string(kSayKeyPackageInvalid), AddCopy::Other},
+        {L"empty", std::string(), AddCopy::Other},
+    };
+    std::wstring table;
+    int right = 0;
+    for (auto const& c : cases) {
+      const AddCopy got = ClassifyAddCopy(c.text);
+      if (got == c.want) ++right;
+      if (!table.empty()) table += L", ";
+      table += std::format(L"{}->{}{}", c.name, Widen(AddCopyName(got)), got == c.want ? L"" : L"(WRONG)");
+    }
+    const int total = static_cast<int>(std::size(cases));
+    out.push_back(std::format(
+        L"  add copy         : {}  {}/{} classified: {}   [query: the adder's three refusals of a join "
+        L"code, each by its own sentence wherever it stands; a refusal by role, a join's refusal and "
+        L"our own words are the caller's fallback]",
+        Verdict(right == total), right, total, table));
+  }
+
+  // 4. the startup refusal of a device with no X-Wing seed.
+  {
+    const bool wrapped = IsNoDeviceWrapKey(
+        std::string(kLibNoDeviceWrapKey) +
+        ", and so it publishes no join code: an invite to one is sealed to that leaf");
+    const bool bare = IsNoDeviceWrapKey(kLibNoDeviceWrapKey);
+    const bool otherKp = !IsNoDeviceWrapKey("urmessage: this device's key package: mls: x");
+    const bool empty = !IsNoDeviceWrapKey("");
+    const bool says = kSayNoDeviceWrapKey.find("cannot make a join code") != std::string_view::npos &&
+                      kSayNoDeviceWrapKey.find("urmessage:") == std::string_view::npos;
+    const bool ok = wrapped && bare && otherKp && empty && says;
+    out.push_back(std::format(
+        L"  no wrap key      : {}  KeyPackage's refusal {} | the bare sentinel {} | another key package "
+        L"error not it {} | empty not it {} | \"{}\" {}   [query: a device whose store holds no X-Wing "
+        L"seed is told on screen that this installation cannot make a join code]",
+        Verdict(ok), wrapped, bare, otherKp, empty, Widen(kSayNoDeviceWrapKey), says));
+  }
+
+  // 5. the table's words, as the plan writes them, and each row's sentence is its own.
+  {
+    struct Row {
+      const wchar_t* name;
+      std::string_view got;
+      std::string_view table;
+    };
+    const Row rows[] = {
+        {L"ErrJoinRefused", JoinCopySentence(JoinCopy::JoinRefused),
+         "This invitation was refused. Your join code is still good: ask for the invitation to be "
+         "sent again another way."},
+        {L"ErrNoJoinCodeForInvite", JoinCopySentence(JoinCopy::NoJoinCodeForInvite),
+         "This invitation cannot be used with any join code this device can read. Make a new join "
+         "code and ask to be invited again."},
+        {L"ErrJoinCodeSpent", JoinCopySentence(JoinCopy::JoinCodeSpent),
+         "This join did not complete. Make a new join code and ask to be added again."},
+        {L"ErrInviteVersion", JoinCopySentence(JoinCopy::InviteVersion),
+         "This invitation was made by an older URmessage. Ask them to update and invite you again."},
+        {L"ErrGroupPredatesJoinSeal", JoinCopySentence(JoinCopy::GroupPredatesJoinSeal),
+         "This group was started before invitations were sealed. Leave it and start it again."},
+        {L"ErrJoinerCannotOpenSealedInvite", AddCopySentence(AddCopy::JoinerCannotOpenSealedInvite),
+         "This join code was made by an older URmessage. Ask them for a new one from an updated app."},
+        {L"ErrKeyPackageInvalid", AddCopySentence(AddCopy::KeyPackageInvalid),
+         "This is not a valid join code. Ask them to send it again."},
+        {L"ErrJoinerAlreadyHasALeaf", AddCopySentence(AddCopy::JoinerAlreadyHasALeaf),
+         "They already have an entry in this group, perhaps from an invitation that was never "
+         "opened. Remove that entry, then add their new join code."},
+    };
+    int verbatim = 0, raw = 0;
+    std::wstring wrong;
+    for (auto const& r : rows) {
+      if (r.got == r.table) {
+        ++verbatim;
+      } else {
+        if (!wrong.empty()) wrong += L", ";
+        wrong += r.name;
+      }
+      if (r.got.find("urmessage:") != std::string_view::npos || r.got.find("Err") != std::string_view::npos)
+        ++raw;
+    }
+    int distinct = 0;
+    for (size_t i = 0; i < std::size(rows); ++i) {
+      bool unique = !rows[i].got.empty();
+      for (size_t j = 0; j < std::size(rows); ++j)
+        if (i != j && rows[i].got == rows[j].got) unique = false;
+      if (unique) ++distinct;
+    }
+    const bool othersEmpty =
+        JoinCopySentence(JoinCopy::Other).empty() && AddCopySentence(AddCopy::Other).empty();
+    const int total = static_cast<int>(std::size(rows));
+    const bool ok = verbatim == total && raw == 0 && distinct == total && othersEmpty;
+    out.push_back(std::format(
+        L"  refusal copy     : {}  {}/{} verbatim from the table{}{} | {} carry the library's words | "
+        L"{}/{} distinct | Other says nothing of its own {}   [query: each row a person is shown is "
+        L"Task 58's sentence, word for word, and is its own; none is the library's]",
+        Verdict(ok), verbatim, total, wrong.empty() ? L"" : L", WRONG: ", wrong, raw, distinct, total,
+        othersEmpty));
+  }
+
+  // 6. the dialog's own copy: R20's intro in the held state, the adder's label, the joiner's label.
+  {
+    const std::wstring held(kHeldIntro);
+    const std::wstring join(kJoinIntro);
+    const std::wstring adder(kAdderInviteLabel);
+    const std::wstring paste(kJoinerPasteLabel);
+    const bool heldTrue = !held.empty() && held.find(L"not in a group") == std::wstring::npos && held != join;
+    const bool joinKept = join.find(L"not in a group yet") != std::wstring::npos;
+    const bool adderVerbatim = adder == L"Only their device can open it. It works once. Send it privately.";
+    const bool pasteSecret = paste.find(L"SECRET") != std::wstring::npos;
+    const bool ok = heldTrue && joinKept && adderVerbatim && pasteSecret;
+    out.push_back(std::format(
+        L"  dialog copy      : {}  held intro \"{}\" says nothing of \"not in a group\" {} | the join "
+        L"road's intro kept {} | the adder's label verbatim {} (\"{}\") | the joiner's paste label "
+        L"keeps \"SECRET\" {}   [query: R20, the held state's intro is true of a device that holds a "
+        L"group; Task 58 Step 3's adder copy word for word; the joiner's label keeps its framing]",
+        Verdict(ok), held, heldTrue, joinKept, adderVerbatim, adder, pasteSecret));
+  }
+  return out;
+}
+
 }  // namespace
 
 void StartupLogInit() {
@@ -2159,6 +2407,10 @@ std::vector<std::wstring> CollectDiagnostics() {
   // which refusal it is, where the group id comes from, the leave's own refusal, and the two
   // sentences. Pure, like the roster's lines above.
   for (auto& line : HeldGroupDiagnostics()) lines.push_back(std::move(line));
+  // What the app says for each refusal of a join or an add, and for a device that cannot make a
+  // join code (Task 58): the rule per row, R13 on its own line, the table's words, and the dialog's
+  // own copy. Pure, like the held-group lines above.
+  for (auto& line : RefusalCopyDiagnostics()) lines.push_back(std::move(line));
   {
     using namespace urmsg::demo;
     World const& w = GetWorld();

@@ -19,6 +19,7 @@
 #include "Identicon.h"
 #include "Live/HeldGroupRules.h"
 #include "Live/LiveMesh.h"
+#include "Live/RefusalCopy.h"
 #include "Live/LiveWorld.h"
 #include "Live/LocalNames.h"
 #include "Localization.h"
@@ -368,7 +369,12 @@ urmsg::demo::World const& EmptyWorld() {
   static const urmsg::demo::World dialling = MakeEmptyWorld(urmsg::demo::ConnectState::Connecting);
   static const urmsg::demo::World stuck = MakeEmptyWorld(urmsg::demo::ConnectState::Offline);
   auto onboard = urmsg::live::OnboardSnapshot();
-  return onboard && onboard->step == urmsg::live::OnboardStep::NoCredential ? stuck : dialling;
+  // A launch that cannot make a join code (Task 58) has closed its session as well: nothing is
+  // dialling there either.
+  return onboard && (onboard->step == urmsg::live::OnboardStep::NoCredential ||
+                     onboard->step == urmsg::live::OnboardStep::NoJoinCode)
+             ? stuck
+             : dialling;
 }
 
 urmsg::demo::World const& MainWindow::ActiveWorld() const {
@@ -452,9 +458,7 @@ void MainWindow::BuildOnboardDialog() {
 
   onboardIntro_ = TextBlock();
   onboardIntro_.TextWrapping(TextWrapping::Wrap);
-  onboardIntro_.Text(
-      L"This device is connected but is not in a group yet. A group is opened by somebody who is "
-      L"already in one: send them the join code below, and paste the invitation they send back.");
+  onboardIntro_.Text(hstring{urmsg::live::kJoinIntro});
   panel.Children().Append(onboardIntro_);
 
   // THE JOIN CONTROLS AS ONE PANEL, so ApplyOnboard can hide them in a breath once this device
@@ -498,8 +502,7 @@ void MainWindow::BuildOnboardDialog() {
 
   TextBlock pasteLabel;
   pasteLabel.TextWrapping(TextWrapping::Wrap);
-  pasteLabel.Text(L"The invitation they send back. THIS ONE IS A SECRET \u2014 whoever has it is in the "
-                  L"group, and it can only be used once.");
+  pasteLabel.Text(hstring{urmsg::live::kJoinerPasteLabel});
   pasteLabel.Opacity(0.75);
   onboardJoinPanel_.Children().Append(pasteLabel);
 
@@ -595,8 +598,8 @@ void MainWindow::BuildOnboardDialog() {
   {
     TextBlock label;
     label.TextWrapping(TextWrapping::Wrap);
-    label.Text(L"Send this invitation to the person whose code you just pasted. WHOEVER HAS IT IS "
-               L"IN THE GROUP, and it works once \u2014 send it the way you would send a password.");
+    // THE ADDER'S COPY (Task 58, Step 3), verbatim from Live/RefusalCopy.h.
+    label.Text(hstring{urmsg::live::kAdderInviteLabel});
     label.Opacity(0.75);
     onboardInvitePanel_.Children().Append(label);
 
@@ -762,13 +765,20 @@ void MainWindow::ApplyOnboard() {
   // THE INVITATION IS SHOWN FOR EXACTLY ONE PUBLICATION AND THEN GOES. It can be used once, so
   // leaving it on screen past its moment is an invitation to send the same one to two people --
   // and the second of them is refused at the join with nothing here able to say why.
+  // A REFUSED ADD IS STILL THE FOUNDER'S ROAD (Task 58): its sentence asks for another join code,
+  // so the box that takes one stays, and the join road does not come back while this device holds
+  // the group it was adding to.
   const bool founded = state->step == urmsg::live::OnboardStep::Founded ||
-                       state->step == urmsg::live::OnboardStep::Invited;
+                       state->step == urmsg::live::OnboardStep::Invited ||
+                       (state->step == urmsg::live::OnboardStep::Refused && state->addRoad);
   const bool haveInvite = !state->inviteCode.empty();
   // NO CREDENTIAL: neither road can be taken, so neither is drawn - only the sentence that says
   // where the file goes. A join panel with an empty code in it would ask for a step that cannot
   // work yet.
-  const bool stuck = state->step == urmsg::live::OnboardStep::NoCredential;
+  // AND AN INSTALLATION THAT CANNOT MAKE A JOIN CODE (Task 58) is stuck the same way: no join code
+  // to show and no road it can take.
+  const bool noCredential = state->step == urmsg::live::OnboardStep::NoCredential;
+  const bool stuck = noCredential || state->step == urmsg::live::OnboardStep::NoJoinCode;
   if (onboardJoinPanel_)
     onboardJoinPanel_.Visibility(founded || stuck ? Visibility::Collapsed : Visibility::Visible);
   if (onboardFoundButton_)
@@ -791,13 +801,18 @@ void MainWindow::ApplyOnboard() {
   // would light it.
   // The opening paragraph says "This device is connected", which a computer with no credential
   // is not; and "Or join a group..." introduces the join panel, so it goes where the panel goes.
-  if (onboardIntro_)
+  if (onboardIntro_) {
     onboardIntro_.Visibility(stuck ? Visibility::Collapsed : Visibility::Visible);
+    // WHILE THE LEAVE OF A HELD GROUP IS ON OFFER (R20) this device holds a group, so the intro does
+    // not say it is "not in a group yet"; the sentence under it says what it holds.
+    onboardIntro_.Text(hstring{state->offerLeaveHeldGroup ? urmsg::live::kHeldIntro
+                                                          : urmsg::live::kJoinIntro});
+  }
   if (onboardOrElse_)
     onboardOrElse_.Visibility(founded || stuck ? Visibility::Collapsed : Visibility::Visible);
   if (onboardDialog_) {
-    onboardDialog_.Title(box_value(stuck ? hstring{L"URmessage needs its credential"}
-                                         : hstring{L"Join a group"}));
+    onboardDialog_.Title(box_value(noCredential ? hstring{L"URmessage needs its credential"}
+                                                : hstring{L"Join a group"}));
     onboardDialog_.PrimaryButtonText(founded || stuck ? hstring{} : hstring{L"Join"});
     // AND THE CLOSE BUTTON SAYS WHAT CLOSING MEANS, which changes with the road. "Not now" is
     // right for somebody who has not joined anything: they are putting it off. It is WRONG for a
