@@ -12,6 +12,7 @@ on:
   push:
     branches:
       - 'ci/task39-shots**'
+      - 'ci/task39-mutants-v2'
 
 permissions:
   contents: read

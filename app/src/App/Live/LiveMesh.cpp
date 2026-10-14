@@ -922,15 +922,8 @@ HeldLeave LeaveHeldGroup(Session& s, HeldInvite const& held, std::string const& 
   char* err = nullptr;
   const std::string gidHex = urmsg::live::GroupIdHex(held.groupId);
   const int32_t gidLen = static_cast<int32_t>(held.groupId.size());
-  urnw::LogInfo("live: held leave: restoring first, in case group {} opens now", gidHex);
-  if (RestoreHeldGroup(s, held)) {
-    urnw::LogInfo("live: *** RESTORED *** group {} came back at epoch {}; this device is in it, "
-                  "and nothing was left",
-                  gidHex, urnet_message_group_epoch(s.group));
-    PublishOnboard(urmsg::live::OnboardStep::Joined, std::string(), "You are in the group.");
-    return HeldLeave::CameBack;
-  }
-  urnw::LogWarn("live: held leave: group {} did not come back; leaving it", gidHex);
+  // MUTANT M3 (ci/task39-mutants-v2, NEVER MERGE): F1's restore-before-forget is removed.
+  (void)&RestoreHeldGroup;
   int32_t kind = urnet_message_device_forget_group(s.device, held.groupId.data(), gidLen, &err);
   std::string why = TakeError(&err);
   // UNFINISHED IS A DEVICE THAT HAS LEFT, as it is for LeaveGroup above; asked once more, and the
