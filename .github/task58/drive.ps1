@@ -16,14 +16,19 @@
 #              process opens it with no sharing and takes LockFileEx's exclusive lock, as the T1
 #              cp3b tests' transientHold does. The restore road, the join road, then (R28) a held
 #              refusal after that restore, and a relaunch that restores the group
-#   permanent  (R27) the record's read DENIED by an ACL, which R26 makes damage: the restore says
-#              so, the held refusal over it offers "Leave the old copy", and the press leaves it
+#   permanent  (R27, R30 point 4) the record's BYTES damaged (its checksum broken), which is
+#              proven permanent: the restore says so, the held refusal over it offers "Leave the old
+#              copy", and the press leaves it
 #   epochheld  (R28) the group's EPOCH files held by the same real lock. First held before the app
 #              starts (the restore road: the held refusal says R25 Q5's row). Then the leave road:
-#              the startup restore fails for a permanent reason (the epoch files' read denied), the
-#              held refusal offers the leave, the files are held by the lock instead, and the press
-#              says R25 Q5's row, calls no forget_group and erases nothing. A relaunch restores the
-#              group with its history after each.
+#              the startup restore fails for a permanent reason (the epoch files' bytes damaged),
+#              the held refusal offers the leave, the bytes are put back and the files held by the
+#              lock instead, and the press says R25 Q5's row, calls no forget_group and erases
+#              nothing. A relaunch restores the group with its history after each.
+#   unproven   (R29, R30) a read DENIED by an ACL, which this build cannot classify: the record's,
+#              then an epoch file's, then an epoch file's again at the press of a leave offered
+#              after a permanent startup failure. Each says R29's unproven row with no leave, and a
+#              relaunch with the read given back restores the group, every hash unchanged
 #
 # R25's follow-up (ci/task58-shots-v3): the F5 sentence (adder), "Make a new join code" before and
 # after a press (joiner). R27's and R28's (ci/task58-shots-v4): notreadnow with a real lock,
@@ -33,7 +38,7 @@
 # keyboard input is synthesized. CAPTURE: PrintWindow(PW_RENDERFULLCONTENT) of the app's own window,
 # found by its process id.
 param(
-  [Parameter(Mandatory = $true)][ValidateSet('joiner', 'adder', 'held', 'nowrapkey', 'notreadnow', 'permanent', 'epochheld')][string]$Leg,
+  [Parameter(Mandatory = $true)][ValidateSet('joiner', 'adder', 'held', 'nowrapkey', 'notreadnow', 'permanent', 'epochheld', 'unproven')][string]$Leg,
   [Parameter(Mandatory = $true)][string]$Exe,
   [Parameter(Mandatory = $true)][string]$Rig,
   [Parameter(Mandatory = $true)][string]$RigWorkDir,
@@ -78,6 +83,8 @@ $say = @{
   NewJoinCodeButton  = 'Make a new join code'
   SendJoinCode       = 'Send your join code to whoever is setting the group up, and paste the invitation they send back.'
   NotInAGroup        = 'This device is not in a group yet.'
+  Unproven           = 'This conversation could not be read on this device, and nothing was changed. Check that URmessage can read its folder, then open URmessage again.'
+  NotConnected       = 'This device is not connected right now, and nothing was changed. Try again when it is connected.'
   NoWrapKey          = 'This installation cannot make a join code, so it cannot join a group. Its saved data was made by an older URmessage.'
   AdderLabel         = 'Only their device can open it. It works once. Send it privately.'
   HeldIntro          = 'This device is connected.'
@@ -337,6 +344,29 @@ function GiveRead([string[]]$paths) {
     & icacls $path /remove:d $who | ForEach-Object { Note "icacls: $_" }
     $script:denied = @($script:denied | Where-Object { $_ -ne $path })
     Check ((ReadFailure $path) -eq '') "deny: $(Split-Path -Leaf $path) reads again"
+  }
+}
+# ---- BYTE DAMAGE (R30 point 4): the last octet of a record flipped, which breaks its checksum, a
+# verdict this build makes on bytes it read and so PROVEN permanent. The original bytes are kept so
+# a leg can put them back.
+$script:originals = @{}
+function BreakBytes([string[]]$paths) {
+  foreach ($path in $paths) {
+    $bytes = [IO.File]::ReadAllBytes($path)
+    $script:originals[$path] = [byte[]]$bytes.Clone()
+    $bytes[$bytes.Length - 1] = [byte]($bytes[$bytes.Length - 1] -bxor 1)
+    [IO.File]::WriteAllBytes($path, $bytes)
+    $now = [IO.File]::ReadAllBytes($path)
+    Check (($now.Length -eq $bytes.Length) -and ($now[$now.Length - 1] -ne $script:originals[$path][$now.Length - 1])) "bytes: $(Split-Path -Leaf $path)'s last octet is flipped ($($now.Length) octets)"
+  }
+}
+function RestoreBytes([string[]]$paths) {
+  foreach ($path in $paths) {
+    [IO.File]::WriteAllBytes($path, $script:originals[$path])
+    $now = [IO.File]::ReadAllBytes($path)
+    $same = $now.Length -eq $script:originals[$path].Length
+    for ($i = 0; $same -and $i -lt $now.Length; $i++) { if ($now[$i] -ne $script:originals[$path][$i]) { $same = $false } }
+    Check $same "bytes: $(Split-Path -Leaf $path) is put back as it was"
   }
 }
 function DirState([string]$dir) {
@@ -631,14 +661,15 @@ try {
       Check (Test-Path -LiteralPath $meta) "A: the group's record is on the disk: $meta"
       Note "A: the group's directory: $(DirState $groupDir)"
 
-      # B. THE RECORD'S READ IS DENIED, which R26 makes PERMANENT damage
-      DenyRead @($meta)
+      # B. THE RECORD'S BYTES ARE DAMAGED (R30 point 4: a deny ACL is no longer damage)
+      BreakBytes @($meta)
 
       # C. THE RESTORE SAYS SO: the library reports the record as one that does not read
       $app = StartApp
       Check (WaitLog 'a group record on this device''s disk does not read, so that group cannot be restored' 1 240) 'C: the restore reported the record as damage (ErrGroupRecordDamaged)'
       $log = LogText
-      Check (($log -match 'meta could not be read: open [^\r\n]*Access is denied')) 'C: the record''s read was denied'
+      Check ((CountIn $log 'urmessage: this does not read as a record this store writes') -ge 1) 'C: the verdict was on the record''s bytes (ErrStateStoreFormat)'
+      Check ((CountIn $log 'device_restore refused a group (ErrGroupReadUnproven)') -eq 0) 'C: the restore did not report it as a file it cannot classify'
       Check ((CountIn $log 'device_restore refused a group (ErrGroupRecordNotReadNow)') -eq 0) 'C: the restore did not report it as a file not read just now'
       Check ($null -ne (WaitName $app.Id "$($say.NotInAGroup) $($say.SendJoinCode)" 60)) 'C: the dialog waits, with the join road''s text'
       Start-Sleep -Seconds 2
@@ -663,7 +694,6 @@ try {
       Row $app.Id 'E1-left' 'device_join refused (ErrNoJoinCodeForInvite)' 1 $say.NoJoinCode @('Leave the old copy of this group', $say.HeldNotLive)
       Check (-not (Test-Path -LiteralPath $meta)) "E: the record is gone"
       Check (@(Get-ChildItem -LiteralPath $groupDir -Recurse -File -ErrorAction SilentlyContinue).Count -eq 0) "E: no file of the group is left ($(DirState $groupDir))"
-      $script:denied = @($script:denied | Where-Object { $_ -ne $meta })
       CloseApp $app
     }
 
@@ -713,25 +743,24 @@ try {
       CloseApp $app
 
       # ---- PART 2, R28's leave road. The startup restore fails for a PERMANENT reason (the epoch
-      #      files' read denied: the library notes the group as one that will not come back), so
-      #      the held refusal offers the leave. Then the denial is lifted, the epoch files are held
-      #      by the real lock, and the leave is pressed: its restore-first could not read a file
-      #      just now, so it says R25 Q5's row and does NOT call forget_group (which, for a group
-      #      noted at startup, would erase it)
-      DenyRead $epochs
+      #      files' bytes damaged: the library notes the group as one that will not come back), so
+      #      the held refusal offers the leave. Then the bytes are put back, the epoch files are
+      #      held by the real lock, and the leave is pressed: its restore-first could not read a
+      #      file just now, so it says R25 Q5's row and does NOT call forget_group
+      BreakBytes $epochs
       $app = StartApp
       # (the third key package of this leg: A's first launch and part 1's restore road published the
       # first two, and part 1's relaunch restored the group and published none)
       Check (WaitLog 'published this device''s key package' 3 240) 'F: the app holds no live group and waits'
       Check ($null -ne (WaitName $app.Id "$($say.NotInAGroup) $($say.SendJoinCode)" 60)) 'F: the dialog waits, with the join road''s text'
       $log = LogText
-      Check (($log -match 'epoch\\[0-9a-f]+ could not be read: open [^\r\n]*Access is denied')) 'F: the startup restore''s epoch read was denied (permanent)'
+      Check (($log -match 'at epoch [0-9]+: [^\r\n]*this does not read as a record this store writes')) 'F: the startup restore found the epoch state''s bytes damaged (proven permanent)'
       Check ((CountIn $log 'device_restore refused a group (ErrGroupRecordNotReadNow)') -eq 1) 'F: this restore did not report a file not read just now (the count is part 1''s)'
       Set-Named $app.Id 'Paste the invitation here' (B64 'invite1.bin') | Out-Null
       Invoke-Named $app.Id 'Join' | Out-Null
       Row $app.Id 'F2-held-leave-offered' 'is not live; the leave is offered' 1 $say.HeldNotLive @($say.NotReadNow, $say.JoinIntro)
       Check ($null -ne (FindByName $app.Id 'Leave the old copy of this group')) 'F: the leave is offered'
-      GiveRead $epochs
+      RestoreBytes $epochs
       StartHold 'epoch2' $epochs
       Invoke-Named $app.Id 'Leave the old copy of this group' | Out-Null
       Row $app.Id 'G2-leave-stops' 'forget_group was not called (R28)' 1 $say.NotReadNow @('Leave the old copy of this group', $say.HeldNotLive, $say.JoinIntro)
@@ -749,6 +778,107 @@ try {
       Check (WaitLog 'restored an existing group from disk' 2 240) 'H: with nothing held, the next launch restored the group'
       Start-Sleep -Seconds 8
       Shot $app.Id 'H2-restored'
+      CloseApp $app
+    }
+
+    'unproven' {
+      # A. the app joins the founder's group and holds it on its disk
+      $app = StartApp
+      Check (WaitLog '*** JOINED the group ***' 1 240) 'A: the app joined the founder''s group'
+      Start-Sleep -Seconds 8
+      Shot $app.Id 'A-joined'
+      CloseApp $app
+      $gidHex = (Get-Content -LiteralPath (Join-Path $rigDir 'gid.txt') -Raw).Trim()
+      $groupDir = GroupDirOf $gidHex
+      $meta = Join-Path $groupDir 'meta'
+      $epochs = @(Get-ChildItem -LiteralPath (Join-Path $groupDir 'epoch') -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+      Check (Test-Path -LiteralPath $meta) "A: the group's record is on the disk: $meta"
+      Check ($epochs.Count -ge 1) "A: the group has epoch files ($($epochs.Count))"
+      $hashes = @{}
+      foreach ($f in @(Get-ChildItem -LiteralPath $groupDir -Recurse -File)) { $hashes[$f.FullName] = (Get-FileHash -LiteralPath $f.FullName).Hash }
+      $before = DirState $groupDir
+      Note "A: the group's directory: $before"
+      function Unchanged([string]$when) {
+        $now = DirState $groupDir
+        Check ($now -eq $before) "$when`: the group's directory is as it was ($now)"
+        $same = $true
+        foreach ($k in $hashes.Keys) { if ((Get-FileHash -LiteralPath $k -ErrorAction SilentlyContinue).Hash -ne $hashes[$k]) { $same = $false; Note "$when`: $k changed" } }
+        Check $same "$when`: every file of the group is the one it was"
+      }
+      $restoreSays = "$($say.Unproven) $($say.SendJoinCode)"
+
+      # ---- PART 1: THE RECORD'S READ DENIED before the app starts (the deny's control: a read
+      #      under it is refused, "Access is denied", 5), the restore road and the join road
+      DenyRead @($meta)
+      $app = StartApp
+      Row $app.Id 'C1-restore-record-denied' 'device_restore refused a group (ErrGroupReadUnproven)' 1 $restoreSays @($say.JoinIntro, 'Leave the old copy of this group', "$($say.NotReadNow) $($say.SendJoinCode)")
+      Check ($null -ne (FindByName $app.Id $say.HeldIntro)) "C: the intro reads, verbatim: $($say.HeldIntro)"
+      $log = LogText
+      Check ((CountIn $log 'could not be read, and this build cannot tell whether that will pass') -ge 1) 'C: the library''s report was ErrGroupReadUnproven'
+      Check (($log -match 'meta could not be read: open [^\r\n]*Access is denied')) 'C: the deny''s control inside the app: the library''s own read of the record was refused, Access is denied (5)'
+      Set-Named $app.Id 'Paste the invitation here' (B64 'invite1.bin') | Out-Null
+      Invoke-Named $app.Id 'Join' | Out-Null
+      Row $app.Id 'D1-join-record-denied' 'device_join refused (ErrGroupReadUnproven)' 1 $say.Unproven @($say.HeldNotLive, 'Leave the old copy of this group', $say.JoinIntro, $say.NewJoinCodeButton)
+      Check ((CountIn (LogText) 'could not be read, so the invite into it is refused: urmessage: a file of a group on this device''s disk could not be read, and this build cannot tell') -ge 1) 'D: the library''s refusal was the gate''s unanswered read, carrying the unproven class'
+      CloseApp $app
+      GiveRead @($meta)
+      Unchanged 'D'
+      $app = StartApp
+      Check (WaitLog 'restored an existing group from disk' 1 240) 'E: with the read given back, the next launch restored the group'
+      Start-Sleep -Seconds 8
+      Shot $app.Id 'E1-restored'
+      CloseApp $app
+
+      # ---- PART 2: AN EPOCH FILE'S READ DENIED before the app starts. Its record reads, so the
+      #      invitation meets the held-group gate, and after this restore the held refusal says the
+      #      unproven row with no leave (R28's flag, set by either class)
+      DenyRead $epochs
+      $app = StartApp
+      Row $app.Id 'F2-restore-epoch-denied' 'device_restore refused a group (ErrGroupReadUnproven)' 2 $restoreSays @($say.JoinIntro, 'Leave the old copy of this group')
+      Check (((LogText) -match 'epoch\\[0-9a-f]+ could not be read: open [^\r\n]*Access is denied')) 'F: the library''s own read of the epoch file was refused, Access is denied (5)'
+      Set-Named $app.Id 'Paste the invitation here' (B64 'invite1.bin') | Out-Null
+      Invoke-Named $app.Id 'Join' | Out-Null
+      Row $app.Id 'G2-held-after-unproven-restore' 'no leave is offered (R29)' 1 $say.Unproven @($say.HeldNotLive, 'Leave the old copy of this group', $say.JoinIntro)
+      $log = LogText
+      Check ((CountIn $log 'has a record on this device''s disk') -ge 1) 'G: the refusal was the held-group gate''s'
+      Check ((CountIn $log 'the leave is offered:') -eq 0) 'G: no leave was offered after the unproven restore'
+      CloseApp $app
+      GiveRead $epochs
+      Unchanged 'G'
+      $app = StartApp
+      Check (WaitLog 'restored an existing group from disk' 2 240) 'H: with the read given back, the next launch restored the group'
+      Start-Sleep -Seconds 8
+      Shot $app.Id 'H2-restored'
+      CloseApp $app
+
+      # ---- PART 3, THE LEAVE'S RESTORE-FIRST (R29 on R28's leave road). The startup restore finds
+      #      the epoch state's bytes damaged (proven permanent), so the held refusal offers the
+      #      leave. The bytes are put back and the epoch file's read denied, and the leave is
+      #      pressed: its restore-first cannot classify the failure, so it says the unproven row,
+      #      offers no leave and does NOT call forget_group
+      BreakBytes $epochs
+      $app = StartApp
+      Check (WaitLog 'published this device''s key package' 4 240) 'I: the app holds no live group and waits'
+      Check ($null -ne (WaitName $app.Id "$($say.NotInAGroup) $($say.SendJoinCode)" 60)) 'I: the dialog waits, with the join road''s text'
+      Set-Named $app.Id 'Paste the invitation here' (B64 'invite1.bin') | Out-Null
+      Invoke-Named $app.Id 'Join' | Out-Null
+      Row $app.Id 'I3-held-leave-offered' 'is not live; the leave is offered' 1 $say.HeldNotLive @($say.Unproven, $say.JoinIntro)
+      Check ($null -ne (FindByName $app.Id 'Leave the old copy of this group')) 'I: the leave is offered'
+      RestoreBytes $epochs
+      DenyRead $epochs
+      Invoke-Named $app.Id 'Leave the old copy of this group' | Out-Null
+      Row $app.Id 'J3-leave-stops-unproven' 'forget_group was not called (R29)' 1 $say.Unproven @('Leave the old copy of this group', $say.HeldNotLive, $say.JoinIntro)
+      $log = LogText
+      Check ((CountIn $log 'did not come back; leaving it') -eq 0) 'J: forget_group was not asked'
+      Check ((CountIn $log '*** LEFT ***') -eq 0) 'J: nothing was left'
+      Check ((CountIn $log 'The old copy of this group could not be left') -eq 0) 'J: Task 39''s fallback was not shown'
+      CloseApp $app
+      GiveRead $epochs
+      Unchanged 'J'
+      $app = StartApp
+      Check (WaitLog 'restored an existing group from disk' 3 240) 'K: with the read given back, the next launch restored the group'
+      Start-Sleep -Seconds 8
+      Shot $app.Id 'K3-restored'
       CloseApp $app
     }
 
