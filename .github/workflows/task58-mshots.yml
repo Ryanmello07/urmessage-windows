@@ -1,0 +1,191 @@
+# THROWAWAY, NEVER MERGE, NEVER IN AN UPSTREAM PULL REQUEST. Hardening plan Task 58: the mutants
+# that change the live worker (R28's two, and FIX 3's M23), which --diagnose cannot see, judged by
+# the screenshot legs.
+# Each job applies ONE mutant (.github/task58/mutants.ps1), builds and drives one leg exactly as
+# task58-shots.yml does, and is green only when the driver FAILED, and failed on the checks that
+# name the mutant's own defect (MUST, below). Everything else is task58-shots.yml's:
+#
+# Builds the app on the join seal's library (composition.txt pins urnetwork/message e0d16eac75e4,
+# the T1 branch's head on the owner's fork after its second fix round, fetched by its SHA; on
+# ci/task58-shots and -v2 it was 7c4119792c1d, and on -v3 09018b10dd23), runs urnetwork/message's own
+# loopback server and the parties beside it (.github/task58/zz_task58_rig_test.go, copied into
+# sdk/cp3b), and, for the two legs that need "an older URmessage", the same kind of rig built from
+# message 215a0696, the commit message-windows main pins (.github/task58/zz_task58_old_rig_test.go).
+# drive.ps1 drives the app through each refusal with UI Automation's Invoke and Value only, and
+# captures each step with PrintWindow. Nothing is published: the artifact is the screenshots, the
+# app's logs and the rigs' output.
+name: Task 58 mutants on the screenshot legs (throwaway)
+
+on:
+  push:
+    branches:
+      - 'ci/task58-mshots**'
+
+permissions:
+  contents: read
+
+jobs:
+  shots:
+    name: Task 58 mutant ${{ matrix.id }} on the ${{ matrix.leg }} leg
+    runs-on: windows-2022
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: M19c
+            leg: epochheld
+            must: "G2-leave-stops: the worker logged 'forget_group was not called (R28)'|G: forget_group was not asked"
+          - id: M19d
+            leg: notreadnow
+            must: "E1-held-after-not-read-restore: the worker logged 'no leave is offered (R28)'|E: no leave was offered in this leg"
+          - id: M23
+            leg: unproven
+            must: "G2-held-after-unproven-restore: the worker logged 'no leave is offered (R29)'|G: no leave was offered after the unproven restore"
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Apply the mutant
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github\task58\mutants.ps1 -Id ${{ matrix.id }} -Apply
+          exit $LASTEXITCODE
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Check out the pinned commits
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\build-sdk-dll.ps1 -Workspace "$env:RUNNER_TEMP\sdk" -CheckoutOnly
+          exit $LASTEXITCODE
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ runner.temp }}/sdk/message/go.mod
+          cache: false
+
+      - name: Build the dll from the composition and stage it
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\build-sdk-dll.ps1 -Workspace "$env:RUNNER_TEMP\sdk" -Stage
+          exit $LASTEXITCODE
+
+      - name: Build the app (Release x64, the dll required)
+        shell: pwsh
+        working-directory: app
+        run: |
+          $pin = '10.0.22621.0'
+          $roots = @("${env:ProgramFiles(x86)}\Windows Kits\10", "$env:ProgramFiles\Windows Kits\10") | Where-Object { Test-Path -LiteralPath $_ }
+          $usable = @(foreach ($r in $roots) {
+            Get-ChildItem (Join-Path $r 'Include') -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' -and
+                (Test-Path -LiteralPath (Join-Path $r "Include\$($_.Name)\um\windows.h")) -and
+                (Test-Path -LiteralPath (Join-Path $r "Lib\$($_.Name)\um\x64\kernel32.lib")) } |
+              Select-Object -ExpandProperty Name
+          }) | Select-Object -Unique | Sort-Object { [version]$_ }
+          $usable = @($usable)
+          $sdk = if ($usable -contains $pin) { $pin } else { $usable[-1] }
+          msbuild URmessage.sln /restore /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=$sdk /p:UrmRequireSdkDll=true /m /v:minimal /clp:Summary
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path -LiteralPath build\x64\Release\URnetworkSdk.dll)) { Write-Host '::error::no URnetworkSdk.dll beside the exe'; exit 1 }
+          Get-Item build\x64\Release\URmessage.exe, build\x64\Release\URnetworkSdk.dll | Format-Table Name, Length | Out-String | Write-Host
+
+      - name: Check out message-server beside message, and build the rig
+        shell: pwsh
+        run: |
+          $ws = Join-Path $env:RUNNER_TEMP 'sdk'
+          $line = Get-Content (Join-Path $ws 'message\scripts\siblings.txt') | Where-Object { $_ -match '^message-server\s' } | Select-Object -First 1
+          $parts = $line -split '\s+'
+          Write-Host "message-server: $($parts[1]) $($parts[2])"
+          git init -q (Join-Path $ws 'message-server')
+          git -C (Join-Path $ws 'message-server') -c core.autocrlf=false fetch -q --depth 1 $parts[1] $parts[2]
+          git -C (Join-Path $ws 'message-server') -c core.autocrlf=false checkout -q FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "message: $(git -C (Join-Path $ws 'message') rev-parse HEAD)"
+          Copy-Item .github\task58\zz_task58_rig_test.go (Join-Path $ws 'message\sdk\cp3b\zz_task58_rig_test.go')
+          $toolchain = (Select-String -Path (Join-Path $ws 'message\go.mod') -Pattern '^toolchain\s+(\S+)').Matches[0].Groups[1].Value
+          $env:GOTOOLCHAIN = $toolchain
+          $env:GOWORK = 'off'
+          Write-Host "toolchain $toolchain"
+          Push-Location (Join-Path $ws 'message\sdk\cp3b')
+          go version
+          go test -c -o (Join-Path $env:RUNNER_TEMP 'rig.exe') .
+          $code = $LASTEXITCODE
+          Pop-Location
+          exit $code
+
+      - name: Build the older build's rig (message 215a0696, the siblings shared)
+        if: matrix.leg == 'joiner' || matrix.leg == 'adder'
+        shell: pwsh
+        run: |
+          $ws = Join-Path $env:RUNNER_TEMP 'sdk'
+          $old = Join-Path $env:RUNNER_TEMP 'old'
+          New-Item -ItemType Directory -Force $old | Out-Null
+          git init -q (Join-Path $old 'message')
+          git -C (Join-Path $old 'message') -c core.autocrlf=false fetch -q --depth 1 https://github.com/urnetwork/message.git 215a0696616084f05ef63e5c2942d5c9f663b56f
+          git -C (Join-Path $old 'message') -c core.autocrlf=false checkout -q FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "older message: $(git -C (Join-Path $old 'message') rev-parse HEAD)"
+          # THE SIBLINGS ARE THE SAME COMMITS: message's scripts/siblings.txt is the same file at
+          # 215a0696 and at the T1 head, so the older build links the checkouts the newer one does.
+          $a = (Get-FileHash (Join-Path $old 'message\scripts\siblings.txt')).Hash
+          $b = (Get-FileHash (Join-Path $ws 'message\scripts\siblings.txt')).Hash
+          Write-Host "siblings.txt: older $a, newer $b"
+          if ($a -ne $b) { Write-Host '::error::the two builds pin different siblings'; exit 1 }
+          foreach ($n in 'connect', 'sdk', 'glog', 'gvisor', 'goidenticons', 'message-server') {
+            cmd /c mklink /J (Join-Path $old $n) (Join-Path $ws $n) | Out-Null
+          }
+          Copy-Item .github\task58\zz_task58_old_rig_test.go (Join-Path $old 'message\sdk\cp3b\zz_task58_old_rig_test.go')
+          $toolchain = (Select-String -Path (Join-Path $old 'message\go.mod') -Pattern '^toolchain\s+(\S+)').Matches[0].Groups[1].Value
+          $env:GOTOOLCHAIN = $toolchain
+          $env:GOWORK = 'off'
+          Write-Host "toolchain $toolchain"
+          Push-Location (Join-Path $old 'message\sdk\cp3b')
+          go test -c -o (Join-Path $env:RUNNER_TEMP 'oldrig.exe') .
+          $code = $LASTEXITCODE
+          Pop-Location
+          exit $code
+
+      - name: Drive the app with the mutant (${{ matrix.leg }})
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github\task58\drive.ps1 -Leg ${{ matrix.leg }} `
+            -Exe "$env:GITHUB_WORKSPACE\app\build\x64\Release\URmessage.exe" `
+            -Rig "$env:RUNNER_TEMP\rig.exe" `
+            -RigWorkDir "$env:RUNNER_TEMP\sdk\message\sdk\cp3b" `
+            -Work "$env:RUNNER_TEMP\t58" `
+            -Out "$env:GITHUB_WORKSPACE\t58out" | Tee-Object -FilePath "$env:RUNNER_TEMP\drive.out"
+          $code = $LASTEXITCODE
+          Set-Content -LiteralPath "$env:RUNNER_TEMP\drive.code" -Value $code
+          Write-Host "the driver exited $code"
+          exit 0
+
+      - name: Judge the mutant (KILLED only when the driver failed on the mutant's own checks)
+        shell: powershell
+        env:
+          MUST: ${{ matrix.must }}
+        run: |
+          $code = [int](Get-Content -LiteralPath "$env:RUNNER_TEMP\drive.code")
+          $out = @(Get-Content -LiteralPath "$env:RUNNER_TEMP\drive.out")
+          $fails = @($out | Where-Object { $_ -match '\] FAIL  ' })
+          Write-Host "the driver exited $code, with $($fails.Count) FAIL line(s):"
+          $fails | ForEach-Object { Write-Host "  $_" }
+          $must = @($env:MUST -split '\|')
+          $missing = @($must | Where-Object { $m = $_; @($fails | Where-Object { $_.Contains($m) }).Count -eq 0 })
+          if ($code -ne 0 -and $missing.Count -eq 0) {
+            Write-Host "${{ matrix.id }} KILLED by the ${{ matrix.leg }} leg: $($must -join ' AND ')"
+            exit 0
+          }
+          Write-Host "::error::${{ matrix.id }} SURVIVED: the driver exited $code, and these checks did not FAIL: $($missing -join ' AND ')"
+          exit 1
+
+      - name: Upload the screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task58-mutant-${{ matrix.id }}-${{ matrix.leg }}
+          path: t58out/
+          if-no-files-found: warn
