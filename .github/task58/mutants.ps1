@@ -93,11 +93,15 @@ if ($Judge -ne '') {
   $fails = @($out -split "`n" | Where-Object { $_ -cmatch ':\s+FAIL\b' })
   Write-Host "FAIL lines: $($fails.Count)"
   $fails | ForEach-Object { Write-Host "  $($_.Substring(0, [Math]::Min(200, $_.Length)))" }
-  $summary = @($out -split "`n" | Where-Object { $_ -match '^diagnostic lines:' })
-  Write-Host "summary: $summary"
+  # THE CONTROL'S OWN CONTROL: an empty or cut-short output has no FAIL line either, so the PASS
+  # lines are counted, and the six Task 58 lines must each be there.
+  $passes = @($out -split "`n" | Where-Object { $_ -cmatch ':\s+PASS\b' })
+  $ours = @($out -split "`n" | Where-Object { $_ -match '^\s+(join copy|join copy R13|add copy|no wrap key|refusal copy|dialog copy)\s+:\s+(PASS|FAIL)\b' })
+  Write-Host "PASS lines: $($passes.Count); Task 58 lines present: $($ours.Count) of 6"
+  if ($ours.Count -ne 6) { Write-Host "::error::$Id`: the output carries $($ours.Count) of the six Task 58 lines"; exit 1 }
   if ($Id -eq 'M0') {
-    if ($fails.Count -eq 0) { Write-Host 'M0: the control is green'; exit 0 }
-    Write-Host '::error::M0: the unmutated tree has FAIL lines'; exit 1
+    if ($fails.Count -eq 0 -and $passes.Count -ge 100) { Write-Host 'M0: the control is green'; exit 0 }
+    Write-Host '::error::M0: the unmutated tree has FAIL lines, or too few PASS lines'; exit 1
   }
   $expect = $mutants[$Id].Expect
   $killed = @($fails | Where-Object { $_ -match ('^\s+' + [regex]::Escape($expect) + '\s+:\s+FAIL\b') })
