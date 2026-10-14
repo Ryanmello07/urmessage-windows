@@ -238,6 +238,14 @@ struct OnboardState {
   // dialog keeps the add panel up under it: the sentence asks for another join code, and the box
   // to paste it into must still be there. Never set on the join road.
   bool addRoad = false;
+  // "MAKE A NEW JOIN CODE" IS ON OFFER (R25 Q2). Set only on the Refused states whose sentence asks
+  // for a new join code (ErrNoJoinCodeForInvite, ErrJoinCodeSpent): the dialog draws the button
+  // that mints one (QueueNewJoinCode), and every later state withdraws it.
+  bool offerNewJoinCode = false;
+  // THIS DEVICE HOLDS A GROUP ON ITS DISK THAT DID NOT OPEN (R25 Q4, Q5): it predates the join
+  // seal, or its record could not be read just now. The intro then says only "This device is
+  // connected.", because "not in a group yet" is false of it.
+  bool holdsGroup = false;
 };
 
 using OnboardPtr = std::shared_ptr<const OnboardState>;
@@ -278,6 +286,16 @@ bool QueueJoinFromInviteCode(std::string base64Invite);
 // Answers false, having asked for nothing, when no such leave is on offer. Never blocks; the
 // outcome arrives as a published OnboardState.
 bool QueueLeaveHeldGroup();
+
+// MAKE A NEW JOIN CODE (R25 Q2). Offered only by the Refused state whose offerNewJoinCode is set:
+// the sentence there asks for a new join code, and this is the press that makes one. On the worker,
+// urnet_message_device_key_package mints a fresh key package, which replaces the code in the
+// join-code box (and the handshake file); the code shown before stays valid until it is used. A
+// device that cannot mint one (ErrNoDeviceWrapKey) is shown that row.
+//
+// Answers false, having asked for nothing, when no such offer stands. Never blocks; the outcome
+// arrives as a published OnboardState.
+bool QueueNewJoinCode();
 
 // MAKE A GROUP, with this device as its owner. Answers false, having queued nothing, when this
 // device already holds one - a device is in one group in this build, and a second create would
