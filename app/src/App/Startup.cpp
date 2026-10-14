@@ -2990,7 +2990,7 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
     const int total = static_cast<int>(std::size(roads));
     out.push_back(std::format(
         L"  R33 roads        : {}  {}/{} ({} PENDING-HEAD): {}   [query: R33 9, a group's absent file is "
-        L"the unproven row with no leave; an unproven take is the window's \\"still good\\" row and no "
+        L"the unproven row with no leave; an unproven take is the window's \"still good\" row and no "
         L"such ref stays no join code (R13); the leave's owner question restores once more; the join "
         L"over a group in the not-read set is the class's row, whatever sentence it also carries]",
         Verdict(right == total), right, total, pending, table));
