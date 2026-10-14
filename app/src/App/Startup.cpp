@@ -2910,6 +2910,91 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
         L"never \"still good\" unless it was held for a moment]",
         Verdict(right == total), right, total, table));
   }
+
+  // 15. R33 (the library's fourth round, FIX 4): the roads it changes. A case marked PENDING-HEAD is
+  //     typed from R33's description, because its sentence does not exist at 907109f; it is re-typed
+  //     from the final head's exact text before this line is final. The others are 907109f's text.
+  {
+    struct Road {
+      const wchar_t* name;
+      bool ok;
+    };
+    const std::string kpRef(64, 'e');
+    const std::string absentEpoch = "urmessage: this state store holds no such value: 0000000000000001";
+    // X1 (PENDING-HEAD): an unproven take answers the window's sentence, because nothing was removed
+    const std::string x1TakeUnproven = refused + ": " + engineNoCode + takeTail + storeState + ": " + kpFile +
+                                       " could not be read: open " + kpFile + ": " + denied;
+    // the lookup that finds no such ref stays "no join code" (907109f's text)
+    const std::string x1TakeNoSuchRef = noCode + ": " + engineNoCode + takeTail +
+                                        "urmessage: this state store holds no such value: " + kpRef;
+    // R33 (1), PENDING-HEAD: a group's file that is absent is unproven, on the restore and the leave
+    const std::string absentRestore = restoreSentence + ": " + unproven + ": group " + hex + ": " +
+                                      restoreSentence + ": group " + hex + " at epoch 1: " + absentEpoch;
+    const std::string absentLeave = unproven + "; so nothing was left: group " + hex + ": " + restoreSentence +
+                                    ": group " + hex + " at epoch 1: " + absentEpoch;
+    // X3 (PENDING-HEAD): the join over a group in the not-read set, in either form the gate may take
+    const std::string x3Clause = "urmessage: whether this device already holds group " + hex +
+                                 " could not be read, so the invite into it is refused: " + unproven +
+                                 ": group " + hex + ": " + restoreSentence + ": group " + hex + " at epoch 1: " +
+                                 storeState + ": " + epochFile + " could not be read: open " + epochFile + ": " + denied;
+    const std::string x3HeldTransient = heldWhole + ": group " + hex + ": " + notReadNow + ": group " + hex +
+                                        ": " + r3FreshEpochHeld;
+    const std::string x3HeldUnproven = heldWhole + ": group " + hex + ": " + unproven + ": group " + hex + ": " +
+                                       r3FreshEpochDenied;
+    // X3 (PENDING-HEAD): ErrGroupNotRestored's remedy scoped to damage, its stable part unchanged
+    const std::string x3NotRestored = "urmessage: this group is on this device's disk and has not been "
+                                      "restored; if a Restore finds it damaged, ForgetGroup leaves it: " + hex;
+    const Road roads[] = {
+        {L"x1-take-unproven[PENDING-HEAD]", ClassifyJoinCopy(x1TakeUnproven) == JoinCopy::JoinRefused &&
+                                                !OffersNewJoinCode(ClassifyJoinCopy(x1TakeUnproven))},
+        {L"x1-take-no-such-ref", ClassifyJoinCopy(x1TakeNoSuchRef) == JoinCopy::NoJoinCodeForInvite &&
+                                     OffersNewJoinCode(ClassifyJoinCopy(x1TakeNoSuchRef))},
+        {L"absent-restore[PENDING-HEAD]", RestoreNote(absentRestore, 0) == kSayGroupReadUnproven &&
+                                              RestoreReadClass(absentRestore) == ReadClass::Unproven &&
+                                              StepAfterRestoreFirst(false, absentRestore) == HeldLeaveStep::Unproven},
+        {L"absent-leave[PENDING-HEAD]", ClassifyLeaveRefusal(absentLeave) == LeaveRefusal::Unproven &&
+                                            LeaveRefusalCopy(ClassifyLeaveRefusal(absentLeave)).sentence ==
+                                                kSayGroupReadUnproven &&
+                                            !LeaveRefusalCopy(ClassifyLeaveRefusal(absentLeave)).offerLeave},
+        {L"x2-owner", ClassifyLeaveRefusal(r3OwnerMustTransfer) == LeaveRefusal::OwnerMustTransfer &&
+                          RestoresOnceMore(ClassifyLeaveRefusal(r3OwnerMustTransfer)) &&
+                          LeaveRefusalCopy(LeaveRefusal::OwnerMustTransfer).sentence.empty()},
+        {L"x2-only-the-owner", !RestoresOnceMore(LeaveRefusal::Other) && !RestoresOnceMore(LeaveRefusal::NotReadNow) &&
+                                   !RestoresOnceMore(LeaveRefusal::Unproven) &&
+                                   !RestoresOnceMore(LeaveRefusal::NotConnected) &&
+                                   !RestoresOnceMore(ClassifyLeaveRefusal(r3LeaveMarkUnwritten))},
+        {L"x3-clause[PENDING-HEAD]", ClassifyJoinCopy(x3Clause) == JoinCopy::GroupReadUnproven &&
+                                         NotReadRowOf(x3Clause) == JoinCopy::GroupReadUnproven &&
+                                         ClassifyJoinRefusal(x3Clause) == JoinRefusal::Other},
+        {L"x3-held-transient[PENDING-HEAD]", NotReadRowOf(x3HeldTransient) == JoinCopy::GroupRecordNotReadNow &&
+                                                 ClassifyJoinRefusal(x3HeldTransient) != JoinRefusal::Other &&
+                                                 JoinCopySentence(NotReadRowOf(x3HeldTransient)) ==
+                                                     kSayGroupRecordNotReadNow},
+        {L"x3-held-unproven[PENDING-HEAD]", NotReadRowOf(x3HeldUnproven) == JoinCopy::GroupReadUnproven &&
+                                                ClassifyJoinRefusal(x3HeldUnproven) != JoinRefusal::Other &&
+                                                JoinCopySentence(NotReadRowOf(x3HeldUnproven)) == kSayGroupReadUnproven},
+        {L"x3-damage-stays-held", NotReadRowOf(r3JoinRecordBroken) == JoinCopy::Other &&
+                                      ClassifyJoinRefusal(r3JoinRecordBroken) == JoinRefusal::HeldNotLive &&
+                                      NotReadRowOf(r3JoinRecordReads) == JoinCopy::Other},
+        {L"x3-not-restored[PENDING-HEAD]", IsNotRestoredRefusal(x3NotRestored) &&
+                                               ClassifyLeaveRefusal(x3NotRestored) == LeaveRefusal::Other},
+    };
+    std::wstring table;
+    int right = 0, pending = 0;
+    for (auto const& r : roads) {
+      if (r.ok) ++right;
+      if (std::wstring_view(r.name).find(L"PENDING-HEAD") != std::wstring_view::npos) ++pending;
+      if (!table.empty()) table += L", ";
+      table += std::format(L"{} {}", r.name, r.ok ? L"ok" : L"WRONG");
+    }
+    const int total = static_cast<int>(std::size(roads));
+    out.push_back(std::format(
+        L"  R33 roads        : {}  {}/{} ({} PENDING-HEAD): {}   [query: R33 9, a group's absent file is "
+        L"the unproven row with no leave; an unproven take is the window's \\"still good\\" row and no "
+        L"such ref stays no join code (R13); the leave's owner question restores once more; the join "
+        L"over a group in the not-read set is the class's row, whatever sentence it also carries]",
+        Verdict(right == total), right, total, pending, table));
+  }
   return out;
 }
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // WHAT THE APP SAYS FOR EACH REFUSAL OF A JOIN OR AN ADD, AND FOR A DEVICE THAT CANNOT MAKE A JOIN
-// CODE (hardening plan Task 58; the lead's rulings R13, R17, R20, R25, R27, R28, R29, R30 and R32).
+// CODE (hardening plan Task 58; the lead's rulings R13, R17, R20, R25, R27 to R30, R32 and R33).
 //
 // The join seal (the plan's phase T1) gives the library a refusal for each thing that can go wrong
 // with an invitation or a join code, and each says what it cost. The app's half is the sentence a
@@ -126,6 +126,13 @@ inline constexpr std::string_view kLibNotConnected = "urmessage: this device has
 //   <ErrNotConnected's sentence>"
 inline constexpr std::string_view kLibLeaveNotTriedHead = "urmessage: group ";
 inline constexpr std::string_view kLibLeaveNotTriedAfterId = "'s restore could not be tried again for the leave";
+// ErrOwnerMustTransfer (R33 X2): the leave reached the owner's question, because the library's own
+// fresh re-try of the group's restore SUCCEEDED and this device owns a group others are in. At the
+// R33 head the library does not keep the group held after that refusal, and the next Restore hands
+// it back.
+//   whole: "urmessage: you own this group and somebody else is in it, so hand it over first with
+//          TransferOwnership; leaving now would leave them with an owner nobody can remove"
+inline constexpr std::string_view kLibOwnerMustTransfer = "urmessage: you own this group and somebody else is in it";
 // The held-group gate's and ForgetGroup's reads of ONE group's record, when the store could not
 // answer. At 907109f each says which class it was, by the sentinel after its clause (R29):
 //   join   "urmessage: whether this device already holds group <hex> could not be read, so the
@@ -301,15 +308,27 @@ HeldLeaveStep StepAfterRestoreFirst(bool cameBack, std::string_view restoreError
 // R32): its fresh re-try's ("<sentinel>; so nothing was left: group <hex>: ..."), its reads of the
 // record ("whether this device holds group <hex> on its disk could not be read, ...: <sentinel>"
 // and "group <hex>'s record could not be read again for the leave, ...: <sentinel>"), and its
-// "could not be tried again for the leave" (not connected). Other is everything else: the caller's
-// own handling (ErrGroupNotRestored, and Task 39's fallback for the rest, a write failure among them).
+// "could not be tried again for the leave" (not connected). OwnerMustTransfer is the leave reaching
+// the owner's question after that re-try brought the group back (R33 X2). Other is everything else:
+// the caller's own handling (ErrGroupNotRestored, and Task 39's fallback for the rest, a write
+// failure among them).
 enum class LeaveRefusal {
   Other,
   NotReadNow,
   Unproven,
   NotConnected,
+  OwnerMustTransfer,
 };
 LeaveRefusal ClassifyLeaveRefusal(std::string_view libraryError);
+// Does the app restore once more after this refusal, so the conversation shows (R33 X2)? The
+// owner's question only: the group's files read, and the next Restore hands the group back.
+bool RestoresOnceMore(LeaveRefusal refusal);
+
+// A JOIN REFUSED OVER A GROUP THIS DEVICE HOLDS AND THE LAST RESTORE COULD NOT READ (R33 X3): the
+// join gate answers with the class's own sentinel while the group is in the library's not-read set,
+// whatever other sentence it carries. The class's row (GroupReadUnproven or GroupRecordNotReadNow),
+// or Other when the text carries neither sentinel. The unproven class wins when both are there.
+JoinCopy NotReadRowOf(std::string_view libraryError);
 
 // WHAT A PERSON IS TOLD OF A GROUP ON THE DISK THAT IS NOT LIVE (Task 39's held refusal, and the
 // leave above when it stops), and whether "Leave the old copy" is offered.
@@ -324,8 +343,9 @@ HeldCopy HeldNotLiveCopy(ReadClass lastRestore);
 // The leave stopped before forget_group (NotReadNow, Unproven, NotConnected). Not connected keeps
 // the leave offered (R32). Any other step is not a stop, and is answered Task 39's sentence.
 HeldCopy LeaveStopCopy(HeldLeaveStep step);
-// The library's own refusal of the leave, by its class. Other answers an empty sentence: the caller
-// says what it said before this file.
+// The library's own refusal of the leave, by its class. Other and OwnerMustTransfer answer an empty
+// sentence: the caller restores once more for the second, and otherwise says what it said before
+// this file.
 HeldCopy LeaveRefusalCopy(LeaveRefusal refusal);
 
 // WHAT THE JOIN DIALOG SAYS FIRST AFTER A RESTORE, from device_restore's report and how many groups

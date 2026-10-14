@@ -131,11 +131,21 @@ HeldLeaveStep StepAfterRestoreFirst(bool cameBack, std::string_view restoreError
 }
 
 LeaveRefusal ClassifyLeaveRefusal(std::string_view libraryError) {
+  // R33 X2: the leave got as far as the owner's question, so the group's files read
+  if (Has(libraryError, kLibOwnerMustTransfer)) return LeaveRefusal::OwnerMustTransfer;
   if (IsNotConnected(libraryError)) return LeaveRefusal::NotConnected;
   if (IsGroupReadUnproven(libraryError)) return LeaveRefusal::Unproven;
   // the transient class's sentinel, or e0d16ea's record clause, which carried no class
   if (IsGroupRecordNotReadNow(libraryError) || IsLeaveNotReadNow(libraryError)) return LeaveRefusal::NotReadNow;
   return LeaveRefusal::Other;
+}
+
+bool RestoresOnceMore(LeaveRefusal refusal) { return refusal == LeaveRefusal::OwnerMustTransfer; }
+
+JoinCopy NotReadRowOf(std::string_view libraryError) {
+  if (IsGroupReadUnproven(libraryError)) return JoinCopy::GroupReadUnproven;
+  if (IsGroupRecordNotReadNow(libraryError)) return JoinCopy::GroupRecordNotReadNow;
+  return JoinCopy::Other;
 }
 
 HeldCopy HeldNotLiveCopy(ReadClass lastRestore) {
@@ -163,6 +173,7 @@ HeldCopy LeaveRefusalCopy(LeaveRefusal refusal) {
     case LeaveRefusal::NotReadNow: return LeaveStopCopy(HeldLeaveStep::NotReadNow);
     case LeaveRefusal::Unproven: return LeaveStopCopy(HeldLeaveStep::Unproven);
     case LeaveRefusal::NotConnected: return LeaveStopCopy(HeldLeaveStep::NotConnected);
+    case LeaveRefusal::OwnerMustTransfer:
     case LeaveRefusal::Other: break;
   }
   return HeldCopy{};
