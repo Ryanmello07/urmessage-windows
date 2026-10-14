@@ -5,7 +5,10 @@
 # ci/task58-mutants-v4 adds R27's (M18 to M18k) and R28's (M19 to M19d). M16, M16b and M16d are
 # re-cut to R27's renamed constant (kLibJoinNotReadTail is kLibJoinNotReadAfterId) with the same
 # meaning; every other earlier mutant is unchanged. M19c and M19d change the worker, which
-# --diagnose cannot see: their Expect is SHOTS, and ci/task58-mshots-v4 judges them. -Apply makes the edit (refusing unless the text it replaces occurs exactly once);
+# --diagnose cannot see: their Expect is SHOTS, and ci/task58-mshots-v4 judges them.
+# ci/task58-mutants-v5 adds FIX 3's (M20 to M22, M18l to M18n; M23 is the worker's, for
+# ci/task58-mshots-v5). M19b, M19c and M19d are re-cut to FIX 3's code with the same meaning: the
+# flag is a class (ReadClass) and the leave's step is computed once. -Apply makes the edit (refusing unless the text it replaces occurs exactly once);
 # -Judge reads the --diagnose output and passes only when the mutant is KILLED: the line it must
 # turn red is FAIL. M0 is the control: no edit, and no FAIL anywhere.
 param(
@@ -166,19 +169,89 @@ $mutants = @{
     New = '' }
   # the held sentence and the leave after it
   'M19b' = @{ File = $copy; Expect = 'held leave'
-    Old = '  if (lastRestoreNotReadNow) return HeldCopy{kSayGroupRecordNotReadNow, false};'
-    New = '  if (lastRestoreNotReadNow) return HeldCopy{kHeldNotLiveSentence, true};' }
+    Old = '    case ReadClass::NotReadNow: return HeldCopy{kSayGroupRecordNotReadNow, false};'
+    New = '    case ReadClass::NotReadNow: return HeldCopy{kHeldNotLiveSentence, true};' }
   # THE REJECTED DESIGN, IN THE WORKER: the leave decides off "did the group come back" alone, as it
   # did before R28, so forget_group is called after a transient restore-first failure. --diagnose
   # cannot see the worker; the epochheld screenshot leg must (ci/task58-mshots-v4).
   'M19c' = @{ File = $mesh; Expect = 'SHOTS'
-    Old = '  switch (urmsg::live::StepAfterRestoreFirst(restore.back, restore.error)) {'
-    New = '  switch (restore.back ? urmsg::live::HeldLeaveStep::CameBack : urmsg::live::HeldLeaveStep::Forget) {' }
+    Old = '  const urmsg::live::HeldLeaveStep step = urmsg::live::StepAfterRestoreFirst(restore.back, restore.error);'
+    New = '  const urmsg::live::HeldLeaveStep step = restore.back ? urmsg::live::HeldLeaveStep::CameBack : urmsg::live::HeldLeaveStep::Forget;' }
   # the startup restore never sets the flag, so a held refusal after it offers the leave again (the
   # notreadnow screenshot leg must see it)
   'M19d' = @{ File = $mesh; Expect = 'SHOTS'
-    Old = '    g_lastRestoreNotReadNow = urmsg::live::IsGroupRecordNotReadNow(restoreError);' + "`n" + '  }' + "`n" + "`n" + '  // ONE PASS PER GROUP'
-    New = '    g_lastRestoreNotReadNow = false;' + "`n" + '  }' + "`n" + "`n" + '  // ONE PASS PER GROUP' }
+    Old = '    g_lastRestoreClass = urmsg::live::RestoreReadClass(restoreError);' + "`n" + '  }' + "`n" + "`n" + '  // ONE PASS PER GROUP'
+    New = '    g_lastRestoreClass = urmsg::live::ReadClass::None;' + "`n" + '  }' + "`n" + "`n" + '  // ONE PASS PER GROUP' }
+  # ---- FIX 3 (ci/task58-mutants-v5): R29's unproven class, R32's not connected, and the take ----
+  # R29: the unproven row offers a leave
+  'M20' = @{ File = $copy; Expect = 'held leave'
+    Old = '    case ReadClass::Unproven: return HeldCopy{kSayGroupReadUnproven, false};'
+    New = '    case ReadClass::Unproven: return HeldCopy{kSayGroupReadUnproven, true};' }
+  # R29 on R28's leave road: forget_group after an unproven restore-first
+  'M20b' = @{ File = $copy; Expect = 'held leave'
+    Old = '  if (IsGroupReadUnproven(restoreError)) return HeldLeaveStep::Unproven;' + "`n"
+    New = '' }
+  # the unproven class mapped to Q5's (the restore-road flag)
+  'M20c' = @{ File = $copy; Expect = 'held leave'
+    Old = '  if (IsGroupReadUnproven(restoreError)) return ReadClass::Unproven;'
+    New = '  if (IsGroupReadUnproven(restoreError)) return ReadClass::NotReadNow;' }
+  # the unproven sentinel answered with Q5's row
+  'M20d' = @{ File = $copy; Expect = 'refusal copy'
+    Old = '    case JoinCopy::GroupReadUnproven: return kSayGroupReadUnproven;'
+    New = '    case JoinCopy::GroupReadUnproven: return kSayGroupRecordNotReadNow;' }
+  # the unproven row reworded
+  'M20e' = @{ File = $head; Expect = 'refusal copy'
+    Old = '    "This conversation could not be read on this device, and nothing was changed. Check that "'
+    New = '    "This conversation could not be read on this device. Check that "' }
+  # the leave's own unproven refusal not told apart (so its record form reads as Q5's)
+  'M20f' = @{ File = $copy; Expect = '907109f roads'
+    Old = '  if (IsGroupReadUnproven(libraryError)) return LeaveRefusal::Unproven;' + "`n"
+    New = '' }
+  # the restore note says nothing of the unproven class
+  'M20g' = @{ File = $copy; Expect = 'restore note'
+    Old = '  if (row == JoinCopy::GroupReadUnproven) return JoinCopySentence(row);' + "`n"
+    New = '' }
+  # the join road misses the unproven class, so the gate's clause reads as Q5's
+  'M20h' = @{ File = $copy; Expect = '907109f roads'
+    Old = '  if (Has(libraryError, kLibGroupReadUnproven)) return JoinCopy::GroupReadUnproven;' + "`n"
+    New = '' }
+  # R32 (4): forget_group after a not-connected restore-first
+  'M21' = @{ File = $copy; Expect = 'held leave'
+    Old = '  if (IsNotConnected(restoreError)) return HeldLeaveStep::NotConnected;' + "`n"
+    New = '' }
+  # R32 (4): the not-connected row dropped to Task 39's fallback
+  'M21b' = @{ File = $copy; Expect = '907109f roads'
+    Old = '  if (IsNotConnected(libraryError)) return LeaveRefusal::NotConnected;' + "`n"
+    New = '' }
+  # R32: the not-connected stop withdraws the leave
+  'M21c' = @{ File = $copy; Expect = 'held leave'
+    Old = '    case HeldLeaveStep::NotConnected: return HeldCopy{kSayNotConnected, true};'
+    New = '    case HeldLeaveStep::NotConnected: return HeldCopy{kSayNotConnected, false};' }
+  # R32: its row reworded
+  'M21d' = @{ File = $head; Expect = 'refusal copy'
+    Old = '    "This device is not connected right now, and nothing was changed. Try again when it is "'
+    New = '    "This device is not connected right now. Try again when it is "' }
+  # THE REJECTED DESIGN FOR THE TAKE: every engine refusal of a key package is the window's "still
+  # good", so a join code that will never read is told it is still good (R13's mirror)
+  'M22' = @{ File = $copy; Expect = '907109f roads'
+    Old = '  if (Has(libraryError, kLibNoJoinCodeForInvite)) return JoinCopy::NoJoinCodeForInvite;'
+    New = '  if (Has(libraryError, "no key package this store holds is addressed by this welcome")) return JoinCopy::JoinRefused;' + "`n" +
+          '  if (Has(libraryError, kLibNoJoinCodeForInvite)) return JoinCopy::NoJoinCodeForInvite;' }
+  # R27 for round 3's stable parts: the whole sentence back
+  'M18l' = @{ File = $head; Expect = 'stable parts'
+    Old = '    "on this device''s disk could not be read, and this build cannot tell whether that will pass";'
+    New = '    "urmessage: a file of a group on this device''s disk could not be read, and this build cannot tell whether that will pass, so that group was not restored; nothing of it was changed, and it is not left until a Restore reads it or finds it damaged";' }
+  'M18m' = @{ File = $head; Expect = 'stable parts'
+    Old = 'inline constexpr std::string_view kLibNotConnected = "urmessage: this device has not said Hello";'
+    New = 'inline constexpr std::string_view kLibNotConnected = "urmessage: this device has not said Hello, and every authenticator is a mac over the connection''s server_nonce";' }
+  'M18n' = @{ File = $head; Expect = 'stable parts'
+    Old = 'inline constexpr std::string_view kLibLeaveNotTriedAfterId = "''s restore could not be tried again for the leave";'
+    New = 'inline constexpr std::string_view kLibLeaveNotTriedAfterId = "''s restore could not be tried again for the leave, so nothing was left";' }
+  # THE WORKER (judged on ci/task58-mshots-v5): the held refusal reads the transient class alone, as
+  # FIX 2 did, so a held refusal after an unproven restore offers the leave
+  'M23' = @{ File = $mesh; Expect = 'SHOTS'
+    Old = '            const urmsg::live::HeldCopy copy = urmsg::live::HeldNotLiveCopy(lastClass);'
+    New = '            const urmsg::live::HeldCopy copy = urmsg::live::HeldNotLiveCopy(lastClass == urmsg::live::ReadClass::NotReadNow ? lastClass : urmsg::live::ReadClass::None);' }
 }
 
 function Swap([string]$file, [string]$old, [string]$new) {
@@ -210,15 +283,15 @@ if ($Judge -ne '') {
   # lines are counted, and the thirteen Task 58 lines (six, R25's four, and R27's and R28's three)
   # must each be there.
   $passes = @($out -split "`n" | Where-Object { $_ -cmatch ':\s+PASS\b' })
-  $ours = @($out -split "`n" | Where-Object { $_ -match '^\s+(join copy|join copy R13|add copy|no wrap key|refusal copy|dialog copy|new join code|not read now|restore note|waiting copy|stable parts|e0d16ea roads|held leave)\s+:\s+(PASS|FAIL)\b' })
-  Write-Host "PASS lines: $($passes.Count); Task 58 lines present: $($ours.Count) of 13"
-  if ($ours.Count -ne 13) { Write-Host "::error::$Id`: the output carries $($ours.Count) of the thirteen Task 58 lines"; exit 1 }
+  $ours = @($out -split "`n" | Where-Object { $_ -match '^\s+(join copy|join copy R13|add copy|no wrap key|refusal copy|dialog copy|new join code|not read now|restore note|waiting copy|stable parts|e0d16ea roads|held leave|907109f roads)\s+:\s+(PASS|FAIL)\b' })
+  Write-Host "PASS lines: $($passes.Count); Task 58 lines present: $($ours.Count) of 14"
+  if ($ours.Count -ne 14) { Write-Host "::error::$Id`: the output carries $($ours.Count) of the fourteen Task 58 lines"; exit 1 }
   if ($Id -eq 'M0') {
     # (the first cut asked for 100 PASS lines, a number guessed before it was measured; the measured
     # control printed 92 by this count, so the rule is the property: no FAIL, and the six Task 58
     # lines each PASS)
     $oursPass = @($ours | Where-Object { $_ -cmatch ':\s+PASS' })
-    if ($fails.Count -eq 0 -and $oursPass.Count -eq 13) { Write-Host "M0: the control is green ($($passes.Count) PASS lines, the thirteen Task 58 lines PASS)"; exit 0 }
+    if ($fails.Count -eq 0 -and $oursPass.Count -eq 14) { Write-Host "M0: the control is green ($($passes.Count) PASS lines, the fourteen Task 58 lines PASS)"; exit 0 }
     Write-Host '::error::M0: the unmutated tree has FAIL lines, or a Task 58 line that does not PASS'; exit 1
   }
   $expect = $mutants[$Id].Expect
