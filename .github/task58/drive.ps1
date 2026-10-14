@@ -332,16 +332,19 @@ try {
       Check (WaitLog '*** GROUP CREATED ***' 1 120) 'A: the app founded a group'
       Start-Sleep -Seconds 3
       Shot $app.Id 'A-founded'
+      # the founder holds a group: the intro does not say "not in a group yet"
+      Check ($null -ne (FindByName $app.Id $say.HeldIntro)) "A: the founder's intro reads, verbatim: $($say.HeldIntro)"
+      Check ($null -eq (FindByName $app.Id $say.JoinIntro)) 'A: the founder''s intro does not say "not in a group yet"'
 
       Set-Named $app.Id 'Paste their join code here' (B64 'damaged.bin') | Out-Null
       Invoke-Named $app.Id 'Add this person to the group' | Out-Null
-      Row $app.Id '1-key-package-invalid' 'refused the add (ErrKeyPackageInvalid)' 1 $say.Invalid
+      Row $app.Id '1-key-package-invalid' 'refused the add (ErrKeyPackageInvalid)' 1 $say.Invalid @($say.JoinIntro)
       Check ($null -ne (FindByName $app.Id 'Paste their join code here')) '1: the add box is still there'
 
       if (Test-Path -LiteralPath (Join-Path $rigDir 'old-kp.bin')) {
         Set-Named $app.Id 'Paste their join code here' (B64 'old-kp.bin') | Out-Null
         Invoke-Named $app.Id 'Add this person to the group' | Out-Null
-        Row $app.Id '2-cannot-open-sealed' 'refused the add (ErrJoinerCannotOpenSealedInvite)' 1 $say.CannotOpen
+        Row $app.Id '2-cannot-open-sealed' 'refused the add (ErrJoinerCannotOpenSealedInvite)' 1 $say.CannotOpen @($say.JoinIntro)
         Check ($null -ne (FindByName $app.Id 'Paste their join code here')) '2: the add box is still there'
       } else {
         $script:notReached += 'ErrJoinerCannotOpenSealedInvite'
@@ -352,13 +355,14 @@ try {
       Check (WaitLog '*** MEMBER ADDED ***' 1 120) '3: the honest join code was added'
       Check ($null -ne (WaitName $app.Id $say.AdderLabel 30)) "3: the adder's copy is on screen, verbatim: $($say.AdderLabel)"
       Check ($null -ne (FindByName $app.Id 'The invitation to send them')) '3: the invitation box is on screen'
+      Check ($null -eq (FindByName $app.Id $say.JoinIntro)) '3: the intro does not say "not in a group yet"'
       Start-Sleep -Seconds 2
       Shot $app.Id '3-adder-copy'
       DumpNames $app.Id '3-adder-copy-uia'
 
       Set-Named $app.Id 'Paste their join code here' (B64 'second.bin') | Out-Null
       Invoke-Named $app.Id 'Add this person to the group' | Out-Null
-      Row $app.Id '4-already-has-a-leaf' 'refused the add (ErrJoinerAlreadyHasALeaf)' 1 $say.HasALeaf
+      Row $app.Id '4-already-has-a-leaf' 'refused the add (ErrJoinerAlreadyHasALeaf)' 1 $say.HasALeaf @($say.JoinIntro)
       Check ($null -ne (FindByName $app.Id 'Paste their join code here')) '4: the add box is still there'
       CloseApp $app
     }
