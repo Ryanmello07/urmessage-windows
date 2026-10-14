@@ -41,14 +41,16 @@
 # checked at. A branch that moves on is ahead of its pin, and the pin stays until it is moved.
 #
 # message: sdk/cgo, the messaging half, its .def, its header, and the scripts that compose, build
-# and check the library. Pinned to 0bb2128f, the merge commit of urnetwork/message's pull request
-# 4 on its main (2026-10-11). That pull request moved message's pinned toolchain, and so this
-# dll's, from go1.26.5 to go1.27.2, and golang.org/x/net to v0.61.0 in the modules that require it,
-# sdk/cgo's among them. Its own pins are the two merge commits below. The pin before it,
-# 2e859f73, is an ancestor of it. Between the two, sdk/cgo's .def and header did not change, and
-# of the scripts that compose, build and check the library only scripts/toolchain.sh did, in its
-# comments.
-message https://github.com/urnetwork/message.git 0bb2128fdf146b7580c8ca21d112966053126703
+# and check the library. Pinned to 215a0696, the merge commit of urnetwork/message's pull request
+# 6 on its main (2026-10-14), the hardening plan's phase T1a. T1a makes the library refuse an
+# invitation into a group this device already holds (ErrGroupAlreadyHeld, ErrGroupRecordDamaged,
+# ErrGroupNotRestored), which the app's held-group leave answers. Between it and the pin before
+# it, 0bb2128f (the merge of pull request 4), lies pull request 5 (phase S0, 9cead7ae). The pin
+# before is an ancestor of this one. Between the two, sdk/cgo's .def and header did not change
+# (urnet_message_device_forget_group was already exported), scripts/siblings.txt did not change,
+# and of the scripts that compose, build and check the library only scripts/vulncheck.sh was
+# added. Its own pins are the two merge commits below.
+message https://github.com/urnetwork/message.git 215a0696616084f05ef63e5c2942d5c9f663b56f
 #
 # sdk: the core SDK. Pinned to urnetwork/sdk main as the removal of messaging merged there
 # (b8209d9d, 2026-10-09 12:25 UTC). compose.sh refuses a core that still carries the messaging
