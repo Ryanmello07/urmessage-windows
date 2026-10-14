@@ -41,6 +41,9 @@ JoinCopy ClassifyJoinCopy(std::string_view libraryError) {
   // What the join cost, ahead of what it was refused over: a spent join code is the fact a person
   // has to act on.
   if (Has(libraryError, kLibJoinCodeSpent)) return JoinCopy::JoinCodeSpent;
+  // ONE THIS BUILD CANNOT CLASSIFY (R29), on the restore road and inside the join gate's clause alike,
+  // and before the transient row: a report that carries both names the longer-lasting.
+  if (Has(libraryError, kLibGroupReadUnproven)) return JoinCopy::GroupReadUnproven;
   // A RECORD THAT COULD NOT BE READ JUST NOW (R25 Q5): nothing was changed, and nothing about the
   // group is known, so no row below that says what the group or the invitation IS may answer it.
   if (Has(libraryError, kLibGroupRecordNotReadNow) ||
@@ -62,6 +65,7 @@ std::string_view JoinCopySentence(JoinCopy row) {
     case JoinCopy::InviteVersion: return kSayInviteVersion;
     case JoinCopy::GroupPredatesJoinSeal: return kSayGroupPredatesJoinSeal;
     case JoinCopy::GroupRecordNotReadNow: return kSayGroupRecordNotReadNow;
+    case JoinCopy::GroupReadUnproven: return kSayGroupReadUnproven;
     case JoinCopy::Other: break;
   }
   return {};
@@ -75,6 +79,7 @@ std::string_view JoinCopyName(JoinCopy row) {
     case JoinCopy::InviteVersion: return "ErrInviteVersion";
     case JoinCopy::GroupPredatesJoinSeal: return "ErrGroupPredatesJoinSeal";
     case JoinCopy::GroupRecordNotReadNow: return "ErrGroupRecordNotReadNow";
+    case JoinCopy::GroupReadUnproven: return "ErrGroupReadUnproven";
     case JoinCopy::Other: break;
   }
   return "other";
@@ -92,17 +97,75 @@ bool IsGroupRecordNotReadNow(std::string_view restoreError) {
   return Has(restoreError, kLibGroupRecordNotReadNow);
 }
 
+bool IsGroupReadUnproven(std::string_view restoreError) {
+  return Has(restoreError, kLibGroupReadUnproven);
+}
+
+bool IsNotConnected(std::string_view libraryError) {
+  return Has(libraryError, kLibNotConnected) ||
+         HasAroundGroupId(libraryError, kLibLeaveNotTriedHead, kLibLeaveNotTriedAfterId);
+}
+
+ReadClass RestoreReadClass(std::string_view restoreError) {
+  if (IsGroupReadUnproven(restoreError)) return ReadClass::Unproven;
+  if (IsGroupRecordNotReadNow(restoreError)) return ReadClass::NotReadNow;
+  return ReadClass::None;
+}
+
+ReadClass NextRestoreClass(ReadClass previous, std::string_view restoreError) {
+  // a restore that was not tried read nothing, and says nothing about the files
+  if (IsNotConnected(restoreError)) return previous;
+  return RestoreReadClass(restoreError);
+}
+
 HeldLeaveStep StepAfterRestoreFirst(bool cameBack, std::string_view restoreError) {
   if (cameBack) return HeldLeaveStep::CameBack;
+  // R32: a restore that could not be tried, because this device is not connected, decided nothing
+  if (IsNotConnected(restoreError)) return HeldLeaveStep::NotConnected;
+  // R29: nor did one that could not read a file for a reason this build cannot classify
+  if (IsGroupReadUnproven(restoreError)) return HeldLeaveStep::Unproven;
   // R28: a restore that could not read a file of a group just now did not decide anything about
   // that group, so nothing is left over it.
   if (IsGroupRecordNotReadNow(restoreError)) return HeldLeaveStep::NotReadNow;
   return HeldLeaveStep::Forget;
 }
 
-HeldCopy HeldNotLiveCopy(bool lastRestoreNotReadNow) {
-  if (lastRestoreNotReadNow) return HeldCopy{kSayGroupRecordNotReadNow, false};
+LeaveRefusal ClassifyLeaveRefusal(std::string_view libraryError) {
+  if (IsNotConnected(libraryError)) return LeaveRefusal::NotConnected;
+  if (IsGroupReadUnproven(libraryError)) return LeaveRefusal::Unproven;
+  // the transient class's sentinel, or e0d16ea's record clause, which carried no class
+  if (IsGroupRecordNotReadNow(libraryError) || IsLeaveNotReadNow(libraryError)) return LeaveRefusal::NotReadNow;
+  return LeaveRefusal::Other;
+}
+
+HeldCopy HeldNotLiveCopy(ReadClass lastRestore) {
+  switch (lastRestore) {
+    case ReadClass::NotReadNow: return HeldCopy{kSayGroupRecordNotReadNow, false};
+    case ReadClass::Unproven: return HeldCopy{kSayGroupReadUnproven, false};
+    case ReadClass::None: break;
+  }
   return HeldCopy{kHeldNotLiveSentence, true};
+}
+
+HeldCopy LeaveStopCopy(HeldLeaveStep step) {
+  switch (step) {
+    case HeldLeaveStep::NotReadNow: return HeldNotLiveCopy(ReadClass::NotReadNow);
+    case HeldLeaveStep::Unproven: return HeldNotLiveCopy(ReadClass::Unproven);
+    case HeldLeaveStep::NotConnected: return HeldCopy{kSayNotConnected, true};
+    case HeldLeaveStep::CameBack:
+    case HeldLeaveStep::Forget: break;
+  }
+  return HeldNotLiveCopy(ReadClass::None);
+}
+
+HeldCopy LeaveRefusalCopy(LeaveRefusal refusal) {
+  switch (refusal) {
+    case LeaveRefusal::NotReadNow: return LeaveStopCopy(HeldLeaveStep::NotReadNow);
+    case LeaveRefusal::Unproven: return LeaveStopCopy(HeldLeaveStep::Unproven);
+    case LeaveRefusal::NotConnected: return LeaveStopCopy(HeldLeaveStep::NotConnected);
+    case LeaveRefusal::Other: break;
+  }
+  return HeldCopy{};
 }
 
 std::string_view RestoreNote(std::string_view restoreError, int restoredCount) {
@@ -111,6 +174,7 @@ std::string_view RestoreNote(std::string_view restoreError, int restoredCount) {
   const JoinCopy row = ClassifyJoinCopy(restoreError);
   if (row == JoinCopy::GroupPredatesJoinSeal || row == JoinCopy::GroupRecordNotReadNow)
     return JoinCopySentence(row);
+  if (row == JoinCopy::GroupReadUnproven) return JoinCopySentence(row);
   return {};
 }
 
