@@ -2868,7 +2868,10 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
                                       LeaveRefusalCopy(LeaveRefusal::Other).sentence.empty()},
         {L"leave-not-restored", ClassifyLeaveRefusal(r3NotRestored) == LeaveRefusal::Other &&
                                     IsNotRestoredRefusal(r3NotRestored)},
-        {L"leave-owner", ClassifyLeaveRefusal(r3OwnerMustTransfer) == LeaveRefusal::Other},
+        // R33 X2 changed this road: the owner's question is told apart, so the app restores once
+        // more (its own row is none; R33 roads asks the rest)
+        {L"leave-owner", ClassifyLeaveRefusal(r3OwnerMustTransfer) == LeaveRefusal::OwnerMustTransfer &&
+                             LeaveRefusalCopy(ClassifyLeaveRefusal(r3OwnerMustTransfer)).sentence.empty()},
         {L"join-record-held", ClassifyJoinCopy(r3JoinRecordHeld) == JoinCopy::GroupRecordNotReadNow &&
                                   ClassifyJoinRefusal(r3JoinRecordHeld) == JoinRefusal::Other &&
                                   !OffersNewJoinCode(ClassifyJoinCopy(r3JoinRecordHeld))},
