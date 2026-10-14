@@ -15,14 +15,17 @@
 //
 // THE BRIDGE CARRIES SENTENCES AND NOT TYPES, so the refusals are told apart by the library's own
 // words, as Live/HeldGroupRules.h tells the held-group refusals apart. Each sentence below is quoted
-// from urnetwork/message sdk/urmessage/errors.go, where its sentinel is declared, at the T1 branch's
-// head (7c4119792c1d). The --diagnose cases are typed from the same file and test the rules against
-// those copies; they do not read the library, so a sentence reworded there leaves them green.
+// from urnetwork/message sdk/urmessage/errors.go, where its sentinel is declared (or, for a clause,
+// from the file named beside it), at the T1 branch's head after the red team's fixes
+// (09018b10dd23; every sentence quoted at 7c4119792c1d reads the same there). The --diagnose cases
+// are typed from the same files and test the rules against those copies; they do not read the
+// library, so a sentence reworded there leaves them green.
 //
 // TEXT THIS FILE DOES NOT KNOW IS NOT GUESSED AT. It answers Other, and the caller says what it
 // said before this file.
 #pragma once
 
+#include <string>
 #include <string_view>
 
 namespace urmsg::live {
@@ -67,6 +70,24 @@ inline constexpr std::string_view kLibJoinerAlreadyHasALeaf =
 inline constexpr std::string_view kLibNoDeviceWrapKey =
     "urmessage: this device holds no x-wing seed for the leaf it publishes, so it cannot open an "
     "encapsulation addressed to that leaf";
+// A GROUP RECORD THAT COULD NOT BE READ JUST NOW (Task 57, F1; the T1 fix, at 09018b10dd23): a file
+// another process holds, or an I/O error. It is NOT damage, nothing of the group was changed, and
+// the library refuses whatever damage would permit. Three roads carry it:
+//   restore  ErrGroupRecordNotReadNow, inside ErrRestore's sentence (restore.go; the list's report
+//            is statestore_durable.go's GroupRecords);
+//   join     the held-group gate's unanswered read, "whether this device already holds group <hex>
+//            could not be read, so the invite into it is refused: ..." (heldgroup.go, heldUnread);
+//   leave    ForgetGroup's one-id read, "whether this device holds group <hex> on its disk could
+//            not be read, so nothing was left: ..." (forget.go, recordOnDisk), which the bridge
+//            answers URNET_MESSAGE_FORGET_REFUSED.
+// The two clauses carry the group's id between their halves, as 64 lower-case hex digits.
+inline constexpr std::string_view kLibGroupRecordNotReadNow =
+    "urmessage: a group record on this device's disk could not be read just now, so that group was "
+    "not restored this time; nothing of it was changed, and the next Restore tries it again";
+inline constexpr std::string_view kLibJoinNotReadHead = "urmessage: whether this device already holds group ";
+inline constexpr std::string_view kLibJoinNotReadTail = " could not be read, so the invite into it is refused";
+inline constexpr std::string_view kLibLeaveNotReadHead = "urmessage: whether this device holds group ";
+inline constexpr std::string_view kLibLeaveNotReadTail = " on its disk could not be read, so nothing was left";
 
 // ── what a person is shown: Task 58's table, verbatim ─────────────────────────────────────────
 
@@ -86,9 +107,18 @@ inline constexpr std::string_view kSayJoinerCannotOpenSealedInvite =
     "This join code was made by an older URmessage. Ask them for a new one from an updated app.";
 inline constexpr std::string_view kSayKeyPackageInvalid =
     "This is not a valid join code. Ask them to send it again.";
+// AMENDED BY R24's F5, in R25 Q1's scoped form. The app has no "has not joined yet" mark (Step 2 is
+// not in T1: the bridge cannot tell it), so the sentence names what the join code claims and the
+// one thing that makes removing the entry safe, which the person can ask.
 inline constexpr std::string_view kSayJoinerAlreadyHasALeaf =
-    "They already have an entry in this group, perhaps from an invitation that was never opened. "
-    "Remove that entry, then add their new join code.";
+    "This join code claims to be someone already in this group. Remove their entry only if they "
+    "tell you they never opened their invitation, then add this join code.";
+// R25 Q5: a group record that could not be read just now, on the restore, join and leave roads
+// alike. NO LEAVE IS OFFERED FOR IT: nothing is known to be wrong with the group, and a leave
+// would erase it.
+inline constexpr std::string_view kSayGroupRecordNotReadNow =
+    "This conversation could not be read just now. Close anything else that may be using "
+    "URmessage's folder, then try again.";
 // The table's last row asks for "an on-screen refusal: this installation cannot make a join code".
 // Its words are this file's: why it cannot, in the person's terms. A store with no seed is one an
 // older build wrote, because this build writes the seed with every identity it mints.
@@ -114,6 +144,22 @@ inline constexpr std::wstring_view kJoinerPasteLabel =
 inline constexpr std::wstring_view kAdderInviteLabel =
     L"Only their device can open it. It works once. Send it privately.";
 
+// THE WAITING STATE'S SENTENCE, in its two halves. The first is true only of a device that holds no
+// group; a device whose group is on its disk and did not open (it predates the seal, or its record
+// could not be read just now) is told why first, and is not told it is "not in a group yet" (R25
+// Q4).
+inline constexpr std::string_view kWaitingNotInAGroup = "This device is not in a group yet.";
+inline constexpr std::string_view kWaitingSendJoinCode =
+    "Send your join code to whoever is setting the group up, and paste the invitation they send back.";
+
+// "MAKE A NEW JOIN CODE" (R25 Q2): the button on the two rows that ask for one (ErrNoJoinCodeForInvite
+// and ErrJoinCodeSpent). A press mints a fresh key package through the existing export and puts it
+// in the join-code box; there is no automatic re-mint.
+inline constexpr std::wstring_view kNewJoinCodeButton = L"Make a new join code";
+inline constexpr std::string_view kSayNewJoinCode =
+    "This is a new join code. Send it to whoever is inviting you, and paste the invitation they send "
+    "back.";
+
 // ── the rules ──────────────────────────────────────────────────────────────────────────────────
 
 enum class JoinCopy {
@@ -123,18 +169,41 @@ enum class JoinCopy {
   JoinCodeSpent,
   InviteVersion,
   GroupPredatesJoinSeal,  // at Join (after kLibJoinRefused) and at Restore alike
+  GroupRecordNotReadNow,  // at Restore (ErrGroupRecordNotReadNow) and at Join (the gate's unread)
 };
 
 // Which row a refusal of parse_invite, device_join or device_restore is. Empty text is Other.
 //
 // THE ORDER IS THE RULE. ErrNoJoinCodeForInvite first, so that no spelling of it can ever reach the
-// row that says the join code is still good (R13). Then what the join COST (spent), then the two
+// row that says the join code is still good (R13). Then what the join COST (spent), then the three
 // rows more specific than the window's sentence, and the window's sentence last, by its prefix.
 JoinCopy ClassifyJoinCopy(std::string_view libraryError);
 // The sentence for a row; empty for Other.
 std::string_view JoinCopySentence(JoinCopy row);
 // The sentinel's name, for a log line.
 std::string_view JoinCopyName(JoinCopy row);
+// Does this row's sentence ask for a new join code, so the dialog offers "Make a new join code"
+// (R25 Q2)? ErrNoJoinCodeForInvite and ErrJoinCodeSpent only.
+bool OffersNewJoinCode(JoinCopy row);
+
+// Is this ForgetGroup's refusal of a group whose record could not be read just now (the leave
+// road of R25 Q5)? Then the app says kSayGroupRecordNotReadNow and offers no leave.
+bool IsLeaveNotReadNow(std::string_view libraryError);
+
+// WHAT THE JOIN DIALOG SAYS FIRST AFTER A RESTORE, from device_restore's report and how many groups
+// it brought back: a group that predates the seal, or one whose record could not be read just now,
+// when no group came back. Empty otherwise (the app is in a group, or the report is nothing a
+// person is told about).
+std::string_view RestoreNote(std::string_view restoreError, int restoredCount);
+
+// The Waiting state's sentence: the note first, if any, and "not in a group yet" only for a device
+// that holds no group on its disk (R25 Q4).
+std::string WaitingText(std::string_view note, bool holdsGroup);
+
+// The dialog's intro. "This device is connected." (kHeldIntro) while the device holds a group: the
+// leave of a held group is on offer (R20), it is on the founder's road, or its group is on its disk
+// and did not open (R25 Q4). The join road's intro otherwise.
+std::wstring_view OnboardIntro(bool offerLeaveHeldGroup, bool founded, bool holdsGroup);
 
 enum class AddCopy {
   Other,

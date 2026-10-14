@@ -709,10 +709,18 @@ std::atomic<uint64_t> g_onboardGeneration{0};
 // the person pressed the button; guarded by g_onboardMutex and consumed by the worker.
 std::atomic<bool> g_heldLeaveOffered{false};
 bool g_heldLeaveAsked = false;
+// "MAKE A NEW JOIN CODE" (R25 Q2), on the same terms as the leave above: offered by the state on
+// screen, asked by the press, and consumed by the worker.
+std::atomic<bool> g_newJoinCodeOffered{false};
+bool g_newJoinCodeAsked = false;            // guarded by g_onboardMutex; consumed by the worker
+// THIS DEVICE HOLDS A GROUP ON ITS DISK THAT DID NOT OPEN (R25 Q4, Q5): set when a restore, a join
+// or a leave says so, cleared by a join and by a leave that left it. Every publication carries it,
+// so no state in between says "not in a group yet" of this device. Guarded by g_onboardMutex.
+bool g_holdsUnopenedGroup = false;
 
 void PublishOnboard(urmsg::live::OnboardStep step, std::string joinCode, std::string message,
                     std::string inviteCode = {}, bool offerLeaveHeldGroup = false,
-                    bool addRoad = false) {
+                    bool addRoad = false, bool offerNewJoinCode = false) {
   auto next = std::make_shared<urmsg::live::OnboardState>();
   next->step = step;
   next->joinCode = std::move(joinCode);
@@ -720,10 +728,14 @@ void PublishOnboard(urmsg::live::OnboardStep step, std::string joinCode, std::st
   next->message = std::move(message);
   next->offerLeaveHeldGroup = offerLeaveHeldGroup;
   next->addRoad = addRoad;
+  next->offerNewJoinCode = offerNewJoinCode;
   {
     std::lock_guard<std::mutex> lock(g_onboardMutex);
+    if (step == urmsg::live::OnboardStep::Joined) g_holdsUnopenedGroup = false;
+    next->holdsGroup = g_holdsUnopenedGroup;
     g_onboard = std::move(next);
     g_heldLeaveOffered.store(offerLeaveHeldGroup, std::memory_order_release);
+    g_newJoinCodeOffered.store(offerNewJoinCode, std::memory_order_release);
   }
   g_onboardGeneration.fetch_add(1, std::memory_order_release);
   // THE SAME BELL THE WORLD RINGS. The window's beat re-reads the onboarding state along with
@@ -891,7 +903,7 @@ struct ErasedOnExit {
 enum class HeldLeave {
   Left,      // this device holds nothing under the id now: open the same invitation again
   CameBack,  // the restore brought the group back, and s.group is it
-  Offered,   // the group is still held and the leave is on offer again; the state says why
+  Offered,   // the group is still held; the state says why, and whether the leave is on offer
 };
 
 // THE RESTORE THE LEAVE RUNS FIRST: device_restore, and the group it brings back under the held
@@ -992,6 +1004,22 @@ HeldLeave LeaveHeldGroup(Session& s, HeldInvite const& held, std::string const& 
     return HeldLeave::Offered;
   }
 
+  // THE RECORD COULD NOT BE READ JUST NOW (R25 Q5; Task 57, F1): the library left nothing, and it
+  // knows nothing about the group. NO LEAVE IS OFFERED: there is nothing to leave, and the person
+  // is told to free the folder and try again.
+  if (urmsg::live::IsLeaveNotReadNow(why)) {
+    urnw::LogWarn("live: held leave: the record of group {} could not be read just now "
+                  "(ErrGroupRecordNotReadNow); nothing was left, and no leave is offered: {}",
+                  gidHex, why);
+    {
+      std::lock_guard<std::mutex> lock(g_onboardMutex);
+      g_holdsUnopenedGroup = true;
+    }
+    PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
+                   std::string(urmsg::live::kSayGroupRecordNotReadNow));
+    return HeldLeave::Offered;
+  }
+
   urnw::LogError("live: held leave: forget_group refused group {}: {}", gidHex, why);
   PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
                  "The old copy of this group could not be left: " +
@@ -1001,6 +1029,51 @@ HeldLeave LeaveHeldGroup(Session& s, HeldInvite const& held, std::string const& 
 }
 
 // ── the two-party handshake ───────────────────────────────────────────────────
+
+enum class Mint {
+  Ok,         // `joinCode` holds a fresh key package, as base64, and the handshake file holds it
+  NoWrapKey,  // ErrNoDeviceWrapKey: this installation cannot make a join code (Task 58)
+  Failed,     // anything else; `why` says what
+};
+
+// MINT A JOIN CODE: a fresh key package off urnet_message_device_key_package, written to the
+// handshake file for the developer's road and kept as text for the screen. At startup, and again
+// on "Make a new join code" (R25 Q2). Buffer-out: call once with out == NULL to size, allocate,
+// call again.
+Mint MintJoinCode(Session& s, std::string& joinCode, size_t& octets, std::string& why) {
+  char* err = nullptr;
+  int32_t needed = 0;
+  if (!urnet_message_device_key_package(s.device, nullptr, &needed, &err)) {
+    const std::string sizing = TakeError(&err);
+    if (needed <= 0) {
+      why = sizing.empty() ? std::string("no reason given") : sizing;
+      return urmsg::live::IsNoDeviceWrapKey(sizing) ? Mint::NoWrapKey : Mint::Failed;
+    }
+  }
+  std::vector<uint8_t> keyPackage(static_cast<size_t>(needed));
+  int32_t capacity = needed;
+  if (!urnet_message_device_key_package(s.device, keyPackage.data(), &capacity, &err)) {
+    why = TakeError(&err);
+    return urmsg::live::IsNoDeviceWrapKey(why) ? Mint::NoWrapKey : Mint::Failed;
+  }
+  keyPackage.resize(static_cast<size_t>(capacity));
+
+  // A KEY PACKAGE IS SINGLE USE AND THIS ONE HAS JUST BEEN MINTED, so any file
+  // already at that path is a previous run's and is worthless to a peer.
+  // Overwriting it is the point.
+  const std::filesystem::path keyPackagePath = HandshakeDir() / kKeyPackageName;
+  if (!WriteOctets(keyPackagePath, keyPackage.data(), keyPackage.size())) {
+    why = "could not write this device's key package to " + Utf8Path(keyPackagePath);
+    return Mint::Failed;
+  }
+  // THE SAME OCTETS AS TEXT. A key package is a public offer to be added, so this is not a secret
+  // and the UI may show it, copy it and let a person send it down any channel they like. The code
+  // itself is still never LOGGED: a log line is a different audience from a screen, it outlives
+  // the moment, and there is no reason to put two kilobytes of base64 in one.
+  joinCode = EncodeBase64(keyPackage.data(), keyPackage.size());
+  octets = keyPackage.size();
+  return Mint::Ok;
+}
 
 // Publish this device's key package, wait for the peer's invite, and join.
 // Answers true with s.group set, or false having said why.
@@ -1015,67 +1088,43 @@ bool JoinFromPeer(Session& s) {
   const std::filesystem::path keyPackagePath = dir / kKeyPackageName;
   const std::filesystem::path invitePath = dir / kInviteName;
 
-  // Buffer-out: call once with out == NULL to size, allocate, call again.
-  //
   // A DEVICE THAT CANNOT MAKE A JOIN CODE IS TOLD SO ON THE SCREEN (Task 58). Its store holds no
   // X-Wing seed (ErrNoDeviceWrapKey), so the library will not publish a join code for it. The
   // session ends here as it did before, with the reason in the window and not only in the log.
   auto cannotMakeJoinCode = [](std::string const& why) {
-    if (!urmsg::live::IsNoDeviceWrapKey(why)) return false;
     urnw::LogError("live: device_key_package refused (ErrNoDeviceWrapKey): {}", why);
     PublishOnboard(urmsg::live::OnboardStep::NoJoinCode, std::string(),
                    std::string(urmsg::live::kSayNoDeviceWrapKey));
-    return true;
   };
-  int32_t needed = 0;
-  if (!urnet_message_device_key_package(s.device, nullptr, &needed, &err)) {
-    const std::string sizing = TakeError(&err);
-    if (needed <= 0) {
-      if (cannotMakeJoinCode(sizing)) return false;
-      urnw::LogError("live: device_key_package could not be sized: {}",
-                     sizing.empty() ? "no reason given" : sizing);
-      return false;
+  std::string joinCode;
+  size_t keyPackageOctets = 0;
+  {
+    std::string why;
+    switch (MintJoinCode(s, joinCode, keyPackageOctets, why)) {
+      case Mint::Ok:
+        break;
+      case Mint::NoWrapKey:
+        cannotMakeJoinCode(why);
+        return false;
+      case Mint::Failed:
+        urnw::LogError("live: device_key_package: {}", why);
+        return false;
     }
-  }
-  std::vector<uint8_t> keyPackage(static_cast<size_t>(needed));
-  int32_t capacity = needed;
-  if (!urnet_message_device_key_package(s.device, keyPackage.data(), &capacity, &err)) {
-    const std::string why = TakeError(&err);
-    if (cannotMakeJoinCode(why)) return false;
-    urnw::LogError("live: device_key_package: {}", why);
-    return false;
-  }
-  keyPackage.resize(static_cast<size_t>(capacity));
-
-  // A KEY PACKAGE IS SINGLE USE AND THIS ONE HAS JUST BEEN MINTED, so any file
-  // already at that path is a previous run's and is worthless to a peer.
-  // Overwriting it is the point.
-  if (!WriteOctets(keyPackagePath, keyPackage.data(), keyPackage.size())) {
-    urnw::LogError("live: could not write this device's key package to {}",
-                   Utf8Path(keyPackagePath));
-    return false;
   }
   urnw::LogInfo(
       "live: published this device's key package ({} octets) to {}. WAITING for a second party: a "
       "solo device cannot open a group — group_open comes after add_member, the alpha accepts "
       "exactly one, and one credential is one key package. Run sdk/livepeer under the OTHER "
       "account, pointed at this file.",
-      keyPackage.size(), Utf8Path(keyPackagePath));
+      keyPackageOctets, Utf8Path(keyPackagePath));
 
-  // THE SAME OCTETS AS TEXT. A key package is a public offer to be added, so this is not a secret
-  // and the UI may show it, copy it and let a person send it down any channel they like. The code
-  // itself is still never LOGGED: a log line is a different audience from a screen, it outlives
-  // the moment, and there is no reason to put two kilobytes of base64 in one.
-  const std::string joinCode = EncodeBase64(keyPackage.data(), keyPackage.size());
-  std::string waiting =
-      "This device is not in a group yet. Send your join code to whoever is setting the group up, "
-      "and paste the invitation they send back.";
+  // THE NOTE FIRST, and "not in a group yet" only when it is true (R25 Q4): a device whose group is
+  // on its disk and did not open is not told it holds none (Live/RefusalCopy.h, WaitingText).
+  std::string waiting;
   {
     std::lock_guard<std::mutex> lock(g_onboardMutex);
-    if (!g_afterLeaveNote.empty()) {
-      waiting = g_afterLeaveNote + " " + waiting;
-      g_afterLeaveNote.clear();
-    }
+    waiting = urmsg::live::WaitingText(g_afterLeaveNote, g_holdsUnopenedGroup);
+    g_afterLeaveNote.clear();
   }
   PublishOnboard(urmsg::live::OnboardStep::Waiting, joinCode, waiting);
 
@@ -1127,6 +1176,41 @@ bool JoinFromPeer(Session& s) {
     // its leave is no longer theirs to ask for. (The file road's own new invitation drops it below.)
     if (!encoded.empty()) held.Drop();
 
+    // "MAKE A NEW JOIN CODE" (R25 Q2): the press on a row that asked for one. The fresh code
+    // replaces the one in the box and in the handshake file; the one shown before stays valid
+    // until it is used.
+    {
+      bool asked = false;
+      {
+        std::lock_guard<std::mutex> lock(g_onboardMutex);
+        asked = g_newJoinCodeAsked;
+        g_newJoinCodeAsked = false;
+      }
+      if (asked) {
+        std::string fresh;
+        size_t octets = 0;
+        std::string why;
+        switch (MintJoinCode(s, fresh, octets, why)) {
+          case Mint::Ok:
+            joinCode = std::move(fresh);
+            urnw::LogInfo("live: *** NEW JOIN CODE *** minted ({} octets) and published to {}",
+                          octets, Utf8Path(keyPackagePath));
+            PublishOnboard(urmsg::live::OnboardStep::Waiting, joinCode,
+                           std::string(urmsg::live::kSayNewJoinCode));
+            break;
+          case Mint::NoWrapKey:
+            // THAT ROW, as at startup: this installation cannot make a join code at all.
+            cannotMakeJoinCode(why);
+            return false;
+          case Mint::Failed:
+            urnw::LogError("live: a new join code could not be minted: {}", why);
+            PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
+                           "A new join code could not be made: " + why, {}, false, false, true);
+            break;
+        }
+      }
+    }
+
     // THE LEAVE OF A GROUP THAT IS NOT LIVE, AND THEN THE SAME INVITATION AGAIN (Task 39). Served
     // before the file road, so a file still on the disk cannot race the leave the person asked for.
     {
@@ -1141,6 +1225,10 @@ bool JoinFromPeer(Session& s) {
           case HeldLeave::Left:
             // THE SAME INVITATION: the refusal came before the join code was touched, so it is
             // still good. It goes through the one join path below, like any other.
+            {
+              std::lock_guard<std::mutex> lock(g_onboardMutex);
+              g_holdsUnopenedGroup = false;
+            }
             encoded = held.octets;
             fromPaste = held.fromPaste;
             break;
@@ -1347,11 +1435,19 @@ bool JoinFromPeer(Session& s) {
           // THE JOIN SEAL'S REFUSALS (Task 58), each in the person's words and each true about what
           // it cost: the window's own sentence says the join code is still good, and the one
           // refusal that does not carry it (ErrNoJoinCodeForInvite) is never said that way (R13).
+          // The two rows that ask for a new join code offer the button that makes one (R25 Q2); a
+          // record that could not be read just now is of a group this device holds, and offers no
+          // leave (R25 Q5).
           if (const urmsg::live::JoinCopy row = urmsg::live::ClassifyJoinCopy(why);
               row != urmsg::live::JoinCopy::Other) {
             urnw::LogWarn("live: device_join refused ({}): {}", urmsg::live::JoinCopyName(row), why);
+            if (row == urmsg::live::JoinCopy::GroupRecordNotReadNow) {
+              std::lock_guard<std::mutex> lock(g_onboardMutex);
+              g_holdsUnopenedGroup = true;
+            }
             PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
-                           std::string(urmsg::live::JoinCopySentence(row)));
+                           std::string(urmsg::live::JoinCopySentence(row)), {}, false, false,
+                           urmsg::live::OffersNewJoinCode(row));
             break;
           }
           urnw::LogError(
@@ -1901,14 +1997,16 @@ void RunSession() {
   }
   if (restored != 0) urnet_release(restored);
   // A GROUP FOUNDED BEFORE INVITATIONS WERE SEALED does not restore (ErrGroupPredatesJoinSeal), and
-  // R9 has the app say so in a sentence, never in the library's words (Task 58). The join dialog's
-  // first state opens with it.
-  if (restoredCount == 0 && urmsg::live::ClassifyJoinCopy(restoreError) ==
-                                urmsg::live::JoinCopy::GroupPredatesJoinSeal) {
-    urnw::LogWarn("live: device_restore refused a group (ErrGroupPredatesJoinSeal); the join dialog "
-                  "says so");
+  // R9 has the app say so in a sentence, never in the library's words (Task 58). Nor does a group
+  // whose record could not be read just now (ErrGroupRecordNotReadNow, R25 Q5). The join dialog's
+  // first state opens with its sentence, and does not say this device is not in a group (R25 Q4).
+  if (const std::string_view note = urmsg::live::RestoreNote(restoreError, restoredCount);
+      !note.empty()) {
+    urnw::LogWarn("live: device_restore refused a group ({}); the join dialog says so",
+                  urmsg::live::JoinCopyName(urmsg::live::ClassifyJoinCopy(restoreError)));
     std::lock_guard<std::mutex> lock(g_onboardMutex);
-    g_afterLeaveNote = std::string(urmsg::live::kSayGroupPredatesJoinSeal);
+    g_afterLeaveNote = std::string(note);
+    g_holdsUnopenedGroup = true;
   }
 
   // ONE PASS PER GROUP THIS DEVICE HOLDS (ledger 273). A pass ends only when the device LEAVES its
@@ -2706,6 +2804,21 @@ bool QueueLeaveHeldGroup() {
     g_heldLeaveAsked = true;
   }
   urnw::LogInfo("live: the leave of a group that is not live was handed to the worker");
+  return true;
+}
+
+bool QueueNewJoinCode() {
+  // ONLY WHILE IT IS ON OFFER: the state on screen asks for a new join code, and nothing else asks
+  // for this. A press that lands after a later state withdrew the offer mints nothing.
+  if (!g_newJoinCodeOffered.load(std::memory_order_acquire)) {
+    urnw::LogWarn("live: a new join code was asked for while none is on offer; refused");
+    return false;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_onboardMutex);
+    g_newJoinCodeAsked = true;
+  }
+  urnw::LogInfo("live: a new join code was asked for and handed to the worker");
   return true;
 }
 

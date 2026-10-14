@@ -661,6 +661,29 @@ void MainWindow::BuildOnboardDialog() {
   });
   panel.Children().Append(onboardLeaveHeldButton_);
 
+  // ── MAKE A NEW JOIN CODE (R25 Q2) ───────────────────────────────────────────────────────────
+  // DIRECTLY UNDER THE SENTENCE THAT ASKS FOR ONE: an invitation no join code of this device can be
+  // read for, and a join that cost its join code, both say to make a new join code. This makes it;
+  // the worker puts it in the join-code box above. Shown only while the worker's state offers it.
+  onboardNewCodeButton_ = Button();
+  onboardNewCodeButton_.Content(box_value(hstring{urmsg::live::kNewJoinCodeButton}));
+  winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(
+      onboardNewCodeButton_, hstring{urmsg::live::kNewJoinCodeButton});
+  onboardNewCodeButton_.Visibility(Visibility::Collapsed);
+  onboardNewCodeButton_.Click([weak = get_weak()](auto const&, auto const&) {
+    auto self = weak.get();
+    if (!self) return;
+    const bool taken = urmsg::live::QueueNewJoinCode();
+    if (taken && self->onboardNewCodeButton_)
+      self->onboardNewCodeButton_.Visibility(Visibility::Collapsed);
+    if (self->onboardStatus_) {
+      self->onboardStatus_.Text(taken ? L"Making a new join code\u2026"
+                                      : L"A new join code is not on offer right now.");
+    }
+    urnw::LogInfo("window: a new join code was {} by the live worker", taken ? "taken" : "REFUSED");
+  });
+  panel.Children().Append(onboardNewCodeButton_);
+
   onboardDialog_ = ContentDialog();
   onboardDialog_.Opened([weak = get_weak()](auto const&, auto const&) {
     if (auto self = weak.get()) self->onboardOpen_ = true;
@@ -743,6 +766,7 @@ void MainWindow::ApplyOnboard() {
       onboardPasteBox_ = nullptr;
       onboardStatus_ = nullptr;
       onboardLeaveHeldButton_ = nullptr;
+      onboardNewCodeButton_ = nullptr;
       urnw::LogInfo("window: the onboarding dialog closed \u2014 this device is in a group");
     }
     // AND IT MAY BE SHOWN AGAIN: a device that leaves its group (ledger 273) is back on the join
@@ -795,6 +819,10 @@ void MainWindow::ApplyOnboard() {
   if (onboardLeaveHeldButton_)
     onboardLeaveHeldButton_.Visibility(state->offerLeaveHeldGroup && !stuck ? Visibility::Visible
                                                                             : Visibility::Collapsed);
+  // "MAKE A NEW JOIN CODE", exactly while the state offers it (R25 Q2).
+  if (onboardNewCodeButton_)
+    onboardNewCodeButton_.Visibility(state->offerNewJoinCode && !stuck ? Visibility::Visible
+                                                                       : Visibility::Collapsed);
   // THE PRIMARY BUTTON IS THE JOIN, so it has no job on the founder's road: an owner adds people
   // with the button inside the add panel, and a Join here would try to join a group with an empty
   // box. Hidden rather than disabled, because a dark button invites a person to look for what
@@ -804,10 +832,11 @@ void MainWindow::ApplyOnboard() {
   if (onboardIntro_) {
     onboardIntro_.Visibility(stuck ? Visibility::Collapsed : Visibility::Visible);
     // WHILE THIS DEVICE HOLDS A GROUP the intro does not say it is "not in a group yet": with the
-    // leave of a held group on offer (R20), and on the founder's road, where the group it made is
-    // the one it is adding to. The sentence under it says the rest.
-    onboardIntro_.Text(hstring{state->offerLeaveHeldGroup || founded ? urmsg::live::kHeldIntro
-                                                                     : urmsg::live::kJoinIntro});
+    // leave of a held group on offer (R20), on the founder's road, where the group it made is the
+    // one it is adding to, and while its group is on its disk and did not open (R25 Q4). The
+    // sentence under it says the rest (Live/RefusalCopy.h, OnboardIntro).
+    onboardIntro_.Text(
+        hstring{urmsg::live::OnboardIntro(state->offerLeaveHeldGroup, founded, state->holdsGroup)});
   }
   if (onboardOrElse_)
     onboardOrElse_.Visibility(founded || stuck ? Visibility::Collapsed : Visibility::Visible);
