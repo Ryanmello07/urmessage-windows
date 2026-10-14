@@ -1849,11 +1849,12 @@ std::wstring StatusStripFieldsAssertion() {
 // ---- an invitation refused over a held group, and the leave that answers it (Task 39) --------
 //
 // PURE on the same terms as the lines above: every function asked is Live/HeldGroupRules.h's, no
-// SDK is loaded and no XAML is touched. The library's sentences below are QUOTED from
+// SDK is loaded and no XAML is touched. The library's sentences below are TYPED HERE, copied from
 // urnetwork/message sdk/urmessage (errors.go declares each sentinel, heldgroup.go and forget.go
-// format the clause after it), at T1a's head 73669fe1, so a sentence that moves there moves the
-// verdict here rather than the app's behaviour in silence. Each line prints PASS or FAIL, the
-// QUERY, and every case it asked, so the complement is on the page beside the verdict.
+// format the clause after it) at 215a0696, and nothing reads the library: these lines test the
+// app's rules against those copies, and a sentence reworded there leaves them green. (A check of
+// the pinned text itself is a follow-up, R21.) Each line prints PASS or FAIL, the QUERY, and every
+// case it asked, so the complement is on the page beside the verdict.
 std::vector<std::wstring> HeldGroupDiagnostics() {
   using namespace urmsg::live;
   std::vector<std::wstring> out;
@@ -1980,12 +1981,42 @@ std::vector<std::wstring> HeldGroupDiagnostics() {
     out.push_back(std::format(
         L"  held not-restored: {}  ErrGroupNotRestored {} | ErrGroupNotHeld not it {} | "
         L"ErrForgetUnfinished not it {} | the held refusal not it {} | empty not it {}   [query: "
-        L"the leave of a group no restore has tried answers ErrGroupNotRestored, and only that "
-        L"answer sends the app to the restore before it offers the leave again]",
+        L"the leave of a group no restore has tried answers ErrGroupNotRestored; the app has restored "
+        L"first already, so that answer erases nothing and offers the leave again]",
         Verdict(ok), notRestored, notHeld, unfinished, heldText, empty));
   }
 
-  // 4. the two sentences a person is shown, and the button the second one names.
+  // 4. the join after a leave whose erase did not finish: offered the leave again only when it is
+  //    ErrForgetUnfinished naming the held group (review F3).
+  {
+    const std::string joinUnfinished =
+        std::string(kForgetUnfinishedSentence) +
+        "; ForgetGroup again, or the next Restore, finishes the erase: group " + hex +
+        " cannot be joined or made until the erase of the leave before it has finished: io";
+    const bool itsOwn = IsUnfinishedEraseOf(joinUnfinished, hex);
+    const bool notOther = !IsUnfinishedEraseOf(joinUnfinished, otherHex);
+    const bool forgetsOwn = !IsUnfinishedEraseOf(
+        std::string(kForgetUnfinishedSentence) +
+            "; ForgetGroup again, or the next Restore, finishes the erase: io",
+        hex);
+    const bool heldText = !IsUnfinishedEraseOf(held + "group " + hex + " has a record on this device's disk", hex);
+    const bool otherJoin = !IsUnfinishedEraseOf(
+        "urmessage: this device holds no join code this invitation was made for; make a new join "
+        "code: group " + hex,
+        hex);
+    const bool empty = !IsUnfinishedEraseOf("", hex);
+    const bool classifiedOther = ClassifyJoinRefusal(joinUnfinished) == JoinRefusal::Other;
+    const bool ok = itsOwn && notOther && forgetsOwn && heldText && otherJoin && empty && classifiedOther;
+    out.push_back(std::format(
+        L"  held unfinished  : {}  the join's ErrForgetUnfinished for its group {} | for another "
+        L"group not it {} | naming no group not it {} | the held refusal not it {} | another join "
+        L"refusal not it {} | empty not it {} | classified other, not held {}   [query: a join "
+        L"refused because the held group's leave has not finished its erase offers that leave again "
+        L"instead of \"not meant for this device\"; nothing else does]",
+        Verdict(ok), itsOwn, notOther, forgetsOwn, heldText, otherJoin, empty, classifiedOther));
+  }
+
+  // 5. the two sentences a person is shown, and the button the second one names.
   {
     const std::string live(kHeldLiveSentence);
     const std::string notLive(kHeldNotLiveSentence);

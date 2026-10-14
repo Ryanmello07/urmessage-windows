@@ -258,13 +258,14 @@ bool QueueJoinFromInviteCode(std::string base64Invite);
 // or its record does not read -- so the conversation's own leave, which needs a live group, cannot
 // reach it.
 //
-// On the worker: urnet_message_device_forget_group with the group id OF THE INVITATION that was
+// On the worker, THE RESTORE RUNS FIRST, on every press: a group that comes back is the group this
+// device is in, and nothing is erased (a restore that failed once may have failed for a moment).
+// Only then urnet_message_device_forget_group, with the group id OF THE INVITATION that was
 // refused, read off the invitation's own octets. No roster is read and no owner's question is
 // asked, because ForgetGroup asks none of a group that has no live roster (the lead's ruling R9).
 // Then the SAME invitation is joined again: the refusal did not spend the join code. When the
-// leave answers that no restore has tried the group yet (ErrGroupNotRestored), the restore runs
-// first; a group that comes back is the group this device is in, and one that does not is offered
-// the leave again.
+// leave answers that no restore has tried the group yet (ErrGroupNotRestored), nothing was erased
+// and the leave is offered again.
 //
 // Answers false, having asked for nothing, when no such leave is on offer. Never blocks; the
 // outcome arrives as a published OnboardState.

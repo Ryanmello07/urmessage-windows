@@ -19,6 +19,11 @@ bool IsNotRestoredRefusal(std::string_view libraryError) {
   return libraryError.find(kNotRestoredSentence) != std::string_view::npos;
 }
 
+bool IsUnfinishedEraseOf(std::string_view libraryError, std::string_view groupIdHex) {
+  return libraryError.find(kForgetUnfinishedSentence) != std::string_view::npos &&
+         RefusalNamesGroup(libraryError, groupIdHex);
+}
+
 bool InviteGroupId(const uint8_t* invite, size_t len, std::array<uint8_t, kGroupIdOctets>& out) {
   constexpr size_t kVersionOctets = 2;
   constexpr size_t kLengthOctets = 4;

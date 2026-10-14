@@ -842,7 +842,10 @@ bool AddMemberFromCode(Session& s, const std::string& theirCode, const std::stri
 //
 // THE INVITATION THAT WAS REFUSED, KEPT FOR THE LEAVE AND FOR THE JOIN AFTER IT. Its octets are
 // the group's secrets in full, exactly as the pasted code they came from is: kept in this worker's
-// memory only, never written down and never logged, and erased the moment they are superseded.
+// memory only, never written down and never logged. What is ERASED, with SecureZeroMemory, is this
+// struct's copy when it is dropped, and each pass of the wait loop's own copy (`encoded`, by
+// ErasedOnExit) when that pass ends. The file road's `previous` and the pasted base64 are not
+// erased; they never were.
 // The group id is the invitation's own first field (HeldGroupRules.h says why there is no bridge
 // accessor for it).
 struct HeldInvite {
@@ -861,18 +864,73 @@ struct HeldInvite {
   ~HeldInvite() { Drop(); }
 };
 
+// One pass's copy of an invitation's octets, erased when the pass ends however it ends (review F5).
+struct ErasedOnExit {
+  std::vector<uint8_t>& octets;
+  ~ErasedOnExit() {
+    if (!octets.empty()) ::SecureZeroMemory(octets.data(), octets.size());
+  }
+};
+
 enum class HeldLeave {
   Left,      // this device holds nothing under the id now: open the same invitation again
   CameBack,  // the restore brought the group back, and s.group is it
   Offered,   // the group is still held and the leave is on offer again; the state says why
 };
 
+// THE RESTORE THE LEAVE RUNS FIRST: device_restore, and the group it brings back under the held
+// id, if any. Answers true with s.group set to it; every other group it answered is released.
+bool RestoreHeldGroup(Session& s, HeldInvite const& held) {
+  char* err = nullptr;
+  const int32_t gidLen = static_cast<int32_t>(held.groupId.size());
+  const uint64_t restored = urnet_message_device_restore(s.device, s.ctx, &err);
+  const std::string restoreError = TakeError(&err);
+  const int32_t count = urnet_message_group_list_count(restored);
+  if (!restoreError.empty())
+    urnw::LogWarn("live: held leave: device_restore reported: {} (and answered {} group(s))",
+                  restoreError, count);
+  uint64_t back = 0;
+  for (int32_t i = 0; i < count; ++i) {
+    const uint64_t group = urnet_message_group_list_at(restored, i);
+    if (group == 0) continue;
+    uint8_t gid[urmsg::live::kGroupIdOctets] = {};
+    int32_t len = static_cast<int32_t>(sizeof(gid));
+    const bool same = back == 0 && urnet_message_group_id(group, gid, &len) && len == gidLen &&
+                      std::memcmp(gid, held.groupId.data(), sizeof(gid)) == 0;
+    if (same) {
+      back = group;
+    } else {
+      urnet_release(group);
+    }
+  }
+  if (restored != 0) urnet_release(restored);
+  if (back == 0) return false;
+  s.group = back;
+  return true;
+}
+
 // THE LEAVE ITSELF, on the worker: forget_group with the invitation's group id, and no roster and
 // no owner's question, because ForgetGroup asks none of a group with no live roster (R9).
+//
+// THE RESTORE RUNS FIRST, ON EVERY PRESS (review F1). A group the startup restore could not bring
+// back is marked as not restored whatever the reason, a file locked or denied for a moment
+// included, and ForgetGroup erases a marked group at once, every epoch state and every line this
+// device sent with it. So the restore is tried again before anything is erased: a group that opens
+// now is this device's again (CameBack) and nothing is left, and only a group that still does not
+// open is forgotten.
 HeldLeave LeaveHeldGroup(Session& s, HeldInvite const& held, std::string const& joinCode) {
   char* err = nullptr;
   const std::string gidHex = urmsg::live::GroupIdHex(held.groupId);
   const int32_t gidLen = static_cast<int32_t>(held.groupId.size());
+  urnw::LogInfo("live: held leave: restoring first, in case group {} opens now", gidHex);
+  if (RestoreHeldGroup(s, held)) {
+    urnw::LogInfo("live: *** RESTORED *** group {} came back at epoch {}; this device is in it, "
+                  "and nothing was left",
+                  gidHex, urnet_message_group_epoch(s.group));
+    PublishOnboard(urmsg::live::OnboardStep::Joined, std::string(), "You are in the group.");
+    return HeldLeave::CameBack;
+  }
+  urnw::LogWarn("live: held leave: group {} did not come back; leaving it", gidHex);
   int32_t kind = urnet_message_device_forget_group(s.device, held.groupId.data(), gidLen, &err);
   std::string why = TakeError(&err);
   // UNFINISHED IS A DEVICE THAT HAS LEFT, as it is for LeaveGroup above; asked once more, and the
@@ -907,39 +965,12 @@ HeldLeave LeaveHeldGroup(Session& s, HeldInvite const& held, std::string const& 
 
   // ErrGroupNotRestored: the record reads and no restore has tried it, so the library will not
   // leave it unasked -- a device that has merely restarted is asked the owner's question like any
-  // other. The restore runs first, and the leave is offered again if the group does not come back.
+  // other. The restore above stopped before it reached this group (a listing that failed, say), so
+  // nothing was erased, and the leave is offered again: the next press restores first again.
   if (urmsg::live::IsNotRestoredRefusal(why)) {
-    urnw::LogWarn("live: held leave: no restore has tried group {} ({}); restoring first", gidHex, why);
-    const uint64_t restored = urnet_message_device_restore(s.device, s.ctx, &err);
-    const std::string restoreError = TakeError(&err);
-    const int32_t count = urnet_message_group_list_count(restored);
-    if (!restoreError.empty())
-      urnw::LogWarn("live: held leave: device_restore reported: {} (and answered {} group(s))",
-                    restoreError, count);
-    uint64_t back = 0;
-    for (int32_t i = 0; i < count; ++i) {
-      const uint64_t group = urnet_message_group_list_at(restored, i);
-      if (group == 0) continue;
-      uint8_t gid[urmsg::live::kGroupIdOctets] = {};
-      int32_t len = static_cast<int32_t>(sizeof(gid));
-      const bool same = back == 0 && urnet_message_group_id(group, gid, &len) &&
-                        len == gidLen && std::memcmp(gid, held.groupId.data(), sizeof(gid)) == 0;
-      if (same) {
-        back = group;
-      } else {
-        urnet_release(group);
-      }
-    }
-    if (restored != 0) urnet_release(restored);
-    if (back != 0) {
-      s.group = back;
-      urnw::LogInfo("live: *** RESTORED *** group {} came back at epoch {}; this device is in it, "
-                    "and nothing was left",
-                    gidHex, urnet_message_group_epoch(s.group));
-      PublishOnboard(urmsg::live::OnboardStep::Joined, std::string(), "You are in the group.");
-      return HeldLeave::CameBack;
-    }
-    urnw::LogWarn("live: held leave: group {} did not come back; the leave is offered again", gidHex);
+    urnw::LogWarn("live: held leave: the restore did not reach group {} ({}); the leave is offered "
+                  "again",
+                  gidHex, why);
     PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
                    std::string(urmsg::live::kHeldNotLiveSentence), {}, true);
     return HeldLeave::Offered;
@@ -1037,6 +1068,7 @@ bool JoinFromPeer(Session& s) {
   HeldInvite held;
   for (;;) {
     std::vector<uint8_t> encoded;
+    const ErasedOnExit encodedErased{encoded};
     bool fromPaste = false;
 
     // The person's road first: somebody who has just pasted is waiting at the screen.
@@ -1062,7 +1094,7 @@ bool JoinFromPeer(Session& s) {
     }
 
     // A NEW INVITATION SUPERSEDES THE ONE THAT WAS REFUSED: the person has moved on from it, and
-    // its leave is no longer theirs to ask for.
+    // its leave is no longer theirs to ask for. (The file road's own new invitation drops it below.)
     if (!encoded.empty()) held.Drop();
 
     // THE LEAVE OF A GROUP THAT IS NOT LIVE, AND THEN THE SAME INVITATION AGAIN (Task 39). Served
@@ -1182,8 +1214,14 @@ bool JoinFromPeer(Session& s) {
         // Two identical reads before accepting it: the writer is another process and a partially
         // written file read whole is a checksum failure at the parse, where it looks like
         // corruption rather than like a race.
-        if (!previous.empty() && previous == raw) {
+        if (held.valid && raw == held.octets) {
+          // THE INVITATION WHOSE LEAVE IS ON OFFER, still in its file (review F4). Joined again it
+          // is refused again, and the Joining state between withdraws the button, so a press in
+          // that moment finds nothing to leave. It is skipped while its leave is on offer.
+          ::SecureZeroMemory(raw.data(), raw.size());
+        } else if (!previous.empty() && previous == raw) {
           encoded = std::move(raw);
+          held.Drop();
         } else {
           previous = std::move(raw);
         }
@@ -1256,6 +1294,18 @@ bool JoinFromPeer(Session& s) {
           break;
         }
         case urmsg::live::JoinRefusal::Other:
+          // THE LEAVE LEFT ITS ERASE UNFINISHED, AND THE JOIN AFTER IT WAITS FOR THAT ERASE (review
+          // F3). The invitation and the join code are both still good, so this is not "not meant
+          // for this device": the leave is offered again, and another press finishes the erase.
+          if (held.valid &&
+              urmsg::live::IsUnfinishedEraseOf(why, urmsg::live::GroupIdHex(held.groupId))) {
+            urnw::LogWarn("live: device_join refused: the erase of the leave of group {} has not "
+                          "finished; the leave is offered again: {}",
+                          urmsg::live::GroupIdHex(held.groupId), why);
+            PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
+                           std::string(urmsg::live::kHeldNotLiveSentence), {}, true);
+            break;
+          }
           urnw::LogError(
               "live: device_join: {} - if this names a key package this device does not hold, the "
               "invite was built from a STALE join code. Send the code the app is showing NOW.",

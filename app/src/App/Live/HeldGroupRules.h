@@ -37,9 +37,16 @@ inline constexpr std::string_view kHeldRefusalSentence =
 inline constexpr std::string_view kHeldOnDiskClause = "has a record on this device's disk";
 
 // ErrGroupNotRestored's sentence: what the leave of a group on the disk answers when no restore
-// has tried that group yet. The remedy it names is the restore, and then the leave again.
+// has tried that group yet. The remedy it names is the restore, and then the leave again; the app
+// restores before every leave, so this answer erases nothing and offers the leave again.
 inline constexpr std::string_view kNotRestoredSentence =
     "urmessage: this group is on this device's disk and has not been restored";
+
+// ErrForgetUnfinished's sentence, up to its remedy: a leave whose erase did not finish. The join
+// of the same group after it is refused with it ("group <hex> cannot be joined or made until the
+// erase of the leave before it has finished", forget.go finishLeaveBefore) until that erase ends.
+inline constexpr std::string_view kForgetUnfinishedSentence =
+    "urmessage: this device has left the group, but its copy on the disk could not be erased in full";
 
 // THE TWO SENTENCES A PERSON IS SHOWN, verbatim from Task 39's table.
 inline constexpr std::string_view kHeldLiveSentence = "You are already in this group on this device.";
@@ -62,6 +69,11 @@ JoinRefusal ClassifyJoinRefusal(std::string_view libraryError);
 
 // Is this the refusal of a leave whose group no restore has tried (ErrGroupNotRestored)?
 bool IsNotRestoredRefusal(std::string_view libraryError);
+
+// Is this a join refused because the leave of THIS group (by its hex) has not finished its erase
+// (ErrForgetUnfinished, naming the group)? Then the leave is offered again and not the sentence for
+// an invitation meant for another device.
+bool IsUnfinishedEraseOf(std::string_view libraryError, std::string_view groupIdHex);
 
 // THE GROUP ID AN ENCODED INVITATION NAMES. It is the invitation's FIRST field: two version
 // octets, a four-octet big-endian length that must say 32, and the 32 octets of the id. The same

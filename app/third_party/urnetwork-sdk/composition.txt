@@ -42,7 +42,7 @@
 #
 # message: sdk/cgo, the messaging half, its .def, its header, and the scripts that compose, build
 # and check the library. Pinned to 215a0696, the merge commit of urnetwork/message's pull request
-# 6 on its main (2026-10-14), the hardening plan's phase T1a. T1a makes the library refuse an
+# 6 on its main (2026-10-14 01:01 UTC), the hardening plan's phase T1a. T1a makes the library refuse an
 # invitation into a group this device already holds (ErrGroupAlreadyHeld, ErrGroupRecordDamaged,
 # ErrGroupNotRestored), which the app's held-group leave answers. Between it and the pin before
 # it, 0bb2128f (the merge of pull request 4), lies pull request 5 (phase S0, 9cead7ae). The pin
