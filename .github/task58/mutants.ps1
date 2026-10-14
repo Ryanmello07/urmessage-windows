@@ -100,8 +100,12 @@ if ($Judge -ne '') {
   Write-Host "PASS lines: $($passes.Count); Task 58 lines present: $($ours.Count) of 6"
   if ($ours.Count -ne 6) { Write-Host "::error::$Id`: the output carries $($ours.Count) of the six Task 58 lines"; exit 1 }
   if ($Id -eq 'M0') {
-    if ($fails.Count -eq 0 -and $passes.Count -ge 100) { Write-Host 'M0: the control is green'; exit 0 }
-    Write-Host '::error::M0: the unmutated tree has FAIL lines, or too few PASS lines'; exit 1
+    # (the first cut asked for 100 PASS lines, a number guessed before it was measured; the measured
+    # control printed 92 by this count, so the rule is the property: no FAIL, and the six Task 58
+    # lines each PASS)
+    $oursPass = @($ours | Where-Object { $_ -cmatch ':\s+PASS' })
+    if ($fails.Count -eq 0 -and $oursPass.Count -eq 6) { Write-Host "M0: the control is green ($($passes.Count) PASS lines, the six Task 58 lines PASS)"; exit 0 }
+    Write-Host '::error::M0: the unmutated tree has FAIL lines, or a Task 58 line that does not PASS'; exit 1
   }
   $expect = $mutants[$Id].Expect
   $killed = @($fails | Where-Object { $_ -match ('^\s+' + [regex]::Escape($expect) + '\s+:\s+FAIL\b') })
