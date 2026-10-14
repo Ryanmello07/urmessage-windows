@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // WHAT THE APP SAYS FOR EACH REFUSAL OF A JOIN OR AN ADD, AND FOR A DEVICE THAT CANNOT MAKE A JOIN
-// CODE (hardening plan Task 58; the lead's rulings R13, R17 and R20).
+// CODE (hardening plan Task 58; the lead's rulings R13, R17, R20, R25, R27 and R28).
 //
 // The join seal (the plan's phase T1) gives the library a refusal for each thing that can go wrong
 // with an invitation or a join code, and each says what it cost. The app's half is the sentence a
@@ -14,12 +14,20 @@
 // the same ones.
 //
 // THE BRIDGE CARRIES SENTENCES AND NOT TYPES, so the refusals are told apart by the library's own
-// words, as Live/HeldGroupRules.h tells the held-group refusals apart. Each sentence below is quoted
-// from urnetwork/message sdk/urmessage/errors.go, where its sentinel is declared (or, for a clause,
-// from the file named beside it), at the T1 branch's head after the red team's fixes
-// (09018b10dd23; every sentence quoted at 7c4119792c1d reads the same there). The --diagnose cases
-// are typed from the same files and test the rules against those copies; they do not read the
-// library, so a sentence reworded there leaves them green.
+// words, as Live/HeldGroupRules.h tells the held-group refusals apart.
+//
+// EACH IS MATCHED BY ITS STABLE PART, NEVER BY ITS WHOLE SENTENCE (R27). A sentinel's sentence is
+// the clause that names what happened, then, after a comma or a semicolon, what it cost or what to
+// do about it, and the library writes the cause after a colon. The app matches the first of these
+// and nothing after it. R26's round reworded ErrGroupRecordNotReadNow, and an app that matched that
+// sentence in full would have answered a known refusal with its fallback, silently. Each constant
+// below is that stable part, and the comment above it quotes the whole sentence as
+// urnetwork/message's sdk/urmessage/errors.go declares it (or, for a clause, as the file named
+// beside it formats it) at the T1 branch's head after its second fix round (e0d16eac75e4). Each
+// stable part (a clause's with its group id between its two halves) is in exactly one sentence the
+// library makes there, measured with git grep outside the tests. The --diagnose cases are typed from those files at that head, whole, and again with
+// each tail reworded; they do not read the library, so only a stable part reworded there makes the
+// app answer its fallback, and a reworded tail does not.
 //
 // TEXT THIS FILE DOES NOT KNOW IS NOT GUESSED AT. It answers Other, and the caller says what it
 // said before this file.
@@ -30,64 +38,86 @@
 
 namespace urmsg::live {
 
-// ── the library's sentences ────────────────────────────────────────────────────────────────────
+// ── the library's sentences, by their stable parts ─────────────────────────────────────────────
 
 // ErrJoinRefused: the ONE sentence every refusal inside a join's window begins with (Task 36),
 // because nothing was written and the join code went back. A refusal is this row only when its
-// text BEGINS with it: the window's deferred call puts it first.
+// text BEGINS with it: the window's deferred call puts it first. At e0d16ea a join code the store
+// holds and could not read FOR A MOMENT (another process held it) is answered with it too (R26 V3).
+//   whole: "urmessage: this invite was refused before anything was written, and the join code is
+//          not spent"
 inline constexpr std::string_view kLibJoinRefused =
-    "urmessage: this invite was refused before anything was written, and the join code is not spent";
+    "urmessage: this invite was refused before anything was written";
 // ErrNoJoinCodeForInvite: the one refusal inside the window that does NOT carry the sentence above
 // (R13, R17): no join code this device can read was the invitation made for, so "not spent" is not
-// true of anything. An invitation made for another device answers it, and so does the same
-// invitation once its join code has gone.
+// true of anything. An invitation made for another device answers it, so does the same invitation
+// once its join code has gone, and at e0d16ea so does a join code that will never read (its
+// octets damaged, or a read that failed for good; R26 V3).
+//   whole: "urmessage: this device holds no join code this invitation was made for; make a new
+//          join code"
 inline constexpr std::string_view kLibNoJoinCodeForInvite =
-    "urmessage: this device holds no join code this invitation was made for; make a new join code";
-// ErrJoinCodeSpent: the join cost its join code (the put-back failed, or the joined state was
-// written and the group's record then could not be).
+    "urmessage: this device holds no join code this invitation was made for";
+// ErrJoinCodeSpent: the join cost its join code. The put-back failed, the joined state was written
+// and the group's record then could not be, or (R26 V3a) the take removed the join code and then
+// failed.
+//   whole: "urmessage: this join did not complete and its join code is spent; make a new join code
+//          and ask to be added again"
 inline constexpr std::string_view kLibJoinCodeSpent =
-    "urmessage: this join did not complete and its join code is spent; make a new join code and ask "
-    "to be added again";
+    "urmessage: this join did not complete and its join code is spent";
 // ErrInviteVersion: parse_invite's refusal of an invitation at another version (an older adder's).
+//   whole: the same; it has no tail, and the version after its colon is the cause.
 inline constexpr std::string_view kLibInviteVersion =
     "urmessage: this invite is at a version this build does not read";
 // ErrGroupPredatesJoinSeal: a group founded before invitations were sealed, refused at Restore and
-// at Join (at Join it is inside the window, so it follows kLibJoinRefused there).
+// at Join (at Join it is inside the window, so it follows ErrJoinRefused's sentence there).
+//   whole: "urmessage: this group was founded before invitations were sealed, so this build does not
+//          open it; leave it and start the group again"
 inline constexpr std::string_view kLibGroupPredatesJoinSeal =
-    "urmessage: this group was founded before invitations were sealed, so this build does not open "
-    "it; leave it and start the group again";
+    "urmessage: this group was founded before invitations were sealed";
 // The adder's three refusals of a join code, each before a commit is staged (Task 45).
+//   whole: the same; it has no tail.
 inline constexpr std::string_view kLibKeyPackageInvalid =
     "urmessage: this join code is not a valid key package";
+//   whole: "urmessage: this join code was made by a build that cannot open a sealed invite; ask for
+//          a join code from an updated URmessage"
 inline constexpr std::string_view kLibJoinerCannotOpenSealedInvite =
-    "urmessage: this join code was made by a build that cannot open a sealed invite; ask for a join "
-    "code from an updated URmessage";
+    "urmessage: this join code was made by a build that cannot open a sealed invite";
+//   whole: "urmessage: this identity already has an entry in this group, perhaps from an invitation
+//          that was never opened; remove that entry, then add the new join code"
 inline constexpr std::string_view kLibJoinerAlreadyHasALeaf =
-    "urmessage: this identity already has an entry in this group, perhaps from an invitation that "
-    "was never opened; remove that entry, then add the new join code";
+    "urmessage: this identity already has an entry in this group";
 // ErrNoDeviceWrapKey: KeyPackage() of a device whose store was written before the X-Wing seed was
 // kept (Task 42). Such a device publishes no join code.
+//   whole: "urmessage: this device holds no x-wing seed for the leaf it publishes, so it cannot open
+//          an encapsulation addressed to that leaf"
 inline constexpr std::string_view kLibNoDeviceWrapKey =
-    "urmessage: this device holds no x-wing seed for the leaf it publishes, so it cannot open an "
-    "encapsulation addressed to that leaf";
-// A GROUP RECORD THAT COULD NOT BE READ JUST NOW (Task 57, F1; the T1 fix, at 09018b10dd23): a file
-// another process holds, or an I/O error. It is NOT damage, nothing of the group was changed, and
-// the library refuses whatever damage would permit. Three roads carry it:
-//   restore  ErrGroupRecordNotReadNow, inside ErrRestore's sentence (restore.go; the list's report
-//            is statestore_durable.go's GroupRecords);
-//   join     the held-group gate's unanswered read, "whether this device already holds group <hex>
-//            could not be read, so the invite into it is refused: ..." (heldgroup.go, heldUnread);
-//   leave    ForgetGroup's one-id read, "whether this device holds group <hex> on its disk could
-//            not be read, so nothing was left: ..." (forget.go, recordOnDisk), which the bridge
-//            answers URNET_MESSAGE_FORGET_REFUSED.
-// The two clauses carry the group's id between their halves, as 64 lower-case hex digits.
+    "urmessage: this device holds no x-wing seed for the leaf it publishes";
+// A FILE OF A GROUP THAT COULD NOT BE READ JUST NOW (Task 57 F1; R26): another process held it,
+// with a sharing or lock violation. Every other failure to read a group's file is damage at
+// e0d16ea, and is not this. Nothing of the group was changed. ErrRestore's sentence carries it, for
+// the record (the list's report, statestore_durable.go's GroupRecords) and for an epoch state
+// (restore.go, "group <id>: ..." after it) alike.
+//   whole: "urmessage: a file of a group on this device's disk could not be read just now, so that
+//          group was not restored this time; nothing of it was changed, and the next Restore tries
+//          it again"
+// ITS SUBJECT IS NOT IN ITS STABLE PART. R26's round reworded the subject from "a group record" to
+// "a file of a group", which is the rewording R27 was ruled over. The predicate names the
+// condition, and it is in no other sentence the library makes.
 inline constexpr std::string_view kLibGroupRecordNotReadNow =
-    "urmessage: a group record on this device's disk could not be read just now, so that group was "
-    "not restored this time; nothing of it was changed, and the next Restore tries it again";
+    "on this device's disk could not be read just now";
+// The held-group gate's and ForgetGroup's reads of ONE group's record, when the store could not
+// answer (a transient read: R26, or a store that could not be asked at all):
+//   join   "urmessage: whether this device already holds group <hex> could not be read, so the
+//          invite into it is refused: <cause>" (heldgroup.go, heldUnread)
+//   leave  "urmessage: whether this device holds group <hex> on its disk could not be read, so
+//          nothing was left: <cause>" (forget.go, recordOnDisk), which the bridge answers
+//          URNET_MESSAGE_FORGET_REFUSED
+// Each is matched by its words before the group id, the id (64 lower-case hex digits), and its
+// words after the id up to its comma; ", so ..." is what it cost.
 inline constexpr std::string_view kLibJoinNotReadHead = "urmessage: whether this device already holds group ";
-inline constexpr std::string_view kLibJoinNotReadTail = " could not be read, so the invite into it is refused";
+inline constexpr std::string_view kLibJoinNotReadAfterId = " could not be read";
 inline constexpr std::string_view kLibLeaveNotReadHead = "urmessage: whether this device holds group ";
-inline constexpr std::string_view kLibLeaveNotReadTail = " on its disk could not be read, so nothing was left";
+inline constexpr std::string_view kLibLeaveNotReadAfterId = " on its disk could not be read";
 
 // ── what a person is shown: Task 58's table, verbatim ─────────────────────────────────────────
 
@@ -189,6 +219,37 @@ bool OffersNewJoinCode(JoinCopy row);
 // Is this ForgetGroup's refusal of a group whose record could not be read just now (the leave
 // road of R25 Q5)? Then the app says kSayGroupRecordNotReadNow and offers no leave.
 bool IsLeaveNotReadNow(std::string_view libraryError);
+
+// Does a restore's report say that a file of a group could not be read just now
+// (ErrGroupRecordNotReadNow's stable part, anywhere in it)?
+bool IsGroupRecordNotReadNow(std::string_view restoreError);
+
+// ── the held-group leave after a restore that could not read a file just now (R28) ─────────────
+
+// WHAT THE LEAVE DOES AFTER ITS RESTORE-FIRST (R21 F1). The group came back, and the device is in
+// it. Or the restore could not read a file of a group just now (ErrGroupRecordNotReadNow), and the
+// group did not come back: the leave stops there, says R25 Q5's row, and does NOT call
+// forget_group, because nothing is known to be wrong with the group and a leave erases it. Or it
+// did not come back for any other reason, and forget_group is asked.
+//
+// A RECORD-ONLY FAILURE NAMES NO GROUP ID (the store cannot name one, R12), so a report that
+// carries the sentinel stops the leave of ANY group: R28's conservative reading.
+enum class HeldLeaveStep {
+  CameBack,
+  NotReadNow,
+  Forget,
+};
+HeldLeaveStep StepAfterRestoreFirst(bool cameBack, std::string_view restoreError);
+
+// WHAT A PERSON IS TOLD OF A GROUP ON THE DISK THAT IS NOT LIVE (Task 39's held refusal, and the
+// leave above when it stops), and whether "Leave the old copy" is offered. While the last restore
+// could not read a file of a group just now, R25 Q5's row with no leave (R28); otherwise Task 39's
+// sentence and the leave.
+struct HeldCopy {
+  std::string_view sentence;
+  bool offerLeave = false;
+};
+HeldCopy HeldNotLiveCopy(bool lastRestoreNotReadNow);
 
 // WHAT THE JOIN DIALOG SAYS FIRST AFTER A RESTORE, from device_restore's report and how many groups
 // it brought back: a group that predates the seal, or one whose record could not be read just now,

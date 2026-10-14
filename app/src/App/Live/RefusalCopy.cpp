@@ -4,6 +4,8 @@
 
 #include "Live/RefusalCopy.h"
 
+#include "Live/HeldGroupRules.h"
+
 namespace urmsg::live {
 
 namespace {
@@ -12,20 +14,20 @@ bool Has(std::string_view text, std::string_view sentence) {
 }
 
 // A CLAUSE WITH A GROUP ID INSIDE IT: `head`, then exactly 64 lower-case hex digits (the library's
-// %x of a 32 octet id), then `tail`, anywhere in the text. The id itself is not asked for: on the
-// restore road there is none to ask with, and on the join and leave roads the clause is the
+// %x of a 32 octet id), then `afterId`, anywhere in the text. The id itself is not asked for: on
+// the restore road there is none to ask with, and on the join and leave roads the clause is the
 // library's answer about the id it was handed.
-bool HasAroundGroupId(std::string_view text, std::string_view head, std::string_view tail) {
+bool HasAroundGroupId(std::string_view text, std::string_view head, std::string_view afterId) {
   constexpr size_t kHexDigits = 64;
   for (size_t at = text.find(head); at != std::string_view::npos; at = text.find(head, at + 1)) {
     const size_t id = at + head.size();
-    if (text.size() < id + kHexDigits + tail.size()) return false;
+    if (text.size() < id + kHexDigits + afterId.size()) return false;
     bool hex = true;
     for (size_t i = id; i < id + kHexDigits && hex; ++i) {
       const char c = text[i];
       hex = ('0' <= c && c <= '9') || ('a' <= c && c <= 'f');
     }
-    if (hex && text.substr(id + kHexDigits, tail.size()) == tail) return true;
+    if (hex && text.substr(id + kHexDigits, afterId.size()) == afterId) return true;
   }
   return false;
 }
@@ -42,7 +44,7 @@ JoinCopy ClassifyJoinCopy(std::string_view libraryError) {
   // A RECORD THAT COULD NOT BE READ JUST NOW (R25 Q5): nothing was changed, and nothing about the
   // group is known, so no row below that says what the group or the invitation IS may answer it.
   if (Has(libraryError, kLibGroupRecordNotReadNow) ||
-      HasAroundGroupId(libraryError, kLibJoinNotReadHead, kLibJoinNotReadTail))
+      HasAroundGroupId(libraryError, kLibJoinNotReadHead, kLibJoinNotReadAfterId))
     return JoinCopy::GroupRecordNotReadNow;
   if (Has(libraryError, kLibGroupPredatesJoinSeal)) return JoinCopy::GroupPredatesJoinSeal;
   if (Has(libraryError, kLibInviteVersion)) return JoinCopy::InviteVersion;
@@ -83,7 +85,24 @@ bool OffersNewJoinCode(JoinCopy row) {
 }
 
 bool IsLeaveNotReadNow(std::string_view libraryError) {
-  return HasAroundGroupId(libraryError, kLibLeaveNotReadHead, kLibLeaveNotReadTail);
+  return HasAroundGroupId(libraryError, kLibLeaveNotReadHead, kLibLeaveNotReadAfterId);
+}
+
+bool IsGroupRecordNotReadNow(std::string_view restoreError) {
+  return Has(restoreError, kLibGroupRecordNotReadNow);
+}
+
+HeldLeaveStep StepAfterRestoreFirst(bool cameBack, std::string_view restoreError) {
+  if (cameBack) return HeldLeaveStep::CameBack;
+  // R28: a restore that could not read a file of a group just now did not decide anything about
+  // that group, so nothing is left over it.
+  if (IsGroupRecordNotReadNow(restoreError)) return HeldLeaveStep::NotReadNow;
+  return HeldLeaveStep::Forget;
+}
+
+HeldCopy HeldNotLiveCopy(bool lastRestoreNotReadNow) {
+  if (lastRestoreNotReadNow) return HeldCopy{kSayGroupRecordNotReadNow, false};
+  return HeldCopy{kHeldNotLiveSentence, true};
 }
 
 std::string_view RestoreNote(std::string_view restoreError, int restoredCount) {
