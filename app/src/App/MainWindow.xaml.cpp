@@ -17,6 +17,7 @@
 #include "Demo/DemoSwitches.h"
 #include "Demo/DemoWorld.h"
 #include "Identicon.h"
+#include "Live/HeldGroupRules.h"
 #include "Live/LiveMesh.h"
 #include "Live/LiveWorld.h"
 #include "Live/LocalNames.h"
@@ -632,6 +633,31 @@ void MainWindow::BuildOnboardDialog() {
   onboardStatus_.TextWrapping(TextWrapping::Wrap);
   panel.Children().Append(onboardStatus_);
 
+  // ── LEAVING THE OLD COPY OF A GROUP THAT IS NOT LIVE (Task 39) ─────────────────────────────
+  // DIRECTLY UNDER THE SENTENCE THAT NAMES IT. An invitation into a group this device holds on its
+  // disk and cannot open is refused, and the sentence says to leave it and use the invitation
+  // again; this is that leave. It reads no roster and asks nothing more, because there is no live
+  // group to ask it of (R9). Shown only while the worker's state offers it.
+  onboardLeaveHeldButton_ = Button();
+  onboardLeaveHeldButton_.Content(box_value(hstring{urmsg::live::kLeaveHeldButton}));
+  winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(
+      onboardLeaveHeldButton_, hstring{urmsg::live::kLeaveHeldButtonName});
+  onboardLeaveHeldButton_.Visibility(Visibility::Collapsed);
+  onboardLeaveHeldButton_.Click([weak = get_weak()](auto const&, auto const&) {
+    auto self = weak.get();
+    if (!self) return;
+    const bool taken = urmsg::live::QueueLeaveHeldGroup();
+    if (taken && self->onboardLeaveHeldButton_)
+      self->onboardLeaveHeldButton_.Visibility(Visibility::Collapsed);
+    if (self->onboardStatus_) {
+      self->onboardStatus_.Text(taken ? L"Leaving the old copy, then opening the invitation again…"
+                                      : L"There is nothing to leave right now.");
+    }
+    urnw::LogInfo("window: the leave of a group that is not live was {} by the live worker",
+                  taken ? "taken" : "REFUSED");
+  });
+  panel.Children().Append(onboardLeaveHeldButton_);
+
   onboardDialog_ = ContentDialog();
   onboardDialog_.Opened([weak = get_weak()](auto const&, auto const&) {
     if (auto self = weak.get()) self->onboardOpen_ = true;
@@ -713,6 +739,7 @@ void MainWindow::ApplyOnboard() {
       onboardCodeBox_ = nullptr;
       onboardPasteBox_ = nullptr;
       onboardStatus_ = nullptr;
+      onboardLeaveHeldButton_ = nullptr;
       urnw::LogInfo("window: the onboarding dialog closed \u2014 this device is in a group");
     }
     // AND IT MAY BE SHOWN AGAIN: a device that leaves its group (ledger 273) is back on the join
@@ -753,6 +780,11 @@ void MainWindow::ApplyOnboard() {
                                                         : Visibility::Collapsed);
   if (onboardInviteBox_ && haveInvite)
     onboardInviteBox_.Text(winrt::to_hstring(state->inviteCode));
+  // THE LEAVE OF A GROUP THAT IS NOT LIVE, exactly while the state offers it (Task 39): the
+  // sentence above names it, and every later state withdraws it.
+  if (onboardLeaveHeldButton_)
+    onboardLeaveHeldButton_.Visibility(state->offerLeaveHeldGroup && !stuck ? Visibility::Visible
+                                                                            : Visibility::Collapsed);
   // THE PRIMARY BUTTON IS THE JOIN, so it has no job on the founder's road: an owner adds people
   // with the button inside the add panel, and a Join here would try to join a group with an empty
   // box. Hidden rather than disabled, because a dark button invites a person to look for what
