@@ -717,6 +717,11 @@ bool g_newJoinCodeAsked = false;            // guarded by g_onboardMutex; consum
 // or a leave says so, cleared by a join and by a leave that left it. Every publication carries it,
 // so no state in between says "not in a group yet" of this device. Guarded by g_onboardMutex.
 bool g_holdsUnopenedGroup = false;
+// THE LAST RESTORE COULD NOT READ A FILE OF A GROUP JUST NOW (R28): its report carried
+// ErrGroupRecordNotReadNow's stable part. Set by the startup restore and by every restore a leave
+// runs first. While it stands, a held refusal says R25 Q5's row and offers no leave, because that
+// failure names no group (R12) and a leave erases. Guarded by g_onboardMutex.
+bool g_lastRestoreNotReadNow = false;
 
 void PublishOnboard(urmsg::live::OnboardStep step, std::string joinCode, std::string message,
                     std::string inviteCode = {}, bool offerLeaveHeldGroup = false,
@@ -907,12 +912,21 @@ enum class HeldLeave {
 };
 
 // THE RESTORE THE LEAVE RUNS FIRST: device_restore, and the group it brings back under the held
-// id, if any. Answers true with s.group set to it; every other group it answered is released.
-bool RestoreHeldGroup(Session& s, HeldInvite const& held) {
+// id, if any. `back` is true with s.group set to it; every other group it answered is released.
+// `error` is the restore's own report, which says whether a file of a group could not be read just
+// now (R28): the leave reads it before it decides anything.
+struct HeldRestore {
+  bool back = false;
+  std::string error;
+};
+
+HeldRestore RestoreHeldGroup(Session& s, HeldInvite const& held) {
   char* err = nullptr;
   const int32_t gidLen = static_cast<int32_t>(held.groupId.size());
   const uint64_t restored = urnet_message_device_restore(s.device, s.ctx, &err);
-  const std::string restoreError = TakeError(&err);
+  HeldRestore out;
+  out.error = TakeError(&err);
+  const std::string& restoreError = out.error;
   const int32_t count = urnet_message_group_list_count(restored);
   if (!restoreError.empty())
     urnw::LogWarn("live: held leave: device_restore reported: {} (and answered {} group(s))",
@@ -932,31 +946,61 @@ bool RestoreHeldGroup(Session& s, HeldInvite const& held) {
     }
   }
   if (restored != 0) urnet_release(restored);
-  if (back == 0) return false;
+  {
+    std::lock_guard<std::mutex> lock(g_onboardMutex);
+    g_lastRestoreNotReadNow = urmsg::live::IsGroupRecordNotReadNow(restoreError);
+  }
+  if (back == 0) return out;
   s.group = back;
-  return true;
+  out.back = true;
+  return out;
 }
 
 // THE LEAVE ITSELF, on the worker: forget_group with the invitation's group id, and no roster and
 // no owner's question, because ForgetGroup asks none of a group with no live roster (R9).
 //
-// THE RESTORE RUNS FIRST, ON EVERY PRESS (review F1). A group the startup restore could not bring
-// back is marked as not restored whatever the reason, a file locked or denied for a moment
-// included, and ForgetGroup erases a marked group at once, every epoch state and every line this
-// device sent with it. So the restore is tried again before anything is erased: a group that opens
-// now is this device's again (CameBack) and nothing is left, and only a group that still does not
-// open is forgotten.
+// THE RESTORE RUNS FIRST, ON EVERY PRESS (review F1). ForgetGroup erases at once a group that a
+// restore has noted as one that will not come back, every epoch state and every line this device
+// sent with it, and a note made at startup stands for the rest of the run. So the restore is tried
+// again before anything is erased: a group that opens now is this device's again (CameBack) and
+// nothing is left.
+//
+// AND A RESTORE THAT COULD NOT READ A FILE OF A GROUP JUST NOW DECIDES NOTHING (R28). Another
+// process held a file; nothing is known to be wrong with the group, and the library notes nothing
+// of it. The leave stops there: R25 Q5's row, no leave on offer, and forget_group is NOT called,
+// which would erase a group noted at startup for another reason, or answer ErrGroupNotRestored and
+// put the same "cannot open" sentence back on every press. The report names no group for a record
+// that could not be read (R12), so the sentinel stops the leave of any group. Only a group that did
+// not come back for some other reason is forgotten.
 HeldLeave LeaveHeldGroup(Session& s, HeldInvite const& held, std::string const& joinCode) {
   char* err = nullptr;
   const std::string gidHex = urmsg::live::GroupIdHex(held.groupId);
   const int32_t gidLen = static_cast<int32_t>(held.groupId.size());
   urnw::LogInfo("live: held leave: restoring first, in case group {} opens now", gidHex);
-  if (RestoreHeldGroup(s, held)) {
-    urnw::LogInfo("live: *** RESTORED *** group {} came back at epoch {}; this device is in it, "
-                  "and nothing was left",
-                  gidHex, urnet_message_group_epoch(s.group));
-    PublishOnboard(urmsg::live::OnboardStep::Joined, std::string(), "You are in the group.");
-    return HeldLeave::CameBack;
+  const HeldRestore restore = RestoreHeldGroup(s, held);
+  switch (urmsg::live::StepAfterRestoreFirst(restore.back, restore.error)) {
+    case urmsg::live::HeldLeaveStep::CameBack:
+      urnw::LogInfo("live: *** RESTORED *** group {} came back at epoch {}; this device is in it, "
+                    "and nothing was left",
+                    gidHex, urnet_message_group_epoch(s.group));
+      PublishOnboard(urmsg::live::OnboardStep::Joined, std::string(), "You are in the group.");
+      return HeldLeave::CameBack;
+    case urmsg::live::HeldLeaveStep::NotReadNow: {
+      const urmsg::live::HeldCopy copy = urmsg::live::HeldNotLiveCopy(true);
+      urnw::LogWarn("live: held leave: the restore before the leave could not read a file of a group "
+                    "just now (ErrGroupRecordNotReadNow); group {} did not come back, nothing was "
+                    "left, and forget_group was not called (R28): {}",
+                    gidHex, restore.error);
+      {
+        std::lock_guard<std::mutex> lock(g_onboardMutex);
+        g_holdsUnopenedGroup = true;
+      }
+      PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode, std::string(copy.sentence), {},
+                     copy.offerLeave);
+      return HeldLeave::Offered;
+    }
+    case urmsg::live::HeldLeaveStep::Forget:
+      break;
   }
   urnw::LogWarn("live: held leave: group {} did not come back; leaving it", gidHex);
   int32_t kind = urnet_message_device_forget_group(s.device, held.groupId.data(), gidLen, &err);
@@ -991,10 +1035,14 @@ HeldLeave LeaveHeldGroup(Session& s, HeldInvite const& held, std::string const& 
       break;
   }
 
-  // ErrGroupNotRestored: the record reads and no restore has tried it, so the library will not
-  // leave it unasked -- a device that has merely restarted is asked the owner's question like any
-  // other. The restore above stopped before it reached this group (a listing that failed, say), so
-  // nothing was erased, and the leave is offered again: the next press restores first again.
+  // ErrGroupNotRestored: the record reads and no restore has noted this group as one that will not
+  // come back, so the library will not leave it unasked -- a device that has merely restarted is
+  // asked the owner's question like any other. WHAT REACHES THIS NOW (R28): a restore above that
+  // did not reach this group and said nothing of a file not read just now. Its listing of the
+  // groups failed, say, so it restored and noted no group at all; or another group failed first and
+  // the report, which carries the first failure only, hid this one's. A restore that could not read
+  // a file of a group just now stopped above, before forget_group. Nothing was erased, and the leave
+  // is offered again: the next press restores first again.
   if (urmsg::live::IsNotRestoredRefusal(why)) {
     urnw::LogWarn("live: held leave: the restore did not reach group {} ({}); the leave is offered "
                   "again",
@@ -1401,11 +1449,28 @@ bool JoinFromPeer(Session& s) {
             held.groupId = gid;
             held.fromPaste = fromPaste;
             held.valid = true;
-            urnw::LogWarn("live: device_join refused: this device holds group {} on its disk and it "
-                          "is not live; the leave is offered: {}",
-                          gidHex, why);
-            PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
-                           std::string(urmsg::live::kHeldNotLiveSentence), {}, true);
+            // AFTER A RESTORE THAT COULD NOT READ A FILE OF A GROUP JUST NOW (R28), the group may be
+            // that one, and nothing is known to be wrong with it: R25 Q5's row, and no leave. The
+            // invitation is kept all the same, so the file road does not open it again and again.
+            bool notReadNow = false;
+            {
+              std::lock_guard<std::mutex> lock(g_onboardMutex);
+              notReadNow = g_lastRestoreNotReadNow;
+              if (notReadNow) g_holdsUnopenedGroup = true;
+            }
+            const urmsg::live::HeldCopy copy = urmsg::live::HeldNotLiveCopy(notReadNow);
+            if (copy.offerLeave) {
+              urnw::LogWarn("live: device_join refused: this device holds group {} on its disk and "
+                            "it is not live; the leave is offered: {}",
+                            gidHex, why);
+            } else {
+              urnw::LogWarn("live: device_join refused: this device holds group {} on its disk and "
+                            "it is not live, and the last restore could not read a file of a group "
+                            "just now; no leave is offered (R28): {}",
+                            gidHex, why);
+            }
+            PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode, std::string(copy.sentence), {},
+                           copy.offerLeave);
           } else {
             // NOT EXPECTED, AND NOT PAPERED OVER: a sentence that says to leave would name an
             // action this screen cannot take, so it is not shown.
@@ -2007,6 +2072,13 @@ void RunSession() {
     std::lock_guard<std::mutex> lock(g_onboardMutex);
     g_afterLeaveNote = std::string(note);
     g_holdsUnopenedGroup = true;
+  }
+  // R28: whether a held refusal after this restore offers the leave. Asked of the report whatever
+  // came back, because a group that did come back is the one this device is in, and the one a held
+  // refusal is about is another.
+  {
+    std::lock_guard<std::mutex> lock(g_onboardMutex);
+    g_lastRestoreNotReadNow = urmsg::live::IsGroupRecordNotReadNow(restoreError);
   }
 
   // ONE PASS PER GROUP THIS DEVICE HOLDS (ledger 273). A pass ends only when the device LEAVES its

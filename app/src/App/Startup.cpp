@@ -1852,7 +1852,8 @@ std::wstring StatusStripFieldsAssertion() {
 // PURE on the same terms as the lines above: every function asked is Live/HeldGroupRules.h's, no
 // SDK is loaded and no XAML is touched. The library's sentences below are TYPED HERE, copied from
 // urnetwork/message sdk/urmessage (errors.go declares each sentinel, heldgroup.go and forget.go
-// format the clause after it) at 215a0696, and nothing reads the library: these lines test the
+// format the clause after it) at 215a0696, and read again at e0d16eac75e4 (R27; the sentences are
+// the same there), and nothing reads the library: these lines test the
 // app's rules against those copies, and a sentence reworded there leaves them green. (A check of
 // the pinned text itself is a follow-up, R21.) Each line prints PASS or FAIL, the QUERY, and every
 // case it asked, so the complement is on the page beside the verdict.
@@ -1861,8 +1862,11 @@ std::vector<std::wstring> HeldGroupDiagnostics() {
   std::vector<std::wstring> out;
   const std::string hex(64, 'a');
   const std::string otherHex = std::string(63, 'a') + "b";
-  const std::string held = std::string(kHeldRefusalSentence) +
-                           "; leave it first with ForgetGroup to join it again: ";
+  // ErrGroupAlreadyHeld's sentence WHOLE, typed from errors.go at e0d16eac75e4 and not built from
+  // kHeldRefusalSentence, which is only its stable part (R27)
+  const std::string held =
+      "urmessage: this device already holds this group, so an invite into it is refused; leave it "
+      "first with ForgetGroup to join it again: ";
 
   // 1. which refusal: the gate's four spellings of ErrGroupAlreadyHeld, and the refusals beside it
   //    that are NOT a held group, among them the one that names a held group and is not the
@@ -1879,6 +1883,11 @@ std::vector<std::wstring> HeldGroupDiagnostics() {
                         " is not the one this join was judged against",
          JoinRefusal::HeldLive},
         {L"on-disk", held + "group " + hex + " has a record on this device's disk",
+         JoinRefusal::HeldNotLive},
+        // R27: the sentence's stable part with its tail reworded is still a held group
+        {L"on-disk-reworded",
+         "urmessage: this device already holds this group; it refuses an invite into it: group " + hex +
+             " has a record on this device's disk",
          JoinRefusal::HeldNotLive},
         {L"damaged", held + "group " + hex +
                          " has a record on this device's disk that does not read: urmessage: a "
@@ -2045,13 +2054,14 @@ std::vector<std::wstring> HeldGroupDiagnostics() {
 // ---- what the app says for each refusal of a join or an add (Task 58) ------------------------
 //
 // PURE on the same terms as the held-group lines above: every function asked is
-// Live/RefusalCopy.h's, no SDK is loaded and no XAML is touched. The library's sentences are the
-// header's copies of urnetwork/message sdk/urmessage/errors.go at the T1 branch's head after the red
-// team's fixes (09018b10dd23), and the clauses after them are typed here from where that branch
-// formats them (group.go's Join, invite.go's ParseInvite, joinseal.go and rolescommit.go for the
-// adder, device.go's KeyPackage, messagegroup/engine.go's refused key packages, restore.go and
-// statestore_durable.go's GroupRecords for a record not read just now, heldgroup.go's heldUnread and
-// forget.go's recordOnDisk). Nothing reads the library: a sentence reworded there leaves these green.
+// Live/RefusalCopy.h's, no SDK is loaded and no XAML is touched. The library's sentences are TYPED
+// HERE WHOLE from urnetwork/message sdk/urmessage/errors.go at the T1 branch's head after its second
+// fix round (e0d16eac75e4), never built from the header's constants, which are only their stable
+// parts (R27). The clauses after them are typed from where that branch formats them (group.go's
+// Join, invite.go's ParseInvite, joinseal.go and rolescommit.go for the adder, device.go's
+// KeyPackage, messagegroup/engine.go's refused key packages, restore.go and statestore_durable.go's
+// GroupRecords and readRecord for a file not read just now, heldgroup.go's heldUnread and forget.go's
+// recordOnDisk). Nothing reads the library: a sentence reworded there leaves these green.
 // THE TABLE'S OWN WORDS ARE TYPED HERE A SECOND TIME, from the plan's Task 58, so a sentence edited
 // in the header is a FAIL here and not a silent change of what a person reads. Each line prints
 // PASS or FAIL, the QUERY, and every case it asked.
@@ -2059,36 +2069,100 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
   using namespace urmsg::live;
   std::vector<std::wstring> out;
   const std::string hex(64, 'c');
-  const std::string refused(kLibJoinRefused);
-  const std::string noCode(kLibNoJoinCodeForInvite);
-  const std::string spent(kLibJoinCodeSpent);
-  const std::string predates(kLibGroupPredatesJoinSeal);
+  // THE LIBRARY'S SENTENCES, WHOLE (R27), as errors.go declares them at e0d16eac75e4.
+  const std::string refused =
+      "urmessage: this invite was refused before anything was written, and the join code is not spent";
+  const std::string noCode =
+      "urmessage: this device holds no join code this invitation was made for; make a new join code";
+  const std::string spent =
+      "urmessage: this join did not complete and its join code is spent; make a new join code and ask "
+      "to be added again";
+  const std::string predates =
+      "urmessage: this group was founded before invitations were sealed, so this build does not open "
+      "it; leave it and start the group again";
+  const std::string inviteVersion = "urmessage: this invite is at a version this build does not read";
+  const std::string invalidKp = "urmessage: this join code is not a valid key package";
+  const std::string cannotOpen =
+      "urmessage: this join code was made by a build that cannot open a sealed invite; ask for a join "
+      "code from an updated URmessage";
+  const std::string hasALeaf =
+      "urmessage: this identity already has an entry in this group, perhaps from an invitation that "
+      "was never opened; remove that entry, then add the new join code";
+  const std::string noWrapKey =
+      "urmessage: this device holds no x-wing seed for the leaf it publishes, so it cannot open an "
+      "encapsulation addressed to that leaf";
+  const std::string notReadNow =
+      "urmessage: a file of a group on this device's disk could not be read just now, so that group "
+      "was not restored this time; nothing of it was changed, and the next Restore tries it again";
+  // the same sentinel as 09018b10dd23 wrote it, before R26's round reworded its subject
+  const std::string notReadNowAt09018b1 =
+      "urmessage: a group record on this device's disk could not be read just now, so that group was "
+      "not restored this time; nothing of it was changed, and the next Restore tries it again";
+  const std::string damaged =
+      "urmessage: a group record on this device's disk does not read, so that group cannot be "
+      "restored; ForgetGroup leaves it, and it can then be joined again";
+  const std::string heldWhole =
+      "urmessage: this device already holds this group, so an invite into it is refused; leave it "
+      "first with ForgetGroup to join it again";
+  const std::string restoreSentence = "urmessage: this group could not be restored from the durable state store";
+  const std::string storeState = "urmessage: the durable state store could not be read or written";
   const std::string engineNoCode =
       "urmessage: JoinFromWelcomeInto: messagegroup: no key package this store holds is addressed "
       "by this welcome";
-  // THE T1 FIX'S SENTENCES (its report, F1 and F4), each as the bridge hands it over, an OS error
-  // and a path included.
-  const std::string storeState = "urmessage: the durable state store could not be read or written";
-  const std::string storeUnreadCode =
-      refused + ": " + engineNoCode +
+  // An OS's own words for the failed reads R26 tells apart (a sharing or a lock violation is for a
+  // moment; a denial is not), and paths as the store writes them: a group's directory is the SHA-256
+  // of its id, and a join code's file is the SHA-256 of its reference.
+  const std::string sharing = "The process cannot access the file because it is being used by another process.";
+  const std::string lockedPortion =
+      "The process cannot access the file because another process has locked a portion of the file.";
+  const std::string denied = "Access is denied.";
+  const std::string dirName(64, 'd');
+  const std::string groupDir = "C:\\u\\live\\state\\state\\group\\" + dirName;
+  const std::string kpFile = "C:\\u\\live\\state\\state\\kp\\" + std::string(64, 'e');
+  // THE SECOND FIX ROUND'S ROADS (T1 FIX 2's report, "The sentences a person meets now"), each as
+  // e0d16ea formats it: restore.go and GroupRecords for the restore, heldgroup.go and forget.go for
+  // one group's record, group.go's window for a join code.
+  const std::string restoreRecordHeld =
+      restoreSentence + ": " + notReadNow + ": " + storeState + ": " + groupDir +
+      "\\meta could not be read: open " + groupDir + "\\meta: " + sharing +
+      " (in all, 1 of the 1 group directories on this disk: " + dirName + ")";
+  const std::string restoreEpochHeld =
+      restoreSentence + ": " + notReadNow + ": group " + hex + ": " + restoreSentence + ": group " + hex +
+      " at epoch 1: " + storeState + ": " + groupDir + "\\epoch\\0000000000000001 could not be read: open " +
+      groupDir + "\\epoch\\0000000000000001: " + lockedPortion;
+  const std::string restoreRecordDenied =
+      restoreSentence + ": " + damaged + ": the record in " + dirName + ": " + storeState + ": " + groupDir +
+      "\\meta could not be read: open " + groupDir + "\\meta: " + denied +
+      " (in all, 1 of the 1 group directories on this disk: " + dirName + ")";
+  const std::string heldOverDenied =
+      heldWhole + ": group " + hex + " has a record on this device's disk that does not read: " + damaged +
+      ": the record in " + dirName + ": " + storeState + ": " + groupDir + "\\meta could not be read: open " +
+      groupDir + "\\meta: " + denied;
+  const std::string joinRecordHeld =
+      "urmessage: whether this device already holds group " + hex +
+      " could not be read, so the invite into it is refused: " + storeState + ": " + groupDir +
+      "\\meta could not be read: open " + groupDir + "\\meta: " + sharing;
+  const std::string leaveRecordHeld =
+      "urmessage: whether this device holds group " + hex + " on its disk could not be read, so nothing "
+      "was left: " + storeState + ": " + groupDir + "\\meta could not be read: open " + groupDir +
+      "\\meta: " + sharing;
+  const std::string takeTail =
       ": the welcome names 1 key package refs, this store refused 1 of them, and the last refusal it "
-      "answered was " + storeState + ": C:\\u\\state\\keypackage\\" + hex +
-      " could not be read: open: The process cannot access the file because it is being used by "
-      "another process.";
-  const std::string notReadRestore =
-      "urmessage: this group could not be restored from the durable state store: " +
-      std::string(kLibGroupRecordNotReadNow) + ": " + storeState + ": C:\\u\\state\\group\\" +
-      hex + "\\meta could not be read: open: Access is denied. (in all, 1 of the 1 group directories "
-      "on this disk: " + hex + ")";
-  const std::string notReadJoin = std::string(kLibJoinNotReadHead) + hex +
-                                  std::string(kLibJoinNotReadTail) + ": " + storeState +
-                                  ": C:\\u\\state\\group\\" + hex +
-                                  "\\meta could not be read: open: Access is denied.";
-  const std::string notReadLeave = std::string(kLibLeaveNotReadHead) + hex +
-                                   std::string(kLibLeaveNotReadTail) + ": " + storeState +
-                                   ": C:\\u\\state\\group\\" + hex +
-                                   "\\meta could not be read: open: The process cannot access the "
-                                   "file because it is being used by another process.";
+      "answered was ";
+  const std::string joinCodeHeld = refused + ": " + engineNoCode + takeTail + storeState + ": " + kpFile +
+                                   " could not be read: open " + kpFile + ": " + sharing;
+  const std::string joinCodeNeverReads = noCode + ": " + engineNoCode + takeTail + storeState + ": " +
+                                         kpFile + " could not be read: open " + kpFile + ": " + denied;
+  const std::string joinCodeRemoved =
+      spent + ": " + engineNoCode + takeTail +
+      "urmessage: the join code was removed from the disk and the take then failed: " + storeState +
+      ": /home/u/.urmessage/state/kp could not be flushed, so a value this store named may not survive "
+      "a crash: input/output error";
+  // the names the lines below used at 09018b10dd23, for the same roads
+  const std::string& storeUnreadCode = joinCodeHeld;
+  const std::string& notReadRestore = restoreRecordHeld;
+  const std::string& notReadJoin = joinRecordHeld;
+  const std::string& notReadLeave = leaveRecordHeld;
 
   // 1. which row a refusal of the join road is, and the order that decides it.
   {
@@ -2114,20 +2188,25 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
          spent + ": this group joined and its record could not be persisted, so a restart would not "
                  "come back into it: io",
          JoinCopy::JoinCodeSpent},
-        {L"version",
-         std::string(kLibInviteVersion) + ": it is at version 0x0002, and this build reads only 0x0003",
+        {L"version", inviteVersion + ": it is at version 0x0002, and this build reads only 0x0003",
          JoinCopy::InviteVersion},
         {L"predates-join", refused + ": " + predates, JoinCopy::GroupPredatesJoinSeal},
         {L"predates-restore", "urmessage: restore: group " + hex + " at epoch 1: " + predates,
          JoinCopy::GroupPredatesJoinSeal},
-        // Task 57's F4, as the T1 fix's report quotes it: a join code the store FAILED TO READ is
+        // Task 57's F4 and R26's V3: a join code the store held and could not read FOR A MOMENT is
         // the window's refusal, and never ErrNoJoinCodeForInvite's row (the engine's own words for
-        // it, "no key package this store holds", are not the sdk's sentence)
+        // it, "no key package this store holds", are not the sdk's sentence); one that will never
+        // read is ErrNoJoinCodeForInvite's; a take whose remove landed is spent
         {L"store-unread-code", storeUnreadCode, JoinCopy::JoinRefused},
+        {L"code-never-reads", joinCodeNeverReads, JoinCopy::NoJoinCodeForInvite},
+        {L"code-removed", joinCodeRemoved, JoinCopy::JoinCodeSpent},
+        {L"not-read-restore-epoch", restoreEpochHeld, JoinCopy::GroupRecordNotReadNow},
+        {L"restore-damaged", restoreRecordDenied, JoinCopy::Other},
         {L"not-read-restore", notReadRestore, JoinCopy::GroupRecordNotReadNow},
         {L"not-read-join", notReadJoin, JoinCopy::GroupRecordNotReadNow},
         {L"not-read-join-short-id",
-         std::string(kLibJoinNotReadHead) + "cc" + std::string(kLibJoinNotReadTail) + ": io",
+         "urmessage: whether this device already holds group cc could not be read, so the invite into "
+         "it is refused: io",
          JoinCopy::Other},
         {L"not-read-leave", notReadLeave, JoinCopy::Other},
         {L"held",
@@ -2194,7 +2273,7 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
       std::string text;
       AddCopy want;
     };
-    const std::string invalid(kLibKeyPackageInvalid);
+    const std::string& invalid = invalidKp;
     const Case cases[] = {
         {L"invalid-decode", invalid + ": it does not decode: syntax: short", AddCopy::KeyPackageInvalid},
         {L"invalid-signature", invalid + ": mls: the key package's signature does not verify",
@@ -2203,10 +2282,8 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
          AddCopy::KeyPackageInvalid},
         {L"invalid-no-key", invalid + ": its leaf publishes no key a join seal can be made to: x",
          AddCopy::KeyPackageInvalid},
-        {L"cannot-open", std::string(kLibJoinerCannotOpenSealedInvite),
-         AddCopy::JoinerCannotOpenSealedInvite},
-        {L"has-a-leaf", std::string(kLibJoinerAlreadyHasALeaf) + ": urmessage: this identity is claimed",
-         AddCopy::JoinerAlreadyHasALeaf},
+        {L"cannot-open", cannotOpen, AddCopy::JoinerCannotOpenSealedInvite},
+        {L"has-a-leaf", hasALeaf + ": urmessage: this identity is claimed", AddCopy::JoinerAlreadyHasALeaf},
         {L"role", "urmessage: a member may not add a new identity to this group", AddCopy::Other},
         {L"join-text", refused + ": x", AddCopy::Other},
         {L"our-own-words", std::string(kSayKeyPackageInvalid), AddCopy::Other},
@@ -2230,10 +2307,9 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
 
   // 4. the startup refusal of a device with no X-Wing seed.
   {
-    const bool wrapped = IsNoDeviceWrapKey(
-        std::string(kLibNoDeviceWrapKey) +
-        ", and so it publishes no join code: an invite to one is sealed to that leaf");
-    const bool bare = IsNoDeviceWrapKey(kLibNoDeviceWrapKey);
+    const bool wrapped =
+        IsNoDeviceWrapKey(noWrapKey + ", and so it publishes no join code: an invite to one is sealed to that leaf");
+    const bool bare = IsNoDeviceWrapKey(noWrapKey);
     const bool otherKp = !IsNoDeviceWrapKey("urmessage: this device's key package: mls: x");
     const bool empty = !IsNoDeviceWrapKey("");
     const bool says = kSayNoDeviceWrapKey.find("cannot make a join code") != std::string_view::npos &&
@@ -2368,8 +2444,9 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
     const bool joinRow = ClassifyJoinCopy(notReadJoin) == JoinCopy::GroupRecordNotReadNow;
     const bool leaveRow = IsLeaveNotReadNow(notReadLeave);
     const bool leaveNotJoin = !IsLeaveNotReadNow(notReadJoin) && !IsLeaveNotReadNow(notReadRestore);
-    const bool leaveShortId = !IsLeaveNotReadNow(std::string(kLibLeaveNotReadHead) + "c" +
-                                                 std::string(kLibLeaveNotReadTail));
+    const bool leaveShortId =
+        !IsLeaveNotReadNow("urmessage: whether this device holds group c on its disk could not be read, so "
+                           "nothing was left");
     const bool notRestoredNot =
         !IsLeaveNotReadNow(std::string(kNotRestoredSentence) +
                            "; call Restore, and if it does not come back, ForgetGroup leaves it: " + hex);
@@ -2461,6 +2538,172 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
         L"intro kept {}   [query: R25 Q4, under the predates row and the not-read row neither the "
         L"Waiting text nor the intro says the device is not in a group]",
         Verdict(ok), fresh, afterLeaveKept, heldNot, heldFirst, kHeldIntro, introHolds, introR20, introJoin));
+  }
+
+  // 11. R27: every library message is matched by its STABLE PART. Each is asked whole, as e0d16ea
+  //     writes it, and again with its tail reworded; both are typed here, never built from the
+  //     header's constants, so a constant that matched a whole sentence again turns the reworded
+  //     case FAIL. The sentence R26's round reworded is asked a third way, in 09018b10dd23's words.
+  {
+    enum class Ask { Join, Add, WrapKey, Leave, Sentinel };
+    struct Case {
+      const wchar_t* name;
+      std::string whole;
+      std::string reworded;
+      Ask ask;
+      JoinCopy join;
+      AddCopy add;
+    };
+    const Case cases[] = {
+        {L"ErrJoinRefused", refused + ": urmessage: the join seal's authenticator does not verify",
+         "urmessage: this invite was refused before anything was written; its join code is still on "
+         "this device: x",
+         Ask::Join, JoinCopy::JoinRefused, AddCopy::Other},
+        {L"ErrNoJoinCodeForInvite", noCode + ": " + engineNoCode,
+         "urmessage: this device holds no join code this invitation was made for; ask for a new "
+         "invitation: x",
+         Ask::Join, JoinCopy::NoJoinCodeForInvite, AddCopy::Other},
+        {L"ErrJoinCodeSpent", joinCodeRemoved,
+         "urmessage: this join did not complete and its join code is spent; ask to be invited again: x",
+         Ask::Join, JoinCopy::JoinCodeSpent, AddCopy::Other},
+        {L"ErrInviteVersion", inviteVersion + ": it is at version 0x0002, and this build reads only 0x0003",
+         "urmessage: this invite is at a version this build does not read: version 2", Ask::Join,
+         JoinCopy::InviteVersion, AddCopy::Other},
+        {L"ErrGroupPredatesJoinSeal", refused + ": " + predates,
+         "urmessage: this group was founded before invitations were sealed, so it is not opened here: x",
+         Ask::Join, JoinCopy::GroupPredatesJoinSeal, AddCopy::Other},
+        {L"ErrGroupRecordNotReadNow", restoreRecordHeld,
+         restoreSentence + ": urmessage: a file of a group on this device's disk could not be read just "
+                           "now, and it is tried again at the next Restore: x",
+         Ask::Join, JoinCopy::GroupRecordNotReadNow, AddCopy::Other},
+        {L"ErrGroupRecordNotReadNow-09018b1", restoreSentence + ": " + notReadNowAt09018b1 + ": x",
+         restoreSentence + ": urmessage: a group record on this device's disk could not be read just "
+                           "now; try again: x",
+         Ask::Join, JoinCopy::GroupRecordNotReadNow, AddCopy::Other},
+        {L"sentinel", restoreEpochHeld,
+         restoreSentence + ": urmessage: a file of a group on this device's disk could not be read just "
+                           "now, and it is tried again at the next Restore: group " + hex + ": x",
+         Ask::Sentinel, JoinCopy::Other, AddCopy::Other},
+        {L"join-gate-unread", joinRecordHeld,
+         "urmessage: whether this device already holds group " + hex +
+             " could not be read, and this invite waits for it: x",
+         Ask::Join, JoinCopy::GroupRecordNotReadNow, AddCopy::Other},
+        {L"leave-unread", leaveRecordHeld,
+         "urmessage: whether this device holds group " + hex +
+             " on its disk could not be read, and it was kept as it was: x",
+         Ask::Leave, JoinCopy::Other, AddCopy::Other},
+        {L"ErrKeyPackageInvalid", invalidKp + ": it does not decode: syntax: short",
+         "urmessage: this join code is not a valid key package: its signature: x", Ask::Add,
+         JoinCopy::Other, AddCopy::KeyPackageInvalid},
+        {L"ErrJoinerCannotOpenSealedInvite", cannotOpen,
+         "urmessage: this join code was made by a build that cannot open a sealed invite; ask them to "
+         "update",
+         Ask::Add, JoinCopy::Other, AddCopy::JoinerCannotOpenSealedInvite},
+        {L"ErrJoinerAlreadyHasALeaf", hasALeaf + ": urmessage: this identity is claimed",
+         "urmessage: this identity already has an entry in this group; remove it before this join "
+         "code: x",
+         Ask::Add, JoinCopy::Other, AddCopy::JoinerAlreadyHasALeaf},
+        {L"ErrNoDeviceWrapKey",
+         noWrapKey + ", and so it publishes no join code: an invite to one is sealed to that leaf",
+         "urmessage: this device holds no x-wing seed for the leaf it publishes, and it publishes no "
+         "join code",
+         Ask::WrapKey, JoinCopy::Other, AddCopy::Other},
+    };
+    auto right = [](Case const& c, std::string const& text) {
+      switch (c.ask) {
+        case Ask::Join: return ClassifyJoinCopy(text) == c.join;
+        case Ask::Add: return ClassifyAddCopy(text) == c.add;
+        case Ask::WrapKey: return IsNoDeviceWrapKey(text);
+        case Ask::Leave: return IsLeaveNotReadNow(text);
+        case Ask::Sentinel: return IsGroupRecordNotReadNow(text);
+      }
+      return false;
+    };
+    std::wstring table;
+    int wholeRight = 0, rewordedRight = 0;
+    for (auto const& c : cases) {
+      const bool w = right(c, c.whole);
+      const bool r = right(c, c.reworded);
+      if (w) ++wholeRight;
+      if (r) ++rewordedRight;
+      if (!table.empty()) table += L", ";
+      table += std::format(L"{} whole {} reworded {}", c.name, w ? L"ok" : L"WRONG", r ? L"ok" : L"WRONG");
+    }
+    const int total = static_cast<int>(std::size(cases));
+    out.push_back(std::format(
+        L"  stable parts     : {}  whole {}/{}, tail reworded {}/{}: {}   [query: R27, each library "
+        L"message is matched by the clause that names its condition and never by its whole sentence, "
+        L"so a reworded tail, or R26's reworded subject, still reaches its row]",
+        Verdict(wholeRight == total && rewordedRight == total), wholeRight, total, rewordedRight, total,
+        table));
+  }
+
+  // 12. T1 FIX 2's roads (R27), one case per road from e0d16ea's exact text, and what the app does
+  //     on each.
+  {
+    const bool rRecord = RestoreNote(restoreRecordHeld, 0) == kSayGroupRecordNotReadNow &&
+                         StepAfterRestoreFirst(false, restoreRecordHeld) == HeldLeaveStep::NotReadNow;
+    const bool rEpoch = RestoreNote(restoreEpochHeld, 0) == kSayGroupRecordNotReadNow &&
+                        StepAfterRestoreFirst(false, restoreEpochHeld) == HeldLeaveStep::NotReadNow;
+    const bool rDamaged = RestoreNote(restoreRecordDenied, 0).empty() &&
+                          StepAfterRestoreFirst(false, restoreRecordDenied) == HeldLeaveStep::Forget &&
+                          ClassifyJoinRefusal(heldOverDenied) == JoinRefusal::HeldNotLive &&
+                          HeldNotLiveCopy(IsGroupRecordNotReadNow(restoreRecordDenied)).offerLeave;
+    const bool lHeld = IsLeaveNotReadNow(leaveRecordHeld) && ClassifyJoinCopy(leaveRecordHeld) == JoinCopy::Other &&
+                       !IsGroupRecordNotReadNow(leaveRecordHeld);
+    const bool jHeld = ClassifyJoinCopy(joinRecordHeld) == JoinCopy::GroupRecordNotReadNow &&
+                       ClassifyJoinRefusal(joinRecordHeld) == JoinRefusal::Other;
+    const bool cHeld = ClassifyJoinCopy(joinCodeHeld) == JoinCopy::JoinRefused &&
+                       !OffersNewJoinCode(ClassifyJoinCopy(joinCodeHeld));
+    const bool cNever = ClassifyJoinCopy(joinCodeNeverReads) == JoinCopy::NoJoinCodeForInvite &&
+                        OffersNewJoinCode(ClassifyJoinCopy(joinCodeNeverReads));
+    const bool cRemoved = ClassifyJoinCopy(joinCodeRemoved) == JoinCopy::JoinCodeSpent &&
+                          OffersNewJoinCode(ClassifyJoinCopy(joinCodeRemoved));
+    const bool ok = rRecord && rEpoch && rDamaged && lHeld && jHeld && cHeld && cNever && cRemoved;
+    out.push_back(std::format(
+        L"  e0d16ea roads    : {}  restore, a record held: R25 Q5's row, and a leave stops {} | restore, "
+        L"an epoch file held: the same {} | restore, a record that will never read: no note, the held "
+        L"refusal over it offers the leave, and the leave forgets {} | a leave while the record is "
+        L"held (REFUSED): R25 Q5's row {} | a join while the record is held: R25 Q5's row {} | a join "
+        L"code held for a moment: \"still good\", no new code {} | a join code that will never read: "
+        L"no join code, a new one offered {} | a take whose remove landed: spent, a new one offered {}   "
+        L"[query: T1 FIX 2's \"The sentences a person meets now\", each typed from e0d16ea and each "
+        L"answered as R25, R27 and R28 rule]",
+        Verdict(ok), rRecord, rEpoch, rDamaged, lHeld, jHeld, cHeld, cNever, cRemoved));
+  }
+
+  // 13. R28: the held-group leave after its restore-first, and a held refusal after a restore that
+  //     could not read a file of a group just now.
+  {
+    const std::string listing = storeState + ": C:\\u\\live\\state\\state\\group could not be "
+                                             "read: open C:\\u\\live\\state\\state\\group: " + denied;
+    const bool cameBack = StepAfterRestoreFirst(true, restoreEpochHeld) == HeldLeaveStep::CameBack &&
+                          StepAfterRestoreFirst(true, "") == HeldLeaveStep::CameBack;
+    const bool recordStops = StepAfterRestoreFirst(false, restoreRecordHeld) == HeldLeaveStep::NotReadNow;
+    const bool epochStops = StepAfterRestoreFirst(false, restoreEpochHeld) == HeldLeaveStep::NotReadNow;
+    const bool damagedForgets = StepAfterRestoreFirst(false, restoreRecordDenied) == HeldLeaveStep::Forget;
+    const bool listingForgets = StepAfterRestoreFirst(false, listing) == HeldLeaveStep::Forget;
+    const bool emptyForgets = StepAfterRestoreFirst(false, "") == HeldLeaveStep::Forget;
+    const HeldCopy stop = HeldNotLiveCopy(true);
+    const HeldCopy offer = HeldNotLiveCopy(false);
+    const bool stopSays = stop.sentence == kSayGroupRecordNotReadNow && !stop.offerLeave;
+    const bool offerSays = offer.sentence == kHeldNotLiveSentence && offer.offerLeave;
+    // the flag a restore leaves: set by a report that carries the sentinel, and by nothing else
+    const bool flagSet = IsGroupRecordNotReadNow(restoreRecordHeld) && IsGroupRecordNotReadNow(restoreEpochHeld);
+    const bool flagNot = !IsGroupRecordNotReadNow(restoreRecordDenied) && !IsGroupRecordNotReadNow(listing) &&
+                         !IsGroupRecordNotReadNow(joinRecordHeld) && !IsGroupRecordNotReadNow(leaveRecordHeld) &&
+                         !IsGroupRecordNotReadNow("");
+    const bool ok = cameBack && recordStops && epochStops && damagedForgets && listingForgets && emptyForgets &&
+                    stopSays && offerSays && flagSet && flagNot;
+    out.push_back(std::format(
+        L"  held leave       : {}  came back {} | a record held: stop, no forget {} | an epoch file "
+        L"held: stop, no forget {} | damage: forget {} | a listing that failed: forget {} | nothing "
+        L"said: forget {} | stopped: \"{}\", no leave {} | otherwise: Task 39's sentence and the leave "
+        L"{} | the sentinel sets the flag {} | nothing else does {}   [query: R28, a leave whose "
+        L"restore-first could not read a file of a group just now calls no forget_group and says R25 "
+        L"Q5's row, and so does a held refusal after such a restore]",
+        Verdict(ok), cameBack, recordStops, epochStops, damagedForgets, listingForgets, emptyForgets,
+        Widen(stop.sentence), stopSays, offerSays, flagSet, flagNot));
   }
   return out;
 }
