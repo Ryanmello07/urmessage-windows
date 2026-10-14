@@ -204,6 +204,10 @@ enum class OnboardStep {
   // THIS COMPUTER HOLDS NO CREDENTIAL, and `message` says where the file goes. A dead end that
   // used to be a log line only: a tester who skipped a step saw an empty window and no reason.
   NoCredential,
+  // THIS INSTALLATION CANNOT MAKE A JOIN CODE (ErrNoDeviceWrapKey, Task 58): its store holds no
+  // X-Wing seed, so it can neither be added to a group nor open an invitation into one. Another dead
+  // end that was a log line only; `message` says it on screen, and no road is drawn.
+  NoJoinCode,
   // ── the founder's road, which is the other half of the same screen ──────────
   Founded,    // this device made a group. IT CANNOT SEND YET: a group of one sits at epoch 0 and
               // is not open on the server, and the commit that opens it is the one that adds the
@@ -230,6 +234,10 @@ struct OnboardState {
   // (QueueLeaveHeldGroup). Never set where there is no such group to leave, because a sentence
   // that names an action the screen does not offer is the dead end this flag exists to close.
   bool offerLeaveHeldGroup = false;
+  // THE REFUSAL CAME FROM AN ADD, by a device that holds the group it was adding to (Task 58). The
+  // dialog keeps the add panel up under it: the sentence asks for another join code, and the box
+  // to paste it into must still be there. Never set on the join road.
+  bool addRoad = false;
 };
 
 using OnboardPtr = std::shared_ptr<const OnboardState>;
@@ -292,7 +300,9 @@ bool QueueCreateGroup();
 //
 // THE OUTCOME IS AN INVITATION TO SEND BACK, published as OnboardState::inviteCode. A refusal -
 // a role that may not add, a lost epoch race, a stale join code - arrives as Refused with the
-// library's own sentence.
+// library's own sentence, except the adder's three refusals of a join code (invalid, from a build
+// that cannot open a sealed invitation, an identity whose entry stands), which arrive in the
+// person's words (Live/RefusalCopy.h, Task 58). Either way the add panel stays (addRoad).
 bool QueueAddMemberFromCode(std::string base64JoinCode);
 
 // ── how this app reaches the message server (ledger 268) ──────────────────────
