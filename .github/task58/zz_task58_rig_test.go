@@ -20,6 +20,8 @@ package cp3b
 //             second.bin (a second join code of the same device). Then adder-ready.
 //   held      Task 39's road: the first join code the app publishes is answered by the file road,
 //             so the app joins and holds the group; invite1.bin keeps the invitation.
+//   notreadnow the same as held (ci/task58-shots-v3, R25 Q5): the driver then denies the record's
+//             read on the app's disk.
 //   nowrapkey nothing but the server.
 
 import (
@@ -198,7 +200,7 @@ func TestTask58Rig(t *testing.T) {
 		task58Write(t, filepath.Join(rigDir, "adder-ready"), []byte("ready"))
 		t.Logf("RIG adder join codes written: %d, %d octets", len(honest), len(second))
 
-	case "held":
+	case "held", "notreadnow":
 		keyPackagePath := filepath.Join(handshake, "app.keypackage")
 		keyPackage, ok := task58Wait(t, keyPackagePath, stop)
 		if !ok {

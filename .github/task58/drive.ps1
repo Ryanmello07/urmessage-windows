@@ -12,12 +12,18 @@
 #   held       R20: the held-group refusal of Task 39, with the dialog's intro
 #   nowrapkey  a device whose identity record holds no X-Wing seed (the three part record a store
 #              written before the seed was kept holds), at startup
+#   notreadnow (R25 Q5, the T1 fix's F1) a group whose record could not be read just now, on the
+#              restore, join and leave roads: the record's read is denied on the runner before the
+#              app starts, as the red team held it, and given back between the roads
+#
+# R25's follow-up (ci/task58-shots-v3): the F5 sentence (adder), "Make a new join code" before and
+# after a press (joiner), and the Q4 intro and Waiting text under the not-read row (notreadnow).
 #
 # DRIVING: UI Automation patterns only (Invoke, and Value to put a code in a box). No mouse or
 # keyboard input is synthesized. CAPTURE: PrintWindow(PW_RENDERFULLCONTENT) of the app's own window,
 # found by its process id.
 param(
-  [Parameter(Mandatory = $true)][ValidateSet('joiner', 'adder', 'held', 'nowrapkey')][string]$Leg,
+  [Parameter(Mandatory = $true)][ValidateSet('joiner', 'adder', 'held', 'nowrapkey', 'notreadnow')][string]$Leg,
   [Parameter(Mandatory = $true)][string]$Exe,
   [Parameter(Mandatory = $true)][string]$Rig,
   [Parameter(Mandatory = $true)][string]$RigWorkDir,
@@ -56,7 +62,12 @@ $say = @{
   Predates           = 'This group was started before invitations were sealed. Leave it and start it again.'
   CannotOpen         = 'This join code was made by an older URmessage. Ask them for a new one from an updated app.'
   Invalid            = 'This is not a valid join code. Ask them to send it again.'
-  HasALeaf           = 'They already have an entry in this group, perhaps from an invitation that was never opened. Remove that entry, then add their new join code.'
+  HasALeaf           = 'This join code claims to be someone already in this group. Remove their entry only if they tell you they never opened their invitation, then add this join code.'
+  NotReadNow         = 'This conversation could not be read just now. Close anything else that may be using URmessage''s folder, then try again.'
+  NewJoinCode        = 'This is a new join code. Send it to whoever is inviting you, and paste the invitation they send back.'
+  NewJoinCodeButton  = 'Make a new join code'
+  SendJoinCode       = 'Send your join code to whoever is setting the group up, and paste the invitation they send back.'
+  NotInAGroup        = 'This device is not in a group yet.'
   NoWrapKey          = 'This installation cannot make a join code, so it cannot join a group. Its saved data was made by an older URmessage.'
   AdderLabel         = 'Only their device can open it. It works once. Send it privately.'
   HeldIntro          = 'This device is connected.'
@@ -198,6 +209,22 @@ function Set-Named([int]$processId, [string]$name, [string]$value) {
   Note "set '$name' to $($value.Length) characters (ValuePattern)"
   return $true
 }
+function ReadValue([int]$processId, [string]$name) {
+  $e = WaitName $processId $name 30
+  if ($null -eq $e) { Check $false "the window carries '$name' to read"; return '' }
+  return $e.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value
+}
+function Sha([string]$text) {
+  $h = [Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::ASCII.GetBytes($text))
+  return (($h | ForEach-Object { $_.ToString('x2') }) -join '').Substring(0, 16)
+}
+function GroupDirOf([string]$gidHex) {
+  $gid = New-Object byte[] 32
+  for ($i = 0; $i -lt 32; $i++) { $gid[$i] = [Convert]::ToByte($gidHex.Substring($i * 2, 2), 16) }
+  $sha = [Security.Cryptography.SHA256]::Create()
+  $name = (($sha.ComputeHash($gid) | ForEach-Object { $_.ToString('x2') }) -join '')
+  return Join-Path (Join-Path (DataDir) 'group') $name
+}
 function B64([string]$name) { return [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $rigDir $name))) }
 function StartApp {
   $p = Start-Process -FilePath $Exe -ArgumentList '--live' -PassThru
@@ -240,6 +267,7 @@ function DataDir {
 }
 
 $deniedDir = $null
+$script:deniedMeta = $null
 try {
   switch ($Leg) {
     'joiner' {
@@ -281,11 +309,12 @@ try {
       Set-Named $app.Id 'Paste the invitation here' (B64 'other.bin') | Out-Null
       Invoke-Named $app.Id 'Join' | Out-Null
       Row $app.Id '3-no-join-code-other-device' 'device_join refused (ErrNoJoinCodeForInvite)' 1 $say.NoJoinCode @($say.JoinRefused)
+      Check ($null -ne (FindByName $app.Id $say.NewJoinCodeButton)) "3: the row offers '$($say.NewJoinCodeButton)'"
 
       # 4. one bit of the authenticator flipped: refused inside the window, the join code goes back
       Set-Named $app.Id 'Paste the invitation here' (B64 'flipped.bin') | Out-Null
       Invoke-Named $app.Id 'Join' | Out-Null
-      Row $app.Id '4-join-refused' 'device_join refused (ErrJoinRefused)' 1 $say.JoinRefused
+      Row $app.Id '4-join-refused' 'device_join refused (ErrJoinRefused)' 1 $say.JoinRefused @($say.NewJoinCodeButton)
 
       # 5. a join whose group record cannot be written: the group's directory takes no new file
       #    (its epoch subdirectory still can), so the joined state commits and the record does not
@@ -309,6 +338,7 @@ try {
       Set-Named $app.Id 'Paste the invitation here' (B64 'spent.bin') | Out-Null
       Invoke-Named $app.Id 'Join' | Out-Null
       Row $app.Id '5-join-code-spent' 'device_join refused (ErrJoinCodeSpent)' 1 $say.Spent @($say.JoinRefused)
+      Check ($null -ne (FindByName $app.Id $say.NewJoinCodeButton)) "5: the row offers '$($say.NewJoinCodeButton)'"
       & icacls $deniedDir /remove:d $who | ForEach-Object { Note "icacls: $_" }
       $deniedDir = $null
 
@@ -319,6 +349,26 @@ try {
       $log = LogText
       Check ((CountIn $log '*** JOINED the group ***') -eq 0) 'the app joined nothing in this leg'
       Check ((CountIn $log 'device_join refused (ErrJoinRefused)') -eq 1) 'the window''s sentence was answered once, to the flipped invitation only'
+
+      # 7. R25 Q2: "Make a new join code", before and after a press. The box shows a NEW join code,
+      #    and it is the one now in the handshake file.
+      Check ($null -ne (FindByName $app.Id $say.NewJoinCodeButton)) "7: the row offers '$($say.NewJoinCodeButton)'"
+      $before = ReadValue $app.Id 'Your join code'
+      Note "7: the join code before the press: $($before.Length) characters, sha256 $(Sha $before)"
+      Shot $app.Id '7-new-join-code-before'
+      DumpNames $app.Id '7-new-join-code-before-uia'
+      Invoke-Named $app.Id $say.NewJoinCodeButton | Out-Null
+      Check (WaitLog '*** NEW JOIN CODE ***' 1 120) '7: the worker minted a new join code'
+      Check ($null -ne (WaitName $app.Id $say.NewJoinCode 30)) "7: the window carries, verbatim: $($say.NewJoinCode)"
+      Start-Sleep -Seconds 2
+      $after = ReadValue $app.Id 'Your join code'
+      Note "7: the join code after the press: $($after.Length) characters, sha256 $(Sha $after)"
+      Check ($after.Length -gt 100 -and $before.Length -gt 100) '7: both join codes are on screen'
+      Check ($after -ne $before) '7: the join code after the press is NOT the one before it'
+      Check ($after -eq [Convert]::ToBase64String([IO.File]::ReadAllBytes($kp))) '7: the new join code is the one in the handshake file'
+      Check ($null -eq (FindByName $app.Id $say.NewJoinCodeButton)) '7: the offer is withdrawn after the press'
+      Shot $app.Id '8-new-join-code-after'
+      DumpNames $app.Id '8-new-join-code-after-uia'
       CloseApp $app
     }
 
@@ -392,6 +442,83 @@ try {
       CloseApp $app
     }
 
+    'notreadnow' {
+      # A. the app joins the founder's group (the rig's held road) and holds it on its disk
+      $app = StartApp
+      Check (WaitLog '*** JOINED the group ***' 1 240) 'A: the app joined the founder''s group'
+      Start-Sleep -Seconds 8
+      Shot $app.Id 'A-joined'
+      CloseApp $app
+      $gidHex = (Get-Content -LiteralPath (Join-Path $rigDir 'gid.txt') -Raw).Trim()
+      $groupDir = GroupDirOf $gidHex
+      $meta = Join-Path $groupDir 'meta'
+      Check (Test-Path -LiteralPath $meta) "A: the group's record is on the disk: $meta"
+      $metaHash = (Get-FileHash -LiteralPath $meta).Hash
+      $filesBefore = @(Get-ChildItem -LiteralPath $groupDir -Recurse -File).Count
+      Note "A: the group's directory holds $filesBefore file(s); the record's sha256 is $metaHash"
+      function DenyMeta {
+        & icacls $meta /deny "${who}:(RD)" | ForEach-Object { Note "icacls: $_" }
+        $read = $true
+        try { [void][IO.File]::ReadAllBytes($meta) } catch { $read = $false; Note "probe: the record does not read: $($_.Exception.Message)" }
+        Check (-not $read) 'the record''s read is denied'
+        Check (Test-Path -LiteralPath $meta) 'the record is still there to see'
+        $script:deniedMeta = $meta
+      }
+      function GiveMeta {
+        & icacls $meta /remove:d $who | ForEach-Object { Note "icacls: $_" }
+        $read = $true
+        try { [void][IO.File]::ReadAllBytes($meta) } catch { $read = $false }
+        Check $read 'the record reads again'
+        $script:deniedMeta = $null
+      }
+
+      # C. THE RESTORE ROAD: the record's read is denied before the app starts
+      DenyMeta
+      $app = StartApp
+      $restoreSays = "$($say.NotReadNow) $($say.SendJoinCode)"
+      Row $app.Id 'C1-restore-not-read-now' 'device_restore refused a group (ErrGroupRecordNotReadNow)' 1 $restoreSays @($say.JoinIntro, "$($say.NotReadNow) $($say.NotInAGroup) $($say.SendJoinCode)", 'Leave the old copy of this group')
+      Check ($null -ne (FindByName $app.Id $say.HeldIntro)) "C: the intro reads, verbatim: $($say.HeldIntro) (R25 Q4)"
+      Check ((CountIn (LogText) 'urmessage: a group record on this device''s disk could not be read just now') -ge 1) 'C: the library''s report was ErrGroupRecordNotReadNow'
+
+      # D. THE JOIN ROAD: the invitation into that group, while the record still does not read
+      Set-Named $app.Id 'Paste the invitation here' (B64 'invite1.bin') | Out-Null
+      Invoke-Named $app.Id 'Join' | Out-Null
+      Row $app.Id 'D1-join-not-read-now' 'device_join refused (ErrGroupRecordNotReadNow)' 1 $say.NotReadNow @($say.HeldNotLive, 'Leave the old copy of this group', $say.JoinIntro)
+      Check ($null -ne (FindByName $app.Id $say.HeldIntro)) "D: the intro reads, verbatim: $($say.HeldIntro)"
+      Check ((CountIn (LogText) 'could not be read, so the invite into it is refused') -ge 1) 'D: the library''s refusal was the gate''s unanswered read'
+
+      # E. the record reads again: the same invitation is refused over a held group, and the leave
+      #    is offered (Task 39)
+      GiveMeta
+      Set-Named $app.Id 'Paste the invitation here' (B64 'invite1.bin') | Out-Null
+      Invoke-Named $app.Id 'Join' | Out-Null
+      Row $app.Id 'E1-held-leave-offered' 'is not live; the leave is offered' 1 $say.HeldNotLive @($say.JoinIntro)
+      Check ($null -ne (FindByName $app.Id 'Leave the old copy of this group')) 'E: the leave is offered'
+
+      # F. THE LEAVE ROAD: the read is denied again, then the leave is pressed. It restores first,
+      #    which cannot read the record, and then ForgetGroup is refused before anything is written
+      DenyMeta
+      Invoke-Named $app.Id 'Leave the old copy of this group' | Out-Null
+      Row $app.Id 'F1-leave-not-read-now' 'could not be read just now (ErrGroupRecordNotReadNow); nothing was left' 1 $say.NotReadNow @('Leave the old copy of this group', $say.HeldNotLive, $say.JoinIntro)
+      Check ($null -ne (FindByName $app.Id $say.HeldIntro)) "F: the intro reads, verbatim: $($say.HeldIntro)"
+      Check ((CountIn (LogText) 'on its disk could not be read, so nothing was left') -ge 1) 'F: the library''s refusal was ForgetGroup''s unanswered read'
+      $log = LogText
+      Check ((CountIn $log '*** LEFT ***') -eq 0) 'F: nothing was left'
+      Check ((CountIn $log 'The old copy of this group could not be left') -eq 0) 'F: Task 39''s fallback was not shown'
+      CloseApp $app
+      GiveMeta
+      Check ((Get-FileHash -LiteralPath $meta).Hash -eq $metaHash) 'F: the record is the one it was'
+      $filesAfter = @(Get-ChildItem -LiteralPath $groupDir -Recurse -File).Count
+      Check ($filesAfter -eq $filesBefore) "F: the group's directory still holds $filesBefore file(s) ($filesAfter)"
+
+      # G. with the record readable, the next launch restores the group: nothing of it was changed
+      $app = StartApp
+      Check (WaitLog 'restored an existing group from disk' 1 240) 'G: the next launch restored the group'
+      Start-Sleep -Seconds 8
+      Shot $app.Id 'G-restored'
+      CloseApp $app
+    }
+
     'nowrapkey' {
       $app = StartApp
       Check (WaitLog 'published this device''s key package' 1 240) 'A: the app minted its identity and published a join code'
@@ -439,6 +566,7 @@ try {
   $script:failures++
 } finally {
   if ($null -ne $deniedDir) { & icacls $deniedDir /remove:d $who 2>$null | Out-Null }
+  if ($null -ne $script:deniedMeta) { & icacls $script:deniedMeta /remove:d $who 2>$null | Out-Null }
   Set-Content -LiteralPath (Join-Path $rigDir 'stop') -Value 'stop'
   if (-not $rigProc.WaitForExit(20000)) { Stop-Process -Id $rigProc.Id -Force }
   if ($null -ne $oldProc -and -not $oldProc.WaitForExit(20000)) { Stop-Process -Id $oldProc.Id -Force }
