@@ -224,6 +224,12 @@ struct OnboardState {
   // One sentence for the person, in their words rather than the library's. Never empty except at
   // Idle, and never carries a code.
   std::string message;
+  // THE LEAVE OF A GROUP THAT IS NOT LIVE IS ON OFFER (Task 39). Set only on the Refused state
+  // that answers an invitation refused over a group this device holds on its disk and cannot open:
+  // the message then says to leave it, and the dialog draws the button that does
+  // (QueueLeaveHeldGroup). Never set where there is no such group to leave, because a sentence
+  // that names an action the screen does not offer is the dead end this flag exists to close.
+  bool offerLeaveHeldGroup = false;
 };
 
 using OnboardPtr = std::shared_ptr<const OnboardState>;
@@ -245,6 +251,25 @@ uint64_t OnboardGeneration();
 // invite at a time and the second replaces the first, because a person who pastes again has
 // corrected themselves rather than asked for two groups.
 bool QueueJoinFromInviteCode(std::string base64Invite);
+
+// LEAVE THE OLD COPY OF A GROUP THAT IS NOT LIVE, and then open the same invitation again (Task 39;
+// the lead's ruling R13). Offered only by the Refused state whose offerLeaveHeldGroup is set: an
+// invitation was refused because this device holds that group on its disk -- it did not restore,
+// or its record does not read -- so the conversation's own leave, which needs a live group, cannot
+// reach it.
+//
+// On the worker, THE RESTORE RUNS FIRST, on every press: a group that comes back is the group this
+// device is in, and nothing is erased (a restore that failed once may have failed for a moment).
+// Only then urnet_message_device_forget_group, with the group id OF THE INVITATION that was
+// refused, read off the invitation's own octets. No roster is read and no owner's question is
+// asked, because ForgetGroup asks none of a group that has no live roster (the lead's ruling R9).
+// Then the SAME invitation is joined again: the refusal did not spend the join code. When the
+// leave answers that no restore has tried the group yet (ErrGroupNotRestored), nothing was erased
+// and the leave is offered again.
+//
+// Answers false, having asked for nothing, when no such leave is on offer. Never blocks; the
+// outcome arrives as a published OnboardState.
+bool QueueLeaveHeldGroup();
 
 // MAKE A GROUP, with this device as its owner. Answers false, having queued nothing, when this
 // device already holds one - a device is in one group in this build, and a second create would

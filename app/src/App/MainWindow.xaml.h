@@ -130,6 +130,9 @@ struct MainWindow : MainWindowT<MainWindow> {
   winrt::Microsoft::UI::Xaml::Controls::Button onboardFoundButton_{nullptr};
   winrt::Microsoft::UI::Xaml::Controls::TextBox onboardTheirCodeBox_{nullptr};
   winrt::Microsoft::UI::Xaml::Controls::TextBox onboardInviteBox_{nullptr};
+  // THE LEAVE OF A GROUP THAT IS NOT LIVE (Task 39), drawn under the sentence that names it and
+  // only while the worker's state offers it (OnboardState::offerLeaveHeldGroup).
+  winrt::Microsoft::UI::Xaml::Controls::Button onboardLeaveHeldButton_{nullptr};
   void RebuildConversationList();
   void SelectConversation(int index);
   // By value, not string_view: this is called with selectedMessageId_ and it
