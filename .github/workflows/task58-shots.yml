@@ -1,8 +1,8 @@
 # THROWAWAY, NEVER MERGE, NEVER IN AN UPSTREAM PULL REQUEST. Hardening plan Task 58, Steps 1 and 3.
 #
-# Builds the app on the join seal's library (composition.txt pins urnetwork/message 09018b10dd23,
-# the T1 branch's head on the owner's fork after the red team's fixes, fetched by its SHA; on
-# ci/task58-shots and -v2 it was 7c4119792c1d), runs urnetwork/message's own
+# Builds the app on the join seal's library (composition.txt pins urnetwork/message e0d16eac75e4,
+# the T1 branch's head on the owner's fork after its second fix round, fetched by its SHA; on
+# ci/task58-shots and -v2 it was 7c4119792c1d, and on -v3 09018b10dd23), runs urnetwork/message's own
 # loopback server and the parties beside it (.github/task58/zz_task58_rig_test.go, copied into
 # sdk/cp3b), and, for the two legs that need "an older URmessage", the same kind of rig built from
 # message 215a0696, the commit message-windows main pins (.github/task58/zz_task58_old_rig_test.go).
@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        leg: [joiner, adder, held, nowrapkey, notreadnow]
+        leg: [joiner, adder, held, nowrapkey, notreadnow, permanent, epochheld]
     steps:
       - name: Check out the repo
         uses: actions/checkout@v4

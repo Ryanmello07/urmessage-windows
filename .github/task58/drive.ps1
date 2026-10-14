@@ -12,18 +12,28 @@
 #   held       R20: the held-group refusal of Task 39, with the dialog's intro
 #   nowrapkey  a device whose identity record holds no X-Wing seed (the three part record a store
 #              written before the seed was kept holds), at startup
-#   notreadnow (R25 Q5, the T1 fix's F1) a group whose record could not be read just now, on the
-#              restore, join and leave roads: the record's read is denied on the runner before the
-#              app starts, as the red team held it, and given back between the roads
+#   notreadnow (R25 Q5; R27) a group whose RECORD another process holds, with a REAL lock: a helper
+#              process opens it with no sharing and takes LockFileEx's exclusive lock, as the T1
+#              cp3b tests' transientHold does. The restore road, the join road, then (R28) a held
+#              refusal after that restore, and a relaunch that restores the group
+#   permanent  (R27) the record's read DENIED by an ACL, which R26 makes damage: the restore says
+#              so, the held refusal over it offers "Leave the old copy", and the press leaves it
+#   epochheld  (R28) the group's EPOCH files held by the same real lock. First held before the app
+#              starts (the restore road: the held refusal says R25 Q5's row). Then the leave road:
+#              the startup restore fails for a permanent reason (the epoch files' read denied), the
+#              held refusal offers the leave, the files are held by the lock instead, and the press
+#              says R25 Q5's row, calls no forget_group and erases nothing. A relaunch restores the
+#              group with its history after each.
 #
 # R25's follow-up (ci/task58-shots-v3): the F5 sentence (adder), "Make a new join code" before and
-# after a press (joiner), and the Q4 intro and Waiting text under the not-read row (notreadnow).
+# after a press (joiner). R27's and R28's (ci/task58-shots-v4): notreadnow with a real lock,
+# permanent, and epochheld, on the T1 head after its second fix round (e0d16eac75e4).
 #
 # DRIVING: UI Automation patterns only (Invoke, and Value to put a code in a box). No mouse or
 # keyboard input is synthesized. CAPTURE: PrintWindow(PW_RENDERFULLCONTENT) of the app's own window,
 # found by its process id.
 param(
-  [Parameter(Mandatory = $true)][ValidateSet('joiner', 'adder', 'held', 'nowrapkey', 'notreadnow')][string]$Leg,
+  [Parameter(Mandatory = $true)][ValidateSet('joiner', 'adder', 'held', 'nowrapkey', 'notreadnow', 'permanent', 'epochheld')][string]$Leg,
   [Parameter(Mandatory = $true)][string]$Exe,
   [Parameter(Mandatory = $true)][string]$Rig,
   [Parameter(Mandatory = $true)][string]$RigWorkDir,
@@ -224,6 +234,115 @@ function GroupDirOf([string]$gidHex) {
   $sha = [Security.Cryptography.SHA256]::Create()
   $name = (($sha.ComputeHash($gid) | ForEach-Object { $_.ToString('x2') }) -join '')
   return Join-Path (Join-Path (DataDir) 'group') $name
+}
+# ---- a REAL lock, held by another process (R27; the T1 cp3b tests' transientHold) ---------------
+# A helper process opens each file with no sharing (share mode 0) and takes LockFileEx's exclusive
+# lock over all of it, as a scanner or a backup tool holding a file does. Any other process's read
+# then fails with a sharing or a lock violation, which R26 calls TRANSIENT. The helper keeps the
+# files until the driver asks it to let go.
+$holdScript = Join-Path $Work 'hold.ps1'
+Set-Content -LiteralPath $holdScript -Encoding ascii -Value @'
+param([string]$Tag, [string]$Dir, [string]$List)
+$ErrorActionPreference = 'Stop'
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class Task58Hold {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct OVERLAPPED { public IntPtr Internal; public IntPtr InternalHigh; public uint Offset; public uint OffsetHigh; public IntPtr hEvent; }
+  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  public static extern IntPtr CreateFileW(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  public static extern bool LockFileEx(IntPtr handle, uint flags, uint reserved, uint lowBytes, uint highBytes, ref OVERLAPPED overlapped);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  public static extern bool CloseHandle(IntPtr handle);
+}
+"@
+$paths = @(Get-Content -LiteralPath $List | Where-Object { $_ -ne '' })
+$handles = New-Object 'System.Collections.Generic.List[IntPtr]'
+foreach ($p in $paths) {
+  # GENERIC_READ, share mode 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL
+  $h = [Task58Hold]::CreateFileW($p, [uint32]2147483648, [uint32]0, [IntPtr]::Zero, [uint32]3, [uint32]128, [IntPtr]::Zero)
+  if ($h -eq [IntPtr](-1)) {
+    Set-Content -LiteralPath (Join-Path $Dir "hold-$Tag.failed") -Value "CreateFileW $p failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+    exit 1
+  }
+  $o = New-Object 'Task58Hold+OVERLAPPED'
+  # LOCKFILE_EXCLUSIVE_LOCK over the whole file
+  if (-not [Task58Hold]::LockFileEx($h, [uint32]2, [uint32]0, [uint32]::MaxValue, [uint32]::MaxValue, [ref]$o)) {
+    Set-Content -LiteralPath (Join-Path $Dir "hold-$Tag.failed") -Value "LockFileEx $p failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+    exit 1
+  }
+  $handles.Add($h)
+}
+Set-Content -LiteralPath (Join-Path $Dir "hold-$Tag.held") -Value "$($handles.Count)"
+$release = Join-Path $Dir "hold-$Tag.release"
+while (-not (Test-Path -LiteralPath $release)) { Start-Sleep -Milliseconds 200 }
+foreach ($h in $handles) { [void][Task58Hold]::CloseHandle($h) }
+Set-Content -LiteralPath (Join-Path $Dir "hold-$Tag.released") -Value 'released'
+'@
+$script:holds = @{}
+function ReadFailure([string]$path) {
+  try { [void][IO.File]::ReadAllBytes($path); return '' } catch {
+    $ex = $_.Exception
+    while ($null -ne $ex.InnerException) { $ex = $ex.InnerException }
+    return $ex.Message
+  }
+}
+function StartHold([string]$tag, [string[]]$paths) {
+  $list = Join-Path $Work "hold-$tag.list"
+  Set-Content -LiteralPath $list -Value $paths -Encoding ascii
+  foreach ($suffix in 'held', 'failed', 'release', 'released') {
+    Remove-Item -LiteralPath (Join-Path $Work "hold-$tag.$suffix") -ErrorAction SilentlyContinue
+  }
+  $p = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden -ArgumentList @(
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $holdScript, '-Tag', $tag, '-Dir', $Work, '-List', $list)
+  $script:holds[$tag] = $p
+  $deadline = (Get-Date).AddSeconds(60)
+  while ((Get-Date) -lt $deadline) {
+    if ((Test-Path -LiteralPath (Join-Path $Work "hold-$tag.held")) -or
+        (Test-Path -LiteralPath (Join-Path $Work "hold-$tag.failed")) -or $p.HasExited) { break }
+    Start-Sleep -Milliseconds 200
+  }
+  $held = Test-Path -LiteralPath (Join-Path $Work "hold-$tag.held")
+  if (-not $held) { Note "hold $tag did not take: $(Get-Content -LiteralPath (Join-Path $Work "hold-$tag.failed") -Raw -ErrorAction SilentlyContinue)" }
+  Check $held "hold $tag`: a helper process (pid $($p.Id)) holds $($paths.Count) file(s) with share mode 0 and LockFileEx's exclusive lock"
+  foreach ($path in $paths) {
+    $why = ReadFailure $path
+    Note "hold $tag`: a read of $path now answers: $why"
+    Check ($why -match 'being used by another process|locked a portion') "hold $tag`: $(Split-Path -Leaf $path) does not read, with a sharing or lock violation (R26's transient)"
+    Check ($why -notmatch 'denied') "hold $tag`: $(Split-Path -Leaf $path) is not denied (a denial is permanent)"
+  }
+}
+function StopHold([string]$tag) {
+  $p = $script:holds[$tag]
+  if ($null -eq $p) { return }
+  Set-Content -LiteralPath (Join-Path $Work "hold-$tag.release") -Value 'release'
+  if (-not $p.WaitForExit(30000)) { Note "hold $tag did not let go within 30 s; stopping it"; Stop-Process -Id $p.Id -Force }
+  $script:holds.Remove($tag)
+  Check (Test-Path -LiteralPath (Join-Path $Work "hold-$tag.released")) "hold $tag`: the helper let go"
+}
+$script:denied = @()
+function DenyRead([string[]]$paths) {
+  foreach ($path in $paths) {
+    & icacls $path /deny "${who}:(RD)" | ForEach-Object { Note "icacls: $_" }
+    $script:denied += $path
+    $why = ReadFailure $path
+    Note "deny: a read of $path now answers: $why"
+    Check ($why -match 'denied') "deny: $(Split-Path -Leaf $path)'s read is denied (R26: permanent)"
+  }
+}
+function GiveRead([string[]]$paths) {
+  foreach ($path in $paths) {
+    & icacls $path /remove:d $who | ForEach-Object { Note "icacls: $_" }
+    $script:denied = @($script:denied | Where-Object { $_ -ne $path })
+    Check ((ReadFailure $path) -eq '') "deny: $(Split-Path -Leaf $path) reads again"
+  }
+}
+function DirState([string]$dir) {
+  $files = @(Get-ChildItem -LiteralPath $dir -Recurse -File -ErrorAction SilentlyContinue | Sort-Object FullName)
+  $names = ($files | ForEach-Object { $_.FullName.Substring($dir.Length) + ':' + $_.Length }) -join ','
+  return "$($files.Count) file(s) [$names]"
 }
 function B64([string]$name) { return [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $rigDir $name))) }
 function StartApp {
@@ -454,68 +573,182 @@ try {
       $meta = Join-Path $groupDir 'meta'
       Check (Test-Path -LiteralPath $meta) "A: the group's record is on the disk: $meta"
       $metaHash = (Get-FileHash -LiteralPath $meta).Hash
-      $filesBefore = @(Get-ChildItem -LiteralPath $groupDir -Recurse -File).Count
-      Note "A: the group's directory holds $filesBefore file(s); the record's sha256 is $metaHash"
-      function DenyMeta {
-        & icacls $meta /deny "${who}:(RD)" | ForEach-Object { Note "icacls: $_" }
-        $read = $true
-        try { [void][IO.File]::ReadAllBytes($meta) } catch { $read = $false; Note "probe: the record does not read: $($_.Exception.Message)" }
-        Check (-not $read) 'the record''s read is denied'
-        Check (Test-Path -LiteralPath $meta) 'the record is still there to see'
-        $script:deniedMeta = $meta
-      }
-      function GiveMeta {
-        & icacls $meta /remove:d $who | ForEach-Object { Note "icacls: $_" }
-        $read = $true
-        try { [void][IO.File]::ReadAllBytes($meta) } catch { $read = $false }
-        Check $read 'the record reads again'
-        $script:deniedMeta = $null
-      }
+      $before = DirState $groupDir
+      Note "A: the group's directory: $before; the record's sha256 is $metaHash"
 
-      # C. THE RESTORE ROAD: the record's read is denied before the app starts
-      DenyMeta
+      # B. ANOTHER PROCESS HOLDS THE RECORD, with a real lock (R27)
+      StartHold 'meta' @($meta)
+
+      # C. THE RESTORE ROAD
       $app = StartApp
       $restoreSays = "$($say.NotReadNow) $($say.SendJoinCode)"
-      Row $app.Id 'C1-restore-not-read-now' 'device_restore refused a group (ErrGroupRecordNotReadNow)' 1 $restoreSays @($say.JoinIntro, "$($say.NotReadNow) $($say.NotInAGroup) $($say.SendJoinCode)", 'Leave the old copy of this group')
+      Row $app.Id 'C1-restore-record-held' 'device_restore refused a group (ErrGroupRecordNotReadNow)' 1 $restoreSays @($say.JoinIntro, "$($say.NotReadNow) $($say.NotInAGroup) $($say.SendJoinCode)", 'Leave the old copy of this group')
       Check ($null -ne (FindByName $app.Id $say.HeldIntro)) "C: the intro reads, verbatim: $($say.HeldIntro) (R25 Q4)"
-      Check ((CountIn (LogText) 'urmessage: a group record on this device''s disk could not be read just now') -ge 1) 'C: the library''s report was ErrGroupRecordNotReadNow'
+      $log = LogText
+      Check ((CountIn $log 'a file of a group on this device''s disk could not be read just now') -ge 1) 'C: the library''s report was ErrGroupRecordNotReadNow, in e0d16ea''s words'
+      Check (($log -match 'meta could not be read: open [^\r\n]*(being used by another process|locked a portion)')) 'C: the record''s read failed with a sharing or lock violation'
 
-      # D. THE JOIN ROAD: the invitation into that group, while the record still does not read
+      # D. THE JOIN ROAD: the invitation into that group while the record is still held
       Set-Named $app.Id 'Paste the invitation here' (B64 'invite1.bin') | Out-Null
       Invoke-Named $app.Id 'Join' | Out-Null
-      Row $app.Id 'D1-join-not-read-now' 'device_join refused (ErrGroupRecordNotReadNow)' 1 $say.NotReadNow @($say.HeldNotLive, 'Leave the old copy of this group', $say.JoinIntro)
+      Row $app.Id 'D1-join-record-held' 'device_join refused (ErrGroupRecordNotReadNow)' 1 $say.NotReadNow @($say.HeldNotLive, 'Leave the old copy of this group', $say.JoinIntro)
       Check ($null -ne (FindByName $app.Id $say.HeldIntro)) "D: the intro reads, verbatim: $($say.HeldIntro)"
       Check ((CountIn (LogText) 'could not be read, so the invite into it is refused') -ge 1) 'D: the library''s refusal was the gate''s unanswered read'
 
-      # E. the record reads again: the same invitation is refused over a held group, and the leave
-      #    is offered (Task 39)
-      GiveMeta
+      # E. R28, THE RESTORE ROAD: the lock is let go and the same invitation meets the held-group
+      #    gate. The startup restore could not read a file just now, so the held refusal says R25
+      #    Q5's row and offers no leave
+      StopHold 'meta'
       Set-Named $app.Id 'Paste the invitation here' (B64 'invite1.bin') | Out-Null
       Invoke-Named $app.Id 'Join' | Out-Null
-      Row $app.Id 'E1-held-leave-offered' 'is not live; the leave is offered' 1 $say.HeldNotLive @($say.JoinIntro)
-      Check ($null -ne (FindByName $app.Id 'Leave the old copy of this group')) 'E: the leave is offered'
-
-      # F. THE LEAVE ROAD: the read is denied again, then the leave is pressed. It restores first,
-      #    which cannot read the record, and then ForgetGroup is refused before anything is written
-      DenyMeta
-      Invoke-Named $app.Id 'Leave the old copy of this group' | Out-Null
-      Row $app.Id 'F1-leave-not-read-now' 'could not be read just now (ErrGroupRecordNotReadNow); nothing was left' 1 $say.NotReadNow @('Leave the old copy of this group', $say.HeldNotLive, $say.JoinIntro)
-      Check ($null -ne (FindByName $app.Id $say.HeldIntro)) "F: the intro reads, verbatim: $($say.HeldIntro)"
-      Check ((CountIn (LogText) 'on its disk could not be read, so nothing was left') -ge 1) 'F: the library''s refusal was ForgetGroup''s unanswered read'
+      Row $app.Id 'E1-held-after-not-read-restore' 'no leave is offered (R28)' 1 $say.NotReadNow @($say.HeldNotLive, 'Leave the old copy of this group', $say.JoinIntro)
       $log = LogText
-      Check ((CountIn $log '*** LEFT ***') -eq 0) 'F: nothing was left'
-      Check ((CountIn $log 'The old copy of this group could not be left') -eq 0) 'F: Task 39''s fallback was not shown'
+      Check ((CountIn $log 'the leave is offered:') -eq 0) 'E: no leave was offered in this leg'
+      Check ((CountIn $log 'has a record on this device''s disk') -ge 1) 'E: the refusal was the held-group gate''s'
       CloseApp $app
-      GiveMeta
-      Check ((Get-FileHash -LiteralPath $meta).Hash -eq $metaHash) 'F: the record is the one it was'
-      $filesAfter = @(Get-ChildItem -LiteralPath $groupDir -Recurse -File).Count
-      Check ($filesAfter -eq $filesBefore) "F: the group's directory still holds $filesBefore file(s) ($filesAfter)"
+      Check ((Get-FileHash -LiteralPath $meta).Hash -eq $metaHash) 'E: the record is the one it was'
+      $after = DirState $groupDir
+      Check ($after -eq $before) "E: the group's directory is as it was ($after)"
 
-      # G. with the record readable, the next launch restores the group: nothing of it was changed
+      # F. with nothing held, the next launch restores the group, with its history
       $app = StartApp
-      Check (WaitLog 'restored an existing group from disk' 1 240) 'G: the next launch restored the group'
+      Check (WaitLog 'restored an existing group from disk' 1 240) 'F: the next launch restored the group'
       Start-Sleep -Seconds 8
-      Shot $app.Id 'G-restored'
+      Shot $app.Id 'F-restored'
+      CloseApp $app
+    }
+
+    'permanent' {
+      # A. the app joins the founder's group and holds it on its disk
+      $app = StartApp
+      Check (WaitLog '*** JOINED the group ***' 1 240) 'A: the app joined the founder''s group'
+      Start-Sleep -Seconds 8
+      Shot $app.Id 'A-joined'
+      CloseApp $app
+      $gidHex = (Get-Content -LiteralPath (Join-Path $rigDir 'gid.txt') -Raw).Trim()
+      $groupDir = GroupDirOf $gidHex
+      $meta = Join-Path $groupDir 'meta'
+      Check (Test-Path -LiteralPath $meta) "A: the group's record is on the disk: $meta"
+      Note "A: the group's directory: $(DirState $groupDir)"
+
+      # B. THE RECORD'S READ IS DENIED, which R26 makes PERMANENT damage
+      DenyRead @($meta)
+
+      # C. THE RESTORE SAYS SO: the library reports the record as one that does not read
+      $app = StartApp
+      Check (WaitLog 'a group record on this device''s disk does not read, so that group cannot be restored' 1 240) 'C: the restore reported the record as damage (ErrGroupRecordDamaged)'
+      $log = LogText
+      Check (($log -match 'meta could not be read: open [^\r\n]*Access is denied')) 'C: the record''s read was denied'
+      Check ((CountIn $log 'device_restore refused a group (ErrGroupRecordNotReadNow)') -eq 0) 'C: the restore did not report it as a file not read just now'
+      Check ($null -ne (WaitName $app.Id "$($say.NotInAGroup) $($say.SendJoinCode)" 60)) 'C: the dialog waits, with the join road''s text'
+      Start-Sleep -Seconds 2
+      Shot $app.Id 'C1-restore-damaged'
+      DumpNames $app.Id 'C1-restore-damaged-uia'
+
+      # D. the invitation into that group: the held refusal over a record that does not read, with
+      #    Task 39's sentence and the leave
+      Set-Named $app.Id 'Paste the invitation here' (B64 'invite1.bin') | Out-Null
+      Invoke-Named $app.Id 'Join' | Out-Null
+      Row $app.Id 'D1-held-damaged' 'is not live; the leave is offered' 1 $say.HeldNotLive @($say.NotReadNow, $say.JoinIntro)
+      Check ($null -ne (FindByName $app.Id 'Leave the old copy of this group')) 'D: the leave is offered'
+      Check ((CountIn (LogText) 'has a record on this device''s disk that does not read') -ge 1) 'D: the refusal was the gate''s, over damage'
+
+      # E. THE PRESS LEAVES IT. Then the same invitation is opened again; its join code was used
+      #    by the first join, so it is answered with the NoJoinCode row
+      Invoke-Named $app.Id 'Leave the old copy of this group' | Out-Null
+      Check (WaitLog '*** LEFT ***' 1 120) 'E: the press left the group'
+      $log = LogText
+      Check ((CountIn $log 'did not come back; leaving it') -eq 1) 'E: the leave asked forget_group, after a restore-first that reported damage'
+      Check ((CountIn $log 'forget_group was not called') -eq 0) 'E: R28''s stop was not taken: the restore-first carried no sentinel'
+      Row $app.Id 'E1-left' 'device_join refused (ErrNoJoinCodeForInvite)' 1 $say.NoJoinCode @('Leave the old copy of this group', $say.HeldNotLive)
+      Check (-not (Test-Path -LiteralPath $meta)) "E: the record is gone"
+      Check (@(Get-ChildItem -LiteralPath $groupDir -Recurse -File -ErrorAction SilentlyContinue).Count -eq 0) "E: no file of the group is left ($(DirState $groupDir))"
+      $script:denied = @($script:denied | Where-Object { $_ -ne $meta })
+      CloseApp $app
+    }
+
+    'epochheld' {
+      # A. the app joins the founder's group and holds it on its disk
+      $app = StartApp
+      Check (WaitLog '*** JOINED the group ***' 1 240) 'A: the app joined the founder''s group'
+      Start-Sleep -Seconds 8
+      Shot $app.Id 'A-joined'
+      CloseApp $app
+      $gidHex = (Get-Content -LiteralPath (Join-Path $rigDir 'gid.txt') -Raw).Trim()
+      $groupDir = GroupDirOf $gidHex
+      $epochs = @(Get-ChildItem -LiteralPath (Join-Path $groupDir 'epoch') -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+      Check ($epochs.Count -ge 1) "A: the group has epoch files ($($epochs.Count)): $(($epochs | ForEach-Object { Split-Path -Leaf $_ }) -join ', ')"
+      $hashes = @{}
+      foreach ($f in @(Get-ChildItem -LiteralPath $groupDir -Recurse -File)) { $hashes[$f.FullName] = (Get-FileHash -LiteralPath $f.FullName).Hash }
+      $before = DirState $groupDir
+      Note "A: the group's directory: $before"
+      function Unchanged([string]$when) {
+        $now = DirState $groupDir
+        Check ($now -eq $before) "$when`: the group's directory is as it was ($now)"
+        $same = $true
+        foreach ($k in $hashes.Keys) { if ((Get-FileHash -LiteralPath $k -ErrorAction SilentlyContinue).Hash -ne $hashes[$k]) { $same = $false; Note "$when`: $k changed" } }
+        Check $same "$when`: every file of the group is the one it was"
+      }
+
+      # ---- PART 1, R28's restore road: the epoch files held by a real lock BEFORE the app starts
+      StartHold 'epoch1' $epochs
+      $app = StartApp
+      Row $app.Id 'C1-restore-epoch-held' 'device_restore refused a group (ErrGroupRecordNotReadNow)' 1 "$($say.NotReadNow) $($say.SendJoinCode)" @($say.JoinIntro, 'Leave the old copy of this group')
+      $log = LogText
+      Check ((CountIn $log 'a file of a group on this device''s disk could not be read just now') -ge 1) 'C: the library''s report was ErrGroupRecordNotReadNow'
+      Check (($log -match 'epoch\\[0-9a-f]+ could not be read: open [^\r\n]*(being used by another process|locked a portion)')) 'C: an epoch file''s read failed with a sharing or lock violation'
+      # the invitation into the group: its record reads, so the gate refuses it as held on the
+      # disk, and after this restore that is R25 Q5's row with no leave (R28)
+      Set-Named $app.Id 'Paste the invitation here' (B64 'invite1.bin') | Out-Null
+      Invoke-Named $app.Id 'Join' | Out-Null
+      Row $app.Id 'D1-held-after-not-read-restore' 'no leave is offered (R28)' 1 $say.NotReadNow @($say.HeldNotLive, 'Leave the old copy of this group', $say.JoinIntro)
+      Check ((CountIn (LogText) 'has a record on this device''s disk') -ge 1) 'D: the refusal was the held-group gate''s'
+      CloseApp $app
+      StopHold 'epoch1'
+      Unchanged 'D'
+      $app = StartApp
+      Check (WaitLog 'restored an existing group from disk' 1 240) 'E: with nothing held, the next launch restored the group'
+      Start-Sleep -Seconds 8
+      Shot $app.Id 'E1-restored'
+      CloseApp $app
+
+      # ---- PART 2, R28's leave road. The startup restore fails for a PERMANENT reason (the epoch
+      #      files' read denied: the library notes the group as one that will not come back), so
+      #      the held refusal offers the leave. Then the denial is lifted, the epoch files are held
+      #      by the real lock, and the leave is pressed: its restore-first could not read a file
+      #      just now, so it says R25 Q5's row and does NOT call forget_group (which, for a group
+      #      noted at startup, would erase it)
+      DenyRead $epochs
+      $app = StartApp
+      # (the third key package of this leg: A's first launch and part 1's restore road published the
+      # first two, and part 1's relaunch restored the group and published none)
+      Check (WaitLog 'published this device''s key package' 3 240) 'F: the app holds no live group and waits'
+      Check ($null -ne (WaitName $app.Id "$($say.NotInAGroup) $($say.SendJoinCode)" 60)) 'F: the dialog waits, with the join road''s text'
+      $log = LogText
+      Check (($log -match 'epoch\\[0-9a-f]+ could not be read: open [^\r\n]*Access is denied')) 'F: the startup restore''s epoch read was denied (permanent)'
+      Check ((CountIn $log 'device_restore refused a group (ErrGroupRecordNotReadNow)') -eq 1) 'F: this restore did not report a file not read just now (the count is part 1''s)'
+      Set-Named $app.Id 'Paste the invitation here' (B64 'invite1.bin') | Out-Null
+      Invoke-Named $app.Id 'Join' | Out-Null
+      Row $app.Id 'F2-held-leave-offered' 'is not live; the leave is offered' 1 $say.HeldNotLive @($say.NotReadNow, $say.JoinIntro)
+      Check ($null -ne (FindByName $app.Id 'Leave the old copy of this group')) 'F: the leave is offered'
+      GiveRead $epochs
+      StartHold 'epoch2' $epochs
+      Invoke-Named $app.Id 'Leave the old copy of this group' | Out-Null
+      Row $app.Id 'G2-leave-stops' 'forget_group was not called (R28)' 1 $say.NotReadNow @('Leave the old copy of this group', $say.HeldNotLive, $say.JoinIntro)
+      $log = LogText
+      Check ((CountIn $log 'did not come back; leaving it') -eq 0) 'G: forget_group was not asked'
+      Check ((CountIn $log '*** LEFT ***') -eq 0) 'G: nothing was left'
+      Check ((CountIn $log 'The old copy of this group could not be left') -eq 0) 'G: Task 39''s fallback was not shown'
+      Check ($null -ne (FindByName $app.Id $say.HeldIntro)) "G: the intro reads, verbatim: $($say.HeldIntro)"
+      $now = DirState $groupDir
+      Check ($now -eq $before) "G: while the files are held, the group's directory is as it was ($now)"
+      CloseApp $app
+      StopHold 'epoch2'
+      Unchanged 'G'
+      $app = StartApp
+      Check (WaitLog 'restored an existing group from disk' 2 240) 'H: with nothing held, the next launch restored the group'
+      Start-Sleep -Seconds 8
+      Shot $app.Id 'H2-restored'
       CloseApp $app
     }
 
@@ -567,6 +800,12 @@ try {
 } finally {
   if ($null -ne $deniedDir) { & icacls $deniedDir /remove:d $who 2>$null | Out-Null }
   if ($null -ne $script:deniedMeta) { & icacls $script:deniedMeta /remove:d $who 2>$null | Out-Null }
+  foreach ($path in @($script:denied)) { if (Test-Path -LiteralPath $path) { & icacls $path /remove:d $who 2>$null | Out-Null } }
+  foreach ($tag in @($script:holds.Keys)) {
+    Set-Content -LiteralPath (Join-Path $Work "hold-$tag.release") -Value 'release'
+    $p = $script:holds[$tag]
+    if (-not $p.WaitForExit(15000)) { Stop-Process -Id $p.Id -Force }
+  }
   Set-Content -LiteralPath (Join-Path $rigDir 'stop') -Value 'stop'
   if (-not $rigProc.WaitForExit(20000)) { Stop-Process -Id $rigProc.Id -Force }
   if ($null -ne $oldProc -and -not $oldProc.WaitForExit(20000)) { Stop-Process -Id $oldProc.Id -Force }
