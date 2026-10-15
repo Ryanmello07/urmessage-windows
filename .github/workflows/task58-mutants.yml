@@ -1,0 +1,78 @@
+# THROWAWAY, NEVER MERGE, NEVER IN AN UPSTREAM PULL REQUEST. Hardening plan Task 58's mutants.
+#
+# One job per mutant (.github/task58/mutants.ps1): the PR tree with ONE exact edit, built as the
+# repository's build-and-test builds it (Release x64, no dll), and its --diagnose read. A job is
+# green only when its mutant is KILLED, that is, the line it must turn red reads FAIL. M0 is the
+# control: no edit, and no FAIL anywhere.
+name: Task 58 mutants (throwaway)
+
+on:
+  push:
+    branches:
+      - 'ci/task58-mutants**'
+
+permissions:
+  contents: read
+
+jobs:
+  mutant:
+    name: Task 58 mutant ${{ matrix.id }}
+    runs-on: windows-2022
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        id: [M0, M1, M1b, M2, M3, M4, M5, M6, M7, M8, M9, M10, M11, M12, M13, M14, M14b, M15, M15b, M16, M16b, M16c, M16d, M16e, M17, M18, M18b, M18c, M18d, M18e, M18f, M18g, M18h, M18i, M18j, M18k, M19, M19b, M20, M20b, M20c, M20d, M20e, M20f, M20g, M20h, M21, M21b, M21c, M21d, M22, M18l, M18m, M18n, M24, M24b, M25, M26, M26b, M26c, M27, M28, M29, M30, M30b, M31, M32, M32b, M32c, M32d, M33]
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Apply the mutant
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github\task58\mutants.ps1 -Id ${{ matrix.id }} -Apply
+          exit $LASTEXITCODE
+
+      - name: Build the solution (Release x64)
+        shell: pwsh
+        working-directory: app
+        run: |
+          $pin = '10.0.22621.0'
+          $roots = @("${env:ProgramFiles(x86)}\Windows Kits\10", "$env:ProgramFiles\Windows Kits\10") | Where-Object { Test-Path -LiteralPath $_ }
+          $usable = @(foreach ($r in $roots) {
+            Get-ChildItem (Join-Path $r 'Include') -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' -and
+                (Test-Path -LiteralPath (Join-Path $r "Include\$($_.Name)\um\windows.h")) -and
+                (Test-Path -LiteralPath (Join-Path $r "Lib\$($_.Name)\um\x64\kernel32.lib")) } |
+              Select-Object -ExpandProperty Name
+          }) | Select-Object -Unique | Sort-Object { [version]$_ }
+          $usable = @($usable)
+          $sdk = if ($usable -contains $pin) { $pin } else { $usable[-1] }
+          msbuild URmessage.sln /restore /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=$sdk /m /v:minimal /clp:Summary
+          exit $LASTEXITCODE
+
+      - name: Run --diagnose and judge the mutant
+        shell: pwsh
+        env:
+          URMESSAGE_APP_ROOT: ${{ github.workspace }}\.ci-appstate
+        run: |
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'app\build\x64\Release\URmessage.exe'
+          $psi = [System.Diagnostics.ProcessStartInfo]::new($exe)
+          $psi.Arguments = '--diagnose'
+          $psi.UseShellExecute = $false
+          $psi.CreateNoWindow = $true
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+          $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+          $p = [System.Diagnostics.Process]::Start($psi)
+          $out = $p.StandardOutput.ReadToEnd()
+          $null = $p.StandardError.ReadToEnd()
+          if (-not $p.WaitForExit(120000)) { try { $p.Kill() } catch { }; Write-Host '::error::--diagnose did not exit'; exit 1 }
+          $file = Join-Path $env:RUNNER_TEMP 'diagnose.out'
+          Set-Content -LiteralPath $file -Value $out -Encoding utf8 -NoNewline
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github\task58\mutants.ps1 -Id ${{ matrix.id }} -Judge $file
+          exit $LASTEXITCODE
