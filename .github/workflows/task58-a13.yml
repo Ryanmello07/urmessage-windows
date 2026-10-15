@@ -1,0 +1,215 @@
+# THROWAWAY, NEVER MERGE, NEVER IN AN UPSTREAM PULL REQUEST. Hardening plan Task 58, R43 A13: the
+# founder's status line says "paste it above", and the join-code box is above it.
+#
+# The adder leg of task58-shots.yml, on the PR head that makes the change, twice:
+#   as-built   the head as committed: the driver must pass every check, among them A13's three
+#              (the new sentence verbatim, the old one gone, and the box above the line by UI
+#              Automation's bounding rectangles).
+#   old-text   the CONTROL: the same head with "paste it above" put back to "paste it below" in
+#              LiveMesh.cpp (one occurrence, asserted). It is green only when the driver FAILED,
+#              and failed on A13's checks, so the checks are shown to see the old sentence.
+# Everything else is task58-shots.yml's: the dll from the composition pin (message e4eb247, the
+# head's own pin), the app built with the dll required, urnetwork/message's loopback server and
+# parties (.github/task58/zz_task58_rig_test.go), the older build's rig for the older join code
+# (.github/task58/zz_task58_old_rig_test.go), and drive.ps1 driving the window with UI Automation's
+# Invoke and Value only and capturing it with PrintWindow. Nothing is published.
+name: Task 58 A13 screenshots (throwaway)
+
+on:
+  push:
+    branches:
+      - 'ci/task58-a13**'
+
+permissions:
+  contents: read
+
+env:
+  A13_HEAD: d72c88e71109ed8ca208385eef6aff9aafe7064c
+
+jobs:
+  shots:
+    name: Task 58 A13 adder leg (${{ matrix.variant }})
+    runs-on: windows-2022
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [as-built, old-text]
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Prove the checkout is the A13 head plus CI files only
+        shell: pwsh
+        run: |
+          $head = git rev-parse HEAD
+          $parent = git rev-parse HEAD^
+          Write-Host "checkout $head"
+          Write-Host "parent   $parent"
+          if ($parent -ne $env:A13_HEAD) { Write-Host "::error::the parent is not $env:A13_HEAD"; exit 1 }
+          $changed = @(git diff --name-only HEAD^ HEAD)
+          $changed | ForEach-Object { Write-Host "  changed by the CI commit: $_" }
+          $outside = @($changed | Where-Object { $_ -notlike '.github/*' -and $_ -ne 'app/src/App/Live/LiveMesh.cpp' })
+          if ($outside.Count -gt 0) { Write-Host "::error::the CI commit changes $($outside -join ', ')"; exit 1 }
+          git diff HEAD^ HEAD -- app/src/App/Live/LiveMesh.cpp | Select-String -Pattern '^[+-][^+-]' | ForEach-Object { Write-Host "  LiveMesh.cpp (the CI endpoint): $($_.Line)" }
+          $line = Select-String -LiteralPath app\src\App\Live\LiveMesh.cpp -Pattern 'paste it (above|below) - "' | ForEach-Object { $_.Line.Trim() }
+          Write-Host "the founder's line as checked out: $line"
+
+      - name: Put the old sentence back (the control only)
+        if: matrix.variant == 'old-text'
+        shell: pwsh
+        run: |
+          $path = 'app\src\App\Live\LiveMesh.cpp'
+          $text = [IO.File]::ReadAllText($path)
+          $old = 'paste it above - "'
+          $new = 'paste it below - "'
+          $n = ([regex]::Matches($text, [regex]::Escape($old))).Count
+          if ($n -ne 1) { Write-Host "::error::'$old' occurs $n times, not once"; exit 1 }
+          [IO.File]::WriteAllText($path, $text.Replace($old, $new))
+          $after = [IO.File]::ReadAllText($path)
+          Write-Host "after: 'paste it above' $(([regex]::Matches($after, 'paste it above')).Count) time(s), 'paste it below' $(([regex]::Matches($after, 'paste it below')).Count) time(s)"
+          git diff --stat -- $path
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Check out the pinned commits
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\build-sdk-dll.ps1 -Workspace "$env:RUNNER_TEMP\sdk" -CheckoutOnly
+          exit $LASTEXITCODE
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ runner.temp }}/sdk/message/go.mod
+          cache: false
+
+      - name: Build the dll from the composition and stage it
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\build-sdk-dll.ps1 -Workspace "$env:RUNNER_TEMP\sdk" -Stage
+          exit $LASTEXITCODE
+
+      - name: Build the app (Release x64, the dll required)
+        shell: pwsh
+        working-directory: app
+        run: |
+          $pin = '10.0.22621.0'
+          $roots = @("${env:ProgramFiles(x86)}\Windows Kits\10", "$env:ProgramFiles\Windows Kits\10") | Where-Object { Test-Path -LiteralPath $_ }
+          $usable = @(foreach ($r in $roots) {
+            Get-ChildItem (Join-Path $r 'Include') -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' -and
+                (Test-Path -LiteralPath (Join-Path $r "Include\$($_.Name)\um\windows.h")) -and
+                (Test-Path -LiteralPath (Join-Path $r "Lib\$($_.Name)\um\x64\kernel32.lib")) } |
+              Select-Object -ExpandProperty Name
+          }) | Select-Object -Unique | Sort-Object { [version]$_ }
+          $usable = @($usable)
+          $sdk = if ($usable -contains $pin) { $pin } else { $usable[-1] }
+          msbuild URmessage.sln /restore /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=$sdk /p:UrmRequireSdkDll=true /m /v:minimal /clp:Summary
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path -LiteralPath build\x64\Release\URnetworkSdk.dll)) { Write-Host '::error::no URnetworkSdk.dll beside the exe'; exit 1 }
+          Get-Item build\x64\Release\URmessage.exe, build\x64\Release\URnetworkSdk.dll | Format-Table Name, Length | Out-String | Write-Host
+
+      - name: Check out message-server beside message, and build the rig
+        shell: pwsh
+        run: |
+          $ws = Join-Path $env:RUNNER_TEMP 'sdk'
+          $line = Get-Content (Join-Path $ws 'message\scripts\siblings.txt') | Where-Object { $_ -match '^message-server\s' } | Select-Object -First 1
+          $parts = $line -split '\s+'
+          Write-Host "message-server: $($parts[1]) $($parts[2])"
+          git init -q (Join-Path $ws 'message-server')
+          git -C (Join-Path $ws 'message-server') -c core.autocrlf=false fetch -q --depth 1 $parts[1] $parts[2]
+          git -C (Join-Path $ws 'message-server') -c core.autocrlf=false checkout -q FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "message: $(git -C (Join-Path $ws 'message') rev-parse HEAD)"
+          Copy-Item .github\task58\zz_task58_rig_test.go (Join-Path $ws 'message\sdk\cp3b\zz_task58_rig_test.go')
+          $toolchain = (Select-String -Path (Join-Path $ws 'message\go.mod') -Pattern '^toolchain\s+(\S+)').Matches[0].Groups[1].Value
+          $env:GOTOOLCHAIN = $toolchain
+          $env:GOWORK = 'off'
+          Write-Host "toolchain $toolchain"
+          Push-Location (Join-Path $ws 'message\sdk\cp3b')
+          go version
+          go test -c -o (Join-Path $env:RUNNER_TEMP 'rig.exe') .
+          $code = $LASTEXITCODE
+          Pop-Location
+          exit $code
+
+      - name: Build the older build's rig (message 215a0696, the siblings shared)
+        shell: pwsh
+        run: |
+          $ws = Join-Path $env:RUNNER_TEMP 'sdk'
+          $old = Join-Path $env:RUNNER_TEMP 'old'
+          New-Item -ItemType Directory -Force $old | Out-Null
+          git init -q (Join-Path $old 'message')
+          git -C (Join-Path $old 'message') -c core.autocrlf=false fetch -q --depth 1 https://github.com/urnetwork/message.git 215a0696616084f05ef63e5c2942d5c9f663b56f
+          git -C (Join-Path $old 'message') -c core.autocrlf=false checkout -q FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "older message: $(git -C (Join-Path $old 'message') rev-parse HEAD)"
+          $a = (Get-FileHash (Join-Path $old 'message\scripts\siblings.txt')).Hash
+          $b = (Get-FileHash (Join-Path $ws 'message\scripts\siblings.txt')).Hash
+          Write-Host "siblings.txt: older $a, newer $b"
+          if ($a -ne $b) { Write-Host '::error::the two builds pin different siblings'; exit 1 }
+          foreach ($n in 'connect', 'sdk', 'glog', 'gvisor', 'goidenticons', 'message-server') {
+            cmd /c mklink /J (Join-Path $old $n) (Join-Path $ws $n) | Out-Null
+          }
+          Copy-Item .github\task58\zz_task58_old_rig_test.go (Join-Path $old 'message\sdk\cp3b\zz_task58_old_rig_test.go')
+          $toolchain = (Select-String -Path (Join-Path $old 'message\go.mod') -Pattern '^toolchain\s+(\S+)').Matches[0].Groups[1].Value
+          $env:GOTOOLCHAIN = $toolchain
+          $env:GOWORK = 'off'
+          Write-Host "toolchain $toolchain"
+          Push-Location (Join-Path $old 'message\sdk\cp3b')
+          go test -c -o (Join-Path $env:RUNNER_TEMP 'oldrig.exe') .
+          $code = $LASTEXITCODE
+          Pop-Location
+          exit $code
+
+      - name: Drive the app (adder, ${{ matrix.variant }})
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github\task58\drive.ps1 -Leg adder `
+            -Exe "$env:GITHUB_WORKSPACE\app\build\x64\Release\URmessage.exe" `
+            -Rig "$env:RUNNER_TEMP\rig.exe" `
+            -RigWorkDir "$env:RUNNER_TEMP\sdk\message\sdk\cp3b" `
+            -OldRig "$env:RUNNER_TEMP\oldrig.exe" `
+            -OldRigWorkDir "$env:RUNNER_TEMP\old\message\sdk\cp3b" `
+            -Work "$env:RUNNER_TEMP\t58" `
+            -Out "$env:GITHUB_WORKSPACE\t58out" | Tee-Object -FilePath "$env:RUNNER_TEMP\drive.out"
+          $code = $LASTEXITCODE
+          Set-Content -LiteralPath "$env:RUNNER_TEMP\drive.code" -Value $code
+          Write-Host "the driver exited $code"
+          exit 0
+
+      - name: Judge (as-built passes every check; the control fails on A13's)
+        shell: powershell
+        env:
+          VARIANT: ${{ matrix.variant }}
+          MUST: "A: the founder's line reads, verbatim|A: the founder's line no longer says the box is below it"
+        run: |
+          $code = [int](Get-Content -LiteralPath "$env:RUNNER_TEMP\drive.code")
+          $out = @(Get-Content -LiteralPath "$env:RUNNER_TEMP\drive.out")
+          $fails = @($out | Where-Object { $_ -match '\] FAIL  ' })
+          $a13 = @($out | Where-Object { $_ -match '\] (PASS|FAIL)  A: (the founder|the join-code box)' })
+          Write-Host "the driver exited $code, with $($fails.Count) FAIL line(s); A13's lines:"
+          $a13 | ForEach-Object { Write-Host "  $_" }
+          $fails | ForEach-Object { Write-Host "  FAIL line: $_" }
+          if ($env:VARIANT -eq 'as-built') {
+            if ($code -eq 0 -and $fails.Count -eq 0 -and $a13.Count -ge 3) { Write-Host 'as-built: every check passed, A13''s among them'; exit 0 }
+            Write-Host '::error::as-built: the driver did not pass every check'
+            exit 1
+          }
+          $must = @($env:MUST -split '\|')
+          $missing = @($must | Where-Object { $m = $_; @($fails | Where-Object { $_.Contains($m) }).Count -eq 0 })
+          if ($code -ne 0 -and $missing.Count -eq 0) { Write-Host "old-text KILLED by the adder leg: $($must -join ' AND ')"; exit 0 }
+          Write-Host "::error::old-text SURVIVED: the driver exited $code, and these checks did not FAIL: $($missing -join ' AND ')"
+          exit 1
+
+      - name: Upload the screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task58-a13-${{ matrix.variant }}
+          path: t58out/
+          if-no-files-found: warn
