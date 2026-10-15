@@ -1,0 +1,212 @@
+URmessage - closed alpha
+========================
+
+Thank you for testing. This is an early build on a live network. Please read the
+two short warnings at the bottom before you send anything you would mind losing.
+
+
+WHAT YOU NEED
+-------------
+
+  1. This folder, unzipped anywhere you like. Nothing is installed and nothing
+     is written outside your own user folder.
+  2. A credential file, sent to you separately. It is named like
+     "tester3.jwt" and it is yours alone - it is the key to your account, so
+     treat it the way you would treat a password.
+
+
+SETTING IT UP (once)
+--------------------
+
+  If you tested an earlier build of URmessage on this computer, do this first:
+  the test network was emptied for this build, and this build cannot use the
+  data an earlier one saved (it would tell you "This installation cannot make a
+  join code"). Press Windows+R, paste this, and press Enter:
+
+         %LOCALAPPDATA%\URmessage\app
+
+  In the folder that opens, delete the folder called "live". Leave the folder
+  %LOCALAPPDATA%\URmessage\dev alone: your credential is in it.
+
+  1. Press Windows+R, paste this, and press Enter:
+
+         %LOCALAPPDATA%\URmessage\dev
+
+     If the folder does not exist, create it: go to %LOCALAPPDATA%, make a
+     folder called URmessage, and a folder called dev inside it.
+
+  2. Copy your credential file into that folder and RENAME it to exactly:
+
+         user1.jwt
+
+     (Yes, "user1" even though you may be tester 3. The name is what this build
+     looks for. It will be your own name in a later one.)
+
+     If you would rather keep the file somewhere else, set the environment
+     variable URMESSAGE_LIVE_JWT to the file's full path, and the app reads that
+     file instead.
+
+  3. Run URmessage.exe from this folder.
+
+If the app says "URmessage needs its credential", the file is not where it
+looked: the message names the exact folder and file name it expects.
+
+
+GETTING INTO A CONVERSATION
+---------------------------
+
+There are two ways in, and the box the app shows you offers both. If somebody
+has already made the group, use the first. If you are the one making it, use the
+second.
+
+The first time you run it, the app connects and then shows a box called
+"Join a group". That takes a few seconds: by default URmessage reaches its
+server through URnetwork (see YOUR IP ADDRESS below) and has to pick a way out
+first. You do not need to do anything while it says it is connecting.
+
+When the box appears:
+
+  1. Press "Copy join code". That puts a long line of text on your clipboard.
+  2. Send it to whoever invited you to this test, any way you like - email,
+     Signal, a message. It is NOT a secret: all it lets somebody do is add this
+     computer to a group.
+  3. They will send you back an INVITATION, which is a longer line of text.
+     Keep it private: it is made for this computer's join code, so it only
+     works here, and only once. Do not post it anywhere, and do not forward it.
+  4. Paste the invitation into the second box and press "Join".
+
+The box closes itself and the conversation appears. After that the app just
+opens into it.
+
+If the invitation is refused, the message under the box says why in plain
+words, and what to do next:
+
+  * If it asks for a new join code, press "Make a new join code", send the new
+    code, and ask for a fresh invitation.
+  * If it says your join code is still good, do not make a new one: do what the
+    message says.
+  * If it says this computer still holds an old copy of the group, press "Leave
+    the old copy", and then use the same invitation again.
+
+
+MAKING THE GROUP YOURSELF
+-------------------------
+
+Press "Start a new group instead".
+
+It is made at once, and it is NOT usable yet - it has only you in it, nothing
+can be sent, and the app says so. A group opens when its first other member is
+added. So:
+
+  1. Ask somebody for their join code (they press "Copy join code" in their own
+     URmessage and send you what it gives them).
+  2. Paste it into the box and press "Add them to the group".
+  3. The app shows you an INVITATION. Press "Copy invitation" and send it to
+     that one person. Only their computer can open it, and it works once. Send
+     it privately.
+  4. Repeat 1-3 for each further person. The invitation shown is always for the
+     code you just pasted - copy it before you add the next person.
+
+If adding somebody is refused, the message says why in plain words, and what to
+do next.
+
+Press "Done" when you have finished adding people. You can send messages as
+soon as the first person has joined.
+
+
+YOUR IP ADDRESS
+---------------
+
+By default URmessage does not connect to its message server directly. It
+connects through URnetwork: your encrypted traffic leaves the network through
+another URnetwork connection, called an exit, and the message server only ever
+sees the exit's address, never yours. The exit can see that something is
+talking to the message server, but not what, and it never learns your address
+either.
+
+You can turn this off in Settings > Privacy and security > "Route through
+URnetwork". It takes effect the next time you start the app. With it off, the
+app connects directly. That can help if the network is struggling, but the
+message server then sees your IP address.
+
+Either way, the app checks the server's own key before it sends anything, so
+nobody in between can pretend to be the server.
+
+
+WHAT WORKS, AND WHAT DOES NOT
+-----------------------------
+
+Works: sending and receiving messages, replying to a message, reactions, the
+member list with everyone's role, and - if you are an owner or an admin -
+changing somebody's role or removing them from the group. In a group of
+three or more, every message shows who sent it. Deleting your own messages
+and leaving a conversation work too, and so does joining a conversation again
+after you left it: see DELETING below.
+
+Does NOT work yet, and the app says so on screen rather than pretending:
+
+  * NAMES. There is no identity layer yet, so the app cannot know anybody's
+    name and shows "unavailable". You CAN give each person a name that only
+    you see: in the panel on the right, open a member and press "Name them".
+    You can name a conversation the same way. These names stay on your
+    computer and are never sent - nobody else, and not the server, sees them.
+  * DELIVERY AND READ RECEIPTS. Nothing reports them, so your own messages stop
+    at "Sent" and never go further. That is the truth, not a bug.
+  * TELLING THE OTHERS YOU LEFT. Leaving is silent for now: see DELETING.
+  * ATTACHMENTS, voice, video, and disappearing messages.
+  * VERY LONG MESSAGES. A message can be about 65,000 bytes (a few hundred
+    pages of plain text; fewer characters if you use emoji or non-Latin
+    scripts). Past that, the Send button goes dark and the app tells you by
+    how much. Your text stays in the box.
+
+Anywhere the app cannot tell you something, it says "unavailable" rather than
+inventing it. If you ever see it claim something it should not know, that is a
+bug worth reporting and we would like to hear about it.
+
+
+DELETING
+--------
+
+  * ONE MESSAGE. Hover over a message you sent and press the bin icon beside
+    Reply and React. It is deleted for everyone, however old it is, and
+    everybody sees "This message was deleted." in its place, so nobody can
+    quietly rewrite a conversation. It reaches every device that is online
+    and honest; anybody who already read it may have kept a copy, and
+    nothing can detect that.
+  * EVERY MESSAGE YOU SENT in a conversation: in the panel on the right,
+    press "Delete all my messages". Only the messages this computer sent are
+    deleted; everybody else's stay.
+  * THE WHOLE CONVERSATION, FOR YOU: in the panel on the right, press "Delete
+    for me and leave". It is deleted from THIS computer and the app goes back
+    to the "Join a group" box. The others are NOT told. They keep their
+    copies, including your messages unless you deleted those first, and you
+    stay on their member list until they remove you. If you own the
+    conversation, it is handed to the other person first, in the same step.
+  * THE WHOLE CONVERSATION, FOR BOTH OF YOU: each of you presses "Delete all
+    my messages" and then "Delete for me and leave".
+
+
+TWO WARNINGS, AND THEY ARE REAL
+-------------------------------
+
+  1. DO NOT RUN TWO COPIES under the same credential - not on two computers,
+     and not by copying your %LOCALAPPDATA%\URmessage folder to another
+     machine. Two copies of one identity break the encryption for everything
+     that identity sends. One credential, one computer.
+
+  2. THIS IS AN ALPHA ON A TEST NETWORK. Messages may be lost, the group may
+     need to be rebuilt, and the whole thing may be wiped between rounds.
+     Please do not put anything in it that you would be upset to lose or to
+     have read by somebody running the server.
+
+
+IF SOMETHING GOES WRONG
+-----------------------
+
+There is a log at:
+
+    %LOCALAPPDATA%\URmessage\app\logs\urmessage-app.log
+
+It contains no message text and no credentials - it is safe to send on. Sending
+it with a note about what you were doing is the single most useful thing you can
+give us.

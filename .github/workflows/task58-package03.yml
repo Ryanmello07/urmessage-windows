@@ -1,0 +1,257 @@
+# THROWAWAY, NEVER MERGE, NEVER IN AN UPSTREAM PULL REQUEST. Hardening plan Task 58: test package 03
+# (the lead's ruling R43), made from 87e47927, the head Task 58's final shots, mutants and CI tested.
+#
+# The branch is 87e47927 plus CI files only (this workflow and .github/package03/); the first step
+# of each job proves it. Nothing is published: no release, no tag. The package is an artifact.
+#
+#   package  builds URnetworkSdk.dll from the composition pin with app/tools/build-sdk-dll.ps1 (its
+#            eleven checks) and stages it; builds the app as build-and-test does, with the dll
+#            required (/p:UrmRequireSdkDll=true); runs --diagnose; then .github/package03/assemble.ps1
+#            makes URmessage-alpha/ (the build output less the by-products the MSI leaves out, plus
+#            READ-ME-FIRST.txt), holds the packaged dll to the vendored .def again, zips it as
+#            URmessage-alpha-03.zip and holds the zip to the folder both ways.
+#   smoke    on windows-2022 and windows-2025: the zip extracted to a fresh folder, no
+#            %LOCALAPPDATA%\URmessage, no URMESSAGE_* variable, URmessage.exe started with no
+#            arguments, the window read with UI Automation and captured with PrintWindow
+#            (.github/package03/smoke.ps1). No credential of any kind is on any runner.
+name: Task 58 test package 03 (throwaway)
+
+on:
+  push:
+    branches:
+      - 'ci/task58-package-03'
+
+permissions:
+  contents: read
+
+env:
+  TESTED_HEAD: 87e47927f10c634f75a37d5981c2160e2c5eb62e
+  DLL_VERSION: 0.0.0-composition.e4eb247d4840.b8209d9d7f6d
+  README_SHA256: 5561d282ac66f9fe93fc31695c44239a1229bbc6b3fa4b74ed67a1b270a9f225
+
+jobs:
+  package:
+    name: Build package 03 (x64)
+    runs-on: windows-2022
+    timeout-minutes: 90
+    outputs:
+      zip_sha256: ${{ steps.assemble.outputs.zip_sha256 }}
+      exe_sha256: ${{ steps.assemble.outputs.exe_sha256 }}
+      dll_sha256: ${{ steps.assemble.outputs.dll_sha256 }}
+      readme_sha256: ${{ steps.assemble.outputs.readme_sha256 }}
+      entries: ${{ steps.assemble.outputs.entries }}
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Prove the checkout is 87e47927 plus CI files only
+        shell: pwsh
+        run: |
+          $head = git rev-parse HEAD
+          $parent = git rev-parse HEAD^
+          Write-Host "checkout $head"
+          Write-Host "parent   $parent"
+          if ($parent -ne $env:TESTED_HEAD) { Write-Host "::error::the parent is not $env:TESTED_HEAD"; exit 1 }
+          $changed = @(git diff --name-only HEAD^ HEAD)
+          $changed | ForEach-Object { Write-Host "  added by the CI commit: $_" }
+          $outside = @($changed | Where-Object { $_ -notlike '.github/*' })
+          if ($outside.Count -gt 0) { Write-Host "::error::the CI commit changes files outside .github: $($outside -join ', ')"; exit 1 }
+          Write-Host "the CI commit changes only .github; everything else is $env:TESTED_HEAD's"
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Self-test the composition checks
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\build-sdk-dll.ps1 -SelfTest
+          exit $LASTEXITCODE
+
+      - name: Check out the pinned commits
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\build-sdk-dll.ps1 -Workspace "$env:RUNNER_TEMP\sdk" -CheckoutOnly
+          exit $LASTEXITCODE
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ runner.temp }}/sdk/message/go.mod
+          cache: false
+
+      - name: Build the dll from the composition, check it, and stage it
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\build-sdk-dll.ps1 -Workspace "$env:RUNNER_TEMP\sdk" -Stage
+          exit $LASTEXITCODE
+
+      # As build-and-test resolves it: the pin when the runner has it, else the highest usable SDK.
+      - name: Resolve the Windows SDK
+        id: toolchain
+        shell: pwsh
+        run: |
+          $pin = '10.0.22621.0'
+          $roots = @("${env:ProgramFiles(x86)}\Windows Kits\10", "$env:ProgramFiles\Windows Kits\10") | Where-Object { Test-Path -LiteralPath $_ }
+          $usable = @(foreach ($r in $roots) {
+            Get-ChildItem (Join-Path $r 'Include') -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' -and
+                (Test-Path -LiteralPath (Join-Path $r "Include\$($_.Name)\um\windows.h")) -and
+                (Test-Path -LiteralPath (Join-Path $r "Lib\$($_.Name)\um\x64\kernel32.lib")) } |
+              Select-Object -ExpandProperty Name
+          }) | Select-Object -Unique | Sort-Object { [version]$_ }
+          $usable = @($usable)
+          $sdk = if ($usable -contains $pin) { $pin } else { Write-Host "::warning::the pinned SDK $pin is absent"; $usable[-1] }
+          Write-Host "sdk used for build : $sdk"
+          "sdk_version=$sdk" >> $env:GITHUB_OUTPUT
+
+      - name: Build the app (Release x64, the dll required)
+        shell: pwsh
+        working-directory: app
+        run: |
+          msbuild URmessage.sln `
+            /restore `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /p:WindowsTargetPlatformVersion=${{ steps.toolchain.outputs.sdk_version }} `
+            /p:UrmRequireSdkDll=true `
+            /m `
+            /v:minimal `
+            /clp:Summary `
+            /flp:"LogFile=msbuild-x64.log;Verbosity=detailed"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-Item build\x64\Release\URmessage.exe, build\x64\Release\URnetworkSdk.dll | Format-Table Name, Length | Out-String | Write-Host
+
+      - name: Run --diagnose on the built exe
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:GITHUB_WORKSPACE 'app\build\x64\Release'
+          $listing = { @(Get-ChildItem -LiteralPath $dir -Recurse -Force | ForEach-Object { "$($_.FullName) $(if ($_.PSIsContainer) { 'd' } else { $_.Length })" }) }
+          $before = & $listing
+          $env:URMESSAGE_APP_ROOT = Join-Path $env:RUNNER_TEMP 'diagnose-root'
+          $psi = [System.Diagnostics.ProcessStartInfo]::new((Join-Path $dir 'URmessage.exe'))
+          $psi.Arguments = '--diagnose'
+          $psi.UseShellExecute = $false
+          $psi.CreateNoWindow = $true
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+          $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+          $p = [System.Diagnostics.Process]::Start($psi)
+          $outTask = $p.StandardOutput.ReadToEndAsync()
+          $errTask = $p.StandardError.ReadToEndAsync()
+          if (-not $p.WaitForExit(120000)) { try { $p.Kill() } catch { }; Write-Host '::error::--diagnose did not exit'; exit 1 }
+          $out = $outTask.GetAwaiter().GetResult()
+          $null = $errTask.GetAwaiter().GetResult()
+          New-Item -ItemType Directory -Force evidence | Out-Null
+          Set-Content -LiteralPath evidence\diagnose-x64.out -Value $out -Encoding utf8 -NoNewline
+          $lines = @($out -split "`r?`n")
+          $fails = @($lines | Where-Object { $_ -cmatch ':\s+FAIL\b|NOT FOUND|NOT RESOLVING' })
+          $passes = @($lines | Where-Object { $_ -cmatch ':\s+PASS\b' })
+          $ours = @($lines | Where-Object { $_ -match '^\s+(join copy|join copy R13|add copy|no wrap key|refusal copy|dialog copy|new join code|not read now|restore note|waiting copy|stable parts|e0d16ea roads|held leave|907109f roads|R33 roads|R34 roads|open not saved|open unrecorded|R38 roads)\s+:\s+PASS\b' })
+          Write-Host "diagnose: $($lines.Count) lines, $($passes.Count) PASS (': PASS'), $($fails.Count) FAIL; Task 58 lines PASS: $($ours.Count) of 19"
+          $fails | ForEach-Object { Write-Host "::error::$_" }
+          $after = & $listing
+          if (@(Compare-Object $before $after).Count -ne 0) { Write-Host '::error::--diagnose wrote into the build output'; exit 1 }
+          if (-not ($lines | Where-Object { $_ -clike '*URmessage startup diagnostics*' })) { Write-Host '::error::no diagnostics header'; exit 1 }
+          if ($fails.Count -gt 0 -or $ours.Count -ne 19) { exit 1 }
+
+      - name: Assemble, zip and check package 03
+        id: assemble
+        shell: pwsh
+        run: |
+          & .github\package03\assemble.ps1 -Out "$env:RUNNER_TEMP\pkg" -Evidence evidence -ReadmeSha256 $env:README_SHA256 -DllVersion $env:DLL_VERSION
+          exit $LASTEXITCODE
+
+      - name: Upload the package
+        uses: actions/upload-artifact@v4
+        with:
+          name: URmessage-alpha-03
+          path: ${{ runner.temp }}/pkg/URmessage-alpha-03.zip
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload the evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package03-evidence
+          path: |
+            evidence/
+            app/msbuild-x64.log
+          if-no-files-found: warn
+
+  smoke:
+    name: Smoke package 03 as shipped (${{ matrix.os }})
+    needs: package
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Prove the checkout is 87e47927 plus CI files only
+        shell: pwsh
+        run: |
+          $head = git rev-parse HEAD
+          $parent = git rev-parse HEAD^
+          Write-Host "checkout $head"
+          Write-Host "parent   $parent"
+          if ($parent -ne $env:TESTED_HEAD) { Write-Host "::error::the parent is not $env:TESTED_HEAD"; exit 1 }
+          $outside = @(git diff --name-only HEAD^ HEAD | Where-Object { $_ -notlike '.github/*' })
+          if ($outside.Count -gt 0) { Write-Host "::error::the CI commit changes files outside .github"; exit 1 }
+
+      - name: Download the package
+        uses: actions/download-artifact@v4
+        with:
+          name: URmessage-alpha-03
+          path: ${{ runner.temp }}/dl
+
+      - name: Extract it to a fresh folder
+        shell: pwsh
+        env:
+          ZIP_SHA256: ${{ needs.package.outputs.zip_sha256 }}
+          EXE_SHA256: ${{ needs.package.outputs.exe_sha256 }}
+          DLL_SHA256: ${{ needs.package.outputs.dll_sha256 }}
+          README_SHA256_OUT: ${{ needs.package.outputs.readme_sha256 }}
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'dl\URmessage-alpha-03.zip'
+          $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
+          Write-Host "zip $sha"
+          if ($sha -ne $env:ZIP_SHA256) { Write-Host "::error::the downloaded zip is not the one the package job made ($env:ZIP_SHA256)"; exit 1 }
+          $fresh = Join-Path $env:RUNNER_TEMP ('fresh-' + [guid]::NewGuid().ToString('N'))
+          if (Test-Path -LiteralPath $fresh) { exit 1 }
+          New-Item -ItemType Directory -Path $fresh | Out-Null
+          Expand-Archive -LiteralPath $zip -DestinationPath $fresh
+          $dir = Join-Path $fresh 'URmessage-alpha'
+          $top = @(Get-ChildItem -LiteralPath $fresh -Force)
+          Write-Host "the zip extracts to: $($top.Name -join ', ')"
+          if ($top.Count -ne 1 -or $top[0].Name -ne 'URmessage-alpha') { Write-Host '::error::the zip does not extract to one folder, URmessage-alpha'; exit 1 }
+          foreach ($pair in @(@('URmessage.exe', $env:EXE_SHA256), @('URnetworkSdk.dll', $env:DLL_SHA256), @('READ-ME-FIRST.txt', $env:README_SHA256_OUT))) {
+            $h = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $dir $pair[0])).Hash.ToLowerInvariant()
+            Write-Host "$($pair[0]) $h"
+            if ($h -ne $pair[1]) { Write-Host "::error::$($pair[0]) is not the packaged one"; exit 1 }
+          }
+          Write-Host "extracted: $(@(Get-ChildItem -LiteralPath $dir -Recurse -File).Count) files under $dir"
+          "PACKAGE_DIR=$dir" >> $env:GITHUB_ENV
+
+      - name: Run it as shipped, and capture the window
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github\package03\smoke.ps1 -Dir "$env:PACKAGE_DIR" -Out "$env:GITHUB_WORKSPACE\smoke" -Os '${{ matrix.os }}' -DllVersion "$env:DLL_VERSION"
+          exit $LASTEXITCODE
+
+      - name: Upload the capture and the log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package03-smoke-${{ matrix.os }}
+          path: smoke/
+          if-no-files-found: warn
