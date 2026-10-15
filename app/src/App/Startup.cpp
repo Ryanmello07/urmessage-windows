@@ -2519,12 +2519,12 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
          "URmessage could not save this new conversation on this device, so it cannot be used, and "
          "its invitation was not shown. Check that URmessage can read and write its folder, then "
          "start the conversation again."},
-        // FIX 6 (9df6fca8414f), A DRAFT FOR THE LEAD'S RULING: a leave mark that names another group
+        // R40 A10: a leave mark that names another group (FIX 6, 9df6fca8414f)
         {L"LeaveMarkNamesAnotherGroup", JoinCopySentence(JoinCopy::LeaveMarkForeign),
-         "This conversation's folder on this device holds a record of leaving a different "
-         "conversation, so URmessage cannot tell whether this one was left, and nothing was changed. "
-         "It cannot be joined or left on this device until that record is moved out of URmessage's "
-         "folder."},
+         "This conversation's folder on this device holds a note about leaving a different "
+         "conversation, so URmessage cannot tell whether this one was left. Nothing was changed. It "
+         "cannot be joined or left on this device until the file named 'forgetting' is moved out of "
+         "that folder."},
     };
     int verbatim = 0, raw = 0;
     std::wstring wrong;
@@ -2554,8 +2554,8 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
         L"{}/{} distinct | Other says nothing of its own {}   [query: each row a person is shown is "
         L"Task 58's sentence, word for word (its ErrJoinerAlreadyHasALeaf row as R25 Q1 amends it, "
         L"R25 Q5's row as R34 A2 amends it, R29's as A3 does, R34 A1's, R35 A8's as R37 amends it, R37 "
-        L"A9's, and FIX 6's draft for a leave mark that names another group), and is its own; none is "
-        L"the library's]",
+        L"A9's, and R40 A10's for a leave mark that names another group), and is its own; none is the "
+        L"library's]",
         Verdict(ok), verbatim, total, wrong.empty() ? L"" : L", WRONG: ", wrong, raw, distinct, total,
         othersEmpty));
   }
@@ -2569,14 +2569,19 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
     const bool heldTrue = !held.empty() && held.find(L"not in a group") == std::wstring::npos && held != join;
     const bool joinKept = join.find(L"not in a group yet") != std::wstring::npos;
     const bool adderVerbatim = adder == L"Only their device can open it. It works once. Send it privately.";
-    const bool pasteSecret = paste.find(L"SECRET") != std::wstring::npos;
-    const bool ok = heldTrue && joinKept && adderVerbatim && pasteSecret;
+    // R40 A11: the joiner's label says what is true since invite version 3, word for word
+    const bool pasteTrue = paste ==
+                               L"The invitation they send back. Keep it private: it was made for this "
+                               L"device's join code, so only this device can open it, and it works once." &&
+                           paste.find(L"whoever has it") == std::wstring::npos;
+    const bool ok = heldTrue && joinKept && adderVerbatim && pasteTrue;
     out.push_back(std::format(
         L"  dialog copy      : {}  held intro \"{}\" says nothing of \"not in a group\" {} | the join "
         L"road's intro kept {} | the adder's label verbatim {} (\"{}\") | the joiner's paste label "
-        L"keeps \"SECRET\" {}   [query: R20, the held state's intro is true of a device that holds a "
-        L"group; Task 58 Step 3's adder copy word for word; the joiner's label keeps its framing]",
-        Verdict(ok), held, heldTrue, joinKept, adderVerbatim, adder, pasteSecret));
+        L"verbatim, and not \"whoever has it\" {}   [query: R20, the held state's intro is true of a "
+        L"device that holds a group; Task 58 Step 3's adder copy word for word; R40 A11, the joiner's "
+        L"label says only this device can open the invitation]",
+        Verdict(ok), held, heldTrue, joinKept, adderVerbatim, adder, pasteTrue));
   }
 
   // 7. "Make a new join code" (R25 Q2): offered on exactly the two rows that ask for one.
@@ -3298,6 +3303,14 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
                                  ClassifyJoinCopy(recordNamesAnother) != JoinCopy::LeaveMarkForeign},
         {L"foreign-under-class", ClassifyJoinCopy(foreignUnderClass) == JoinCopy::GroupReadUnproven &&
                                      ClassifyLeaveRefusal(foreignUnderClass) == LeaveRefusal::Unproven},
+        // R40 A10: the library's own words follow the row, on both roads, so the folder is named; no
+        // other row's do
+        {L"foreign-names-the-folder",
+         ShowsLibraryWords(JoinCopy::LeaveMarkForeign) && ShowsLibraryWords(LeaveRefusal::MarkForeign) &&
+             WithLibraryWords(kSayLeaveMarkForeign, r6Foreign) == std::string(kSayLeaveMarkForeign) + " " + r6Foreign &&
+             WithLibraryWords(kSayLeaveMarkForeign, r6Foreign).find(dirName) != std::string::npos &&
+             !ShowsLibraryWords(JoinCopy::GroupReadUnproven) && !ShowsLibraryWords(JoinCopy::JoinRefused) &&
+             !ShowsLibraryWords(LeaveRefusal::Unproven) && !ShowsLibraryWords(LeaveRefusal::Other)},
     };
     std::wstring table;
     int right = 0;
@@ -3311,8 +3324,8 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
         L"  R38 roads        : {}  {}/{}: {}   [query: FIX 6, typed from 9df6fca8414f: a leave mark that "
         L"cannot be held against what stands is its class's row on the leave, the join and the restore, "
         L"with no leave; the stale mark at the erase is ErrGroupNotRestored's answer; the epoch a leave "
-        L"could not read keeps Task 39's fallback; a mark that names another group is its own row "
-        L"(a draft), with no leave and no new join code, after every class]",
+        L"could not read keeps Task 39's fallback; a mark that names another group is R40 A10's row, the "
+        L"library's words after it, with no leave and no new join code, after every class]",
         Verdict(right == total), right, total, table));
   }
   return out;

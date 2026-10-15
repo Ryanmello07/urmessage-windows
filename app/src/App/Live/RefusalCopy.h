@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // WHAT THE APP SAYS FOR EACH REFUSAL OF A JOIN OR AN ADD, AND FOR A DEVICE THAT CANNOT MAKE A JOIN
-// CODE (hardening plan Task 58; the lead's rulings R13, R17, R20, R25, R27 to R30, R32 to R35, R37 and
-// R38).
+// CODE (hardening plan Task 58; the lead's rulings R13, R17, R20, R25, R27 to R30, R32 to R35, R37,
+// R38 and R40).
 //
 // The join seal (the plan's phase T1) gives the library a refusal for each thing that can go wrong
 // with an invitation or a join code, and each says what it cost. The app's half is the sentence a
@@ -309,14 +309,15 @@ inline constexpr std::string_view kSayOpenRecordNotSaved =
     "URmessage could not save this new conversation on this device, so it cannot be used, and its "
     "invitation was not shown. Check that URmessage can read and write its folder, then start the "
     "conversation again.";
-// A DRAFT, FOR THE LEAD'S RULING (FIX 6, at 9df6fca8414f): a leave mark in this conversation's folder
-// that names another group (kLibLeaveMarkForeign). Nothing was changed, and nothing this app can do
-// moves it: the join and the leave of this group are both refused while it stands, so no leave is
-// offered and the invitation is kept.
+// R40 A10: a leave mark in this conversation's folder that names another group (kLibLeaveMarkForeign,
+// FIX 6 at 9df6fca8414f). Nothing was changed, and nothing this app can do moves it: the join and the
+// leave of this group are both refused while it stands, so no leave is offered and the invitation is
+// kept. The library's own words follow it on the screen, as on the fallback rows, so the folder is
+// named (WithLibraryWords).
 inline constexpr std::string_view kSayLeaveMarkForeign =
-    "This conversation's folder on this device holds a record of leaving a different conversation, "
-    "so URmessage cannot tell whether this one was left, and nothing was changed. It cannot be joined "
-    "or left on this device until that record is moved out of URmessage's folder.";
+    "This conversation's folder on this device holds a note about leaving a different conversation, "
+    "so URmessage cannot tell whether this one was left. Nothing was changed. It cannot be joined or "
+    "left on this device until the file named 'forgetting' is moved out of that folder.";
 
 // ── the join dialog's own copy ─────────────────────────────────────────────────────────────────
 
@@ -327,10 +328,13 @@ inline constexpr std::wstring_view kJoinIntro =
 // THE INTRO WHILE THIS DEVICE HOLDS A GROUP: while the leave of a held group is on offer (R20), and
 // on the founder's road. "Not in a group yet" is false there; the sentence under it says the rest.
 inline constexpr std::wstring_view kHeldIntro = L"This device is connected.";
-// The joiner's paste label. IT KEEPS ITS "SECRET" FRAMING (Task 58, Step 3).
+// The joiner's paste label (R40 A11). It said "whoever has it is in the group", which is false since
+// invite version 3: an invitation is sealed to the join code it was made for, so only the device that
+// holds that join code can open it. app\tools\verify-copy.ps1 fails the build on any app string that
+// says it again.
 inline constexpr std::wstring_view kJoinerPasteLabel =
-    L"The invitation they send back. THIS ONE IS A SECRET — whoever has it is in the group, and "
-    L"it can only be used once.";
+    L"The invitation they send back. Keep it private: it was made for this device's join code, so "
+    L"only this device can open it, and it works once.";
 // THE ADDER'S COPY FOR AN INVITATION, verbatim from Task 58, Step 3. Since invite version 3 the
 // join secrets are sealed to the joiner's own device key, so only their device opens it.
 inline constexpr std::wstring_view kAdderInviteLabel =
@@ -474,6 +478,14 @@ HeldCopy LeaveStopCopy(HeldLeaveStep step);
 HeldCopy LeaveRefusalCopy(LeaveRefusal refusal);
 // The refusal's name, for a log line.
 std::string_view LeaveRefusalName(LeaveRefusal refusal);
+
+// R40 A10: THE ROWS WHOSE OWN WORDS ARE FOLLOWED ON THE SCREEN BY THE LIBRARY'S, so a folder they name
+// is named: a leave mark that names another group, on the join and on the leave. Every other row says
+// what it says alone.
+bool ShowsLibraryWords(JoinCopy row);
+bool ShowsLibraryWords(LeaveRefusal refusal);
+// The row's sentence, then the library's own words after it, as the fallback rows show them.
+std::string WithLibraryWords(std::string_view sentence, std::string_view libraryError);
 
 // WHAT THE JOIN DIALOG SAYS FIRST AFTER A RESTORE, from device_restore's report and how many groups
 // it brought back: a group that predates the seal, or one with a file that could not be read (just

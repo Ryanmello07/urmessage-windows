@@ -1114,8 +1114,11 @@ HeldLeave LeaveHeldGroup(Session& s, HeldInvite const& held, std::string const& 
       std::lock_guard<std::mutex> lock(g_onboardMutex);
       g_holdsUnopenedGroup = true;
     }
-    PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode, std::string(copy.sentence), {},
-                   copy.offerLeave);
+    // R40 A10: a row that names a folder is followed by the library's own words, which name it
+    PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
+                   urmsg::live::ShowsLibraryWords(refusal) ? urmsg::live::WithLibraryWords(copy.sentence, why)
+                                                           : std::string(copy.sentence),
+                   {}, copy.offerLeave);
     return HeldLeave::Offered;
   }
 
@@ -1595,9 +1598,12 @@ bool JoinFromPeer(Session& s) {
               std::lock_guard<std::mutex> lock(g_onboardMutex);
               g_holdsUnopenedGroup = true;
             }
+            // R40 A10: a row that names a folder is followed by the library's own words, which name it
             PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
-                           std::string(urmsg::live::JoinCopySentence(row)), {}, false, false,
-                           urmsg::live::OffersNewJoinCode(row));
+                           urmsg::live::ShowsLibraryWords(row)
+                               ? urmsg::live::WithLibraryWords(urmsg::live::JoinCopySentence(row), why)
+                               : std::string(urmsg::live::JoinCopySentence(row)),
+                           {}, false, false, urmsg::live::OffersNewJoinCode(row));
             break;
           }
           urnw::LogError(
