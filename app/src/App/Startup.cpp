@@ -2234,6 +2234,37 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
   const std::string r3JoinRecordReads = heldWhole + ": group " + hex + " has a record on this device's disk";
   const std::string r3TakeBroken = noCode + ": " + engineNoCode + takeTail + format +
                                    ": the record under this name is not the key package of " + hex;
+  // ROUND 5'S SENTENCES (93cc0afb85b1, read there: heldgroup.go, forget.go, group.go, joinstage.go
+  // and statestore_durable.go). The gate refuses a record missing from a folder where the store's own
+  // files stand (R34 item 1); ForgetGroup answers ErrGroupNotHeld for a folder holding nothing of a
+  // group (item 8); PutGroupRecord's double failure reaches a join and Open (item 3); and the
+  // window's commit is a write of the store's own.
+  const std::string r5GateRecordMissing = "urmessage: whether this device already holds group " + hex +
+                                          " could not be read, so the invite into it is refused: " + unproven +
+                                          ": its directory stands and its record is not in it";
+  const std::string r5ForgetNotHeld = "urmessage: this device holds no such group: " + hex;
+  const std::string r5Temp = groupDir + "\\.writing-2718281828";
+  const std::string r5CreationUnretracted =
+      storeState + ": group " + hex +
+      ": its record is on the disk and this store could not record that its creation finished: the "
+      "creation mark could not be removed: " + storeState + ": " + groupDir + "\\pending could not be "
+      "removed: remove " + groupDir + "\\pending: The directory is not empty.; and its retraction could "
+      "not be written: " + storeState + ": " + r5Temp + " could not be renamed onto " + groupDir +
+      "\\recorded: rename " + r5Temp + " " + groupDir + "\\recorded: " + denied;
+  const std::string r5JoinDoubleFailure = spent +
+                                          ": this group joined and its record could not be persisted, so a "
+                                          "restart would not come back into it: " + r5CreationUnretracted;
+  const std::string r5OpenDoubleFailure =
+      "urmessage: this group is open on the server and its record is on this device's disk, but this "
+      "store could not record that the group's creation finished: " + r5CreationUnretracted;
+  const std::string r5OpenNotPersisted =
+      "urmessage: this group is open on the server and its record could not be persisted, so a restart "
+      "would refuse to send in it: " + storeState + ": a temporary file in " + groupDir +
+      " could not be created: open " + r5Temp + ": " + denied;
+  const std::string r5TakeDenied = refused + ": " + engineNoCode + takeTail + storeState + ": " + kpFile +
+                                   " could not be read: open " + kpFile + ": " + denied;
+  const std::string r5CommitRefused = refused + ": " + storeState + ": a temporary file in " + groupDir +
+                                      " could not be created: open " + r5Temp + ": " + denied;
 
   // 1. which row a refusal of the join road is, and the order that decides it.
   {
@@ -2266,9 +2297,10 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
          JoinCopy::GroupPredatesJoinSeal},
         // Task 57's F4 and R26's V3: a join code the store held and could not read FOR A MOMENT is
         // the window's refusal, and never ErrNoJoinCodeForInvite's row (the engine's own words for
-        // it, "no key package this store holds", are not the sdk's sentence); one that will never
-        // read is ErrNoJoinCodeForInvite's; a take whose remove landed is spent
-        {L"store-unread-code", storeUnreadCode, JoinCopy::JoinRefused},
+        // it, "no key package this store holds", are not the sdk's sentence), and since R34 A1 it is
+        // the window's row for a join the store would not serve; one that will never read is
+        // ErrNoJoinCodeForInvite's; a take whose remove landed is spent
+        {L"store-unread-code", storeUnreadCode, JoinCopy::JoinRefusedByStore},
         {L"code-never-reads", joinCodeNeverReads, JoinCopy::NoJoinCodeForInvite},
         {L"code-removed", joinCodeRemoved, JoinCopy::JoinCodeSpent},
         {L"not-read-restore-epoch", restoreEpochHeld, JoinCopy::GroupRecordNotReadNow},
@@ -2303,8 +2335,9 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
         L"anywhere is its own row, then ErrJoinCodeSpent's, a record not read just now (restore's "
         L"ErrGroupRecordNotReadNow, or the join gate's clause around a 64 digit id), "
         L"ErrGroupPredatesJoinSeal's and ErrInviteVersion's; ErrJoinRefused's is its row only as the "
-        L"text's FIRST words, a join code the store failed to read included (F4); anything else, our "
-        L"own words and the leave's clause included, is the caller's fallback]",
+        L"text's FIRST words, and R34 A1's when the store's own refusal follows them (a join code the "
+        L"store failed to read, F4); anything else, our own words and the leave's clause included, is "
+        L"the caller's fallback]",
         Verdict(right == total), right, total, table));
   }
 
@@ -2404,6 +2437,11 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
         {L"ErrJoinRefused", JoinCopySentence(JoinCopy::JoinRefused),
          "This invitation was refused. Your join code is still good: ask for the invitation to be "
          "sent again another way."},
+        // R34 A1: the window's refusal of a join the store would not serve
+        {L"ErrJoinRefused+ErrStateStoreState", JoinCopySentence(JoinCopy::JoinRefusedByStore),
+         "URmessage could not use its own folder, so this invitation was not used. Your join code is "
+         "still good: check that URmessage can read and write its folder, then paste the invitation "
+         "again."},
         {L"ErrNoJoinCodeForInvite", JoinCopySentence(JoinCopy::NoJoinCodeForInvite),
          "This invitation cannot be used with any join code this device can read. Make a new join "
          "code and ask to be invited again."},
@@ -2421,18 +2459,23 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
         {L"ErrJoinerAlreadyHasALeaf", AddCopySentence(AddCopy::JoinerAlreadyHasALeaf),
          "This join code claims to be someone already in this group. Remove their entry only if "
          "they tell you they never opened their invitation, then add this join code."},
-        // R25 Q5
+        // R25 Q5, as R34 A2 amends it
         {L"ErrGroupRecordNotReadNow", JoinCopySentence(JoinCopy::GroupRecordNotReadNow),
          "This conversation could not be read just now. Close anything else that may be using "
-         "URmessage's folder, then try again."},
-        // R29
+         "URmessage's folder, then open URmessage again."},
+        // R29, as R34 A3 amends it
         {L"ErrGroupReadUnproven", JoinCopySentence(JoinCopy::GroupReadUnproven),
          "This conversation could not be read on this device, and nothing was changed. Check that "
-         "URmessage can read its folder, then open URmessage again."},
+         "URmessage can read its folder and that no program has moved files out of it, then open "
+         "URmessage again."},
         // R32
         {L"ErrNotConnected", LeaveStopCopy(HeldLeaveStep::NotConnected).sentence,
          "This device is not connected right now, and nothing was changed. Try again when it is "
          "connected."},
+        // R35 A8: the founding road, for group_open's double failure
+        {L"OpenCreationUnrecorded", kSayCreationUnfinished,
+         "This conversation was created, but URmessage could not finish saving it. Close anything "
+         "else that may be using URmessage's folder, then open URmessage again."},
     };
     int verbatim = 0, raw = 0;
     std::wstring wrong;
@@ -2461,7 +2504,8 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
         L"  refusal copy     : {}  {}/{} verbatim from the table{}{} | {} carry the library's words | "
         L"{}/{} distinct | Other says nothing of its own {}   [query: each row a person is shown is "
         L"Task 58's sentence, word for word (its ErrJoinerAlreadyHasALeaf row as R25 Q1 amends it, "
-        L"and R25 Q5's row), and is its own; none is the library's]",
+        L"R25 Q5's row as R34 A2 amends it, R29's as A3 does, and the rows of R34 A1 and R35 A8), and "
+        L"is its own; none is the library's]",
         Verdict(ok), verbatim, total, wrong.empty() ? L"" : L", WRONG: ", wrong, raw, distinct, total,
         othersEmpty));
   }
@@ -2490,7 +2534,8 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
     const JoinCopy rows[] = {JoinCopy::Other,         JoinCopy::JoinRefused,
                              JoinCopy::NoJoinCodeForInvite, JoinCopy::JoinCodeSpent,
                              JoinCopy::InviteVersion, JoinCopy::GroupPredatesJoinSeal,
-                             JoinCopy::GroupRecordNotReadNow};
+                             JoinCopy::GroupRecordNotReadNow, JoinCopy::GroupReadUnproven,
+                             JoinCopy::JoinRefusedByStore};
     std::wstring offered;
     int right = 0;
     for (JoinCopy row : rows) {
@@ -2512,7 +2557,7 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
     out.push_back(std::format(
         L"  new join code    : {}  {}/{} rows right, offered on: {} | the button reads \"{}\" {} | "
         L"after a press: \"{}\" {}   [query: R25 Q2, the button is on the rows that ask for a new "
-        L"join code (ErrNoJoinCodeForInvite, ErrJoinCodeSpent) and on no other]",
+        L"join code (ErrNoJoinCodeForInvite, ErrJoinCodeSpent) and on no other, R34 A1's among them]",
         Verdict(ok), right, total, offered, kNewJoinCodeButton, button, Widen(kSayNewJoinCode), says));
   }
 
@@ -2632,7 +2677,7 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
   //     header's constants, so a constant that matched a whole sentence again turns the reworded
   //     case FAIL. The sentence R26's round reworded is asked a third way, in 09018b10dd23's words.
   {
-    enum class Ask { Join, Add, WrapKey, Leave, Sentinel, NotConnected };
+    enum class Ask { Join, Add, WrapKey, Leave, Sentinel, NotConnected, Open };
     struct Case {
       const wchar_t* name;
       std::string whole;
@@ -2706,6 +2751,16 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
         {L"leave-not-tried", r3LeaveNotTried,
          "urmessage: group " + hex + "'s restore could not be tried again for the leave; it is kept: x",
          Ask::NotConnected, JoinCopy::Other, AddCopy::Other},
+        // round 5 (93cc0afb85b1): the store's own refusal under the window's sentence (R34 A1), and
+        // group_open's double failure (R35 A8)
+        {L"ErrStateStoreState-in-window", r5TakeDenied,
+         refused + ": urmessage: the durable state store could not be read or written, so the join "
+                   "code stayed where it was: x",
+         Ask::Join, JoinCopy::JoinRefusedByStore, AddCopy::Other},
+        {L"open-creation-unrecorded", r5OpenDoubleFailure,
+         "urmessage: this group is open on the server and its record is on this device's disk, but this "
+         "store could not record that the group's creation finished; the next Restore reads it: x",
+         Ask::Open, JoinCopy::Other, AddCopy::Other},
     };
     auto right = [](Case const& c, std::string const& text) {
       switch (c.ask) {
@@ -2715,6 +2770,7 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
         case Ask::Leave: return IsLeaveNotReadNow(text);
         case Ask::Sentinel: return IsGroupRecordNotReadNow(text);
         case Ask::NotConnected: return IsNotConnected(text);
+        case Ask::Open: return IsCreationUnrecorded(text);
       }
       return false;
     };
@@ -2752,7 +2808,7 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
                        !IsGroupRecordNotReadNow(leaveRecordHeld);
     const bool jHeld = ClassifyJoinCopy(joinRecordHeld) == JoinCopy::GroupRecordNotReadNow &&
                        ClassifyJoinRefusal(joinRecordHeld) == JoinRefusal::Other;
-    const bool cHeld = ClassifyJoinCopy(joinCodeHeld) == JoinCopy::JoinRefused &&
+    const bool cHeld = ClassifyJoinCopy(joinCodeHeld) == JoinCopy::JoinRefusedByStore &&
                        !OffersNewJoinCode(ClassifyJoinCopy(joinCodeHeld));
     const bool cNever = ClassifyJoinCopy(joinCodeNeverReads) == JoinCopy::NoJoinCodeForInvite &&
                         OffersNewJoinCode(ClassifyJoinCopy(joinCodeNeverReads));
@@ -2764,8 +2820,9 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
         L"an epoch file held: the same {} | restore, a record that will never read: no note, the held "
         L"refusal over it offers the leave, and the leave forgets {} | a leave while the record is "
         L"held (REFUSED): R25 Q5's row {} | a join while the record is held: R25 Q5's row {} | a join "
-        L"code held for a moment: \"still good\", no new code {} | a join code that will never read: "
-        L"no join code, a new one offered {} | a take whose remove landed: spent, a new one offered {}   "
+        L"code held for a moment: \"still good\" (R34 A1's row), no new code {} | a join code that "
+        L"will never read: no join code, a new one offered {} | a take whose remove landed: spent, a "
+        L"new one offered {}   "
         L"[query: T1 FIX 2's \"The sentences a person meets now\", each typed from e0d16ea and each "
         L"answered as R25, R27 and R28 rule]",
         Verdict(ok), rRecord, rEpoch, rDamaged, lHeld, jHeld, cHeld, cNever, cRemoved));
@@ -2868,7 +2925,10 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
                                       LeaveRefusalCopy(LeaveRefusal::Other).sentence.empty()},
         {L"leave-not-restored", ClassifyLeaveRefusal(r3NotRestored) == LeaveRefusal::Other &&
                                     IsNotRestoredRefusal(r3NotRestored)},
-        {L"leave-owner", ClassifyLeaveRefusal(r3OwnerMustTransfer) == LeaveRefusal::Other},
+        // R33 X2 changed this road: the owner's question is told apart, so the app restores once
+        // more (its own row is none; R33 roads asks the rest)
+        {L"leave-owner", ClassifyLeaveRefusal(r3OwnerMustTransfer) == LeaveRefusal::OwnerMustTransfer &&
+                             LeaveRefusalCopy(ClassifyLeaveRefusal(r3OwnerMustTransfer)).sentence.empty()},
         {L"join-record-held", ClassifyJoinCopy(r3JoinRecordHeld) == JoinCopy::GroupRecordNotReadNow &&
                                   ClassifyJoinRefusal(r3JoinRecordHeld) == JoinRefusal::Other &&
                                   !OffersNewJoinCode(ClassifyJoinCopy(r3JoinRecordHeld))},
@@ -2885,7 +2945,7 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
         {L"held-after-denied-restore", HeldNotLiveCopy(RestoreReadClass(r3RestoreEpochDenied)).sentence ==
                                            kSayGroupReadUnproven &&
                                        !HeldNotLiveCopy(RestoreReadClass(r3RestoreEpochDenied)).offerLeave},
-        {L"take-held", ClassifyJoinCopy(joinCodeHeld) == JoinCopy::JoinRefused &&
+        {L"take-held", ClassifyJoinCopy(joinCodeHeld) == JoinCopy::JoinRefusedByStore &&
                            !OffersNewJoinCode(ClassifyJoinCopy(joinCodeHeld))},
         {L"take-denied", ClassifyJoinCopy(joinCodeNeverReads) == JoinCopy::NoJoinCodeForInvite &&
                              OffersNewJoinCode(ClassifyJoinCopy(joinCodeNeverReads))},
@@ -2908,6 +2968,165 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
         L"Q5's row for the transient class; the not-connected row, with the leave kept, for a leave not "
         L"tried; Task 39's fallback for a leave mark that could not be written; and a join code's take "
         L"never \"still good\" unless it was held for a moment]",
+        Verdict(right == total), right, total, table));
+  }
+
+  // 15. R33 (the library's fourth round, FIX 4): the roads it changes, each typed from its head
+  //     fdc1b0aa3c31: errors.go, group.go's Join (its window's one exit), messagegroup/engine.go's
+  //     refused key packages, statestore_durable.go's readRecord, restore.go, forget.go's ForgetGroup
+  //     and restoreForLeave, and heldgroup.go's joinOverHeldGroup. FIX 5 (93cc0afb85b1) reworded none
+  //     of these sentences; the take's row is R34 A1's since then.
+  {
+    struct Road {
+      const wchar_t* name;
+      bool ok;
+    };
+    const std::string kpRef(64, 'e');
+    // readRecord's absence: ErrStateNotFound, then the file's own name
+    const std::string absentEpoch = "urmessage: this state store holds no such value: 0000000000000001";
+    // X1: a take the store refused for a reason it cannot prove permanent (here a permission refused)
+    // removed nothing, so it answers the window's sentence (group.go, Join's deferred refusal)
+    const std::string x1TakeUnproven = refused + ": " + engineNoCode + takeTail + storeState + ": " + kpFile +
+                                       " could not be read: open " + kpFile + ": " + denied;
+    // and a take that finds no such join code is still no join code
+    const std::string x1TakeNoSuchRef = noCode + ": " + engineNoCode + takeTail +
+                                        "urmessage: this state store holds no such value: " + kpRef;
+    // R33 (1): a group's file that is absent is unproven, at the restore (restore.go) and at the leave's
+    // fresh re-try of it (forget.go, restoreForLeave)
+    const std::string absentRestore = restoreSentence + ": " + unproven + ": group " + hex + ": " +
+                                      restoreSentence + ": group " + hex + " at epoch 1: " + absentEpoch;
+    const std::string absentLeave = unproven + "; so nothing was left: group " + hex + ": " + restoreSentence +
+                                    ": group " + hex + " at epoch 1: " + absentEpoch;
+    // and a record absent from a group directory that stands, at the leave (forget.go, ForgetGroup)
+    const std::string absentRecordLeave = "urmessage: whether this device holds group " + hex +
+                                          " on its disk could not be read, so nothing was left: " + unproven +
+                                          ": its directory stands and its record is not in it";
+    // X3: the gate's answer for a group the last Restore could not read, by the class's own sentinel
+    // and with no held sentence (heldgroup.go, joinOverHeldGroup)
+    const std::string x3Gate = "urmessage: group " + hex +
+                               " is on this device's disk and the last Restore could not read it, so the "
+                               "invite into it is refused: ";
+    const std::string x3Unproven = x3Gate + unproven;
+    const std::string x3Transient = x3Gate + notReadNow;
+    // X3: ErrGroupNotRestored's remedy scoped to damage, its stable part unchanged (errors.go; forget.go
+    // formats it "%w: %x")
+    const std::string x3NotRestored = "urmessage: this group is on this device's disk and has not been "
+                                      "restored; call Restore, and if it does not come back because it is "
+                                      "damaged, ForgetGroup leaves it: " + hex;
+    const Road roads[] = {
+        {L"x1-take-unproven", ClassifyJoinCopy(x1TakeUnproven) == JoinCopy::JoinRefusedByStore &&
+                                  !OffersNewJoinCode(ClassifyJoinCopy(x1TakeUnproven))},
+        {L"x1-take-no-such-ref", ClassifyJoinCopy(x1TakeNoSuchRef) == JoinCopy::NoJoinCodeForInvite &&
+                                     OffersNewJoinCode(ClassifyJoinCopy(x1TakeNoSuchRef))},
+        {L"absent-restore", RestoreNote(absentRestore, 0) == kSayGroupReadUnproven &&
+                                RestoreReadClass(absentRestore) == ReadClass::Unproven &&
+                                StepAfterRestoreFirst(false, absentRestore) == HeldLeaveStep::Unproven},
+        {L"absent-leave", ClassifyLeaveRefusal(absentLeave) == LeaveRefusal::Unproven &&
+                              LeaveRefusalCopy(ClassifyLeaveRefusal(absentLeave)).sentence ==
+                                  kSayGroupReadUnproven &&
+                              !LeaveRefusalCopy(ClassifyLeaveRefusal(absentLeave)).offerLeave},
+        {L"absent-record-leave", ClassifyLeaveRefusal(absentRecordLeave) == LeaveRefusal::Unproven &&
+                                     LeaveRefusalCopy(ClassifyLeaveRefusal(absentRecordLeave)).sentence ==
+                                         kSayGroupReadUnproven &&
+                                     !LeaveRefusalCopy(ClassifyLeaveRefusal(absentRecordLeave)).offerLeave &&
+                                     !IsNotRestoredRefusal(absentRecordLeave)},
+        {L"x2-owner", ClassifyLeaveRefusal(r3OwnerMustTransfer) == LeaveRefusal::OwnerMustTransfer &&
+                          RestoresOnceMore(ClassifyLeaveRefusal(r3OwnerMustTransfer)) &&
+                          LeaveRefusalCopy(LeaveRefusal::OwnerMustTransfer).sentence.empty()},
+        {L"x2-only-the-owner", !RestoresOnceMore(LeaveRefusal::Other) && !RestoresOnceMore(LeaveRefusal::NotReadNow) &&
+                                   !RestoresOnceMore(LeaveRefusal::Unproven) &&
+                                   !RestoresOnceMore(LeaveRefusal::NotConnected) &&
+                                   !RestoresOnceMore(ClassifyLeaveRefusal(r3LeaveMarkUnwritten))},
+        {L"x3-unproven", ClassifyJoinCopy(x3Unproven) == JoinCopy::GroupReadUnproven &&
+                             JoinCopySentence(ClassifyJoinCopy(x3Unproven)) == kSayGroupReadUnproven &&
+                             !OffersNewJoinCode(ClassifyJoinCopy(x3Unproven)) &&
+                             ClassifyJoinRefusal(x3Unproven) == JoinRefusal::Other},
+        {L"x3-transient", ClassifyJoinCopy(x3Transient) == JoinCopy::GroupRecordNotReadNow &&
+                              JoinCopySentence(ClassifyJoinCopy(x3Transient)) == kSayGroupRecordNotReadNow &&
+                              !OffersNewJoinCode(ClassifyJoinCopy(x3Transient)) &&
+                              ClassifyJoinRefusal(x3Transient) == JoinRefusal::Other},
+        {L"x3-damage-stays-held", ClassifyJoinRefusal(r3JoinRecordBroken) == JoinRefusal::HeldNotLive &&
+                                      ClassifyJoinCopy(r3JoinRecordBroken) == JoinCopy::Other &&
+                                      ClassifyJoinRefusal(r3JoinRecordReads) == JoinRefusal::HeldNotLive &&
+                                      ClassifyJoinCopy(r3JoinRecordReads) == JoinCopy::Other},
+        {L"x3-not-restored", IsNotRestoredRefusal(x3NotRestored) &&
+                                 ClassifyLeaveRefusal(x3NotRestored) == LeaveRefusal::Other},
+    };
+    std::wstring table;
+    int right = 0;
+    for (auto const& r : roads) {
+      if (r.ok) ++right;
+      if (!table.empty()) table += L", ";
+      table += std::format(L"{} {}", r.name, r.ok ? L"ok" : L"WRONG");
+    }
+    const int total = static_cast<int>(std::size(roads));
+    out.push_back(std::format(
+        L"  R33 roads        : {}  {}/{}: {}   [query: R33, typed from fdc1b0aa3c31: a group's absent "
+        L"file, and a record absent from a directory that stands, is the unproven row with no leave; a "
+        L"take refused for a reason not proven permanent is R34 A1's \"still good\" row, and no such "
+        L"ref stays no join code (R13); the leave's owner question restores once more; the gate's "
+        L"answer for a group the last Restore could not read is the class's row, never Task 39's held "
+        L"row; ErrGroupNotRestored scoped to damage keeps its stable part]",
+        Verdict(right == total), right, total, table));
+  }
+
+  // 16. R34 and R35 (the library's fifth round, FIX 5): the rows A1 to A8 rule, each road typed from
+  //     93cc0afb85b1 (heldgroup.go's gate, forget.go's ForgetGroup, group.go's Join and Open,
+  //     joinstage.go's commit, statestore_durable.go's PutGroupRecord, writeRecord and removeLocked).
+  {
+    struct Road {
+      const wchar_t* name;
+      bool ok;
+    };
+    // R34 A1's order: no library sentence at 93cc0afb85b1 carries a class's sentinel under the window's
+    // sentence, and the order is the rule all the same: the class's row
+    const std::string afterClass = refused + ": " + unproven + ": " + storeState + ": " + epochFile +
+                                   " could not be read: open " + epochFile + ": " + denied;
+    const std::string transit = refused + ": urmessage: the join seal's authenticator does not verify";
+    const Road roads[] = {
+        // A7: the gate's refusal of a record missing from a folder where the store's own files stand
+        {L"a7-gate-record-missing",
+         ClassifyJoinCopy(r5GateRecordMissing) == JoinCopy::GroupReadUnproven &&
+             JoinCopySentence(ClassifyJoinCopy(r5GateRecordMissing)) == kSayGroupReadUnproven &&
+             ClassifyJoinRefusal(r5GateRecordMissing) == JoinRefusal::Other &&
+             !OffersNewJoinCode(ClassifyJoinCopy(r5GateRecordMissing)) && !IsLeaveNotReadNow(r5GateRecordMissing)},
+        // ForgetGroup's not-held answer: the bridge answers it FORGET_FAILED, and its words are no row's
+        {L"forget-not-held", ClassifyLeaveRefusal(r5ForgetNotHeld) == LeaveRefusal::Other &&
+                                 !IsNotRestoredRefusal(r5ForgetNotHeld) &&
+                                 ClassifyJoinCopy(r5ForgetNotHeld) == JoinCopy::Other},
+        // A8: the double failure is the spent row at a join, and A8's row at the founding Open
+        {L"a8-join-double-failure", ClassifyJoinCopy(r5JoinDoubleFailure) == JoinCopy::JoinCodeSpent &&
+                                        OffersNewJoinCode(ClassifyJoinCopy(r5JoinDoubleFailure)) &&
+                                        !IsCreationUnrecorded(r5JoinDoubleFailure)},
+        {L"a8-open-double-failure", IsCreationUnrecorded(r5OpenDoubleFailure) &&
+                                        ClassifyJoinCopy(r5OpenDoubleFailure) == JoinCopy::Other &&
+                                        ClassifyAddCopy(r5OpenDoubleFailure) == AddCopy::Other},
+        {L"a8-open-not-persisted", !IsCreationUnrecorded(r5OpenNotPersisted)},
+        // A1: a refusal the store made inside the window, with no new join code
+        {L"a1-take-denied", ClassifyJoinCopy(r5TakeDenied) == JoinCopy::JoinRefusedByStore &&
+                                JoinCopySentence(ClassifyJoinCopy(r5TakeDenied)) == kSayJoinRefusedByStore &&
+                                !OffersNewJoinCode(ClassifyJoinCopy(r5TakeDenied))},
+        {L"a1-take-held", ClassifyJoinCopy(joinCodeHeld) == JoinCopy::JoinRefusedByStore},
+        {L"a1-commit-refused", ClassifyJoinCopy(r5CommitRefused) == JoinCopy::JoinRefusedByStore},
+        {L"a1-transit", ClassifyJoinCopy(transit) == JoinCopy::JoinRefused &&
+                            JoinCopySentence(ClassifyJoinCopy(transit)) == kSayJoinRefused},
+        {L"a1-after-class", ClassifyJoinCopy(afterClass) == JoinCopy::GroupReadUnproven},
+    };
+    std::wstring table;
+    int right = 0;
+    for (auto const& r : roads) {
+      if (r.ok) ++right;
+      if (!table.empty()) table += L", ";
+      table += std::format(L"{} {}", r.name, r.ok ? L"ok" : L"WRONG");
+    }
+    const int total = static_cast<int>(std::size(roads));
+    out.push_back(std::format(
+        L"  R34 roads        : {}  {}/{}: {}   [query: R34 and R35, typed from 93cc0afb85b1: the gate's "
+        L"refusal of a record missing from a folder where the store's files stand is A3's unproven "
+        L"row with no leave (A7); ForgetGroup's not-held answer is no row's; the double failure is the "
+        L"spent row at a join and A8's row at the founding open, and the open's other refusal keeps "
+        L"its own words; a refusal the store made inside the window is A1's row with no new join code, "
+        L"after every class row, and the window's other refusals keep its own row]",
         Verdict(right == total), right, total, table));
   }
   return out;

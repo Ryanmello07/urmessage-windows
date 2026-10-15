@@ -17,7 +17,9 @@
 // words. Each one this file matches is quoted below from urnetwork/message, sdk/urmessage, where
 // the sentinel is declared (errors.go) and where the clause is formatted (heldgroup.go). EACH IS
 // MATCHED BY ITS STABLE PART (R27, as Live/RefusalCopy.h says): the clause that names the condition,
-// and never the cost or the remedy after it. Re-read at the T1 branch's head e0d16eac75e4.
+// and never the cost or the remedy after it. Re-read at the T1 branch's head e0d16eac75e4, and
+// again at its R33 head fdc1b0aa3c31, where ErrGroupNotRestored's remedy is scoped to damage and its
+// stable part is unchanged.
 #pragma once
 
 #include <array>
@@ -44,7 +46,8 @@ inline constexpr std::string_view kHeldOnDiskClause = "has a record on this devi
 // then the leave again; the app restores before every leave, so this answer erases nothing and
 // offers the leave again.
 //   whole: "urmessage: this group is on this device's disk and has not been restored; call Restore,
-//          and if it does not come back, ForgetGroup leaves it"
+//          and if it does not come back because it is damaged, ForgetGroup leaves it" (fdc1b0aa3c31;
+//          until R33's X3 it read "if it does not come back, ForgetGroup leaves it")
 inline constexpr std::string_view kNotRestoredSentence =
     "urmessage: this group is on this device's disk and has not been restored";
 

@@ -51,6 +51,10 @@ JoinCopy ClassifyJoinCopy(std::string_view libraryError) {
     return JoinCopy::GroupRecordNotReadNow;
   if (Has(libraryError, kLibGroupPredatesJoinSeal)) return JoinCopy::GroupPredatesJoinSeal;
   if (Has(libraryError, kLibInviteVersion)) return JoinCopy::InviteVersion;
+  // THE WINDOW'S REFUSAL OF A JOIN THE STORE WOULD NOT SERVE (R34 A1): asked after every not-read
+  // class row above, so a refusal that carries a class's sentinel keeps its class's row.
+  if (libraryError.starts_with(kLibJoinRefused) && Has(libraryError, kLibStateStoreState))
+    return JoinCopy::JoinRefusedByStore;
   // THE WINDOW'S SENTENCE, BY ITS PREFIX: the window's one exit puts it first, and the same words
   // anywhere else are not that refusal.
   if (libraryError.starts_with(kLibJoinRefused)) return JoinCopy::JoinRefused;
@@ -60,6 +64,7 @@ JoinCopy ClassifyJoinCopy(std::string_view libraryError) {
 std::string_view JoinCopySentence(JoinCopy row) {
   switch (row) {
     case JoinCopy::JoinRefused: return kSayJoinRefused;
+    case JoinCopy::JoinRefusedByStore: return kSayJoinRefusedByStore;
     case JoinCopy::NoJoinCodeForInvite: return kSayNoJoinCodeForInvite;
     case JoinCopy::JoinCodeSpent: return kSayJoinCodeSpent;
     case JoinCopy::InviteVersion: return kSayInviteVersion;
@@ -74,6 +79,7 @@ std::string_view JoinCopySentence(JoinCopy row) {
 std::string_view JoinCopyName(JoinCopy row) {
   switch (row) {
     case JoinCopy::JoinRefused: return "ErrJoinRefused";
+    case JoinCopy::JoinRefusedByStore: return "ErrJoinRefused+ErrStateStoreState";
     case JoinCopy::NoJoinCodeForInvite: return "ErrNoJoinCodeForInvite";
     case JoinCopy::JoinCodeSpent: return "ErrJoinCodeSpent";
     case JoinCopy::InviteVersion: return "ErrInviteVersion";
@@ -131,12 +137,16 @@ HeldLeaveStep StepAfterRestoreFirst(bool cameBack, std::string_view restoreError
 }
 
 LeaveRefusal ClassifyLeaveRefusal(std::string_view libraryError) {
+  // R33 X2: the leave got as far as the owner's question, so the group's files read
+  if (Has(libraryError, kLibOwnerMustTransfer)) return LeaveRefusal::OwnerMustTransfer;
   if (IsNotConnected(libraryError)) return LeaveRefusal::NotConnected;
   if (IsGroupReadUnproven(libraryError)) return LeaveRefusal::Unproven;
   // the transient class's sentinel, or e0d16ea's record clause, which carried no class
   if (IsGroupRecordNotReadNow(libraryError) || IsLeaveNotReadNow(libraryError)) return LeaveRefusal::NotReadNow;
   return LeaveRefusal::Other;
 }
+
+bool RestoresOnceMore(LeaveRefusal refusal) { return refusal == LeaveRefusal::OwnerMustTransfer; }
 
 HeldCopy HeldNotLiveCopy(ReadClass lastRestore) {
   switch (lastRestore) {
@@ -163,6 +173,7 @@ HeldCopy LeaveRefusalCopy(LeaveRefusal refusal) {
     case LeaveRefusal::NotReadNow: return LeaveStopCopy(HeldLeaveStep::NotReadNow);
     case LeaveRefusal::Unproven: return LeaveStopCopy(HeldLeaveStep::Unproven);
     case LeaveRefusal::NotConnected: return LeaveStopCopy(HeldLeaveStep::NotConnected);
+    case LeaveRefusal::OwnerMustTransfer:
     case LeaveRefusal::Other: break;
   }
   return HeldCopy{};
@@ -222,5 +233,7 @@ std::string_view AddCopyName(AddCopy row) {
 }
 
 bool IsNoDeviceWrapKey(std::string_view libraryError) { return Has(libraryError, kLibNoDeviceWrapKey); }
+
+bool IsCreationUnrecorded(std::string_view libraryError) { return Has(libraryError, kLibCreationUnrecorded); }
 
 }  // namespace urmsg::live
