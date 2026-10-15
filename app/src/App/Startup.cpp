@@ -2472,10 +2472,16 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
         {L"ErrNotConnected", LeaveStopCopy(HeldLeaveStep::NotConnected).sentence,
          "This device is not connected right now, and nothing was changed. Try again when it is "
          "connected."},
-        // R35 A8: the founding road, for group_open's double failure
+        // R35 A8, as R37 amends it: the founding road, for group_open's double failure
         {L"OpenCreationUnrecorded", kSayCreationUnfinished,
-         "This conversation was created, but URmessage could not finish saving it. Close anything "
-         "else that may be using URmessage's folder, then open URmessage again."},
+         "This conversation was created, but URmessage could not finish saving it, and its invitation "
+         "was not shown. Close anything else that may be using URmessage's folder, then open "
+         "URmessage again."},
+        // R37 A9: the founding road, for group_open's record-persist failure
+        {L"OpenRecordNotPersisted", kSayOpenRecordNotSaved,
+         "URmessage could not save this new conversation on this device, so it cannot be used, and "
+         "its invitation was not shown. Check that URmessage can read and write its folder, then "
+         "start the conversation again."},
     };
     int verbatim = 0, raw = 0;
     std::wstring wrong;
@@ -2504,8 +2510,8 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
         L"  refusal copy     : {}  {}/{} verbatim from the table{}{} | {} carry the library's words | "
         L"{}/{} distinct | Other says nothing of its own {}   [query: each row a person is shown is "
         L"Task 58's sentence, word for word (its ErrJoinerAlreadyHasALeaf row as R25 Q1 amends it, "
-        L"R25 Q5's row as R34 A2 amends it, R29's as A3 does, and the rows of R34 A1 and R35 A8), and "
-        L"is its own; none is the library's]",
+        L"R25 Q5's row as R34 A2 amends it, R29's as A3 does, R34 A1's, R35 A8's as R37 amends it, and "
+        L"R37 A9's), and is its own; none is the library's]",
         Verdict(ok), verbatim, total, wrong.empty() ? L"" : L", WRONG: ", wrong, raw, distinct, total,
         othersEmpty));
   }
@@ -2677,7 +2683,7 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
   //     header's constants, so a constant that matched a whole sentence again turns the reworded
   //     case FAIL. The sentence R26's round reworded is asked a third way, in 09018b10dd23's words.
   {
-    enum class Ask { Join, Add, WrapKey, Leave, Sentinel, NotConnected, Open };
+    enum class Ask { Join, Add, WrapKey, Leave, Sentinel, NotConnected, Open, OpenNotSaved };
     struct Case {
       const wchar_t* name;
       std::string whole;
@@ -2761,6 +2767,11 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
          "urmessage: this group is open on the server and its record is on this device's disk, but this "
          "store could not record that the group's creation finished; the next Restore reads it: x",
          Ask::Open, JoinCopy::Other, AddCopy::Other},
+        // R37 A9: group_open's record-persist failure
+        {L"open-record-not-persisted", r5OpenNotPersisted,
+         "urmessage: this group is open on the server and its record could not be persisted; nothing "
+         "can be sent in it after a restart: x",
+         Ask::OpenNotSaved, JoinCopy::Other, AddCopy::Other},
     };
     auto right = [](Case const& c, std::string const& text) {
       switch (c.ask) {
@@ -2771,6 +2782,7 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
         case Ask::Sentinel: return IsGroupRecordNotReadNow(text);
         case Ask::NotConnected: return IsNotConnected(text);
         case Ask::Open: return IsCreationUnrecorded(text);
+        case Ask::OpenNotSaved: return IsOpenRecordNotPersisted(text);
       }
       return false;
     };
@@ -3128,6 +3140,60 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
         L"its own words; a refusal the store made inside the window is A1's row with no new join code, "
         L"after every class row, and the window's other refusals keep its own row]",
         Verdict(right == total), right, total, table));
+  }
+
+  // 17. R37 A9: group_open's refusal of a group open on the server whose record could not be persisted,
+  //     typed from 93cc0afb85b1 (group.go, Open), and the founding road's row for it. The road's own
+  //     "could not be published to the server" stays for every other refusal of the open.
+  {
+    const std::string reworded =
+        "urmessage: this group is open on the server and its record could not be persisted; nothing "
+        "can be sent in it after a restart: x";
+    const std::string alreadyOpen = "urmessage: this group is already open on the server";
+    const std::string sealing = "urmessage: sealing the founding commit: x";
+    const bool whole = OpenRefusalCopy(r5OpenNotPersisted) == kSayOpenRecordNotSaved;
+    const bool tail = OpenRefusalCopy(reworded) == kSayOpenRecordNotSaved;
+    const bool notTheDoubleFailure = OpenRefusalCopy(r5OpenDoubleFailure) == kSayCreationUnfinished;
+    const bool othersKeep = OpenRefusalCopy(alreadyOpen).empty() && OpenRefusalCopy(sealing).empty() &&
+                            OpenRefusalCopy("").empty();
+    const std::string_view say = OpenRefusalCopy(r5OpenNotPersisted);
+    const bool verbatim =
+        say == "URmessage could not save this new conversation on this device, so it cannot be used, and "
+               "its invitation was not shown. Check that URmessage can read and write its folder, then "
+               "start the conversation again.";
+    const bool notShown = say.find("its invitation was not shown") != std::string_view::npos;
+    const bool own = say.find("urmessage:") == std::string_view::npos && say != kSayCreationUnfinished;
+    const bool ok = whole && tail && notTheDoubleFailure && othersKeep && verbatim && notShown && own;
+    out.push_back(std::format(
+        L"  open not saved   : {}  the whole sentence {} | its tail reworded {} | the double failure "
+        L"keeps A8's row {} | the open's other refusals keep the road's own words {} | the row verbatim "
+        L"{} | it says the invitation was not shown {} | its own words {}   [query: R37 A9, a group "
+        L"open on the server whose record could not be persisted is told \"{}\", and not that it could "
+        L"not be published]",
+        Verdict(ok), whole, tail, notTheDoubleFailure, othersKeep, verbatim, notShown, own, Widen(say)));
+  }
+
+  // 18. R35 A8, as R37 amends it: group_open's double failure, and the founding road's row for it.
+  {
+    const std::string reworded =
+        "urmessage: this group is open on the server and its record is on this device's disk, but this "
+        "store could not record that the group's creation finished; the next Restore reads it: x";
+    const bool whole = OpenRefusalCopy(r5OpenDoubleFailure) == kSayCreationUnfinished;
+    const bool tail = OpenRefusalCopy(reworded) == kSayCreationUnfinished;
+    const bool notTheRecordFailure = OpenRefusalCopy(r5OpenNotPersisted) != kSayCreationUnfinished;
+    const std::string_view say = OpenRefusalCopy(r5OpenDoubleFailure);
+    const bool verbatim =
+        say == "This conversation was created, but URmessage could not finish saving it, and its "
+               "invitation was not shown. Close anything else that may be using URmessage's folder, then "
+               "open URmessage again.";
+    const bool notShown = say.find("its invitation was not shown") != std::string_view::npos;
+    const bool own = say.find("urmessage:") == std::string_view::npos && say != kSayOpenRecordNotSaved;
+    const bool ok = whole && tail && notTheRecordFailure && verbatim && notShown && own;
+    out.push_back(std::format(
+        L"  open unrecorded  : {}  the whole sentence {} | its tail reworded {} | the record failure is "
+        L"not it {} | the row verbatim {} | it says the invitation was not shown {} | its own words {}   "
+        L"[query: R35 A8 as R37 amends it, group_open's double failure is told \"{}\"]",
+        Verdict(ok), whole, tail, notTheRecordFailure, verbatim, notShown, own, Widen(say)));
   }
   return out;
 }

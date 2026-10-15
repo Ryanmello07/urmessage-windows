@@ -846,15 +846,18 @@ bool AddMemberFromCode(Session& s, const std::string& theirCode, const std::stri
   if (!wasOpen) {
     if (!urnet_message_group_open(s.group, s.ctx, &err)) {
       const std::string why = TakeError(&err);
-      // THE GROUP IS OPEN ON THE SERVER AND ITS RECORD IS ON THE DISK, and the store could not record
-      // that its creation finished (R34 item 3): "could not be published" would be false of it, so
-      // R35 A8's row says what happened. Every other refusal of the open is said as it was before.
-      const bool unrecorded = urmsg::live::IsCreationUnrecorded(why);
+      // THE GROUP IS OPEN ON THE SERVER, and this device could not finish saving it: its creation
+      // could not be recorded as finished (R34 item 3, R35 A8), or its record could not be persisted
+      // (R37 A9). "Could not be published" would be false of either, so its own row says what
+      // happened, and that the invitation was not shown. Every other refusal of the open is said as
+      // it was before.
+      const std::string_view row = urmsg::live::OpenRefusalCopy(why);
       urnw::LogError("live: group_open{}: {}",
-                     unrecorded ? " (open, and its creation could not be recorded as finished)" : "", why);
+                     row.empty() ? "" : " (the group is open on the server and this device could not finish saving it)",
+                     why);
       PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
-                     unrecorded ? std::string(urmsg::live::kSayCreationUnfinished)
-                                : "They were added, but the group could not be published to the server: " + why,
+                     !row.empty() ? std::string(row)
+                                  : "They were added, but the group could not be published to the server: " + why,
                      {}, false, true);
       return false;
     }
