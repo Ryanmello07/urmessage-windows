@@ -51,6 +51,9 @@ JoinCopy ClassifyJoinCopy(std::string_view libraryError) {
     return JoinCopy::GroupRecordNotReadNow;
   if (Has(libraryError, kLibGroupPredatesJoinSeal)) return JoinCopy::GroupPredatesJoinSeal;
   if (Has(libraryError, kLibInviteVersion)) return JoinCopy::InviteVersion;
+  // A LEAVE MARK THAT NAMES ANOTHER GROUP (FIX 6): asked after every class row above, so a refusal
+  // that carries a class's sentinel keeps its class's row
+  if (IsLeaveMarkForeign(libraryError)) return JoinCopy::LeaveMarkForeign;
   // THE WINDOW'S REFUSAL OF A JOIN THE STORE WOULD NOT SERVE (R34 A1): asked after every not-read
   // class row above, so a refusal that carries a class's sentinel keeps its class's row.
   if (libraryError.starts_with(kLibJoinRefused) && Has(libraryError, kLibStateStoreState))
@@ -71,6 +74,7 @@ std::string_view JoinCopySentence(JoinCopy row) {
     case JoinCopy::GroupPredatesJoinSeal: return kSayGroupPredatesJoinSeal;
     case JoinCopy::GroupRecordNotReadNow: return kSayGroupRecordNotReadNow;
     case JoinCopy::GroupReadUnproven: return kSayGroupReadUnproven;
+    case JoinCopy::LeaveMarkForeign: return kSayLeaveMarkForeign;
     case JoinCopy::Other: break;
   }
   return {};
@@ -86,6 +90,7 @@ std::string_view JoinCopyName(JoinCopy row) {
     case JoinCopy::GroupPredatesJoinSeal: return "ErrGroupPredatesJoinSeal";
     case JoinCopy::GroupRecordNotReadNow: return "ErrGroupRecordNotReadNow";
     case JoinCopy::GroupReadUnproven: return "ErrGroupReadUnproven";
+    case JoinCopy::LeaveMarkForeign: return "LeaveMarkNamesAnotherGroup";
     case JoinCopy::Other: break;
   }
   return "other";
@@ -110,6 +115,10 @@ bool IsGroupReadUnproven(std::string_view restoreError) {
 bool IsNotConnected(std::string_view libraryError) {
   return Has(libraryError, kLibNotConnected) ||
          HasAroundGroupId(libraryError, kLibLeaveNotTriedHead, kLibLeaveNotTriedAfterId);
+}
+
+bool IsLeaveMarkForeign(std::string_view libraryError) {
+  return HasAroundGroupId(libraryError, kLibLeaveMarkForeignHead, kLibLeaveMarkForeignAfterName);
 }
 
 ReadClass RestoreReadClass(std::string_view restoreError) {
@@ -143,6 +152,8 @@ LeaveRefusal ClassifyLeaveRefusal(std::string_view libraryError) {
   if (IsGroupReadUnproven(libraryError)) return LeaveRefusal::Unproven;
   // the transient class's sentinel, or e0d16ea's record clause, which carried no class
   if (IsGroupRecordNotReadNow(libraryError) || IsLeaveNotReadNow(libraryError)) return LeaveRefusal::NotReadNow;
+  // FIX 6: a leave mark that names another group, after every class
+  if (IsLeaveMarkForeign(libraryError)) return LeaveRefusal::MarkForeign;
   return LeaveRefusal::Other;
 }
 
@@ -173,10 +184,23 @@ HeldCopy LeaveRefusalCopy(LeaveRefusal refusal) {
     case LeaveRefusal::NotReadNow: return LeaveStopCopy(HeldLeaveStep::NotReadNow);
     case LeaveRefusal::Unproven: return LeaveStopCopy(HeldLeaveStep::Unproven);
     case LeaveRefusal::NotConnected: return LeaveStopCopy(HeldLeaveStep::NotConnected);
+    case LeaveRefusal::MarkForeign: return HeldCopy{kSayLeaveMarkForeign, false};
     case LeaveRefusal::OwnerMustTransfer:
     case LeaveRefusal::Other: break;
   }
   return HeldCopy{};
+}
+
+std::string_view LeaveRefusalName(LeaveRefusal refusal) {
+  switch (refusal) {
+    case LeaveRefusal::NotReadNow: return "ErrGroupRecordNotReadNow";
+    case LeaveRefusal::Unproven: return "ErrGroupReadUnproven";
+    case LeaveRefusal::NotConnected: return "ErrNotConnected";
+    case LeaveRefusal::OwnerMustTransfer: return "ErrOwnerMustTransfer";
+    case LeaveRefusal::MarkForeign: return "LeaveMarkNamesAnotherGroup";
+    case LeaveRefusal::Other: break;
+  }
+  return "other";
 }
 
 std::string_view RestoreNote(std::string_view restoreError, int restoredCount) {

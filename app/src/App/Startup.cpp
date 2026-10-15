@@ -2265,6 +2265,43 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
                                    " could not be read: open " + kpFile + ": " + denied;
   const std::string r5CommitRefused = refused + ": " + storeState + ": a temporary file in " + groupDir +
                                       " could not be created: open " + r5Temp + ": " + denied;
+  // ROUND 6'S SENTENCES (9df6fca8414f, read there: forget.go, restore.go, statestore_durable.go). The
+  // leave mark is held against what stands beside it (R36 item 2): undecided on the leave, the join
+  // and the restore; stale at the erase; and its epoch unread at MarkGroupForgetting.
+  const std::string r6Forgetting = groupDir + "\\forgetting";
+  const std::string r6EpochDir = groupDir + "\\epoch";
+  const std::string r6LeaveUndecided = "urmessage: a leave of group " + hex +
+                                       " this device recorded could not be held against what stands beside "
+                                       "it on the disk, so nothing was left: ";
+  const std::string r6JoinUndecided = "urmessage: a leave of group " + hex +
+                                      " this device recorded could not be held against what stands beside "
+                                      "it on the disk, so the invite into it is refused: ";
+  const std::string r6MarkUnread = ": the leave mark in " + dirName + " could not be read, so it decides nothing: " +
+                                   storeState + ": " + r6Forgetting + " could not be read: open " + r6Forgetting +
+                                   ": ";
+  const std::string r6RecordAboveUnread = ": the leave mark in " + dirName +
+                                          " names epoch 3, and whether a record above it stands could not be "
+                                          "read, so the mark decides nothing yet: " + storeState + ": " + metaFile +
+                                          " could not be read: open " + metaFile + ": ";
+  const std::string r6EpochAboveUnread = ": the leave mark in " + dirName +
+                                         " names epoch 3, and whether an epoch state above it stands could not "
+                                         "be read, so the mark decides nothing yet: " + storeState + ": " +
+                                         r6EpochDir + " could not be read: open " + r6EpochDir + ": ";
+  const std::string r6StaleUnremoved = ": the leave mark in " + dirName +
+                                       " names epoch 3, something of a later join stands above it, and the mark "
+                                       "could not be removed: " + storeState + ": " + r6Forgetting +
+                                       " could not be removed: remove " + r6Forgetting + ": ";
+  const std::string r6NoEpoch = ": the leave mark in " + dirName + " names no epoch it decided on, so it decides nothing";
+  const std::string r6Foreign = format + ": the leave mark in " + dirName + " does not name its own group";
+  const std::string r6StaleAtErase =
+      "urmessage: this group is on this device's disk and has not been restored; call Restore, and if it "
+      "does not come back because it is damaged, ForgetGroup leaves it: " + hex +
+      ": urmessage: the leave mark named an earlier join of this group than what stands on the disk, so it "
+      "was removed and nothing was erased: group " + hex;
+  const std::string r6MarkUnlisted = "urmessage: the leave could not be recorded on the disk, so nothing was left: " +
+                                     storeState + ": " + r6EpochDir +
+                                     " could not be listed, so the epoch this leave decides on could not be read: "
+                                     "open " + r6EpochDir + ": " + denied;
 
   // 1. which row a refusal of the join road is, and the order that decides it.
   {
@@ -2482,6 +2519,12 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
          "URmessage could not save this new conversation on this device, so it cannot be used, and "
          "its invitation was not shown. Check that URmessage can read and write its folder, then "
          "start the conversation again."},
+        // FIX 6 (9df6fca8414f), A DRAFT FOR THE LEAD'S RULING: a leave mark that names another group
+        {L"LeaveMarkNamesAnotherGroup", JoinCopySentence(JoinCopy::LeaveMarkForeign),
+         "This conversation's folder on this device holds a record of leaving a different "
+         "conversation, so URmessage cannot tell whether this one was left, and nothing was changed. "
+         "It cannot be joined or left on this device until that record is moved out of URmessage's "
+         "folder."},
     };
     int verbatim = 0, raw = 0;
     std::wstring wrong;
@@ -2510,8 +2553,9 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
         L"  refusal copy     : {}  {}/{} verbatim from the table{}{} | {} carry the library's words | "
         L"{}/{} distinct | Other says nothing of its own {}   [query: each row a person is shown is "
         L"Task 58's sentence, word for word (its ErrJoinerAlreadyHasALeaf row as R25 Q1 amends it, "
-        L"R25 Q5's row as R34 A2 amends it, R29's as A3 does, R34 A1's, R35 A8's as R37 amends it, and "
-        L"R37 A9's), and is its own; none is the library's]",
+        L"R25 Q5's row as R34 A2 amends it, R29's as A3 does, R34 A1's, R35 A8's as R37 amends it, R37 "
+        L"A9's, and FIX 6's draft for a leave mark that names another group), and is its own; none is "
+        L"the library's]",
         Verdict(ok), verbatim, total, wrong.empty() ? L"" : L", WRONG: ", wrong, raw, distinct, total,
         othersEmpty));
   }
@@ -2541,7 +2585,7 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
                              JoinCopy::NoJoinCodeForInvite, JoinCopy::JoinCodeSpent,
                              JoinCopy::InviteVersion, JoinCopy::GroupPredatesJoinSeal,
                              JoinCopy::GroupRecordNotReadNow, JoinCopy::GroupReadUnproven,
-                             JoinCopy::JoinRefusedByStore};
+                             JoinCopy::JoinRefusedByStore, JoinCopy::LeaveMarkForeign};
     std::wstring offered;
     int right = 0;
     for (JoinCopy row : rows) {
@@ -2767,6 +2811,11 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
          "urmessage: this group is open on the server and its record is on this device's disk, but this "
          "store could not record that the group's creation finished; the next Restore reads it: x",
          Ask::Open, JoinCopy::Other, AddCopy::Other},
+        // FIX 6 (9df6fca8414f): a leave mark that names another group
+        {L"leave-mark-foreign", r6Foreign,
+         format + ": the leave mark in " + dirName + " does not name its own group, and it decides "
+                                                     "nothing here: x",
+         Ask::Join, JoinCopy::LeaveMarkForeign, AddCopy::Other},
         // R37 A9: group_open's record-persist failure
         {L"open-record-not-persisted", r5OpenNotPersisted,
          "urmessage: this group is open on the server and its record could not be persisted; nothing "
@@ -3194,6 +3243,77 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
         L"not it {} | the row verbatim {} | it says the invitation was not shown {} | its own words {}   "
         L"[query: R35 A8 as R37 amends it, group_open's double failure is told \"{}\"]",
         Verdict(ok), whole, tail, notTheRecordFailure, verbatim, notShown, own, Widen(say)));
+  }
+
+  // 19. R38: FIX 6's sentences (9df6fca8414f), each road typed from forget.go, restore.go and
+  //     statestore_durable.go there. Every mark that cannot be held against what stands carries its
+  //     class's sentence, and the class's row answers it; the stale mark at the erase is
+  //     ErrGroupNotRestored's answer; the epoch a leave could not read keeps Task 39's fallback; and a
+  //     mark that names another group has its own row, a draft for the lead's ruling.
+  {
+    struct Road {
+      const wchar_t* name;
+      bool ok;
+    };
+    const std::string leaveTransient = r6LeaveUndecided + notReadNow + r6RecordAboveUnread + sharing;
+    const std::string leaveUnproven = r6LeaveUndecided + unproven + r6MarkUnread + denied;
+    const std::string leaveNoEpoch = r6LeaveUndecided + unproven + r6NoEpoch;
+    const std::string joinUnproven = r6JoinUndecided + unproven + r6EpochAboveUnread + denied;
+    const std::string joinTransient = r6JoinUndecided + notReadNow + r6StaleUnremoved + sharing;
+    const std::string restoreUndecided = notReadNow + r6MarkUnread + sharing;
+    const std::string recordNamesAnother = damaged + ": " + format + ": the record in " + dirName +
+                                           " does not name its own group";
+    // the order is the rule: a text that carries a class's sentence and the foreign clause is the
+    // class's (no library sentence at 9df6fca8414f carries both)
+    const std::string foreignUnderClass = r6LeaveUndecided + unproven + ": " + r6Foreign;
+    auto leaveRow = [](std::string const& text, LeaveRefusal want, std::string_view say, bool leave) {
+      const LeaveRefusal got = ClassifyLeaveRefusal(text);
+      return got == want && LeaveRefusalCopy(got).sentence == say && LeaveRefusalCopy(got).offerLeave == leave &&
+             !IsNotRestoredRefusal(text);
+    };
+    const Road roads[] = {
+        {L"leave-undecided-transient", leaveRow(leaveTransient, LeaveRefusal::NotReadNow, kSayGroupRecordNotReadNow, false)},
+        {L"leave-undecided-unproven", leaveRow(leaveUnproven, LeaveRefusal::Unproven, kSayGroupReadUnproven, false)},
+        {L"leave-mark-no-epoch", leaveRow(leaveNoEpoch, LeaveRefusal::Unproven, kSayGroupReadUnproven, false)},
+        {L"join-undecided-unproven", ClassifyJoinCopy(joinUnproven) == JoinCopy::GroupReadUnproven &&
+                                         ClassifyJoinRefusal(joinUnproven) == JoinRefusal::Other &&
+                                         !OffersNewJoinCode(ClassifyJoinCopy(joinUnproven))},
+        {L"join-undecided-transient", ClassifyJoinCopy(joinTransient) == JoinCopy::GroupRecordNotReadNow &&
+                                          ClassifyJoinRefusal(joinTransient) == JoinRefusal::Other},
+        {L"restore-undecided", RestoreNote(restoreUndecided, 0) == kSayGroupRecordNotReadNow &&
+                                   RestoreReadClass(restoreUndecided) == ReadClass::NotReadNow &&
+                                   StepAfterRestoreFirst(false, restoreUndecided) == HeldLeaveStep::NotReadNow},
+        {L"leave-stale-at-erase", IsNotRestoredRefusal(r6StaleAtErase) &&
+                                      ClassifyLeaveRefusal(r6StaleAtErase) == LeaveRefusal::Other},
+        {L"leave-mark-unlisted", ClassifyLeaveRefusal(r6MarkUnlisted) == LeaveRefusal::Other &&
+                                     !IsNotRestoredRefusal(r6MarkUnlisted) &&
+                                     LeaveRefusalCopy(LeaveRefusal::Other).sentence.empty()},
+        {L"join-mark-foreign", ClassifyJoinCopy(r6Foreign) == JoinCopy::LeaveMarkForeign &&
+                                   JoinCopySentence(ClassifyJoinCopy(r6Foreign)) == kSayLeaveMarkForeign &&
+                                   !OffersNewJoinCode(ClassifyJoinCopy(r6Foreign)) &&
+                                   ClassifyJoinRefusal(r6Foreign) == JoinRefusal::Other},
+        {L"leave-mark-foreign", leaveRow(r6Foreign, LeaveRefusal::MarkForeign, kSayLeaveMarkForeign, false) &&
+                                    !RestoresOnceMore(LeaveRefusal::MarkForeign)},
+        {L"record-not-mark", !IsLeaveMarkForeign(recordNamesAnother) &&
+                                 ClassifyJoinCopy(recordNamesAnother) != JoinCopy::LeaveMarkForeign},
+        {L"foreign-under-class", ClassifyJoinCopy(foreignUnderClass) == JoinCopy::GroupReadUnproven &&
+                                     ClassifyLeaveRefusal(foreignUnderClass) == LeaveRefusal::Unproven},
+    };
+    std::wstring table;
+    int right = 0;
+    for (auto const& r : roads) {
+      if (r.ok) ++right;
+      if (!table.empty()) table += L", ";
+      table += std::format(L"{} {}", r.name, r.ok ? L"ok" : L"WRONG");
+    }
+    const int total = static_cast<int>(std::size(roads));
+    out.push_back(std::format(
+        L"  R38 roads        : {}  {}/{}: {}   [query: FIX 6, typed from 9df6fca8414f: a leave mark that "
+        L"cannot be held against what stands is its class's row on the leave, the join and the restore, "
+        L"with no leave; the stale mark at the erase is ErrGroupNotRestored's answer; the epoch a leave "
+        L"could not read keeps Task 39's fallback; a mark that names another group is its own row "
+        L"(a draft), with no leave and no new join code, after every class]",
+        Verdict(right == total), right, total, table));
   }
   return out;
 }
