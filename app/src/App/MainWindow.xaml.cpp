@@ -625,7 +625,8 @@ void MainWindow::BuildOnboardDialog() {
       winrt::Windows::ApplicationModel::DataTransfer::Clipboard::SetContent(package);
       if (self->onboardStatus_)
         self->onboardStatus_.Text(L"Invitation copied. Send it to that one person only.");
-      // The invitation is never logged: it is the group's secrets in full.
+      // The invitation is never logged. Only the device whose join code it was made for can open it
+      // (R40 A11), but it still names the group and its members.
       urnw::LogInfo("window: an invitation was copied to the clipboard");
     });
     onboardInvitePanel_.Children().Append(copyInvite);

@@ -191,6 +191,19 @@ HeldCopy LeaveRefusalCopy(LeaveRefusal refusal) {
   return HeldCopy{};
 }
 
+bool ShowsLibraryWords(JoinCopy row) { return row == JoinCopy::LeaveMarkForeign; }
+
+bool ShowsLibraryWords(LeaveRefusal refusal) { return refusal == LeaveRefusal::MarkForeign; }
+
+std::string WithLibraryWords(std::string_view sentence, std::string_view libraryError) {
+  std::string out(sentence);
+  if (!libraryError.empty()) {
+    out += ' ';
+    out += libraryError;
+  }
+  return out;
+}
+
 std::string_view LeaveRefusalName(LeaveRefusal refusal) {
   switch (refusal) {
     case LeaveRefusal::NotReadNow: return "ErrGroupRecordNotReadNow";
