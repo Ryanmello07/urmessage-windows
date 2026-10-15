@@ -68,9 +68,10 @@ jobs:
       - name: Check out the repo
         uses: actions/checkout@v4
 
-      # THE APP'S COPY SAYS NOTHING FALSE ABOUT AN INVITATION (Task 58; the lead's ruling R40 A11).
-      # Since invite version 3 an invitation is sealed to the join code it was made for, so only that
-      # device can open it, and "whoever has it is in the group" is false. app\tools\verify-copy.ps1
+      # THE APP'S COPY SAYS NOTHING FALSE ABOUT AN INVITATION (Task 58; the lead's rulings R40 A11 and
+      # A12). Since invite version 3 an invitation is sealed to the join code it was made for, so only
+      # that device can open it, and "whoever has it is in", or "whoever reads it is in", the group is
+      # false. app\tools\verify-copy.ps1
       # reads every source under app\src as the compiler sees its strings (comments out, adjacent
       # literals joined) and fails on any string that says it. Its self-test runs first, over
       # fixtures that must and must not be found, so a scan that finds nothing has shown it can find.

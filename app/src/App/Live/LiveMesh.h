@@ -190,8 +190,9 @@ bool LeaveInFlight();
 // THE TWO ARE NOT THE SAME KIND OF SECRET AND THE UI MUST NOT TREAT THEM ALIKE:
 //   * a JOIN CODE is a public offer to be added. Showing it to the wrong person costs nothing;
 //     they can add this device to a group it will simply ignore.
-//   * an INVITE CODE carries the group's secrets. WHOEVER READS IT IS IN THE GROUP. It is consumed
-//     on use and must never be stored, logged or shown twice.
+//   * an INVITE CODE is sealed to the join code it was made for: since invite version 3 only the
+//     device that holds that join code can open it (R40 A12). It still names the group and its
+//     members. It is consumed on use and must never be stored, logged or shown twice.
 // Neither is ever written to the log by this module, and the code text itself is never formatted
 // into any log line.
 

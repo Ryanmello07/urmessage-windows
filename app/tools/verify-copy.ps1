@@ -1,31 +1,35 @@
 # SPDX-License-Identifier: MPL-2.0
 #
-# THE APP'S COPY SAYS NOTHING FALSE ABOUT AN INVITATION (hardening plan Task 58; the lead's ruling
-# R40 A11).
+# THE APP'S COPY SAYS NOTHING FALSE ABOUT AN INVITATION (hardening plan Task 58; the lead's rulings
+# R40 A11 and A12).
 #
 # Since invite version 3 an invitation is sealed to the join code it was made for, so only the device
-# that holds that join code can open it, and "whoever has it is in the group" is false. The joiner's
-# paste label said it until R40. This check fails on any app string that says it again.
+# that holds that join code can open it, and "whoever has it is in the group" is false, as is
+# "whoever reads it is in this group". The joiner's paste label said the first until R40 A11, and two
+# log lines said the second until A12. This check fails on any app string that says either again:
+# "whoever has it is in", or "whoever reads it is in".
 #
 # WHAT IT READS, AND HOW. Every .cpp, .h and .idl file under app\src, as the compiler sees its strings:
 # comments are taken out, and adjacent string literals are joined, so a phrase split across two
 # literals, or across a line, is still found. Raw strings, wide and UTF-8 literals, character
 # literals and digit separators are read as such. Every .xaml file is read with its comments taken
-# out. The phrase is matched without regard to case.
+# out. Each phrase is matched without regard to case.
 #
-# IT PRINTS WHAT IT LEFT OUT: every comment that says the phrase, by file and line, because a comment
-# is not a string a person is shown, and a reader should see what that narrowing removed.
+# IT PRINTS WHAT IT LEFT OUT: every comment that says a phrase, by file and line, because a comment
+# is not a string a person is shown, and a reader should see what that narrowing removed. Comments
+# are kept true by hand.
 #
 # -SelfTest reads fixtures first: a literal that says it, the phrase split across two literals and
-# across a line, a wide literal, a raw string, a XAML attribute, and the phrase in a line comment, a
-# block comment and a XAML comment, beside a character literal holding a quote, a "//" inside a
-# string and a number with digit separators. Each must be found, or not found, as it says.
+# across a line, a wide literal, a raw string, a XAML attribute, a log line that says the second
+# phrase, and the phrases in a line comment, a block comment and a XAML comment, beside a character
+# literal holding a quote, a "//" inside a string and a number with digit separators. Each must be
+# found, or not found, as it says.
 param(
   [switch]$SelfTest,
   [string]$Root = ''
 )
 $ErrorActionPreference = 'Stop'
-$phrase = 'whoever has it is in the group'
+$phrases = @('whoever has it is in', 'whoever reads it is in')
 
 if ($Root -eq '') { $Root = Join-Path (Join-Path $PSScriptRoot '..') 'src' }
 
@@ -91,7 +95,10 @@ function Read-Xaml([string]$text) {
 }
 
 function Test-Says([string]$text) {
-  return $text.IndexOf($phrase, [StringComparison]::OrdinalIgnoreCase) -ge 0
+  foreach ($phrase in $phrases) {
+    if ($text.IndexOf($phrase, [StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+  }
+  return $false
 }
 
 # What one source says: its strings that say the phrase, and its comments that do.
@@ -120,6 +127,10 @@ if ($SelfTest) {
        Text = 'auto s = R"x(say "whoever has it is in the group" here)x";' },
     @{ Name = 'a XAML attribute that says it'; Kind = 'xaml'; Want = $true
        Text = '<TextBlock Text="Whoever has it is in the group"/>' },
+    @{ Name = 'a log line that says the second phrase across two literals'; Kind = 'cpp'; Want = $true
+       Text = "LogWarn(`"Delete it by hand: it is key material and whoever reads it `"`n        `"is in this group.`", path);" },
+    @{ Name = 'the second phrase in a comment'; Kind = 'cpp'; Want = $false
+       Text = "// a file copy of it is key material for a group whoever reads it is in`nauto s = `"fine`";" },
     @{ Name = 'the phrase in a line comment'; Kind = 'cpp'; Want = $false
        Text = "// whoever has it is in the group`nauto s = `"fine`";" },
     @{ Name = 'the phrase in a block comment'; Kind = 'cpp'; Want = $false
@@ -127,7 +138,7 @@ if ($SelfTest) {
     @{ Name = 'a comment after a string, beside a quote character and a // in a string'; Kind = 'cpp'; Want = $false
        Text = "char q = '`"'; auto u = `"http://x`"; // whoever has it is in the group" },
     @{ Name = 'two literals that are not adjacent'; Kind = 'cpp'; Want = $false
-       Text = 'f("whoever has it is in ", "the group");' },
+       Text = 'f("whoever has it ", "is in the group");' },
     @{ Name = 'a digit separator before a string'; Kind = 'cpp'; Want = $false
        Text = "auto n = 1'000; auto s = `"whoever has it`"; // is in the group" },
     @{ Name = 'the phrase in a XAML comment'; Kind = 'xaml'; Want = $false
@@ -159,13 +170,13 @@ foreach ($f in $files) {
   $rel = $f.FullName.Substring((Resolve-Path $Root).Path.Length).TrimStart('\', '/')
   foreach ($s in $findings.Says) {
     $hits++
-    Write-Host ("FAIL {0}:{1}: a string says `"{2}`"" -f $rel, $s.Line, $phrase)
+    Write-Host ("FAIL {0}:{1}: a string says `"{2}`" or `"{3}`"" -f $rel, $s.Line, $phrases[0], $phrases[1])
   }
   foreach ($c in $findings.Comments) {
-    Write-Host ("left out {0}:{1}: a comment says it, and a comment is not a string anybody is shown" -f $rel, $c.Line)
+    Write-Host ("left out {0}:{1}: a comment says a phrase, and a comment is not a string anybody is shown" -f $rel, $c.Line)
   }
 }
 Write-Host ("read {0} files under {1}, {2} strings" -f $files.Count, $Root, $stringsRead)
-if ($hits -gt 0) { Write-Host "FAIL: $hits app string(s) say `"$phrase`", which is false since invite version 3"; exit 1 }
-Write-Host "PASS: no app string says `"$phrase`""
+if ($hits -gt 0) { Write-Host "FAIL: $hits app string(s) say `"$($phrases[0])`" or `"$($phrases[1])`", which is false since invite version 3"; exit 1 }
+Write-Host "PASS: no app string says `"$($phrases[0])`" or `"$($phrases[1])`""
 exit 0

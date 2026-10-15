@@ -1180,10 +1180,12 @@ Mint MintJoinCode(Session& s, std::string& joinCode, size_t& octets, std::string
 // Publish this device's key package, wait for the peer's invite, and join.
 // Answers true with s.group set, or false having said why.
 //
-// THE KEY PACKAGE IS NOT A SECRET and the INVITE IS. A key package is a public
-// offer to be added; an invite carries the Welcome and the group's secrets, so
-// whoever reads it is in the group. The invite is deleted the moment it has been
-// used, and the key package is deleted by the peer that consumes it.
+// THE KEY PACKAGE IS NOT A SECRET, AND THE INVITE IS PRIVATE. A key package is a
+// public offer to be added. An invite carries the Welcome, and since invite
+// version 3 its join secrets are sealed to the join code it was made for, so only
+// this device can open it (R40 A12). It still names the group and its members, so
+// it is never logged, and the invite is deleted the moment it has been used. The
+// key package is deleted by the peer that consumes it.
 bool JoinFromPeer(Session& s) {
   char* err = nullptr;
   const std::filesystem::path dir = HandshakeDir();
@@ -1335,13 +1337,14 @@ bool JoinFromPeer(Session& s) {
             fromPaste = held.fromPaste;
             break;
           case HeldLeave::CameBack: {
-            // The group is this device's again, so the invitation into it has done its job: a file
-            // copy of it is key material for a group anyone who reads it is in.
+            // The group is this device's again, so the invitation into it has done its job. Only
+            // this device can open it, but a file copy of it still names the group and its members,
+            // so it goes (R40 A12).
             std::error_code ec;
             if (!held.fromPaste && std::filesystem::exists(invitePath, ec) &&
                 !std::filesystem::remove(invitePath, ec)) {
-              urnw::LogWarn("live: the invite at {} could not be deleted ({}). Delete it by hand: it "
-                            "is key material and whoever reads it is in this group.",
+              urnw::LogWarn("live: the invite at {} could not be deleted ({}). Delete it by hand: only "
+                            "this device can open it, but it names the group and its members.",
                             Utf8Path(invitePath), ec.message());
             }
             held.Drop();
@@ -1624,14 +1627,15 @@ bool JoinFromPeer(Session& s) {
     urnw::LogInfo("live: *** JOINED the group *** at epoch {}", urnet_message_group_epoch(s.group));
     PublishOnboard(urmsg::live::OnboardStep::Joined, std::string(), "You are in the group.");
 
-    // CONSUMED, SO DELETED. It is key material and it has done its job; leaving it on disk is a
-    // group anyone who reads that file is in. Only the FILE road leaves anything behind - a pasted
-    // code was never written down by this process, which is the better of the two for that reason.
+    // CONSUMED, SO DELETED. It has done its job. Only this device can open it, but left on disk it
+    // still names the group and its members (R40 A12). Only the FILE road leaves anything behind - a
+    // pasted code was never written down by this process, which is the better of the two for that
+    // reason.
     std::error_code ec;
     if (!fromPaste && std::filesystem::exists(invitePath, ec)) {
       if (!std::filesystem::remove(invitePath, ec)) {
-        urnw::LogWarn("live: the invite at {} could not be deleted ({}). Delete it by hand: it is "
-                      "key material and whoever reads it is in this group.",
+        urnw::LogWarn("live: the invite at {} could not be deleted ({}). Delete it by hand: only "
+                      "this device can open it, but it names the group and its members.",
                       Utf8Path(invitePath), ec.message());
       } else {
         urnw::LogInfo("live: the invite has been consumed and deleted");
