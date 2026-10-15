@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // WHAT THE APP SAYS FOR EACH REFUSAL OF A JOIN OR AN ADD, AND FOR A DEVICE THAT CANNOT MAKE A JOIN
-// CODE (hardening plan Task 58; the lead's rulings R13, R17, R20, R25, R27 to R30, R32 to R35 and R37).
+// CODE (hardening plan Task 58; the lead's rulings R13, R17, R20, R25, R27 to R30, R32 to R35, R37 and
+// R38).
 //
 // The join seal (the plan's phase T1) gives the library a refusal for each thing that can go wrong
 // with an invitation or a join code, and each says what it cost. The app's half is the sentence a
@@ -23,8 +24,8 @@
 // sentence in full would have answered a known refusal with its fallback, silently. Each constant
 // below is that stable part, and the comment above it quotes the whole sentence as
 // urnetwork/message's sdk/urmessage/errors.go declares it (or, for a clause, as the file named
-// beside it formats it) at the T1 branch's head after its fifth fix round, 93cc0afb85b1. R33 and
-// R34 reworded none of the sentences quoted here; they added clauses, each quoted where it is
+// beside it formats it) at the T1 branch's head after its sixth fix round, 9df6fca8414f. R33, R34
+// and R36 reworded none of the sentences quoted here; they added clauses, each quoted where it is
 // matched, and a comment that quotes an older head says so. EVERY HIT OF A STABLE PART IN THE
 // LIBRARY OUTSIDE ITS TESTS IS LISTED WITH WHAT IT MEANS FOR THE MAPPING HERE, and the list is
 // asserted both ways (R34 A4), so a hit nobody listed fails the check. Most have one. A clause the
@@ -195,6 +196,42 @@ inline constexpr std::string_view kLibCreationUnrecorded =
 //          restart would refuse to send in it: <cause>"
 inline constexpr std::string_view kLibOpenRecordNotPersisted =
     "urmessage: this group is open on the server and its record could not be persisted";
+// THE LEAVE MARK, HELD AGAINST WHAT STANDS BESIDE IT (R36 item 2; T1 FIX 6, at 9df6fca8414f). A leave
+// this device recorded is finished only while its mark still names the join of the group that
+// stands. A mark that cannot be held against what stands decides nothing, and the call is refused
+// with the class's own sentence after its clause, so the class's row answers it on every road:
+//   leave    "urmessage: a leave of group <hex> this device recorded could not be held against what
+//            stands beside it on the disk, so nothing was left: <the class's sentence>: the leave
+//            mark in <dir> ..." (forget.go, ForgetGroup), which the bridge answers REFUSED
+//   join     the same clause, "..., so the invite into it is refused: <the class's sentence>: ..."
+//            (forget.go, finishLeaveBefore); CreateGroup's "so no group is founded under it" reaches
+//            the founding road, which says it in that road's own words
+//   restore  the store's own sentence, unwrapped: "<the class's sentence>: the leave mark in <dir>
+//            ..." (restore.go)
+// After the class's sentence the store says which read it was: "the leave mark in <dir> could not be
+// read, so it decides nothing", "... names epoch <n>, and whether a record above it stands could not
+// be read, so the mark decides nothing yet", "... names epoch <n>, and whether an epoch state above it
+// stands could not be read, so the mark decides nothing yet", "... names epoch <n>, something of a
+// later join stands above it, and the mark could not be removed", or "the leave mark in <dir> names
+// no epoch it decided on, so it decides nothing" (the unproven class; no mark this build writes is
+// one, and none stands after the T1 reset).
+// A mark naming an EARLIER join than what stands is removed, and nothing is erased. At the erase that
+// is ErrGroupNotRestored's answer, "<ErrGroupNotRestored's sentence>: <hex>: urmessage: the leave mark
+// named an earlier join of this group than what stands on the disk, so it was removed and nothing was
+// erased: group <hex>" (forget.go, leaveUnfinished), answered as ErrGroupNotRestored is. And a leave
+// whose epoch cannot be read cannot write its mark: "urmessage: the leave could not be recorded on the
+// disk, so nothing was left: <ErrStateStoreState's sentence>: <dir> could not be listed, so the epoch
+// this leave decides on could not be read: <cause>" (forget.go; statestore_durable.go,
+// MarkGroupForgetting), which keeps Task 39's fallback, the leave offered again.
+// A MARK THAT NAMES ANOTHER GROUP decides nothing, and it is no class: it is a file this store did
+// not write for this folder, and it stays until it is moved out (statestore_durable.go,
+// leaveMarkLocked). Joins and leaves of the group are refused while it stands.
+//   whole: "urmessage: this does not read as a record this store writes: the leave mark in <dir>
+//          does not name its own group"
+// Matched by its words before the folder's name, the name (64 lower-case hex digits), and its words
+// after it, which together are in no other sentence the library makes.
+inline constexpr std::string_view kLibLeaveMarkForeignHead = "the leave mark in ";
+inline constexpr std::string_view kLibLeaveMarkForeignAfterName = " does not name its own group";
 
 // ── what a person is shown: Task 58's table, verbatim ─────────────────────────────────────────
 
@@ -272,6 +309,14 @@ inline constexpr std::string_view kSayOpenRecordNotSaved =
     "URmessage could not save this new conversation on this device, so it cannot be used, and its "
     "invitation was not shown. Check that URmessage can read and write its folder, then start the "
     "conversation again.";
+// A DRAFT, FOR THE LEAD'S RULING (FIX 6, at 9df6fca8414f): a leave mark in this conversation's folder
+// that names another group (kLibLeaveMarkForeign). Nothing was changed, and nothing this app can do
+// moves it: the join and the leave of this group are both refused while it stands, so no leave is
+// offered and the invitation is kept.
+inline constexpr std::string_view kSayLeaveMarkForeign =
+    "This conversation's folder on this device holds a record of leaving a different conversation, "
+    "so URmessage cannot tell whether this one was left, and nothing was changed. It cannot be joined "
+    "or left on this device until that record is moved out of URmessage's folder.";
 
 // ── the join dialog's own copy ─────────────────────────────────────────────────────────────────
 
@@ -319,6 +364,7 @@ enum class JoinCopy {
   GroupPredatesJoinSeal,  // at Join (after kLibJoinRefused) and at Restore alike
   GroupRecordNotReadNow,  // at Restore (ErrGroupRecordNotReadNow) and at Join (the gate's unread)
   GroupReadUnproven,      // the same roads, for the unproven class (ErrGroupReadUnproven, R29)
+  LeaveMarkForeign,       // a leave mark that names another group, at Join (FIX 6)
 };
 
 // Which row a refusal of parse_invite, device_join or device_restore is. Empty text is Other.
@@ -350,6 +396,9 @@ bool IsGroupReadUnproven(std::string_view restoreError);
 // Is this a refusal because this device is not connected (R32): ErrNotConnected's stable part, or
 // the leave's "could not be tried again for the leave" clause around a group id?
 bool IsNotConnected(std::string_view libraryError);
+// Is this a leave mark that names another group (FIX 6): kLibLeaveMarkForeign's clause around a
+// folder's name?
+bool IsLeaveMarkForeign(std::string_view libraryError);
 
 // THE RESTORE-ROAD FLAG (R28, R29): which "not read" class the last restore reported, if any. A
 // report that carries both names the unproven one, the longer-lasting.
@@ -389,15 +438,17 @@ HeldLeaveStep StepAfterRestoreFirst(bool cameBack, std::string_view restoreError
 // record ("whether this device holds group <hex> on its disk could not be read, ...: <sentinel>"
 // and "group <hex>'s record could not be read again for the leave, ...: <sentinel>"), and its
 // "could not be tried again for the leave" (not connected). OwnerMustTransfer is the leave reaching
-// the owner's question after that re-try brought the group back (R33 X2). Other is everything else:
-// the caller's own handling (ErrGroupNotRestored, and Task 39's fallback for the rest, a write
-// failure among them).
+// the owner's question after that re-try brought the group back (R33 X2). MarkForeign is a leave mark
+// in the group's folder that names another group (FIX 6), asked after the classes. Other is
+// everything else: the caller's own handling (ErrGroupNotRestored, the stale mark at the erase among
+// its causes, and Task 39's fallback for the rest, a write failure among them).
 enum class LeaveRefusal {
   Other,
   NotReadNow,
   Unproven,
   NotConnected,
   OwnerMustTransfer,
+  MarkForeign,
 };
 LeaveRefusal ClassifyLeaveRefusal(std::string_view libraryError);
 // Does the app restore once more after this refusal, so the conversation shows (R33 X2)? The
@@ -417,10 +468,12 @@ HeldCopy HeldNotLiveCopy(ReadClass lastRestore);
 // The leave stopped before forget_group (NotReadNow, Unproven, NotConnected). Not connected keeps
 // the leave offered (R32). Any other step is not a stop, and is answered Task 39's sentence.
 HeldCopy LeaveStopCopy(HeldLeaveStep step);
-// The library's own refusal of the leave, by its class. Other and OwnerMustTransfer answer an empty
-// sentence: the caller restores once more for the second, and otherwise says what it said before
-// this file.
+// The library's own refusal of the leave, by its class. MarkForeign answers its own row, with no
+// leave. Other and OwnerMustTransfer answer an empty sentence: the caller restores once more for the
+// second, and otherwise says what it said before this file.
 HeldCopy LeaveRefusalCopy(LeaveRefusal refusal);
+// The refusal's name, for a log line.
+std::string_view LeaveRefusalName(LeaveRefusal refusal);
 
 // WHAT THE JOIN DIALOG SAYS FIRST AFTER A RESTORE, from device_restore's report and how many groups
 // it brought back: a group that predates the seal, or one with a file that could not be read (just
