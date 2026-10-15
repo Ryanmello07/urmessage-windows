@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // WHAT THE APP SAYS FOR EACH REFUSAL OF A JOIN OR AN ADD, AND FOR A DEVICE THAT CANNOT MAKE A JOIN
-// CODE (hardening plan Task 58; the lead's rulings R13, R17, R20, R25, R27 to R30, and R32 to R35).
+// CODE (hardening plan Task 58; the lead's rulings R13, R17, R20, R25, R27 to R30, R32 to R35 and R37).
 //
 // The join seal (the plan's phase T1) gives the library a refusal for each thing that can go wrong
 // with an invitation or a join code, and each says what it cost. The app's half is the sentence a
@@ -188,6 +188,13 @@ inline constexpr std::string_view kLibLeaveNotReadAfterId = " on its disk could 
 inline constexpr std::string_view kLibCreationUnrecorded =
     "urmessage: this group is open on the server and its record is on this device's disk, but this "
     "store could not record that the group's creation finished";
+// group_open's refusal of a group that IS open on the server when its record could not be persisted
+// (group.go, Open, at 93cc0afb85b1): a restart would refuse to send in it. Its stable part is the
+// clause before ", so": what happened, and not what it costs.
+//   whole: "urmessage: this group is open on the server and its record could not be persisted, so a
+//          restart would refuse to send in it: <cause>"
+inline constexpr std::string_view kLibOpenRecordNotPersisted =
+    "urmessage: this group is open on the server and its record could not be persisted";
 
 // ── what a person is shown: Task 58's table, verbatim ─────────────────────────────────────────
 
@@ -249,12 +256,22 @@ inline constexpr std::string_view kSayNotConnected =
 inline constexpr std::string_view kSayNoDeviceWrapKey =
     "This installation cannot make a join code, so it cannot join a group. Its saved data was made "
     "by an older URmessage.";
-// R35 A8: the founding road, when group_open answers its double failure (kLibCreationUnrecorded).
-// The road's own "the group could not be published to the server" would be false of it: the group
-// IS open on the server, and its record is on the disk.
+// THE FOUNDING ROAD'S OWN ROWS FOR A group_open THAT FAILED AFTER THE GROUP WAS PUBLISHED. The road
+// adds the person, builds the invitation and then opens the group, and every refusal of the open
+// returns before the invitation is shown, so each row says so. Its own "the group could not be
+// published to the server" stays for every other refusal of the open, where it is true.
+// R35 A8, as R37 amends it: the double failure (kLibCreationUnrecorded). The group IS open on the
+// server and its record is on the disk; adding the same person again after the reopen meets R25 Q1's
+// row for a person whose entry still stands, unchanged.
 inline constexpr std::string_view kSayCreationUnfinished =
-    "This conversation was created, but URmessage could not finish saving it. Close anything else "
-    "that may be using URmessage's folder, then open URmessage again.";
+    "This conversation was created, but URmessage could not finish saving it, and its invitation was "
+    "not shown. Close anything else that may be using URmessage's folder, then open URmessage again.";
+// R37 A9: the record could not be persisted (kLibOpenRecordNotPersisted). The group IS open on the
+// server, and this device would refuse to send in it after a restart.
+inline constexpr std::string_view kSayOpenRecordNotSaved =
+    "URmessage could not save this new conversation on this device, so it cannot be used, and its "
+    "invitation was not shown. Check that URmessage can read and write its folder, then start the "
+    "conversation again.";
 
 // ── the join dialog's own copy ─────────────────────────────────────────────────────────────────
 
@@ -438,5 +455,11 @@ bool IsNoDeviceWrapKey(std::string_view libraryError);
 // Is this group_open's double failure (kLibCreationUnrecorded, R34 item 3)? Then the founding road
 // says kSayCreationUnfinished (R35 A8) and not its own "could not be published to the server".
 bool IsCreationUnrecorded(std::string_view libraryError);
+// Is this group_open's refusal of a group open on the server whose record could not be persisted
+// (kLibOpenRecordNotPersisted)? Then the founding road says kSayOpenRecordNotSaved (R37 A9).
+bool IsOpenRecordNotPersisted(std::string_view libraryError);
+// The founding road's sentence for a refusal of group_open: A8's row, A9's row, or empty for every
+// other refusal, where the road's own "could not be published to the server" is true.
+std::string_view OpenRefusalCopy(std::string_view libraryError);
 
 }  // namespace urmsg::live

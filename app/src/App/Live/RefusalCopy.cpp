@@ -236,4 +236,12 @@ bool IsNoDeviceWrapKey(std::string_view libraryError) { return Has(libraryError,
 
 bool IsCreationUnrecorded(std::string_view libraryError) { return Has(libraryError, kLibCreationUnrecorded); }
 
+bool IsOpenRecordNotPersisted(std::string_view libraryError) { return Has(libraryError, kLibOpenRecordNotPersisted); }
+
+std::string_view OpenRefusalCopy(std::string_view libraryError) {
+  if (IsCreationUnrecorded(libraryError)) return kSayCreationUnfinished;
+  if (IsOpenRecordNotPersisted(libraryError)) return kSayOpenRecordNotSaved;
+  return {};
+}
+
 }  // namespace urmsg::live
