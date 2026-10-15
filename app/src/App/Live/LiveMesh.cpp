@@ -1404,7 +1404,7 @@ bool JoinFromPeer(Session& s) {
             // that opens it is the one adding the first other person.
             PublishOnboard(urmsg::live::OnboardStep::Founded, joinCode,
                            "Your group is made, but it has only you in it and nothing can be "
-                           "sent yet. Ask somebody for their join code and paste it below - "
+                           "sent yet. Ask somebody for their join code and paste it above - "
                            "adding them is what opens the group.");
             // The fetch loop does NOT take over here: a group that is not open has nothing to
             // fetch, and the add below is served from this same loop.
