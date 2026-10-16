@@ -1,0 +1,46 @@
+# THROWAWAY, NEVER MERGE. fix/icon-fallback: which private-use code points each runner's Segoe icon fonts map,
+# read off the font files with WPF's GlyphTypeface. No app is built or launched. Nothing is published.
+name: Icon font probe (throwaway)
+
+on:
+  push:
+    branches:
+      - 'ci/icons-probe**'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Probe (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+    steps:
+      - name: The private-use code points of each Segoe icon font
+        shell: powershell
+        run: |
+          Add-Type -AssemblyName PresentationCore
+          $out = New-Item -ItemType Directory -Force (Join-Path $env:GITHUB_WORKSPACE 'probe')
+          foreach ($name in 'segmdl2.ttf', 'SegoeIcons.ttf') {
+            $path = Join-Path "$env:WINDIR\Fonts" $name
+            if (-not (Test-Path -LiteralPath $path)) { Write-Host "${name}: not on this runner"; continue }
+            $face = New-Object System.Windows.Media.GlyphTypeface((New-Object System.Uri($path)))
+            $cps = @($face.CharacterToGlyphMap.Keys | Where-Object { $_ -ge 0xE000 -and $_ -le 0xF8FF } | Sort-Object)
+            Write-Host "${name}: version $($face.Version), $($cps.Count) private-use code points"
+            $list = ($cps | ForEach-Object { '{0:X4}' -f $_ }) -join ' '
+            Set-Content -LiteralPath (Join-Path $out "$name-${{ matrix.os }}.txt") -Value $list -Encoding ascii
+            foreach ($cp in 0xED1A, 0xE890, 0xE7B3, 0xE8F4, 0xE18B, 0xE052, 0xE7BA, 0xE8C5, 0xE9A8, 0xF78D, 0xE8F8, 0xE733) {
+              Write-Host ("  {0}: U+{1:X4} {2}" -f $name, $cp, $(if ($face.CharacterToGlyphMap.ContainsKey($cp)) { 'mapped' } else { 'NOT mapped' }))
+            }
+          }
+          exit 0
+
+      - name: Upload the lists
+        uses: actions/upload-artifact@v4
+        with:
+          name: icon-probe-${{ matrix.os }}
+          path: probe/
