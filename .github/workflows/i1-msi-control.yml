@@ -387,6 +387,9 @@ jobs:
           }
           if ($ok) { Write-Host 'control: preview-first and preview-changed pass; standard-changed fails on the shortcut id alone' }
           if (-not $ok) { exit 1 }
+          # the standard-changed case leaves its exit code in LASTEXITCODE, and the runner's pwsh
+          # wrapper would exit with it: this step passed, so it says so
+          exit 0
 
       # This repository has no test framework and none may be added. The
       # runnable check is the app's own --diagnose switch: it prints the App
