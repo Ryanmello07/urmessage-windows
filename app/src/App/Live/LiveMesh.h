@@ -71,12 +71,17 @@ bool StartIfEnabled();
 // The third is the one that is easy to drop and is the reason this exists. A device that founded a
 // group nobody joined has a group handle, an epoch and a message log, and every send into it is
 // refused by the server — so a button gated on "there is a group" is an enabled button that cannot
-// work, which is precisely what design §9.1 forbids. Answered from an atomic the worker re-reads
-// off urnet_message_group_is_open each poll, so a group that closes under the app turns the button
-// off within one fetch period rather than at the next click.
+// work, which is precisely what design §9.1 forbids. Answered from the group's gate, which the
+// worker re-reads off urnet_message_group_is_open each poll, so a group that closes under the app
+// turns the button off within one fetch period rather than at the next click.
+//
+// OF ONE GROUP, NAMED BY ITS ID (64 lower-case hex): a device holds many conversations, each with
+// its own gate (the conversation-list design 2.2, Live/ConversationRules.h). Every verb below names
+// its group the same way, and is done to that group, in the incarnation it was queued for, and to
+// no other.
 //
 // Safe from any thread and never blocks.
-bool CanSend();
+bool CanSend(std::string const& groupIdHex);
 
 // SEAL AND SUBMIT `utf8Body` TO THE OPEN GROUP, on the worker. Answers false — having queued
 // NOTHING — when CanSend() is false or the body is empty; true means the worker has taken it and
@@ -97,7 +102,7 @@ bool CanSend();
 // to the 32 octets the ABI takes HERE, at the queue, so that a name that does not decode is refused
 // with the text still in the box rather than refused by the worker after the box has emptied. The
 // worker then calls urnet_message_group_send_reply instead of _send; nothing else differs.
-bool QueueSend(std::string utf8Body, std::string replacesLocalId = {},
+bool QueueSend(std::string groupIdHex, std::string utf8Body, std::string replacesLocalId = {},
                std::string replyToMessageIdHex = {});
 
 // PUT A REACTION ON A MESSAGE, OR TAKE ONE OFF, on the worker. `targetMessageIdHex` is the
@@ -107,7 +112,8 @@ bool QueueSend(std::string utf8Body, std::string replacesLocalId = {},
 // urnet_message_group_unreact over _react. Answers false, having queued nothing, when CanSend() is
 // false, the emoji is empty, or the id does not decode. The outcome arrives as a published world:
 // the reaction standing on the target row, or a Failed entry there carrying the library's reason.
-bool QueueReaction(std::string targetMessageIdHex, std::string utf8Emoji, bool remove);
+bool QueueReaction(std::string groupIdHex, std::string targetMessageIdHex, std::string utf8Emoji,
+                   bool remove);
 
 // DELETE ONE OF THIS DEVICE'S OWN MESSAGES FOR EVERYONE, on the worker: urnet_message_group_delete
 // seals a TOMBSTONE naming `targetMessageIdHex`. There is no time limit: the owner ruled
@@ -117,7 +123,7 @@ bool QueueReaction(std::string targetMessageIdHex, std::string utf8Emoji, bool r
 // false, having queued nothing, when CanSend() is false or the id does not decode. The outcome
 // arrives as a published world: the line becomes the placeholder, or a Failed note under it
 // carries the library's reason.
-bool QueueDelete(std::string targetMessageIdHex);
+bool QueueDelete(std::string groupIdHex, std::string targetMessageIdHex);
 
 // ── the two role verbs (item 242 R3) ──────────────────────────────────────────
 
@@ -130,13 +136,13 @@ bool QueueDelete(std::string targetMessageIdHex);
 //
 // ONE ROUND TRIP INSIDE ONE ABI CALL, like a send, and so queued for the same reason: the worker
 // owns the group handle and the UI thread must never wait on the server.
-bool QueueRoleChange(std::string identityPubHex, std::string role);
+bool QueueRoleChange(std::string groupIdHex, std::string identityPubHex, std::string role);
 
 // TRANSFER OWNERSHIP TO ONE MEMBER, on the worker: urnet_message_group_transfer_ownership. This
 // device, the outgoing owner, becomes an admin in the same commit (MASTER section 11, ruling 4).
 // The CONFIRMATION is the caller's - the rail asks before it calls this - because this is the one
 // change here with no undo by construction. Same answers as QueueRoleChange.
-bool QueueTransferOwnership(std::string identityPubHex);
+bool QueueTransferOwnership(std::string groupIdHex, std::string identityPubHex);
 
 // REMOVE ONE MEMBER FROM THE GROUP, on the worker: urnet_message_group_remove_member with the
 // identity_pub a roster row carries, passed back as is. Answers false, having queued nothing, when
@@ -153,14 +159,14 @@ bool QueueTransferOwnership(std::string identityPubHex);
 // this, because nothing in this product can put the member back. Re-admitting needs a fresh key
 // package from them (device.KeyPackage is single use and is consumed destructively at the join),
 // and the alpha's one-credential peer cannot mint a second one at all.
-bool QueueRemoveMember(std::string identityPubHex);
+bool QueueRemoveMember(std::string groupIdHex, std::string identityPubHex);
 
 // LEAVE THE GROUP: "delete for me and leave" (the owner's ruling of 2026-10-02; msgrepo ledger
 // 273). On the worker: when `transferToIdentityHex` names a member, ownership moves to them FIRST
 // (urnet_message_group_transfer_ownership) and nothing else happens if that is refused; then
 // urnet_message_device_forget_group erases this device's whole copy of the conversation, the
-// worker publishes an empty world, and it goes back to waiting for an invitation exactly as a
-// device that never had a group does. NOBODY IS TOLD: the others keep their copies, and this device
+// worker drops that conversation from the world. Only that group's queue and gate go: every other
+// conversation this device holds is exactly as it was (the conversation-list design 2.2). NOBODY IS TOLD: the others keep their copies, and this device
 // stays on their member list until somebody removes it (ruling 48). Answers false, having queued
 // nothing, when a leave is already in flight, when there is no group, or when a hand-over is asked
 // for and the group cannot take a commit (CanSend() false) or the identity is not hex. A plain
@@ -170,10 +176,10 @@ bool QueueRemoveMember(std::string identityPubHex);
 // THE CONFIRMATION AND THE OWNER'S CASE ARE THE CALLER'S. The library refuses an owner who is the
 // last of its identity's leaves while anybody else is in the group (MASTER section 11), so the
 // rail reads the roster first and either names the member it hands over to or says to hand over.
-bool QueueLeave(std::string transferToIdentityHex = {});
+bool QueueLeave(std::string groupIdHex, std::string transferToIdentityHex = {});
 
-// Is a leave queued or under way right now? The rail hides its button while one is.
-bool LeaveInFlight();
+// Is a leave of this group queued or under way right now? The rail hides its button while one is.
+bool LeaveInFlight(std::string const& groupIdHex);
 
 // ── getting into a group at all (the onboarding half) ─────────────────────────
 //
