@@ -90,12 +90,161 @@ void AppendInertGroup(StackPanel const& column, winrt::hstring const& title) {
   column.Children().Append(card.root);
 }
 
+// ---- the ACCOUNT group, over the fabricated world (identity phase 1, Task 6) -----------------
+//
+// Demo/IdentityDemo.h's BuildAccount is the ONE source of every string here, so --diagnose reads
+// what this draws: "Your ID" with Copy, "Change my recovery phrase", Devices with each device's
+// name, device ID, marks, and when and by whom it was added, with Rename and Remove; Add a device;
+// and, demo only, a way into every identity screen a click cannot reach from this page. Each button
+// goes back to MainWindow through `onIdentity`, which opens the screen it names.
+Button MakeAccountButton(urmsg::demo::identity::Button const& b,
+                         std::function<void(urmsg::demo::identity::Button const&)> const& onIdentity) {
+  Button btn;
+  btn.Content(winrt::box_value(winrt::hstring{b.label}));
+  btn.Padding(ThicknessHelper::FromLengths(12, 4, 12, 4));
+  btn.MinHeight(32);
+  btn.VerticalAlignment(VerticalAlignment::Center);
+  btn.HorizontalAlignment(HorizontalAlignment::Left);
+  if (b.kind == urmsg::demo::identity::TextKind::DemoOnly)
+    btn.Foreground(urnw::colors::MakeBrush(urnw::colors::kUrAmber));
+  automation::AutomationProperties::SetName(btn, winrt::hstring{b.label});
+  btn.Click([onIdentity, b](auto const&, auto const&) {
+    if (onIdentity) onIdentity(b);
+  });
+  return btn;
+}
+
+void AppendAccountGroup(
+    StackPanel const& column, urmsg::demo::identity::AccountModel const& a,
+    std::function<void(urmsg::demo::identity::Button const&)> const& onIdentity) {
+  namespace id = urmsg::demo::identity;
+  AppendCaption(column, winrt::hstring{a.caption}, {}, /*first=*/true);
+  {
+    auto card = kit::MakePaneCard();
+    {
+      auto row = kit::MakePaneTwoLineRow(winrt::hstring{a.idTitle}, winrt::hstring{a.idNote}, 56);
+      StackPanel trailing;
+      trailing.Orientation(Orientation::Horizontal);
+      trailing.Spacing(12);
+      TextBlock value;
+      if (auto style = StyleByKey(L"UrValueTextStyle")) value.Style(style);
+      value.Text(winrt::hstring{a.idValue});
+      value.IsTextSelectionEnabled(true);
+      if (auto app = Application::Current()) {
+        auto key = winrt::box_value(winrt::hstring{L"UrMonoFontFamily"});
+        if (app.Resources().HasKey(key))
+          if (auto mono = app.Resources().Lookup(key).try_as<Media::FontFamily>())
+            value.FontFamily(mono);
+      }
+      automation::AutomationProperties::SetName(
+          value, winrt::hstring{a.idTitle + L", " + a.idValue});
+      automation::AutomationProperties::SetAutomationId(value, L"AccountYourId");
+      trailing.Children().Append(value);
+      // COPY COPIES THE FRAMING TOO: pasted somewhere else, a bare UUID would be a made-up ID with
+      // nothing left to say so.
+      Button copy;
+      copy.Content(winrt::box_value(winrt::hstring{a.copy.label}));
+      copy.Padding(ThicknessHelper::FromLengths(12, 4, 12, 4));
+      copy.MinHeight(32);
+      automation::AutomationProperties::SetName(copy, winrt::hstring{L"Copy " + a.idTitle});
+      const winrt::hstring copied{a.copied};
+      copy.Click([copied](auto const&, auto const&) {
+        winrt::Windows::ApplicationModel::DataTransfer::DataPackage package;
+        package.SetText(copied);
+        winrt::Windows::ApplicationModel::DataTransfer::Clipboard::SetContent(package);
+      });
+      trailing.Children().Append(copy);
+      row.trailing.Children().Append(trailing);
+      card.body.Children().Append(row.root);
+    }
+    {
+      auto row = kit::MakePaneTwoLineRow(winrt::hstring{a.changeTitle},
+                                         winrt::hstring{a.changeNote}, kRowHeight);
+      row.trailing.Children().Append(MakeAccountButton(a.change, onIdentity));
+      card.body.Children().Append(row.root);
+    }
+    kit::FinalizePaneCard(card);
+    column.Children().Append(card.root);
+  }
+
+  AppendCaption(column, winrt::hstring{a.devicesCaption}, {}, /*first=*/false);
+  {
+    auto card = kit::MakePaneCard();
+    {
+      auto row = kit::MakePaneTwoLineRow(winrt::hstring{a.devicesNote}, {}, kRowHeight);
+      row.title.Foreground(urnw::colors::MutedBrush());
+      card.body.Children().Append(row.root);
+    }
+    for (id::AccountDevice const& d : a.devices) {
+      Border rowRoot = kit::MakePaneRow(76);
+      Grid grid;
+      grid.ColumnSpacing(10);
+      ColumnDefinition textColumn, buttonColumn;
+      textColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
+      buttonColumn.Width(GridLengthHelper::Auto());
+      grid.ColumnDefinitions().Append(textColumn);
+      grid.ColumnDefinitions().Append(buttonColumn);
+      StackPanel text;
+      text.VerticalAlignment(VerticalAlignment::Center);
+      text.Spacing(2);
+      TextBlock name;
+      if (auto style = StyleByKey(L"UrBodyStrongTextStyle")) name.Style(style);
+      name.Text(winrt::hstring{d.name + (d.thisDevice ? std::wstring(L" (this device)")
+                                                      : std::wstring())});
+      text.Children().Append(name);
+      TextBlock detail;
+      if (auto style = StyleByKey(L"UrCaptionTextStyle")) detail.Style(style);
+      detail.Text(winrt::hstring{d.detail});
+      text.Children().Append(detail);
+      TextBlock added;
+      if (auto style = StyleByKey(L"UrCaptionTextStyle")) added.Style(style);
+      added.Text(winrt::hstring{d.added});
+      text.Children().Append(added);
+      grid.Children().Append(text);
+      StackPanel buttons;
+      buttons.Orientation(Orientation::Horizontal);
+      buttons.Spacing(8);
+      buttons.VerticalAlignment(VerticalAlignment::Center);
+      for (id::Button const& b : d.buttons) {
+        Button btn = MakeAccountButton(b, onIdentity);
+        automation::AutomationProperties::SetName(btn, winrt::hstring{b.label + L" " + d.name});
+        buttons.Children().Append(btn);
+      }
+      Grid::SetColumn(buttons, 1);
+      grid.Children().Append(buttons);
+      rowRoot.Child(grid);
+      card.body.Children().Append(rowRoot);
+    }
+    {
+      Border rowRoot = kit::MakePaneRow(52);
+      rowRoot.Child(MakeAccountButton(a.add, onIdentity));
+      card.body.Children().Append(rowRoot);
+    }
+    kit::FinalizePaneCard(card);
+    column.Children().Append(card.root);
+  }
+
+  AppendCaption(column, winrt::hstring{a.moreCaption}, {}, /*first=*/false);
+  {
+    auto card = kit::MakePaneCard();
+    VariableSizedWrapGrid wrap;
+    wrap.Orientation(Orientation::Horizontal);
+    wrap.ItemWidth(390);
+    wrap.ItemHeight(40);
+    wrap.Margin(ThicknessHelper::FromLengths(12, 8, 12, 8));
+    for (id::Button const& b : a.more) wrap.Children().Append(MakeAccountButton(b, onIdentity));
+    card.body.Children().Append(wrap);
+    column.Children().Append(card.root);
+  }
+}
+
 }  // namespace
 
 SettingsView MakeSettings(urmsg::demo::World const& world,
                           std::function<void(bool)> onAdvancedChanged, bool advanced,
                           std::function<void(bool)> onRouteChanged,
-                          bool routeThroughUrnetwork) {
+                          bool routeThroughUrnetwork,
+                          std::function<void(urmsg::demo::identity::Button const&)> onIdentity) {
   SettingsView view;
 
   // THE ONE urmsg::ActiveRunMode() READ ON THIS PAGE, taken at build time and never
@@ -159,8 +308,14 @@ SettingsView MakeSettings(urmsg::demo::World const& world,
   // Settings pane while real messages sat one destination away. MainWindow passes
   // ActiveWorld() and rebuilds this page on the beat a live world lands.
 
+  // ---- Account, first, in fabricated mode (identity phase 1, Task 6) ------------
+  // BuildAccount builds nothing in live mode, where the inert ACCOUNT group stays at the foot of
+  // the page as it was: a live launch has no identity yet to draw (Task 16).
+  const urmsg::demo::identity::AccountModel account = urmsg::demo::identity::BuildAccount(mode);
+  if (account.built) AppendAccountGroup(column, account, onIdentity);
+
   // ---- Appearance -----------------------------------------------------------
-  AppendCaption(column, L"APPEARANCE", {}, /*first=*/true);
+  AppendCaption(column, L"APPEARANCE", {}, /*first=*/!account.built);
   {
     auto card = kit::MakePaneCard();
     card.body.Children().Append(
@@ -374,7 +529,7 @@ SettingsView MakeSettings(urmsg::demo::World const& world,
   // ---- present, and visibly inert (design §6.6, §9.1) -----------------------
   AppendInertGroup(column, L"NOTIFICATIONS");
   AppendInertGroup(column, L"STORAGE AND DATA");
-  AppendInertGroup(column, L"ACCOUNT");
+  if (!account.built) AppendInertGroup(column, L"ACCOUNT");
 
   view.root = pane;
   return view;

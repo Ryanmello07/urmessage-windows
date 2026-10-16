@@ -18,7 +18,8 @@ namespace urmsg::demo {
 namespace {
 
 constexpr DemoOptions kDefaults{false, DemoScreen::None, false, false, true, 0,
-                                DemoComposer::AsIs, DemoNames::None, false};
+                                DemoComposer::AsIs, DemoNames::None, false,
+                                identity::Screen::None};
 
 // The ceiling for --demo-stress=N. The switch exists to find the thread's
 // knee, and 20000 rows (~200x the fixture's longest conversation) is far
@@ -118,6 +119,15 @@ constexpr void ApplyArg(DemoOptions& o, std::wstring_view arg) {
   if (body == L"demo-names=dialog") {
     o.enabled = true;
     o.names = DemoNames::Dialog;
+    return;
+  }
+  // --demo-identity=<screen> (Task 6). An unknown screen is NOT a demo switch: the --demo=nope
+  // carve-out, so a typo never opens the fabricated world.
+  if (body.starts_with(L"demo-identity=")) {
+    const identity::Screen s = identity::ScreenFromName(body.substr(14));
+    if (s == identity::Screen::None) return;
+    o.enabled = true;
+    o.identityScreen = s;
     return;
   }
 }
@@ -286,6 +296,33 @@ static_assert(ParseArgs({L"--demo=inspect"}).composer == DemoComposer::AsIs);
 // --demo=nope above: a typo must never light up the demo.
 static_assert(!ParseArgs({L"--demo-foo"}).enabled);
 
+// --demo-identity (Task 6): one row per kind of screen it opens, the carve-out for an unknown
+// name, and the cross-field rows that say it touches ONE field.
+static_assert(ParseArgs({}).identityScreen == identity::Screen::None);
+static_assert(ParseArgs({L"--demo"}).identityScreen == identity::Screen::None);
+static_assert(ParseArgs({L"--demo-identity=setup"}).identityScreen == identity::Screen::SetUp);
+static_assert(ParseArgs({L"--demo-identity=words"}).identityScreen == identity::Screen::Words);
+static_assert(ParseArgs({L"--demo-identity=words"}).enabled);
+static_assert(ParseArgs({L"-demo-identity=remove-phrase"}).identityScreen ==
+              identity::Screen::RemovePhrase);
+static_assert(ParseArgs({L"/demo-identity=change-done"}).identityScreen == identity::Screen::ChangeDone);
+static_assert(ParseArgs({L"demo-identity=account"}).identityScreen == identity::Screen::Account);
+static_assert(ParseArgs({L"--demo-identity=nope"}).identityScreen == identity::Screen::None);
+static_assert(!ParseArgs({L"--demo-identity=nope"}).enabled);
+static_assert(!ParseArgs({L"--demo-identity="}).enabled);
+static_assert(ParseArgs({L"--demo-identity=words"}).screen == DemoScreen::None);
+static_assert(ParseArgs({L"--demo-identity=words"}).watermark);
+static_assert(!ParseArgs({L"--demo-identity=words"}).autoplay);
+static_assert(!ParseArgs({L"--demo-identity=words"}).advanced);
+static_assert(ParseArgs({L"--demo-identity=words"}).composer == DemoComposer::AsIs);
+static_assert(ParseArgs({L"--demo=settings"}).identityScreen == identity::Screen::None);
+// every name in the table opens its own screen, and only it
+static_assert([] {
+  for (auto const& n : identity::kScreenNames)
+    if (identity::ScreenFromName(n.name) != n.screen) return false;
+  return true;
+}());
+
 DemoOptions ParseDemoOptions() {
   DemoOptions out = kDefaults;
   int argc = 0;
@@ -293,6 +330,13 @@ DemoOptions ParseDemoOptions() {
   if (!argv) return out;
   for (int i = 1; i < argc; ++i) ApplyArg(out, std::wstring_view{argv[i]});
   ::LocalFree(argv);
+  // THE IDENTITY PREVIEW BUILD (Task 6's zip). A plain launch - the README's way, a double-click -
+  // opens the fabricated world on "Set up this device", because that build has no live mode
+  // (LiveMesh.cpp's IsEnabled answers false in it). Any argument keeps the explicit rules above.
+  if (identity::kIdentityPreviewBuild && argc <= 1) {
+    out.enabled = true;
+    out.identityScreen = identity::Screen::SetUp;
+  }
   return out;
 }
 

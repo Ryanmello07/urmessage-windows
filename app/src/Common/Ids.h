@@ -30,13 +30,33 @@
 
 namespace urnw::ids {
 
+// THE IDENTITY PREVIEW BUILD (identity phase 1, Task 6: /p:UrmIdentityPreview=true, which
+// Directory.Build.props turns into URM_IDENTITY_PREVIEW=1 for every project) KEEPS OUT OF THE REAL
+// APP'S WAY. It gets its own single-instance key, so a running URmessage does not swallow its launch
+// (or it the other's); its own folder, so its prefs - Advanced Mode, the route switch - and its log
+// never touch the real app's; and its own window-placement key and user model id. Its values are
+// none of the VPN app's either.
+#if defined(URM_IDENTITY_PREVIEW) && URM_IDENTITY_PREVIEW
+inline constexpr bool kIdentityPreviewIds = true;
+#else
+inline constexpr bool kIdentityPreviewIds = false;
+#endif
+
 // AppInstance single-instance key. VPN app: L"URnetwork.Desktop" — see the
 // header note; this must never be that string.
+#if defined(URM_IDENTITY_PREVIEW) && URM_IDENTITY_PREVIEW
+inline constexpr wchar_t kSingleInstanceKey[] = L"URmessage.IdentityPreview";
+#else
 inline constexpr wchar_t kSingleInstanceKey[] = L"URmessage.Desktop";
+#endif
 
 // App user model id — toast notifications from an unpackaged app, and
 // taskbar/tray grouping. VPN app: L"URnetwork.Desktop".
+#if defined(URM_IDENTITY_PREVIEW) && URM_IDENTITY_PREVIEW
+inline constexpr wchar_t kAppUserModelId[] = L"URmessage.IdentityPreview";
+#else
 inline constexpr wchar_t kAppUserModelId[] = L"URmessage.Desktop";
+#endif
 
 // Tray icon identity for Shell_NotifyIcon with NIF_GUID. Freshly generated for
 // this product; the VPN app's is {B7E9C2A1-4F3D-4C8E-9A1B-2D6E8F0A1C34}, and
@@ -60,13 +80,21 @@ inline constexpr wchar_t kUriScheme[] = L"urmessage";
 // overrides it per worktree. Named here rather than buried in Paths.cpp so the
 // "does this collide with the VPN app" question has exactly one file to read.
 // VPN app: L"URnetwork" / L"URNETWORK_APP_ROOT".
+#if defined(URM_IDENTITY_PREVIEW) && URM_IDENTITY_PREVIEW
+inline constexpr wchar_t kStorageFolderName[] = L"URmessage-identity-preview";
+#else
 inline constexpr wchar_t kStorageFolderName[] = L"URmessage";
+#endif
 inline constexpr wchar_t kAppRootEnvVar[] = L"URMESSAGE_APP_ROOT";
 
 // HKCU subkey the window-placement blob lives under (WindowShell.cpp).
 // VPN app: L"Software\\URnetwork\\Window". Left shared, the two apps would
 // restore each other's window geometry.
+#if defined(URM_IDENTITY_PREVIEW) && URM_IDENTITY_PREVIEW
+inline constexpr wchar_t kWindowPlacementKey[] = L"Software\\URmessage-identity-preview\\Window";
+#else
 inline constexpr wchar_t kWindowPlacementKey[] = L"Software\\URmessage\\Window";
+#endif
 
 // The log file name inside LogDir(). VPN app: urnetwork-app.log.
 inline constexpr wchar_t kLogFileName[] = L"urmessage-app.log";
