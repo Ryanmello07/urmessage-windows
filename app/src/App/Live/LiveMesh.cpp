@@ -900,6 +900,7 @@ std::string g_pastedInvite;                 // guarded by g_onboardMutex; consum
 // Guarded by g_onboardMutex; written by the worker and consumed when the join road opens again.
 std::string g_afterLeaveNote;
 bool g_createGroupAsked = false;            // guarded by g_onboardMutex; consumed by the worker
+bool g_openRoadAsked = false;               // guarded by g_onboardMutex; consumed by the join road
 std::atomic<uint64_t> g_onboardGeneration{0};
 // THE LEAVE OF A GROUP THAT IS NOT LIVE (Task 39). Offered: the state on screen carries the offer,
 // set by every publication to what that publication says, so any later state withdraws it. Asked:
@@ -966,12 +967,13 @@ void PublishAdd(std::string const& gid, urmsg::live::AddStep step, std::string m
   next->inviteCode = std::move(inviteCode);
   {
     std::lock_guard<std::mutex> lock(g_addMutex);
+    next->generation = g_addGeneration.load(std::memory_order_relaxed) + 1;
     g_adds.erase(std::remove_if(g_adds.begin(), g_adds.end(),
                                 [&](urmsg::live::AddPtr const& a) { return a->groupIdHex == gid; }),
                  g_adds.end());
     g_adds.push_back(std::move(next));
+    g_addGeneration.fetch_add(1, std::memory_order_release);
   }
-  g_addGeneration.fetch_add(1, std::memory_order_release);
   urmsg::live::NotifyPublished();
 }
 
@@ -1003,11 +1005,9 @@ void DropAdd(std::string const& gid) {
                                 [&](urmsg::live::AddPtr const& a) { return a->groupIdHex == gid; }),
                  g_adds.end());
     dropped = g_adds.size() != before;
+    if (dropped) g_addGeneration.fetch_add(1, std::memory_order_release);
   }
-  if (dropped) {
-    g_addGeneration.fetch_add(1, std::memory_order_release);
-    urmsg::live::NotifyPublished();
-  }
+  if (dropped) urmsg::live::NotifyPublished();
 }
 
 // THE FOUNDER'S SENTENCE (R43 A13): the add panel's join-code box is above it, and a group of one
@@ -1525,6 +1525,17 @@ void JoinRoad(Session& s, AdoptFn const& adopt) {
   };
   size_t heldBefore = SlotCount();
   if (heldBefore == 0 && !openRoad()) return;
+  // THE WAITING STATE AGAIN, with the code this road holds (QueueOpenJoinRoad): the dialog opened on
+  // the join road beside the conversations this device holds.
+  auto publishWaiting = [&]() {
+    const bool conversations = SlotCount() > 0;
+    std::string waiting;
+    {
+      std::lock_guard<std::mutex> lock(g_onboardMutex);
+      waiting = urmsg::live::WaitingText(std::string_view(), g_holdsUnopenedGroup || conversations);
+    }
+    PublishOnboard(urmsg::live::OnboardStep::Waiting, joinCode, waiting);
+  };
 
   // ── wait for an invite, from EITHER road ────────────────────────────────────
   //
@@ -1549,6 +1560,21 @@ void JoinRoad(Session& s, AdoptFn const& adopt) {
       const size_t heldNow = SlotCount();
       if (heldBefore > 0 && heldNow == 0 && !openRoad()) return;
       heldBefore = heldNow;
+    }
+    // THE DIALOG ASKED FOR THE ROAD ("Join with an invitation"): a code minted if this run has none,
+    // and the Waiting state published again either way.
+    {
+      bool asked = false;
+      {
+        std::lock_guard<std::mutex> lock(g_onboardMutex);
+        asked = g_openRoadAsked;
+        g_openRoadAsked = false;
+      }
+      if (asked && joinCode.empty()) {
+        if (!openRoad()) return;
+      } else if (asked) {
+        publishWaiting();
+      }
     }
 
     std::vector<uint8_t> encoded;
@@ -2398,6 +2424,7 @@ void GroupLoop(std::shared_ptr<SessionContext> session, std::shared_ptr<GroupSlo
     urmsg::live::LiveGroup live;
     live.groupIdHex = gidHex;
     live.adoptedAtMs = slot->adoptedAtMs;
+    live.groupOfOne = IsGroupOfOne(*slot);
     live.epoch = urnet_message_group_epoch(group);
     live.open = urnet_message_group_is_open(group);
     live.clientId = clientId;
@@ -3443,6 +3470,15 @@ bool QueueLeaveHeldGroup() {
     g_heldLeaveAsked = true;
   }
   urnw::LogInfo("live: the leave of a group that is not live was handed to the worker");
+  return true;
+}
+
+bool QueueOpenJoinRoad() {
+  {
+    std::lock_guard<std::mutex> lock(g_onboardMutex);
+    g_openRoadAsked = true;
+  }
+  urnw::LogInfo("live: the join road was asked to open for the dialog");
   return true;
 }
 

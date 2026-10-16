@@ -1153,6 +1153,28 @@ LeavePlan PlanLeave(demo::Conversation const& conv) {
   return plan;
 }
 
+// ADD SOMEONE: the add dialog for this group, the window's (RosterVerb::addSomeone).
+Border MakeAddSomeoneButtonRow(demo::Conversation const& conv) {
+  Border row;
+  row.Padding(ThicknessHelper::FromLengths(12, 0, 12, 6));
+  Button b;
+  if (auto style = kit::StyleByKey(L"UrPaneActionSecondaryStyle")) b.Style(style);
+  b.Height(30);
+  b.MinHeight(30);
+  b.Padding(ThicknessHelper::FromLengths(10, 0, 10, 0));
+  b.FontSize(12);
+  b.HorizontalAlignment(HorizontalAlignment::Left);
+  b.Content(winrt::box_value(H(L"Add someone")));
+  automation::AutomationProperties::SetName(b, H(L"Add someone to this conversation"));
+  b.Click([gid = conv.groupIdHex](winrt::Windows::Foundation::IInspectable const&, auto const&) {
+    auto const& host = MutableRosterVerb();
+    const bool opened = host.addSomeone && host.addSomeone(gid);
+    urnw::LogInfo("rail: add someone {}", opened ? "opened the add dialog" : "was not taken");
+  });
+  row.Child(b);
+  return row;
+}
+
 Border MakeLeaveButtonRow(demo::Conversation const& conv) {
   Border row;
   row.Padding(ThicknessHelper::FromLengths(12, 0, 12, 6));
@@ -1635,6 +1657,18 @@ void PopulateConversation(InspectRailView& v, demo::Conversation const& conv,
     if (!mine.empty() && host.deleteMine && host.enabled && conv.myRole != demo::kRoleObserver &&
         urmsg::ActiveRunMode() == urmsg::RunMode::Live)
       body.Append(MakeDeleteMineButtonRow(mine));
+  }
+  // ADD SOMEONE, live only (the conversation-list design 3): for an owner or an admin of a group that
+  // is open now, and for the founder of a group of one, whose first add is what opens it. The
+  // library refuses an add a role may not make, and its sentence says so; this only keeps the
+  // button off the rows that cannot use it.
+  {
+    auto const& host = MutableRosterVerb();
+    const bool mayAdd = conv.myRole == demo::kRoleOwner || conv.myRole == demo::kRoleAdmin;
+    const bool groupOfOne = conv.members.size() == 1;
+    if (host.addSomeone && mayAdd && (host.enabled || groupOfOne) && !conv.groupIdHex.empty() &&
+        urmsg::ActiveRunMode() == urmsg::RunMode::Live)
+      body.Append(MakeAddSomeoneButtonRow(conv));
   }
   // DELETE FOR ME AND LEAVE, live only (ledger 273), and under the bulk delete because that is the
   // order a person who wants their lines gone for everyone has to take them in. Not gated by

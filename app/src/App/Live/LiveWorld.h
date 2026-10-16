@@ -212,6 +212,9 @@ struct LiveGroup {
   // A LEAVE THIS DEVICE ASKED FOR AND WAS REFUSED (ledger 273), as the library said it, or "".
   // A granted one is never here: the worker publishes the world without that conversation instead.
   std::string leaveError;
+  // A GROUP OF ONE (the conversation-list design 3): founded here, and nobody else in it yet. Its row
+  // and its thread say so, because it cannot send yet and is not kept until somebody joins.
+  bool groupOfOne = false;
   // WHEN THIS DEVICE TOOK THE GROUP UP, wall-clock milliseconds: restored, joined or founded in this
   // run. The list's order falls back to it for a conversation with no line yet (the conversation-list
   // design 2.4), so a group just joined is the first row rather than the last. 0 is "not known".
@@ -246,6 +249,12 @@ struct LiveConversation {
 // the views which RENDER it — the inspect rail, the network page — can name it without any of them
 // acquiring a dependency on this directory. One spelling, one presentation, no second copy.
 using urmsg::demo::kUnavailable;
+
+// THE GROUP OF ONE'S LINE (the conversation-list design 3): its row's second line and its thread's
+// one line. True of it: nobody else is in it, the first add opens it, and the library keeps no group
+// of one across a restart (lib restore.go:240-254).
+inline constexpr wchar_t kGroupOfOneLine[] =
+    L"Only you so far. Add someone to start it. It is not kept until they join.";
 
 // ── the mapping ───────────────────────────────────────────────────────────────
 // ONE GROUP'S CONVERSATION, one row per message: the whole of what the views draw for it.

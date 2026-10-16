@@ -230,8 +230,11 @@ std::wstring MembersCaptionMeta(demo::Conversation const& conv) {
     total += member.devices.size();
   }
   // "0/0 online" is a claim about people; "presence unavailable" is the fact. U+00B7 MIDDLE DOT.
-  if (total == 0) return std::format(L"{} members \u00B7 presence unavailable", conv.members.size());
-  return std::format(L"{} members \u00B7 {}/{} online", conv.members.size(), online, total);
+  // AND "1 member", not "1 members": a group of one is drawn now (the conversation-list design 3).
+  const size_t n = conv.members.size();
+  const std::wstring members = n == 1 ? std::wstring(L"1 member") : std::format(L"{} members", n);
+  if (total == 0) return members + L" \u00B7 presence unavailable";
+  return std::format(L"{} \u00B7 {}/{} online", members, online, total);
 }
 
 std::wstring MemberRowMeta(demo::MemberRef const& member) {

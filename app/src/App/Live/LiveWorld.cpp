@@ -534,6 +534,11 @@ urmsg::demo::Conversation BuildConversationImpl(LiveGroup const& group, int64_t&
     conv.rows.push_back(std::move(row));
   }
 
+  // A GROUP OF ONE SAYS SO in its thread, which has nothing else to show (the conversation-list
+  // design 3), and on its row below.
+  if (group.groupOfOne && group.messages.empty())
+    conv.rows.push_back(MakeSystemRow(L"group-of-one", kGroupOfOneLine));
+
   // A LEAVE THAT WAS REFUSED (ledger 273), at the foot and in the library's own words: the person
   // pressed a button, and without this line its whole effect would be nothing at all.
   if (!group.leaveError.empty())
@@ -544,7 +549,9 @@ urmsg::demo::Conversation BuildConversationImpl(LiveGroup const& group, int64_t&
   // empty conversation says so rather than drawing a blank line. AN OUTBOX ENTRY IS DELIBERATELY
   // NOT A PREVIEW: the conversation list's second line is what the conversation last SAID, and a
   // message the server refused was never said to anybody.
-  conv.preview = newestBody.empty() ? std::wstring(kUnavailable) : newestBody;
+  conv.preview = !newestBody.empty()   ? newestBody
+                 : group.groupOfOne    ? std::wstring(kGroupOfOneLine)
+                                       : std::wstring(kUnavailable);
   conv.timeLabel = newestMs > 0 ? FormatClock(newestMs) : std::wstring(kUnavailable);
   // THIS GROUP'S OWN EPOCH (A14, A20): the strip and the developer page read the open
   // conversation's, because a world of many conversations has no one epoch.
