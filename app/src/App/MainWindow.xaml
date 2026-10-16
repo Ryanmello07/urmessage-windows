@@ -211,6 +211,12 @@
                                 <TextBlock x:Name="ListPaneCount"
                                            Style="{StaticResource UrPaneMetaStyle}"
                                            HorizontalAlignment="Right" />
+                                <!-- THE LIST'S "+" (the conversation-list design 3): built and shown
+                                     by BuildListActions in live launches only, and Collapsed
+                                     otherwise, because the fabricated world has no road to take. -->
+                                <Button x:Name="ListActionsButton"
+                                        Style="{StaticResource UrPaneActionButtonStyle}"
+                                        Visibility="Collapsed" />
                             </Grid>
                         </Border>
                         <!-- MakePaneSearchRow lands here (code-behind) -->

@@ -393,6 +393,10 @@ void MainWindow::ArmLiveWorldUpdates() {
   // exactly what it drew before this existed.
   if (!urmsg::live::IsEnabled()) return;
 
+  // THE LIST'S "+" (the conversation-list design 3), live launches only: the fabricated world has no
+  // road to take.
+  BuildListActions();
+
   liveBridge_ = std::make_shared<LiveWorldBridge>();
   liveBridge_->window = get_weak();
   // The static GetForCurrentThread(), the same one StartAmbientActivity uses and for the same
@@ -534,6 +538,8 @@ void MainWindow::BuildOnboardDialog() {
       self->onboardAddDrawn_ = 0;
       self->ApplyOnboard();
     } else if (self->onboardStatus_) {
+      // A CREATE IN FLIGHT: neither road is drawn until the road answers it
+      self->onboardCreating_ = taken;
       self->onboardStatus_.Text(taken ? L"Making the group\u2026"
                                       : L"A group could not be started right now.");
     }
@@ -704,6 +710,8 @@ void MainWindow::BuildOnboardDialog() {
       self->onboardOpen_ = false;
       // THE ADD PANEL LETS GO OF ITS GROUP WITH THE DIALOG: opened again, it is on the join road
       self->onboardAddGroup_.clear();
+      self->onboardCreating_ = false;
+      self->onboardForced_ = false;
     }
   });
   onboardDialog_.Title(box_value(hstring{L"Join a group"}));
@@ -742,6 +750,99 @@ void MainWindow::BuildOnboardDialog() {
   });
 }
 
+// THE LIST'S ACTIONS (the conversation-list design 3): one "+" in the list pane's header, at every
+// width, opening the two ways in: a new conversation, and an invitation somebody sent.
+void MainWindow::BuildListActions() {
+  if (listActions_) return;
+  // DECLARED IN THE MARKUP (MainWindow.xaml, ListActionsButton), Collapsed, in the header's own
+  // Grid: found here by its name and shown, never re-parented.
+  Controls::Button plus = ListActionsButton();
+  if (!plus) {
+    urnw::LogWarn("window: the list's \"+\" is not in the markup; the list's actions are not built");
+    return;
+  }
+  // ITS STYLE IS THE MARKUP'S (UrPaneActionButtonStyle): the pane header's own borderless action
+  Controls::FontIcon glyph;
+  glyph.Glyph(L"\uE710");
+  glyph.FontSize(12);
+  plus.Content(glyph);
+  const hstring name{L"New conversation or join with an invitation"};
+  winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(plus, name);
+  Controls::ToolTipService::SetToolTip(plus, box_value(name));
+  Controls::MenuFlyout menu;
+  Controls::MenuFlyoutItem create;
+  create.Text(L"New conversation");
+  create.Click([weak = get_weak()](auto const&, auto const&) {
+    if (auto self = weak.get()) self->NewConversationFromList();
+  });
+  Controls::MenuFlyoutItem join;
+  join.Text(L"Join with an invitation");
+  join.Click([weak = get_weak()](auto const&, auto const&) {
+    if (auto self = weak.get()) self->JoinFromList();
+  });
+  menu.Items().Append(create);
+  menu.Items().Append(join);
+  plus.Flyout(menu);
+  // the count stands left of the "+", where the header has room for both
+  ListPaneCount().Margin(ThicknessHelper::FromLengths(0, 0, 36, 0));
+  plus.Visibility(Visibility::Visible);
+  listActions_ = plus;
+  urnw::LogInfo("window: the list's actions are built (new conversation, join with an invitation)");
+}
+
+// NEW CONVERSATION: a group made beside the ones held, and the dialog opens on its add panel once
+// the road has made it; refused while a group of one waits, when that group's add panel opens.
+void MainWindow::NewConversationFromList() {
+  std::string waiting;
+  const bool taken = urmsg::live::QueueCreateGroup(&waiting);
+  onboardAddGroup_ = taken ? std::string() : waiting;
+  onboardCreating_ = taken;
+  OpenOnboardDialog();
+  if (onboardStatus_ && taken) onboardStatus_.Text(L"Making the group\u2026");
+  urnw::LogInfo("window: a new conversation was {} from the list", taken ? "asked for"
+                                                                         : "refused, a group of one waits");
+}
+
+// JOIN WITH AN INVITATION: the dialog on the join road, with the code to show (QueueOpenJoinRoad).
+void MainWindow::JoinFromList() {
+  onboardAddGroup_.clear();
+  onboardCreating_ = false;
+  urmsg::live::QueueOpenJoinRoad();
+  OpenOnboardDialog();
+  urnw::LogInfo("window: join with an invitation was opened from the list");
+}
+
+// ADD SOMEONE, from the rail: the dialog on the add panel of that group.
+void MainWindow::OpenAddDialog(std::string groupIdHex) {
+  onboardAddGroup_ = std::move(groupIdHex);
+  onboardCreating_ = false;
+  OpenOnboardDialog();
+  urnw::LogInfo("window: add someone was opened from the rail");
+}
+
+// THE DIALOG, OPENED BY A PRESS: drawn from the newest states, of which those standing at this
+// moment say nothing new (OnboardStep and AddState generations), and shown beside the conversations.
+void MainWindow::OpenOnboardDialog() {
+  if (!urmsg::live::IsEnabled()) return;
+  onboardOpenedAt_ = urmsg::live::OnboardGeneration();
+  onboardAddOpenedAt_ = urmsg::live::AddGeneration();
+  onboardForced_ = true;
+  BuildOnboardDialog();
+  if (onboardStatus_) onboardStatus_.Text(hstring{});
+  // NEVER A GENERATION THE ROAD PUBLISHED, so the draw below runs even before it has published one
+  onboardDrawn_ = ~uint64_t{0};
+  onboardAddDrawn_ = ~uint64_t{0};
+  ApplyOnboard();
+}
+
+bool MainWindow::LiveWorldHoldsGroup(std::string const& groupIdHex) const {
+  if (!liveWorld_) return false;
+  const std::wstring gid = urnw::Widen(groupIdHex);
+  for (auto const& c : liveWorld_->conversations)
+    if (c.groupIdHex == gid) return true;
+  return false;
+}
+
 void MainWindow::ApplyOnboard() {
   // ONLY A LIVE LAUNCH HAS AN ONBOARDING STATE. A fabricated one is already in a group that was
   // never joined.
@@ -750,6 +851,9 @@ void MainWindow::ApplyOnboard() {
   const uint64_t addGeneration = urmsg::live::AddGeneration();
   if (generation == onboardDrawn_ && addGeneration == onboardAddDrawn_) return;
   auto state = urmsg::live::OnboardSnapshot();
+  // A PRESS OPENS THE DIALOG BEFORE THE ROAD HAS SAID ANYTHING (a session that restored its
+  // conversations publishes nothing until it is asked): it is drawn from an empty state then.
+  if (!state && onboardForced_) state = std::make_shared<const urmsg::live::OnboardState>();
   if (!state) return;
   // A DIALOG NEEDS A XamlRoot, AND THE WINDOW'S CONTENT HAS NONE UNTIL IT IS IN THE TREE. A state
   // published before then is left UNCONSUMED and asked for again when the content loads, rather
@@ -785,8 +889,26 @@ void MainWindow::ApplyOnboard() {
       takenUpConversationId_ = urmsg::live::ConversationIdOf(state->groupIdHex);
   }
 
-  if (state->step == urmsg::live::OnboardStep::Joined) {
+  // THE ADD PANEL'S GROUP (the conversation-list design 2.3): the group the join road founds from
+  // this dialog, bound once per state the road published. A create in flight is answered here too:
+  // by that Founded, or by the road's refusal.
+  const std::string boundBefore = onboardAddGroup_;
+  if (generation != addBindDrawn_) {
+    addBindDrawn_ = generation;
+    if (state->step == urmsg::live::OnboardStep::Founded && !state->groupIdHex.empty()) {
+      onboardAddGroup_ = state->groupIdHex;
+      onboardCreating_ = false;
+    } else if (onboardCreating_ && onboardOpenedAt_ < generation) {
+      onboardCreating_ = false;
+    }
+  }
+
+  // A JOIN CLOSES THE DIALOG, when the road joined after the dialog was opened: a Joined state that
+  // stood before a press belongs to an earlier join, and leaves the dialog the press opened up.
+  if (state->step == urmsg::live::OnboardStep::Joined && onboardOpenedAt_ < generation) {
     onboardAddGroup_.clear();
+    onboardCreating_ = false;
+    onboardForced_ = false;
     if (onboardDialog_) {
       onboardDialog_.Hide();
       onboardDialog_ = nullptr;
@@ -804,23 +926,29 @@ void MainWindow::ApplyOnboard() {
   }
 
   BuildOnboardDialog();
-  // THE ADD PANEL'S GROUP (the conversation-list design 2.3): the group the join road just founded,
-  // bound when the road says so, and let go once that group has no add state (it was left).
-  const std::string boundBefore = onboardAddGroup_;
-  if (newJoinState && state->step == urmsg::live::OnboardStep::Founded && !state->groupIdHex.empty())
-    onboardAddGroup_ = state->groupIdHex;
-  const urmsg::live::AddPtr add =
+  // THE BINDING IS LET GO once its group is no longer held: no add state and no row.
+  urmsg::live::AddPtr add =
       onboardAddGroup_.empty() ? nullptr : urmsg::live::AddSnapshot(onboardAddGroup_);
-  if (!onboardAddGroup_.empty() && !add) onboardAddGroup_.clear();
+  if (!onboardAddGroup_.empty() && !add && !LiveWorldHoldsGroup(onboardAddGroup_))
+    onboardAddGroup_.clear();
+  // AN INVITATION SHOWN BEFORE THIS DIALOG WAS OPENED AGAIN IS NOT SHOWN AGAIN, nor its sentence: an
+  // invitation is used once, and a second copy of it on screen invites a second person to be sent it.
+  if (add && add->step == urmsg::live::AddStep::Invited && add->generation <= onboardAddOpenedAt_)
+    add = nullptr;
   if (onboardCodeBox_ && !state->joinCode.empty())
     onboardCodeBox_.Text(winrt::to_hstring(state->joinCode));
-  // THE SENTENCE OF THE ROAD THE DIALOG IS ON, when that road moved: the add's while the panel is
-  // bound to a group, else the join road's.
+  // THE SENTENCE OF THE ROAD THE DIALOG IS ON, when that road moved since the dialog was opened: the
+  // add's while the panel is bound to a group, else the join road's.
   if (onboardStatus_) {
-    if (add && (newAddState || onboardAddGroup_ != boundBefore) && !add->message.empty())
-      onboardStatus_.Text(winrt::to_hstring(add->message));
-    else if (!add && newJoinState && !state->message.empty())
+    if (!onboardAddGroup_.empty()) {
+      if (add && (newAddState || onboardAddGroup_ != boundBefore) && !add->message.empty())
+        onboardStatus_.Text(winrt::to_hstring(add->message));
+      else if (!add && onboardAddGroup_ != boundBefore)
+        onboardStatus_.Text(hstring{});
+    } else if (!onboardCreating_ && newJoinState && onboardOpenedAt_ < generation &&
+               !state->message.empty()) {
       onboardStatus_.Text(winrt::to_hstring(state->message));
+    }
   }
 
   // ── WHICH ROAD IS THIS PERSON ON ───────────────────────────────────────────────────────────
@@ -834,9 +962,12 @@ void MainWindow::ApplyOnboard() {
   // A REFUSED ADD IS STILL THE FOUNDER'S ROAD (Task 58): its sentence asks for another join code,
   // so the box that takes one stays, and the join road does not come back while this device holds
   // the group it was adding to.
-  const bool founded = add != nullptr;
+  const bool founded = !onboardAddGroup_.empty();
   const bool haveInvite =
       add && add->step == urmsg::live::AddStep::Invited && !add->inviteCode.empty();
+  // A CREATE IN FLIGHT draws neither road: the join panel would be the wrong one, and the add panel
+  // has no group yet.
+  const bool creating = onboardCreating_ && !founded;
   // NO CREDENTIAL: neither road can be taken, so neither is drawn - only the sentence that says
   // where the file goes. A join panel with an empty code in it would ask for a step that cannot
   // work yet.
@@ -845,9 +976,11 @@ void MainWindow::ApplyOnboard() {
   const bool noCredential = state->step == urmsg::live::OnboardStep::NoCredential;
   const bool stuck = noCredential || state->step == urmsg::live::OnboardStep::NoJoinCode;
   if (onboardJoinPanel_)
-    onboardJoinPanel_.Visibility(founded || stuck ? Visibility::Collapsed : Visibility::Visible);
+    onboardJoinPanel_.Visibility(founded || stuck || creating ? Visibility::Collapsed
+                                                              : Visibility::Visible);
   if (onboardFoundButton_)
-    onboardFoundButton_.Visibility(founded || stuck ? Visibility::Collapsed : Visibility::Visible);
+    onboardFoundButton_.Visibility(founded || stuck || creating ? Visibility::Collapsed
+                                                                : Visibility::Visible);
   if (onboardAddPanel_)
     onboardAddPanel_.Visibility(founded && !stuck ? Visibility::Visible : Visibility::Collapsed);
   if (onboardInvitePanel_)
@@ -880,11 +1013,14 @@ void MainWindow::ApplyOnboard() {
         hstring{urmsg::live::OnboardIntro(state->offerLeaveHeldGroup, founded, state->holdsGroup)});
   }
   if (onboardOrElse_)
-    onboardOrElse_.Visibility(founded || stuck ? Visibility::Collapsed : Visibility::Visible);
+    onboardOrElse_.Visibility(founded || stuck || creating ? Visibility::Collapsed
+                                                           : Visibility::Visible);
   if (onboardDialog_) {
+    // THE TITLE SAYS WHICH ROAD: adding somebody to the group the panel is for, or joining one.
     onboardDialog_.Title(box_value(noCredential ? hstring{L"URmessage needs its credential"}
+                                   : founded    ? hstring{L"Add someone"}
                                                 : hstring{L"Join a group"}));
-    onboardDialog_.PrimaryButtonText(founded || stuck ? hstring{} : hstring{L"Join"});
+    onboardDialog_.PrimaryButtonText(founded || stuck || creating ? hstring{} : hstring{L"Join"});
     // AND THE CLOSE BUTTON SAYS WHAT CLOSING MEANS, which changes with the road. "Not now" is
     // right for somebody who has not joined anything: they are putting it off. It is WRONG for a
     // founder whose group is open and whose invitation has been copied - they are finished, and a
@@ -912,13 +1048,16 @@ void MainWindow::ApplyOnboard() {
   // of the world on screen.
   const bool holdsConversation =
       state->holdsConversation || (liveWorld_ && !liveWorld_->conversations.empty());
-  if (!onboardShown_ && !holdsConversation) {
+  // A PRESS OPENS IT WHATEVER IS HELD, whenever it is not on screen already.
+  const bool wantShow = onboardForced_ ? !onboardOpen_ : (!onboardShown_ && !holdsConversation);
+  if (wantShow) {
     // THE FLAG IS SET ONLY ONCE ShowAsync HAS TAKEN (re-check R4). It throws while another
     // ContentDialog is open, and a flag set first would keep this dialog away for the rest of the
     // run. On a throw it is asked again in a second, from a fresh draw.
     try {
       onboardDialog_.ShowAsync();
       onboardShown_ = true;
+      onboardForced_ = false;
       urnw::LogInfo("window: the onboarding dialog is up \u2014 this device holds no group");
     } catch (winrt::hresult_error const& e) {
       urnw::LogWarn("window: the onboarding dialog could not open yet ({}); asking again in a second",
@@ -1573,6 +1712,13 @@ void MainWindow::BuildDemoViews() {
                   transferToIdentityHex.empty() ? "" : " with a hand-over",
                   queued ? "taken" : "REFUSED");
     return queued;
+  };
+  // ADD SOMEONE (the conversation-list design 3): the add dialog for that group.
+  roster.addSomeone = [weak = get_weak()](std::wstring groupIdHex) -> bool {
+    auto self = weak.get();
+    if (!self) return false;
+    self->OpenAddDialog(urnw::Narrow(groupIdHex));
+    return true;
   };
   roster.nameRefusal = [](std::wstring const& typed) -> std::wstring {
     return urmsg::live::LocalNameRefusal(urmsg::live::CheckLocalName(typed));

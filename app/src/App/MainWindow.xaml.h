@@ -111,6 +111,24 @@ struct MainWindow : MainWindowT<MainWindow> {
   // one a refused create named. Empty while the dialog is on the join road.
   uint64_t onboardAddDrawn_ = 0;
   std::string onboardAddGroup_;
+  // THE DIALOG OPENED BY A PRESS (the list's "+", the rail's Add someone), which shows it beside the
+  // conversations this device holds; the states and add states as they stood at that press, which
+  // it does not draw again (a stale sentence, an invitation already shown); a create asked for and
+  // not yet answered; and the onboarding generation the add panel was last bound from.
+  bool onboardForced_ = false;
+  bool onboardCreating_ = false;
+  uint64_t onboardOpenedAt_ = 0;
+  uint64_t onboardAddOpenedAt_ = 0;
+  uint64_t addBindDrawn_ = 0;
+  winrt::Microsoft::UI::Xaml::Controls::Button listActions_{nullptr};
+  // THE LIST'S ACTIONS (the conversation-list design 3): the "+" in the list pane's header, and the
+  // dialog each of its two items, and the rail's Add someone, opens.
+  void BuildListActions();
+  void NewConversationFromList();
+  void JoinFromList();
+  void OpenAddDialog(std::string groupIdHex);
+  void OpenOnboardDialog();
+  bool LiveWorldHoldsGroup(std::string const& groupIdHex) const;
   bool onboardShown_ = false;
   // Whether the dialog is ON SCREEN right now, which onboardShown_ is not once it has been
   // dismissed: kept by its Opened and Closed events (review M2).

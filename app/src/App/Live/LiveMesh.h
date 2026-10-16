@@ -272,6 +272,9 @@ enum class AddStep {
 struct AddState {
   std::string groupIdHex;
   AddStep step = AddStep::Founded;
+  // AddGeneration() as it stood once this state was published: the dialog draws no invitation it
+  // drew before it was opened again, because an invitation is used once.
+  uint64_t generation = 0;
   // AN INVITATION THIS DEVICE JUST MINTED FOR SOMEBODY ELSE, base64, and empty except at Invited.
   // Replaced by the group's next add, because an invitation is used ONCE: leaving it on screen past
   // its moment invites a second person to be sent the same one, and the second of them is refused
@@ -331,6 +334,11 @@ bool QueueJoinFromInviteCode(std::string base64Invite);
 // Answers false, having asked for nothing, when no such leave is on offer. Never blocks; the
 // outcome arrives as a published OnboardState.
 bool QueueLeaveHeldGroup();
+
+// OPEN THE JOIN ROAD FOR THE DIALOG (the conversation-list design 3): "Join with an invitation". A
+// session that restored its conversations has minted no join code, and one is minted now; either
+// way the road publishes its Waiting state again, with the code to show. Never blocks; answers true.
+bool QueueOpenJoinRoad();
 
 // MAKE A NEW JOIN CODE (R25 Q2). Offered only by the Refused state whose offerNewJoinCode is set:
 // the sentence there asks for a new join code, and this is the press that makes one. On the worker,

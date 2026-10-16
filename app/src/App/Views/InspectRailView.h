@@ -157,6 +157,9 @@ struct RosterVerb {
   std::function<bool(std::wstring transferToIdentityHex)> leave;
   // Whether a leave is in flight; the button is hidden while one is (re-check R4).
   std::function<bool()> leaveInFlight;
+  // ADD SOMEONE (the conversation-list design 3): open the add dialog for this group. Answers
+  // whether the host opened it.
+  std::function<bool(std::wstring groupIdHex)> addSomeone;
   bool enabled = false;
 };
 void SetInspectRailRosterVerb(RosterVerb verb);
