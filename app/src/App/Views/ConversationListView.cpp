@@ -449,7 +449,7 @@ urnw::kit::PaneTwoLineRowButton MakeConversationRow(urmsg::demo::Conversation co
 
 ConversationListView MakeConversationList(urmsg::demo::World const& world,
                                           std::function<void(int)> onSelect,
-                                          std::wstring const& notice) {
+                                          std::wstring const& notice, bool entrance) {
   ConversationListView view;
 
   Controls::StackPanel stack;
@@ -467,6 +467,10 @@ ConversationListView MakeConversationList(urmsg::demo::World const& world,
     stack.Children().Append(text);
     view.notice = text;
   }
+  // THE REQUESTS SLOT: empty and collapsed, above RECENT (the conversation-list design 3).
+  view.requests = Controls::Grid();
+  view.requests.Visibility(Visibility::Collapsed);
+  stack.Children().Append(view.requests);
   // The 28px group rhythm the pane already uses, with NO count on it.
   // ListPaneCount in the pane header is the ONE "how many rows are on screen"
   // readout and L5's filter updates it; a second count that the filter did not
@@ -503,7 +507,7 @@ ConversationListView MakeConversationList(urmsg::demo::World const& world,
   // `if` as the opacity's, so the reduce-motion path still writes nothing at
   // all (code-inspection only: that branch has never executed on this
   // machine).
-  if (urnw::motion::ShouldAnimate()) {
+  if (entrance && urnw::motion::ShouldAnimate()) {
     for (auto const& row : view.rows)
       if (row.root) EntranceStartPose(row.root);
     if (view.header) EntranceStartPose(view.header);

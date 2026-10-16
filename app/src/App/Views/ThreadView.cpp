@@ -1938,7 +1938,8 @@ void ClearComposerReply(std::shared_ptr<ThreadParts> const& parts) {
 // world is the one placeholder ("unavailable": the protocol carries no names) and on the fixture
 // is a fixture name. The identicon beside it is drawn from the real sender handle, so the strip
 // still shows WHICH sender even where it cannot show a name.
-void BeginComposerReply(std::shared_ptr<ThreadParts> const& parts, demo::MessageRow const& row) {
+void BeginComposerReply(std::shared_ptr<ThreadParts> const& parts, demo::MessageRow const& row,
+                        bool focus = true) {
   if (!parts || !parts->replyStrip || !parts->composerBox) return;
   if (row.kind != demo::RowKind::Message || row.id.empty()) return;
   parts->replyToId = row.id;
@@ -1956,7 +1957,7 @@ void BeginComposerReply(std::shared_ptr<ThreadParts> const& parts, demo::Message
       parts->replyStrip, winrt::hstring{L"Replying to " + who + L": " + line});
   parts->replyStrip.Visibility(Visibility::Visible);
   UpdateComposerSend(parts);
-  parts->composerBox.Focus(FocusState::Programmatic);
+  if (focus) parts->composerBox.Focus(FocusState::Programmatic);
 }
 
 // Take what the box holds and hand it to the host. The box is cleared ONLY on a true answer: a
@@ -3716,6 +3717,30 @@ void SetThreadNoSession(ThreadView& v, bool noSession) {
   if (!parts || !parts->composerNote) return;
   // Recorded and handed to the ONE writer, exactly as the mode is and for the same reason.
   parts->noteNoSession = noSession;
+  UpdateComposerSend(parts);
+}
+
+ThreadDraft ThreadComposerDraft(ThreadView const& v) {
+  ThreadDraft draft;
+  auto parts = Find(v.root);
+  if (!parts || !parts->composerBox) return draft;
+  draft.text = std::wstring(parts->composerBox.Text());
+  draft.replyToRowId = parts->replyToId;
+  return draft;
+}
+
+void SetThreadComposerDraft(ThreadView& v, ThreadDraft const& draft, demo::Conversation const& c) {
+  auto parts = Find(v.root);
+  if (!parts || !parts->composerBox) return;
+  parts->composerBox.Text(winrt::hstring{draft.text});
+  ClearComposerReply(parts);
+  if (!draft.replyToRowId.empty()) {
+    for (auto const& row : c.rows) {
+      if (row.id != draft.replyToRowId) continue;
+      BeginComposerReply(parts, row, /*focus=*/false);
+      break;
+    }
+  }
   UpdateComposerSend(parts);
 }
 

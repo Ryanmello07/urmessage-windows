@@ -98,6 +98,18 @@ void SetThreadNoSession(ThreadView& v, bool noSession);
 // Put text in the composer as though it had been typed, for the one demo switch that needs the
 // box full (--demo-composer=overlimit). The button and caption follow it through the one writer.
 void SetThreadComposerText(ThreadView& v, std::wstring const& text);
+
+// THE COMPOSER'S DRAFT (the conversation-list design 2.6, F3): what the box holds and the row it
+// replies to. The window reads it before another conversation opens and puts it back when this one
+// opens again, so a draft or a reply started in one conversation is never sent into another.
+struct ThreadDraft {
+  std::wstring text;
+  std::wstring replyToRowId;
+};
+ThreadDraft ThreadComposerDraft(ThreadView const& v);
+// Put a draft into the composer, over conversation `c`: its reply target only while `c` still holds
+// that row, else none. Takes no focus.
+void SetThreadComposerDraft(ThreadView& v, ThreadDraft const& draft, urmsg::demo::Conversation const& c);
 void SetThreadTyping(ThreadView& v, bool typing);
 void AppendThreadRow(ThreadView& v, urmsg::demo::MessageRow const& row);
 

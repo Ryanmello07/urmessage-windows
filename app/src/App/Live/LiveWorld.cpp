@@ -66,55 +66,63 @@ void Mix(uint64_t& h, std::wstring const& s) {
   h *= 1099511628211ull;
 }
 
-uint64_t Digest(urmsg::demo::World const& world) {
+// ONE CONVERSATION, everything a reader can see of it: its row ids, bodies, system lines, times,
+// sides, sending-epoch roles and reactions, and its roster, roles and epoch.
+uint64_t ConversationDigestImpl(urmsg::demo::Conversation const& conv) {
   uint64_t h = 1469598103934665603ull;
-  for (auto const& conv : world.conversations) {
-    Mix(h, conv.id);
-    Mix(h, conv.name);
-    Mix(h, conv.preview);
-    Mix(h, conv.timeLabel);
-    for (auto const& row : conv.rows) {
-      Mix(h, row.id);
-      Mix(h, row.body);
-      Mix(h, row.systemText);
-      Mix(h, row.timeLabel);
-      // The sending-epoch role (item 242 R4). It decides whether the row draws as a bubble or
-      // collapses, and it can change with no row id and no body moving — a record whose epoch this
-      // device only obtains on a later fetch opens then, carrying a role it did not carry before —
-      // so without this the world that carries the change reads as "unchanged" and the thread
-      // never redraws it.
-      Mix(h, row.senderRoleAtSend);
-      h ^= static_cast<uint64_t>(row.kind) * 31 + static_cast<uint64_t>(row.outgoing) * 7 +
-           static_cast<uint64_t>(row.state);
+  Mix(h, conv.id);
+  Mix(h, conv.name);
+  Mix(h, conv.preview);
+  Mix(h, conv.timeLabel);
+  for (auto const& row : conv.rows) {
+    Mix(h, row.id);
+    Mix(h, row.body);
+    Mix(h, row.systemText);
+    Mix(h, row.timeLabel);
+    // The sending-epoch role (item 242 R4). It decides whether the row draws as a bubble or
+    // collapses, and it can change with no row id and no body moving — a record whose epoch this
+    // device only obtains on a later fetch opens then, carrying a role it did not carry before —
+    // so without this the world that carries the change reads as "unchanged" and the thread
+    // never redraws it.
+    Mix(h, row.senderRoleAtSend);
+    h ^= static_cast<uint64_t>(row.kind) * 31 + static_cast<uint64_t>(row.outgoing) * 7 +
+         static_cast<uint64_t>(row.state);
+    h *= 1099511628211ull;
+    // A reaction landing, leaving, being attempted or being refused moves no row id and no body,
+    // so it has to be mixed on its own or the world that carries it is "unchanged".
+    for (auto const& r : row.reactions) {
+      Mix(h, r.emoji);
+      Mix(h, r.failureReason);
+      h ^= static_cast<uint64_t>(r.mine) * 3 + static_cast<uint64_t>(r.state) * 5 +
+           static_cast<uint64_t>(r.removing) * 11;
       h *= 1099511628211ull;
-      // A reaction landing, leaving, being attempted or being refused moves no row id and no body,
-      // so it has to be mixed on its own or the world that carries it is "unchanged".
-      for (auto const& r : row.reactions) {
-        Mix(h, r.emoji);
-        Mix(h, r.failureReason);
-        h ^= static_cast<uint64_t>(r.mine) * 3 + static_cast<uint64_t>(r.state) * 5 +
-             static_cast<uint64_t>(r.removing) * 11;
-        h *= 1099511628211ull;
-      }
     }
   }
   // The roster, the viewer's role and any change this device is making to a member: a role that
   // moves on another member's commit changes no row id and no body, so it has to be mixed on its
-  // own or the world that carries it is "unchanged" and the rail never redraws it.
-  for (auto const& conv : world.conversations) {
-    // Each conversation's own epoch: the strip shows the open conversation's, and it moves on a
-    // commit with no row id and no body moving.
-    h ^= conv.epoch;
+  // own or the world that carries it is "unchanged" and the rail never redraws it. And this
+  // conversation's own epoch: the strip shows the open conversation's, and it moves on a commit
+  // with no row id and no body moving.
+  h ^= conv.epoch;
+  h *= 1099511628211ull;
+  Mix(h, conv.myRole);
+  for (auto const& m : conv.members) {
+    Mix(h, m.id);
+    Mix(h, m.role);
+    Mix(h, m.roleActionVerb);
+    Mix(h, m.roleActionReason);
+    h ^= static_cast<uint64_t>(m.mine) * 3 + static_cast<uint64_t>(m.roleAction) * 7;
     h *= 1099511628211ull;
-    Mix(h, conv.myRole);
-    for (auto const& m : conv.members) {
-      Mix(h, m.id);
-      Mix(h, m.role);
-      Mix(h, m.roleActionVerb);
-      Mix(h, m.roleActionReason);
-      h ^= static_cast<uint64_t>(m.mine) * 3 + static_cast<uint64_t>(m.roleAction) * 7;
-      h *= 1099511628211ull;
-    }
+  }
+  return h;
+}
+
+// THE WHOLE WORLD: every conversation's digest, in the list's order, and the world's epoch.
+uint64_t Digest(urmsg::demo::World const& world) {
+  uint64_t h = 1469598103934665603ull;
+  for (auto const& conv : world.conversations) {
+    h ^= ConversationDigestImpl(conv);
+    h *= 1099511628211ull;
   }
   h ^= world.currentEpoch;
   return h;
@@ -590,6 +598,26 @@ void OrderConversations(std::vector<LiveConversation>& conversations) {
                      if (a.activityMs != b.activityMs) return a.activityMs > b.activityMs;
                      return a.groupIdHex < b.groupIdHex;
                    });
+}
+
+uint64_t ConversationDigest(urmsg::demo::Conversation const& c) {
+  return ConversationDigestImpl(c);
+}
+
+uint64_t ListDigest(urmsg::demo::World const& world) {
+  uint64_t h = 1469598103934665603ull;
+  for (auto const& c : world.conversations) {
+    Mix(h, c.id);
+    Mix(h, c.name);
+    Mix(h, c.preview);
+    Mix(h, c.timeLabel);
+    Mix(h, c.groupIdHex);
+    h ^= static_cast<uint64_t>(c.kind) * 31 + static_cast<uint64_t>(c.memberCount) * 7 +
+         static_cast<uint64_t>(c.unread) * 13 + static_cast<uint64_t>(c.muted) * 3 +
+         static_cast<uint64_t>(c.disappearing) * 5;
+    h *= 1099511628211ull;
+  }
+  return h;
 }
 
 std::wstring ConversationIdOf(std::string const& groupIdHex) {

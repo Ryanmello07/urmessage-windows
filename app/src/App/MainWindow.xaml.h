@@ -15,6 +15,7 @@
 // UrmCompileGeneratedXamlImpl adds to the build, not from this header.
 #include "MainWindow.g.h"
 
+#include <map>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -269,6 +270,15 @@ struct MainWindow : MainWindowT<MainWindow> {
   // conversation-list design 2.4), and the onboarding generation that named it.
   std::wstring takenUpConversationId_;
   std::uint64_t takenUpDrawn_ = 0;
+  // EACH CONVERSATION'S DRAFT, by its id (the conversation-list design 2.6, F3): read when another
+  // conversation opens, put back when this one opens again, and dropped with its conversation.
+  std::map<std::wstring, urmsg::views::ThreadDraft> drafts_;
+  void KeepOpenDraft();
+  // WHAT THE LIST AND THE OPEN THREAD LAST DREW (A21, A22): each is drawn again only when its own
+  // digest moved, and the list's entrance plays once.
+  std::uint64_t listDrawnDigest_ = 0;
+  std::uint64_t threadDrawnDigest_ = 0;
+  bool liveEntrancePlayed_ = false;
 
   // Ambient activity (design doc 9.2). Off unless --demo-autoplay. None of
   // these may change destination, move the selection, or open or close the
