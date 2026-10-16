@@ -50,6 +50,21 @@ ConversationRowModel MakeConversationRowModel(demo::Conversation const& c);
 // the same reason (UrComponents.h:333-340).
 std::wstring ConversationRowAutomationName(demo::Conversation const& c, bool selected);
 
+// WHAT A LIST BUILT FROM `world` TELLS A SCREEN READER, ROW BY ROW: each row's name unselected and
+// selected, out of `world` and out of no other. The list stores these when it builds its rows and
+// selection reads them back, so a row is announced from the same conversation it was drawn from.
+//
+// THE DEFECT THIS EXISTS TO STOP (F1, the conversation-list design): selection used to name the
+// rows from demo::GetWorld(), the fabricated world, whatever world the list was built from. A live
+// list's selected row was therefore announced as the fabricated world's first conversation ("Design
+// team, 5 members, ...") over a real conversation on screen. --diagnose's `list.row.names` holds
+// this function to the world it is given.
+struct ConversationRowNames {
+  std::wstring unselected;
+  std::wstring selected;
+};
+std::vector<ConversationRowNames> ConversationRowNamesFor(demo::World const& world);
+
 // The row's entrance delay: kStaggerMs per step, capped at kMaxStaggerSteps.
 // int64_t because motion::MakeSplineDouble takes its beginMs as one
 // (UrMotion.h:100-101).
