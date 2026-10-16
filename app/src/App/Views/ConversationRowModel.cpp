@@ -85,6 +85,14 @@ std::wstring ConversationRowAutomationName(demo::Conversation const& c, bool sel
   return name;
 }
 
+std::vector<ConversationRowNames> ConversationRowNamesFor(demo::World const& world) {
+  std::vector<ConversationRowNames> out;
+  out.reserve(world.conversations.size());
+  for (auto const& c : world.conversations)
+    out.push_back({ConversationRowAutomationName(c, false), ConversationRowAutomationName(c, true)});
+  return out;
+}
+
 int64_t ConversationRowDelayMs(std::size_t index) {
   const std::size_t steps =
       (std::min)(index, static_cast<std::size_t>(urnw::motion::kMaxStaggerSteps));
@@ -292,6 +300,64 @@ std::vector<std::wstring> CollectConversationListDiagnostics() {
                        std::format(L"{} group rows carry a <=6-char prefix of their "
                                    L"groupIdHex; {} DM rows carry none",
                                    chips, dmRows)));
+
+  // 8. A LIST NAMES ITS ROWS FROM THE WORLD IT IS BUILT FROM (F1). The live list is built from
+  //    the live world, and selection used to name its rows from the fabricated one, so a screen
+  //    reader heard "Design team, 5 members, ..." over a real conversation. Asserted on a SECOND
+  //    world built here, whose names, previews and times no fabricated row has: a helper that read
+  //    any world but the one it is given cannot pass, because each name must open with its own
+  //    row's name and the selected one must carry its own row's preview and not its neighbour's.
+  //    Purely a stack local, like the ghost above: the fingerprint is untouched.
+  demo::World other{};
+  {
+    demo::Conversation direct{};
+    direct.id = L"diag-names-direct";
+    direct.kind = demo::ConversationKind::Direct;
+    direct.name = L"Diagnostic direct row";
+    direct.preview = L"the direct row's own preview";
+    direct.timeLabel = L"09:01";
+    demo::Conversation group{};
+    group.id = L"diag-names-group";
+    group.kind = demo::ConversationKind::Group;
+    group.name = L"Diagnostic group row";
+    group.memberCount = 3;
+    group.preview = L"the group row's own preview";
+    group.timeLabel = L"09:02";
+    other.conversations = {direct, group};
+  }
+  const std::vector<ConversationRowNames> otherNames = ConversationRowNamesFor(other);
+  const std::vector<ConversationRowNames> ownNames = ConversationRowNamesFor(world);
+  std::size_t otherOwn = 0;
+  for (std::size_t i = 0; i < otherNames.size() && i < other.conversations.size(); ++i) {
+    auto const& c = other.conversations[i];
+    auto const& n = otherNames[i];
+    const bool own = n.unselected == ConversationRowAutomationName(c, false) &&
+                     n.selected == ConversationRowAutomationName(c, true) &&
+                     n.unselected.rfind(c.name + L", ", 0) == 0 &&
+                     n.selected.rfind(c.name + L", ", 0) == 0 &&
+                     n.selected.find(c.preview) != std::wstring::npos;
+    if (own) ++otherOwn;
+  }
+  const bool neighbourKept =
+      otherNames.size() == 2 &&
+      otherNames[1].selected.find(other.conversations[0].preview) == std::wstring::npos &&
+      otherNames[0].selected.find(other.conversations[1].preview) == std::wstring::npos;
+  std::size_t fabricatedOwn = 0;
+  for (std::size_t i = 0; i < ownNames.size() && i < total; ++i) {
+    if (ownNames[i].unselected == ConversationRowAutomationName(world.conversations[i], false) &&
+        ownNames[i].selected == ConversationRowAutomationName(world.conversations[i], true))
+      ++fabricatedOwn;
+  }
+  const bool namesOk = otherNames.size() == other.conversations.size() &&
+                       otherOwn == other.conversations.size() && neighbourKept &&
+                       ownNames.size() == total && fabricatedOwn == total && 0 < total;
+  lines.push_back(Line(
+      L"list.row.names", namesOk,
+      std::format(L"a list names its rows from the world it is built from: {} of {} rows of a "
+                  L"second world, {} of {} of the fabricated one; the second world's row 2 "
+                  L"selected is \"{}\"",
+                  otherOwn, other.conversations.size(), fabricatedOwn, total,
+                  otherNames.size() == 2 ? otherNames[1].selected : std::wstring(L"(missing)"))));
   return lines;
 }
 
