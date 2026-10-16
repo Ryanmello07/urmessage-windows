@@ -24,6 +24,7 @@
 #include <functional>
 
 #include "Demo/DemoWorld.h"
+#include "Demo/IdentityDemo.h"
 #include "RunMode.h"
 
 #include <winrt/Microsoft.UI.Xaml.h>
@@ -49,9 +50,15 @@ struct SettingsView {
 // "Route through URnetwork" switch (ledger 268): MainWindow passes
 // urmsg::live::RouteThroughUrnetwork() and wires the callback to
 // urmsg::live::SetRouteThroughUrnetwork, its one writer.
+//
+// `onIdentity` carries out a button of the ACCOUNT group (identity phase 1, Task 6): in fabricated
+// mode that group is Demo/IdentityDemo.h's BuildAccount - "Your ID", Devices, and the demo's way
+// into every identity screen - at the TOP of the page, and MainWindow opens the screen a button
+// names. In live mode BuildAccount builds nothing and the inert ACCOUNT group stays where it was.
 SettingsView MakeSettings(urmsg::demo::World const& world,
                           std::function<void(bool)> onAdvancedChanged, bool advanced,
                           std::function<void(bool)> onRouteChanged,
-                          bool routeThroughUrnetwork);
+                          bool routeThroughUrnetwork,
+                          std::function<void(urmsg::demo::identity::Button const&)> onIdentity = {});
 
 }  // namespace urmsg::views

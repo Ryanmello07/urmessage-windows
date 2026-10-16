@@ -2757,10 +2757,17 @@ bool IsPlainLaunch() {
 }
 
 bool IsEnabled() {
+#if defined(URM_IDENTITY_PREVIEW) && URM_IDENTITY_PREVIEW
+  // THE IDENTITY PREVIEW BUILD HAS NO LIVE MODE (identity phase 1, Task 6). Its zip is the owner's
+  // first look at the identity screens, over made-up data, and nothing in it is encrypted: no
+  // argument, variable or file turns a mesh on, so no launch of it maps the SDK.
+  return false;
+#else
   const std::wstring env = EnvVar(L"URMESSAGE_LIVE");
   if (env == L"1" || HasCommandLineFlag(L"--live")) return true;
   if (env == L"0") return false;
   return IsPlainLaunch();
+#endif
 }
 
 bool RouteThroughUrnetwork() {

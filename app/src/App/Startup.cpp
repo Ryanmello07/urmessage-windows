@@ -45,6 +45,7 @@
 #include "Live/HeldGroupRules.h"  // the held-group lines below (pure; Task 39)
 #include "Live/RefusalCopy.h"     // the refusal copy lines below (pure; Task 58)
 #include "Demo/DemoSwitches.h"
+#include "Demo/IdentityDemo.h"  // the identity screens' pure gate (Task 6)
 #include "Demo/DemoStress.h"
 
 // The Windows App SDK version this binary was BUILT against, injected from the
@@ -3393,10 +3394,20 @@ std::vector<std::wstring> CollectDiagnostics() {
     constexpr const wchar_t* kScreens[] = {L"none", L"chats", L"thread", L"inspect",
                                            L"network", L"settings", L"developer"};
     lines.push_back(std::format(
-        L"  demo switches    : enabled={} screen={} autoplay={} advanced={} watermark={}",
+        L"  demo switches    : enabled={} screen={} autoplay={} advanced={} watermark={} "
+        L"identity={}",
         o.enabled ? L"yes" : L"no", kScreens[static_cast<size_t>(o.screen)],
         o.autoplay ? L"yes" : L"no", o.advanced ? L"yes" : L"no",
-        o.watermark ? L"on" : L"off"));
+        o.watermark ? L"on" : L"off", urmsg::demo::identity::ScreenName(o.identityScreen)));
+    // WHICH BUILD THIS IS. The identity preview (Task 6's zip, /p:UrmIdentityPreview=true) opens
+    // the fabricated identity screens on a plain launch and is never live; every other build keeps
+    // the rule that a plain launch is live. Printed so a smoke of the zip can say which it ran.
+    lines.push_back(std::format(
+        L"  build kind       : {}",
+        urmsg::demo::identity::kIdentityPreviewBuild
+            ? L"identity preview (slice 0): a plain launch opens the fabricated identity screens, "
+              L"and no launch is ever live"
+            : L"standard: a plain launch is live"));
   }
   {
     const nlohmann::json prefs = urnw::LoadAppPrefs();
@@ -3453,6 +3464,12 @@ std::vector<std::wstring> CollectDiagnostics() {
   // join code (Task 58): the rule per row, R13 on its own line, the table's words, and the dialog's
   // own copy. Pure, like the held-group lines above.
   for (auto& line : RefusalCopyDiagnostics()) lines.push_back(std::move(line));
+  // The identity screens over the fabricated world (identity phase 1, Task 6): every screen built
+  // and read for Property 1, the demo words, the capture policy against the blocks, the typed-back
+  // check, the phrase field's rule, the fixture, and live mode drawing none of them. Pure, like
+  // the lines above; the copy pairs these screens use are gated in RunModeCopyDiagnostics.
+  for (auto& line : urmsg::demo::identity::IdentityDemoDiagnostics())
+    lines.push_back(std::move(line));
   {
     using namespace urmsg::demo;
     World const& w = GetWorld();

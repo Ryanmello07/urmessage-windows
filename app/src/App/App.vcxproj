@@ -191,6 +191,11 @@
            the value end at `L` and the TU fails with C2065 'L': undeclared
            identifier. -->
       <PreprocessorDefinitions>DISABLE_XAML_GENERATED_MAIN;URM_WINDOWSAPPSDK_VERSION_RAW=$(UrmWindowsAppSdkVersion);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <!-- THE IDENTITY PREVIEW BUILD (identity phase 1, Task 6): /p:UrmIdentityPreview=true makes the
+           zip the owner previews the identity screens with. Its plain launch opens the fabricated
+           world on "Set up this device" (Demo\DemoSwitches.cpp) and no launch of it is ever live
+           (Live\LiveMesh.cpp's IsEnabled). Every other build is unchanged. -->
+      <PreprocessorDefinitions Condition="'$(UrmIdentityPreview)'=='true'">URM_IDENTITY_PREVIEW=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary Condition="'$(Configuration)'=='Debug'">MultiThreadedDebugDLL</RuntimeLibrary>
       <RuntimeLibrary Condition="'$(Configuration)'=='Release'">MultiThreadedDLL</RuntimeLibrary>
       <Optimization Condition="'$(Configuration)'=='Release'">MaxSpeed</Optimization>
@@ -250,6 +255,9 @@
          winrt/ headers even though (unlike DemoWorld.cpp) it needs Win32
          (<windows.h>, <shellapi.h>) for CommandLineToArgvW. -->
     <ClCompile Include="Demo\DemoSwitches.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <!-- NotUsing for the same reason as Demo\DemoWorld.cpp above: Startup.cpp's CollectDiagnostics
+         calls IdentityDemoDiagnostics before winrt::init_apartment (identity phase 1, Task 6). -->
+    <ClCompile Include="Demo\IdentityDemo.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <!-- NotUsing for the same reason as Demo\DemoWorld.cpp above: Startup.cpp's
          `demo stress` line calls this generator from CollectDiagnostics()
          before winrt::init_apartment, so the TU must not pull in the pch and
@@ -312,6 +320,7 @@
          before winrt::init_apartment (main.cpp:168 vs :183), so this TU must
          not pull in the pch and its winrt/ headers. -->
     <ClCompile Include="Views\InspectRailFields.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="Views\IdentityView.cpp" />
     <ClCompile Include="Views\InspectRailView.cpp" />
     <!-- Uses the pch (it builds XAML): only its Format*/CollectNetworkDiagnostics
          half is pure, and main.cpp calls that half only from the `if (diagnose)`
@@ -352,6 +361,7 @@
     <ClInclude Include="Views\ThreadLayout.h" />
     <ClInclude Include="Views\ThreadView.h" />
     <ClInclude Include="Demo\DemoSwitches.h" />
+    <ClInclude Include="Demo\IdentityDemo.h" />
     <ClInclude Include="Demo\DemoStress.h" />
     <ClInclude Include="Demo\DemoAutoplay.h" />
     <ClInclude Include="Demo\DemoAutoplayLoop.h" />
@@ -376,6 +386,7 @@
     <ClInclude Include="Views\DeveloperDump.h" />
     <ClInclude Include="Views\DeveloperView.h" />
     <ClInclude Include="Views\InspectRailFields.h" />
+    <ClInclude Include="Views\IdentityView.h" />
     <ClInclude Include="Views\InspectRailView.h" />
     <ClInclude Include="Views\NetworkPageView.h" />
     <ClInclude Include="Views\RosterRules.h" />
