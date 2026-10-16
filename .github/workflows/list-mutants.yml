@@ -1,0 +1,146 @@
+# THROWAWAY, NEVER MERGE, NEVER IN AN UPSTREAM PULL REQUEST. feat/conversation-list: the --diagnose
+# lines of lead ruling R67's two fixes, each against a mutant that puts its defect back with ONE edit:
+#   cm-receive-gone     a receive's report is never drawn            -> conv receive
+#   cm-receive-removed  the report drawn over a removal too          -> conv receive
+#   cm-removed-bubble   a removed conversation's Reply denies a session -> removed controls
+#   cm-removed-roster   its role controls take the dark arm           -> removed controls
+# A mutant is KILLED only when its own line FAILS and no other line does. The control (the tested
+# head) prints no FAIL. Nothing is published.
+name: List diagnose mutants, R67 fixes (throwaway)
+
+on:
+  push:
+    branches:
+      - 'ci/list-mutants**'
+
+permissions:
+  contents: read
+
+env:
+  LIST_HEAD: 34fd7b15cbf9b9e3e6929caeb1e33f13ab595717
+
+jobs:
+  diagnose:
+    name: Diagnose (${{ matrix.variant }})
+    runs-on: windows-2022
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [control, cm-receive-gone, cm-receive-removed, cm-removed-bubble, cm-removed-roster]
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Prove the checkout is the tested head plus CI files only
+        shell: pwsh
+        run: |
+          $parent = git rev-parse HEAD^
+          Write-Host "checkout $(git rev-parse HEAD)"
+          Write-Host "tested   $parent"
+          if ($parent -ne $env:LIST_HEAD) { Write-Host "::error::the parent is not $env:LIST_HEAD"; exit 1 }
+          $changed = @(git diff --name-only HEAD^ HEAD)
+          $outside = @($changed | Where-Object { $_ -notlike '.github/*' })
+          if ($outside.Count -gt 0) { Write-Host "::error::the CI commit changes files outside .github: $($outside -join ', ')"; exit 1 }
+
+      - name: Apply the mutant
+        if: matrix.variant != 'control'
+        shell: pwsh
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          function Swap([string]$path, [string]$old, [string]$new) {
+            $text = [IO.File]::ReadAllText($path)
+            $n = ([regex]::Matches($text, [regex]::Escape($old))).Count
+            if ($n -ne 1) { Write-Host "::error::the edit's text occurs $n times in $path, not once"; exit 1 }
+            [IO.File]::WriteAllText($path, $text.Replace($old, $new), (New-Object Text.UTF8Encoding($false)))
+          }
+          $nl = "`n"
+          if ($env:VARIANT -eq 'cm-receive-gone') {
+            Swap 'app\src\App\Live\LiveWorld.cpp' ('  if (!group.receiveError.empty() && !group.removed)') ('  if (false && !group.receiveError.empty() && !group.removed)  // CM: a receive report is never drawn')
+          }
+          if ($env:VARIANT -eq 'cm-receive-removed') {
+            Swap 'app\src\App\Live\LiveWorld.cpp' ('  if (!group.receiveError.empty() && !group.removed)') ('  if (!group.receiveError.empty())  // CM: drawn over a removal too')
+          }
+          if ($env:VARIANT -eq 'cm-removed-bubble') {
+            Swap 'app\src\App\Views\ThreadLayout.cpp' ('          return std::wstring(L"Reply, disabled. ") + demo::kRemovedLine;') ('          return L"Reply: there is no live session to send a reply into";  // CM: the session denied')
+          }
+          if ($env:VARIANT -eq 'cm-removed-roster') {
+            Swap 'app\src\App\Views\RosterRules.cpp' ('      return RoleControlLabel(verb) + L", disabled. " + demo::kRemovedLine;') ('      return dark;  // CM: the dark arm, "no live session"')
+          }
+          git --no-pager diff --stat
+          git --no-pager diff
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build the app (Release x64)
+        shell: pwsh
+        working-directory: app
+        run: |
+          $pin = '10.0.22621.0'
+          $roots = @("${env:ProgramFiles(x86)}\Windows Kits\10", "$env:ProgramFiles\Windows Kits\10") | Where-Object { Test-Path -LiteralPath $_ }
+          $usable = @(foreach ($r in $roots) {
+            Get-ChildItem (Join-Path $r 'Include') -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' -and
+                (Test-Path -LiteralPath (Join-Path $r "Include\$($_.Name)\um\windows.h")) -and
+                (Test-Path -LiteralPath (Join-Path $r "Lib\$($_.Name)\um\x64\kernel32.lib")) } |
+              Select-Object -ExpandProperty Name
+          }) | Select-Object -Unique | Sort-Object { [version]$_ }
+          $usable = @($usable)
+          $sdk = if ($usable -contains $pin) { $pin } else { $usable[-1] }
+          msbuild URmessage.sln /restore /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=$sdk /m /v:minimal /clp:Summary
+          exit $LASTEXITCODE
+
+      - name: Run --diagnose and judge (${{ matrix.variant }})
+        shell: pwsh
+        env:
+          VARIANT: ${{ matrix.variant }}
+          URMESSAGE_APP_ROOT: ${{ github.workspace }}\.ci-appstate
+        run: |
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'app\build\x64\Release\URmessage.exe'
+          $psi = [System.Diagnostics.ProcessStartInfo]::new($exe)
+          $psi.Arguments = '--diagnose'
+          $psi.UseShellExecute = $false
+          $psi.CreateNoWindow = $true
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+          $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+          $p = [System.Diagnostics.Process]::Start($psi)
+          $out = $p.StandardOutput.ReadToEnd()
+          $null = $p.StandardError.ReadToEnd()
+          if (-not $p.WaitForExit(120000)) { Write-Host '::error::--diagnose did not exit'; exit 1 }
+          New-Item -ItemType Directory -Force "$env:GITHUB_WORKSPACE\cmdiag" | Out-Null
+          [IO.File]::WriteAllText("$env:GITHUB_WORKSPACE\cmdiag\diagnose-$env:VARIANT.out", $out, (New-Object Text.UTF8Encoding($false)))
+          $lines = @($out -split "`r?`n")
+          $pass = @($lines | Where-Object { $_ -match '\bPASS\b' }).Count
+          $fails = @($lines | Where-Object { $_ -match '\bFAIL\b' })
+          Write-Host "--diagnose: $($lines.Count) lines, $pass PASS, $($fails.Count) FAIL"
+          $fails | ForEach-Object { Write-Host "  FAIL line: $($_.Substring(0, [Math]::Min(300, $_.Length)))" }
+          $labels = @($fails | ForEach-Object { ($_.TrimStart() -split ':')[0].Trim() })
+          Write-Host "failing lines: $($labels -join ', ')"
+          if ($env:VARIANT -eq 'control') {
+            if ($fails.Count -eq 0 -and $pass -gt 100) { Write-Host 'control: no FAIL'; exit 0 }
+            Write-Host '::error::control: --diagnose printed FAIL'; exit 1
+          }
+          $want = @()
+          if ($env:VARIANT -eq 'cm-receive-gone') { $want = @('conv receive') }
+          if ($env:VARIANT -eq 'cm-receive-removed') { $want = @('conv receive') }
+          if ($env:VARIANT -eq 'cm-removed-bubble') { $want = @('removed controls') }
+          if ($env:VARIANT -eq 'cm-removed-roster') { $want = @('removed controls') }
+          $missing = @($want | Where-Object { $labels -notcontains $_ })
+          $extra = @($labels | Where-Object { $want -notcontains $_ })
+          if ($missing.Count -eq 0 -and $extra.Count -eq 0) { Write-Host "$($env:VARIANT) KILLED by its own line, and only by it: $($want -join ', ')"; exit 0 }
+          Write-Host "::error::$($env:VARIANT) is not killed for its own reason: missing $($missing -join ', '); other FAIL lines $($extra -join ', ')"
+          exit 1
+
+      - name: Upload the diagnose output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: list-diagnose-${{ matrix.variant }}
+          path: cmdiag/
+          if-no-files-found: warn
