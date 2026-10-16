@@ -554,6 +554,14 @@ urmsg::demo::Conversation BuildConversationImpl(LiveGroup const& group, int64_t&
   if (group.removed) conv.rows.push_back(MakeSystemRow(L"removed", urmsg::demo::kRemovedLine));
   conv.removed = group.removed;
 
+  // WHAT THIS GROUP'S LAST RECEIVE REPORTED, at the foot of ITS OWN conversation and in the library's
+  // own words (the conversation-list design 2.1): never drawn on another conversation, gone with the
+  // first receive that reports nothing, and not over a removal, whose line already says why nothing
+  // more will come.
+  if (!group.receiveError.empty() && !group.removed)
+    conv.rows.push_back(MakeSystemRow(
+        L"receive-reported", std::wstring(kReceiveReportedLead) + urnw::Widen(group.receiveError)));
+
   // A LEAVE THAT WAS REFUSED (ledger 273), at the foot and in the library's own words: the person
   // pressed a button, and without this line its whole effect would be nothing at all.
   if (!group.leaveError.empty())
