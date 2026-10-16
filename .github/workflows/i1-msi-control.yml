@@ -1,0 +1,671 @@
+# URmessage Windows client — mainstream CI (urnetwork/message-windows).
+#
+# Adapted from the VPN client's .github/workflows/build-and-test.yml, and the
+# adaptation is almost entirely DELETION. That workflow is 361 lines because
+# most of it is a Go pipeline: it checks out sdk/connect/glog/goidenticons,
+# installs mingw-w64 and llvm-mingw, cross-compiles URnetworkSdk.dll for amd64
+# and arm64, vendors wintun by sha256 + Authenticode signer, builds a WiX MSI
+# and verifies its payload.
+#
+# URmessage needs little of that. The app build needs no Go and no SDK DLL:
+# the app reaches the message server through URnetworkSdk.dll, but it links an
+# import library made from the vendored export list and delay-loads the dll,
+# so the build-and-test job neither makes nor needs it. The sdk-composition
+# job makes the dll separately, from urnetwork/message's native composition at
+# the commits app/third_party/urnetwork-sdk/composition.txt pins, and holds
+# the vendored export list and headers to it. No wintun, no driver, no
+# service. The installer is a per-user MSI (app/installer), which this
+# workflow builds and verifies as a check and does not upload (see those
+# steps). The build is restore NuGet, msbuild the solution, produce the exe,
+# package the MSI. What is KEPT from the precedent is its style and its scars:
+# the job shape, the least-privilege permissions block, windows-2022 rather
+# than windows-latest, keeping the msbuild log even on failure, and asserting
+# on the artifact that matters instead of on a step's exit code.
+#
+# This is the MAINSTREAM workflow: build and test, and nothing more. No release
+# job, no tagging, no version derivation, no release upload. The artifact below
+# is for inspection; an artifact is not a release.
+#
+# SPDX-License-Identifier: MPL-2.0
+# THROWAWAY, NEVER MERGE, NEVER IN AN UPSTREAM PULL REQUEST. build-and-test.yml, unchanged but for
+# its trigger and one step after "Verify the MSI payload": the control that shows
+# verify-msi-payload.ps1 reads the STANDARD build's AppUserModelID out of Ids.h by its condition,
+# whatever the order of a pair's arms.
+name: I1 MSI check control (throwaway)
+
+on:
+  push:
+    branches:
+      - 'ci/i1-msi-control**'
+
+# Least privilege. Nothing here writes to the repository: no tag, no release,
+# no commit. `contents: read` is the whole requirement — and unlike the VPN
+# workflow there is no `actions: read` either, because that permission existed
+# only to let the version-derive step read the run's created_at, and this
+# workflow derives no version (see the build step).
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and test the Windows app (x64)
+    # NOT windows-latest. That image has moved to Visual Studio 18, whose
+    # toolset set no longer matches what Directory.Build.props pins (v143 +
+    # Windows SDK 10.0.22621.0). windows-2022 IS the reference box those pins
+    # describe, which is the whole reason this workflow uses the pins directly
+    # instead of reusing tools/build-local.ps1's toolset/SDK detection — that
+    # detection exists for developer machines that do not have the pinned
+    # toolchain, and CI is the machine that defines it.
+    runs-on: windows-2022
+    # A hedge, not a gate. The diagnose step below has its own 120s wait and
+    # kills what it waits on, but URmessage.exe is a /SUBSYSTEM:WINDOWS binary
+    # with several MessageBoxW paths, and a modal box on a headless runner is
+    # unattended by definition. Fail in 45 minutes with a log, rather than
+    # burning six hours of the default job timeout.
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      # THE APP'S COPY SAYS NOTHING FALSE ABOUT AN INVITATION (Task 58; the lead's rulings R40 A11 and
+      # A12). Since invite version 3 an invitation is sealed to the join code it was made for, so only
+      # that device can open it, and "whoever has it is in", or "whoever reads it is in", the group is
+      # false. app\tools\verify-copy.ps1
+      # reads every source under app\src as the compiler sees its strings (comments out, adjacent
+      # literals joined) and fails on any string that says it. Its self-test runs first, over
+      # fixtures that must and must not be found, so a scan that finds nothing has shown it can find.
+      # Run under Windows PowerShell 5.1, the way the other checks run.
+      - name: Check that no app string says whoever has an invitation is in the group
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\verify-copy.ps1 -SelfTest
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::the copy check's self-test failed (exit code $LASTEXITCODE) -- its output is above"
+            exit $LASTEXITCODE
+          }
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\verify-copy.ps1
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::an app string says what is false of an invitation (exit code $LASTEXITCODE) -- its output is above"
+            exit $LASTEXITCODE
+          }
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      # The pins are the contract, so print a divergence before msbuild trips
+      # over it as an unrelated-looking MSB8036/MSB8020 forty lines into a
+      # build log. This step used to hard-fail when the pin was absent, on the
+      # theory that a CI run building against a different SDK would stop being
+      # the reference -- but the precedent workflow
+      # (upstream-build-and-test.yml, which has actually run green) does the
+      # opposite in its own comment: runner images carry a different SDK set
+      # than the reference box the pins describe, so IT resolves whatever is
+      # installed and overrides with that. A hard fail here teaches nothing
+      # about the demo and blocks every PR on an image detail; a silent
+      # override would make the pin meaningless. The middle path: keep
+      # printing exactly what the runner has, proceed with the build using
+      # whatever it does have, and warn (not fail) when the pin is missing. If
+      # that warning ever fires, the correct response is to change the pin in
+      # app/Directory.Build.props, not to add more detection to CI.
+      - name: Resolve the toolchain, warning if the pin is absent
+        id: toolchain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # Kept in step with app/Directory.Build.props.
+          $sdk = '10.0.22621.0'
+          $toolset = 'v143'
+
+          $kitRoots = @(
+            "${env:ProgramFiles(x86)}\Windows Kits\10",
+            "$env:ProgramFiles\Windows Kits\10"
+          ) | Where-Object { Test-Path -LiteralPath $_ }
+
+          $available = @()
+          foreach ($root in $kitRoots) {
+            $installed = Get-ChildItem (Join-Path $root 'Include') -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' } |
+              Select-Object -ExpandProperty Name
+            Write-Host "$root : $($installed -join ', ')"
+            $available += $installed
+          }
+
+          # Headers AND libs: a headers-only kit compiles and then fails at
+          # link, which reads as an unrelated error.
+          $header = $kitRoots | ForEach-Object { Join-Path $_ "Include\$sdk\um\windows.h" } |
+            Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          $lib = $kitRoots | ForEach-Object { Join-Path $_ "Lib\$sdk\um\x64\kernel32.lib" } |
+            Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          $pinPresent = [bool]($header -and $lib)
+
+          if (-not $header) {
+            Write-Host "::warning::Windows SDK $sdk has no um\windows.h on this runner; app/Directory.Build.props pins it, but this workflow now builds with whatever the runner has instead of failing (see the step comment above)"
+          } else {
+            Write-Host "windows sdk headers: $header"
+          }
+          if (-not $lib) {
+            Write-Host "::warning::Windows SDK $sdk has no Lib\um\x64\kernel32.lib on this runner (headers without libs link-fail)"
+          } else {
+            Write-Host "windows sdk libs   : $lib"
+          }
+
+          # The toolset check is a WARNING: msbuild's own MSB8020 already names
+          # v143 plainly, so a false negative here (an image that stores the
+          # toolset somewhere new) must not fail an otherwise good build. There
+          # is also no override lever for the toolset the way there is for the
+          # SDK version below, so surfacing it is all this step can do.
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path -LiteralPath $vswhere) {
+            $vs = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath
+            if ($vs) {
+              $toolsetDir = Join-Path $vs "MSBuild\Microsoft\VC\v170\Platforms\x64\PlatformToolsets\$toolset"
+              if (Test-Path -LiteralPath $toolsetDir) {
+                Write-Host "platform toolset   : $toolsetDir"
+              } else {
+                Write-Host "::warning::platform toolset $toolset was not found under $vs -- if the build fails with MSB8020, this is why"
+              }
+              $msvc = Get-ChildItem (Join-Path $vs 'VC\Tools\MSVC') -Directory -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty Name
+              Write-Host "msvc versions      : $($msvc -join ', ')"
+            }
+          }
+
+          # Resolve what the build should actually use: the pin when it is
+          # present (the common case -- windows-2022 IS the reference box), or
+          # else the highest installed SDK that has both headers and libs, so
+          # the build proceeds instead of hard-failing on an image detail.
+          $resolvedSdk = $sdk
+          if (-not $pinPresent) {
+            $usable = foreach ($root in $kitRoots) {
+              foreach ($name in ($available | Select-Object -Unique)) {
+                $h = Join-Path $root "Include\$name\um\windows.h"
+                $l = Join-Path $root "Lib\$name\um\x64\kernel32.lib"
+                if ((Test-Path -LiteralPath $h) -and (Test-Path -LiteralPath $l)) { $name }
+              }
+            }
+            # @(...): a single surviving match collapses to a bare string, and
+            # a bare string indexed with [-1] below returns its LAST
+            # CHARACTER, not the element -- silently resolving to "0" for a
+            # version like 10.0.19041.0. Force it to stay an array.
+            $usable = @($usable | Select-Object -Unique | Sort-Object { [version]$_ })
+            if (-not $usable) {
+              throw "no Windows 10 SDK with both headers and x64 libs found on this runner -- there is nothing to fall back to"
+            }
+            $resolvedSdk = $usable[-1]
+            Write-Host "::warning::Windows SDK $sdk (pinned in app/Directory.Build.props) is absent on this runner -- proceeding with the build using $resolvedSdk instead. If this fires on an ordinary run, fix the pin in app/Directory.Build.props; don't add more detection here."
+          }
+          Write-Host "sdk used for build : $resolvedSdk"
+          "sdk_version=$resolvedSdk" >> $env:GITHUB_OUTPUT
+
+      # /restore does the NuGet work (App.vcxproj takes Windows App SDK 2.2.0,
+      # C++/WinRT and the SDK build tools as PackageReferences; Common.vcxproj
+      # takes none). Everything else about the build comes from
+      # app/Directory.Build.props, ON PURPOSE:
+      #
+      #   * no /p:PlatformToolset. There is no override lever for it (see the
+      #     toolchain step above): v143 is what windows-2022 ships, and if that
+      #     ever stops being true msbuild's own MSB8020 already names it
+      #     plainly.
+      #   * /p:WindowsTargetPlatformVersion IS passed, but sourced from the
+      #     toolchain step's resolved value, not hardcoded here. On this
+      #     runner (which the props file's 10.0.22621.0 pin describes) that
+      #     resolves right back to the pin, so this is a no-op in the ordinary
+      #     case — as it was when this workflow overrode nothing here — and it
+      #     only diverges, with a warning already on record above, when the
+      #     pinned SDK is absent. That is what lets the build proceed instead
+      #     of failing on an image detail.
+      #   * no /p:UrVersion*. The mainstream workflow releases nothing, so the
+      #     props defaults (0.0.0-dev, version code 0) are the correct identity
+      #     for a build that is never shipped.
+      #   * no /p:RestorePackagesConfig. There is no packages.config anywhere in
+      #     this repo (the VPN repo has one); the flag would be inert here.
+      #
+      # x64 only. The solution also configures ARM64 and it cross-builds from
+      # this runner, but the test below RUNS the binary, and an x64 host cannot
+      # run an ARM64 exe — an ARM64 leg would build-only and would quietly be a
+      # weaker gate wearing the same name.
+      - name: Build the solution (Release x64)
+        id: build
+        shell: pwsh
+        working-directory: app
+        run: |
+          msbuild URmessage.sln `
+            /restore `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /p:WindowsTargetPlatformVersion=${{ steps.toolchain.outputs.sdk_version }} `
+            /m `
+            /v:minimal `
+            /clp:Summary `
+            /flp:"LogFile=msbuild-x64.log;Verbosity=detailed"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::msbuild failed with exit code $LASTEXITCODE -- see the msbuild-log-x64 artifact for the detailed log"
+            exit $LASTEXITCODE
+          }
+
+      # The per-user MSI (app/installer), built from the output folder the step
+      # above just wrote, as a BUILD CHECK: WiX compiles it and runs its ICE
+      # validation with every warning an error, except ICE03 and ICE61, which
+      # Installer.wixproj suppresses with its reasons. The next two steps run
+      # ICE03 on its own and read what landed inside. They run before the
+      # diagnose step so that they package exactly what msbuild produced,
+      # never anything a run of the app could leave behind.
+      #
+      # It is NOT uploaded, on purpose, for three reasons. It carries the four
+      # licensed brand typefaces (README, open question 1; the same reason the
+      # upload at the end of this file is just the exe). This build stages no
+      # URnetworkSdk.dll, so an install of it is an app whose ordinary launch
+      # cannot go live. And it is unstamped (MSI version 0.0.1, version code
+      # 0), so it would never update. It shows that the installer still builds
+      # and still carries the app; it is not a client for anyone to install.
+      #
+      # /restore fetches the WiX v5 SDK (WixToolset.Sdk 5.0.2, pinned in
+      # Installer.wixproj) from NuGet, as the solution build fetches the
+      # Windows App SDK.
+      - name: Build the per-user MSI (x64 build check, not uploaded)
+        shell: pwsh
+        working-directory: app
+        run: |
+          msbuild installer\Installer.wixproj `
+            /restore `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /p:BinDir="$env:GITHUB_WORKSPACE\app\build\x64\Release" `
+            /v:minimal `
+            /clp:Summary `
+            /flp:"LogFile=msbuild-msi-x64.log;Verbosity=detailed"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::the MSI build failed with exit code $LASTEXITCODE -- see msbuild-msi-x64.log in the msbuild-log-x64 artifact"
+            exit $LASTEXITCODE
+          }
+
+      # ICE03 is what checks the syntax of the conditions and formatted strings
+      # Package.wxs authors by hand: the launch conditions, the shortcut's
+      # Target, the registry value. The build above suppresses it for the
+      # whole package, because the harvested Windows App SDK payload fails it
+      # on eight File.Language rows (Installer.wixproj names them), and WiX
+      # cannot suppress it for one table. This runs ICE03 alone, with the WiX
+      # SDK the MSI build restored, and passes only on exactly those eight
+      # rows: a new row anywhere fails, and so does a listed row that is gone.
+      # Run under Windows PowerShell 5.1, the way the README runs it.
+      - name: Run ICE03 on its own and allow only the eight known rows
+        shell: pwsh
+        run: |
+          $msi = @(Get-ChildItem app\installer\bin -Recurse -Filter URmessage.msi)
+          if ($msi.Count -ne 1) {
+            Write-Host "::error::expected exactly one URmessage.msi under app\installer\bin, found $($msi.Count)"
+            exit 1
+          }
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\verify-msi-ice03.ps1 -MsiPath $msi[0].FullName
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::the ICE03 check failed (exit code $LASTEXITCODE) -- its output is above"
+            exit $LASTEXITCODE
+          }
+
+      # What landed inside the MSI, and how Windows Installer resolves it (see
+      # the script's header). From the MSI's own tables, read-only: every file
+      # under INSTALLFOLDER and enough of them; ten files the app needs to
+      # start and render (the exe, resources.pri, the compiled XAML, the
+      # Windows App Runtime, the body face and the app-local VC++ runtime),
+      # each at its path; the per-user properties; and the Start-menu
+      # shortcut's Target and AppUserModelID. Then, in Windows Installer
+      # sessions on temporary copies, without installing anything: a default
+      # install requests those files and the shortcut, INSTALLFOLDER resolves
+      # under %LOCALAPPDATA%\Programs, and ALLUSERS=1 or a deleted
+      # MSIINSTALLPERUSER is refused. Run without -Release, which would also
+      # require URnetworkSdk.dll and is for an MSI that ships. Run under
+      # Windows PowerShell 5.1, the way the README runs it.
+      - name: Verify the MSI payload
+        shell: pwsh
+        run: |
+          $msi = @(Get-ChildItem app\installer\bin -Recurse -Filter URmessage.msi)
+          if ($msi.Count -ne 1) {
+            Write-Host "::error::expected exactly one URmessage.msi under app\installer\bin, found $($msi.Count)"
+            exit 1
+          }
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\verify-msi-payload.ps1 -MsiPath $msi[0].FullName
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::the MSI payload check failed (exit code $LASTEXITCODE) -- its output is above"
+            exit $LASTEXITCODE
+          }
+
+      # THE CONTROL (identity/i1; the lead's direction for the slice-0 PR). The same check against
+      # three other Ids.h files, each of which it must answer for its own reason:
+      #   preview-first   0f0a97dc's Ids.h, whose pairs open with the identity preview's arm: the
+      #                   version that failed this check (run 38900446335). It must PASS now.
+      #   preview-changed this Ids.h with the PREVIEW arm's id changed: the standard build does not
+      #                   compile that arm, so it must still PASS.
+      #   standard-changed this Ids.h with the STANDARD arm's id changed: it must FAIL, and on the
+      #                   shortcut's AppUserModelID and nothing else.
+      - name: Control - the MSI check reads the standard build's id by its condition
+        shell: pwsh
+        run: |
+          $msi = @(Get-ChildItem app\installer\bin -Recurse -Filter URmessage.msi)
+          if ($msi.Count -ne 1) { Write-Host "::error::expected one MSI, found $($msi.Count)"; exit 1 }
+          $dir = Join-Path $env:RUNNER_TEMP 'ids-control'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $here = [IO.File]::ReadAllText('app\src\Common\Ids.h')
+          $std = 'inline constexpr wchar_t kAppUserModelId[] = L"URmessage.Desktop";'
+          $pre = 'inline constexpr wchar_t kAppUserModelId[] = L"URmessage.IdentityPreview";'
+          foreach ($needle in @($std, $pre)) {
+            $n = ([regex]::Matches($here, [regex]::Escape($needle))).Count
+            if ($n -ne 1) { Write-Host "::error::'$needle' occurs $n times in Ids.h, not once"; exit 1 }
+          }
+          $enc = New-Object Text.UTF8Encoding($false)
+          git show 0f0a97dc4cc18ce6ac7b363f66a1df15c25f92af:app/src/Common/Ids.h | Set-Content -LiteralPath (Join-Path $dir 'preview-first.h') -Encoding utf8
+          [IO.File]::WriteAllText((Join-Path $dir 'preview-changed.h'), $here.Replace($pre, 'inline constexpr wchar_t kAppUserModelId[] = L"URmessage.Wrong";'), $enc)
+          [IO.File]::WriteAllText((Join-Path $dir 'standard-changed.h'), $here.Replace($std, 'inline constexpr wchar_t kAppUserModelId[] = L"URmessage.Wrong";'), $enc)
+          $first = [IO.File]::ReadAllText((Join-Path $dir 'preview-first.h'))
+          $order = $first.IndexOf('L"URmessage.IdentityPreview"') -lt $first.IndexOf('L"URmessage.Desktop"')
+          Write-Host "preview-first.h opens its user model id pair with the preview's arm: $order"
+          if (-not $order) { Write-Host '::error::preview-first.h is not in the order that broke the first check'; exit 1 }
+          $verdict = @{}
+          foreach ($case in @('preview-first', 'preview-changed', 'standard-changed')) {
+            $out = & powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\verify-msi-payload.ps1 -MsiPath $msi[0].FullName -IdsPath (Join-Path $dir "$case.h") 2>&1 | Out-String
+            $code = $LASTEXITCODE
+            Write-Host "---- $case : exit $code"
+            Write-Host $out
+            $verdict[$case] = @{ code = $code; out = $out }
+          }
+          $ok = $true
+          if ($verdict['preview-first'].code -ne 0) { Write-Host '::error::preview-first did not pass'; $ok = $false }
+          if ($verdict['preview-changed'].code -ne 0) { Write-Host '::error::preview-changed did not pass'; $ok = $false }
+          $sc = $verdict['standard-changed']
+          $own = $sc.out.Contains("has System.AppUserModel.ID 'URmessage.Desktop', but the app sets 'URmessage.Wrong'")
+          $issues = [regex]::Match($sc.out, 'failed \((\d+) issue')
+          $count = if ($issues.Success) { [int]$issues.Groups[1].Value } else { -1 }
+          if ($sc.code -eq 0 -or -not $own -or $count -ne 1) {
+            Write-Host "::error::standard-changed: exit $($sc.code), names the id: $own, issues: $count (want a failure on that one issue)"
+            $ok = $false
+          }
+          if ($ok) { Write-Host 'control: preview-first and preview-changed pass; standard-changed fails on the shortcut id alone' }
+          if (-not $ok) { exit 1 }
+
+      # This repository has no test framework and none may be added. The
+      # runnable check is the app's own --diagnose switch: it prints the App
+      # Runtime path, resources.pri, the fonts, the single-instance key and
+      # whether MRT actually RESOLVES a string, then exits — verified in
+      # app/src/App/main.cpp, where the diagnose branch returns before
+      # AppInstance::FindOrRegisterForKey and before Application::Start, so it
+      # creates no window and registers no single-instance key. That is what
+      # makes it safe on a headless runner.
+      #
+      # The demo plan (docs/superpowers/plans/) adds PASS/FAIL assertion lines
+      # to CollectDiagnostics(). Today there are none, so there are no FAIL
+      # lines and the gate passes; the moment they land it starts biting. The
+      # match is CASE-SENSITIVE on `FAIL`, which also catches the FAILED lines
+      # the diagnostics already emit today (the COM apartment, the MRT loader
+      # throwing, the App SDK being unusable) — every one of which is a genuine
+      # failure — while never firing on ordinary prose.
+      #
+      # It runs whenever the solution built, even when an MSI step above
+      # failed: those steps package and inspect a copy of the output, and a
+      # failure there must not hide whether the app itself still starts. It
+      # stays after them, so the MSI still packages untouched output.
+      - name: Run the --diagnose smoke test
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: pwsh
+        env:
+          # The app resolves its state root from this (Common/Paths.cpp), else
+          # %LOCALAPPDATA%. Pointing it inside the workspace puts the app log
+          # somewhere the upload step below can collect it.
+          URMESSAGE_APP_ROOT: ${{ github.workspace }}\.ci-appstate
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $app = Join-Path $env:GITHUB_WORKSPACE 'app'
+          $exe = Join-Path $app 'build\x64\Release\URmessage.exe'
+          if (-not (Test-Path -LiteralPath $exe)) {
+            Write-Host "::error::the build reported success but produced no $exe"
+            exit 1
+          }
+          $outFile = Join-Path $app 'diagnose-x64.out'
+          $errFile = Join-Path $app 'diagnose-x64.err'
+
+          # WHY a manually-started Process with redirected streams, and not
+          # `& $exe --diagnose` or Start-Process: URmessage.exe is
+          # /SUBSYSTEM:WINDOWS, and WriteDiagnosticsToConsole
+          # (app/src/App/Startup.cpp) falls back to a MODAL MessageBoxW whenever
+          # it cannot write to a std handle. On a headless runner
+          # AttachConsole(ATTACH_PARENT_PROCESS) may find nothing to attach to,
+          # which is exactly that case — and a modal box nobody can dismiss
+          # would hang this job until a timeout. Redirecting stdout/stderr
+          # (below) hands the process a valid non-console handle: GetConsoleMode
+          # fails on it, the code takes its WriteFile/utf-8 branch, WriteStdout
+          # returns true, and the message box is never reached.
+          #
+          # WHY NOT Start-Process -PassThru: reproduced on this box (Windows
+          # PowerShell 5.1.26100.9168) that combining -PassThru with
+          # -RedirectStandardOutput/-RedirectStandardError makes .ExitCode
+          # unreliable — WaitForExit(120000) returns True, HasExited is True,
+          # and ExitCode is $null, so `if ($code -ne 0)` below would silently
+          # never fire regardless of what the app returned. Constructing the
+          # Process via ProcessStartInfo instead makes THIS object the one that
+          # owns the child's handle, so ExitCode is real.
+          $psi = [System.Diagnostics.ProcessStartInfo]::new($exe)
+          $psi.Arguments = '--diagnose'
+          $psi.UseShellExecute = $false
+          $psi.CreateNoWindow = $true
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError  = $true
+          # WriteStdout writes utf-8 BYTES to the redirected handle (not
+          # utf-16); telling the streams to decode as utf-8 here is what keeps
+          # the non-ascii in the diagnostics from mojibaking below.
+          $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+          $psi.StandardErrorEncoding  = [System.Text.Encoding]::UTF8
+          $p = [System.Diagnostics.Process]::Start($psi)
+
+          # Read both streams to end BEFORE WaitForExit, or a child that fills
+          # a pipe buffer while nothing drains it deadlocks against a
+          # WaitForExit called first.
+          $out = $p.StandardOutput.ReadToEnd()
+          $err = $p.StandardError.ReadToEnd()
+
+          # Belt and braces, because the redirect above does not cover every
+          # path: the catch around StartupLogInit in wWinMain shows a message
+          # box unconditionally before any of the console logic runs. If that
+          # ever fires, fail here in two minutes naming the cause, rather than
+          # hanging on the job timeout with nothing to read.
+          if (-not $p.WaitForExit(120000)) {
+            Write-Host "::error::--diagnose did not exit within 120s; the most likely cause is a modal dialog on a headless runner (see the MessageBoxW paths in app/src/App/main.cpp and Startup.cpp)"
+            try { $p.Kill() } catch { }
+            exit 1
+          }
+          $code = $p.ExitCode
+
+          $text = $out
+          $errText = $err
+
+          # Nothing reads these files back in this job (the streams above are
+          # read directly now), but the "Upload the diagnose output" step
+          # still archives them, so keep writing them for it.
+          Set-Content -LiteralPath $outFile -Value $text -Encoding utf8 -NoNewline
+          Set-Content -LiteralPath $errFile -Value $errText -Encoding utf8 -NoNewline
+
+          Write-Host '----- URmessage.exe --diagnose -----'
+          if ([string]::IsNullOrWhiteSpace($text)) { Write-Host '(no output)' } else { Write-Host $text }
+          if (-not [string]::IsNullOrWhiteSpace($errText)) {
+            Write-Host '----- stderr -----'
+            Write-Host $errText
+          }
+          Write-Host "----- exit code: $code -----"
+
+          $lines = @(($text -split "\r?\n") | Where-Object { $_.Trim() -ne '' })
+
+          # A vacuous pass is the failure mode this gate is most exposed to, so
+          # empty output is itself a failure: the switch always prints at least
+          # its header, and nothing at all means it never got to write.
+          if ($lines.Count -eq 0) {
+            Write-Host "::error::--diagnose exited $code but printed nothing; the diagnostics never reached stdout"
+            exit 1
+          }
+
+          # $failLines also gates -- via the extra -cmatch alternation below --
+          # three states that carry no FAIL token but are just as fatal: each
+          # means the exe that was just built cannot render its own UI, which
+          # is exactly what this job exists to catch. The README calls
+          # "resources (mrt) : NOT RESOLVING" a silent, shipping-grade failure
+          # for that reason: the built exe renders raw key ids instead of
+          # every string in the UI. "resources.pri : MISSING" and "app runtime
+          # : NOT FOUND" are the same class of failure one step earlier.
+          $failLines = @($lines | Where-Object {
+            $_ -cmatch 'FAIL' -or
+            $_ -cmatch 'resources \(mrt\)\s*:\s*NOT RESOLVING|resources\.pri\s*:\s*MISSING|app runtime\s*:\s*NOT FOUND'
+          })
+          $passLines = @($lines | Where-Object { $_ -cmatch 'PASS' })
+          Write-Host "diagnostic lines: $($lines.Count)   PASS: $($passLines.Count)   FAIL: $($failLines.Count)"
+
+          # The rest are not gates, but worth surfacing: the diagnostics word
+          # several other real problems without the token FAIL, and a warning
+          # annotation costs nothing. (The three states gated above are
+          # excluded here so each is reported once, as an error, not twice.)
+          # Widening the gate further to the rest is the plan's job, via the
+          # PASS/FAIL assertion lines it adds to CollectDiagnostics().
+          foreach ($line in $lines) {
+            if ($line -cmatch 'MISSING|NOT FOUND|NOT RESOLVING|COULD NOT BE OPENED' -and
+                $line -notmatch 'resources \(mrt\)\s*:\s*NOT RESOLVING|resources\.pri\s*:\s*MISSING|app runtime\s*:\s*NOT FOUND') {
+              Write-Host "::warning::--diagnose: $($line.Trim())"
+            }
+          }
+
+          if ($failLines.Count -gt 0) {
+            foreach ($line in $failLines) {
+              Write-Host "::error::--diagnose reported a failure: $($line.Trim())"
+            }
+            exit 1
+          }
+
+          # Checked after the FAIL scan so the log carries the reason before the
+          # code. Note that the diagnose path returns 0 even for a COM apartment
+          # failure — it reports that as a FAILED line instead — so the exit code
+          # alone is not a sufficient gate, and neither is the FAIL scan alone.
+          if ($code -ne 0) {
+            Write-Host "::error::--diagnose exited with code $code"
+            exit $code
+          }
+
+          if ($passLines.Count -eq 0) {
+            Write-Host "note: no PASS/FAIL assertion lines in this build -- the demo plan adds them to CollectDiagnostics(); until then this step gates on the diagnostics' own FAILED lines only"
+          }
+          Write-Host '--diagnose OK'
+
+      # The detailed msbuild log is the whole point of a red run, so keep it
+      # whether the build passed, failed, or the diagnose step failed after it.
+      # The MSI build's own log comes along when that step ran.
+      - name: Upload the msbuild log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: msbuild-log-x64
+          path: |
+            app/msbuild-x64.log
+            app/msbuild-msi-x64.log
+          if-no-files-found: warn
+
+      # Same reasoning for the diagnostics: the step already prints them, but a
+      # file survives log truncation and can be diffed run to run. The app's own
+      # log comes along because URMESSAGE_APP_ROOT put it in the workspace.
+      - name: Upload the diagnose output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnose-output-x64
+          path: |
+            app/diagnose-x64.out
+            app/diagnose-x64.err
+            .ci-appstate/logs/
+          if-no-files-found: warn
+
+      # For inspection only — an artifact is not a release, and this workflow
+      # publishes nothing. Deliberately JUST the exe, not the whole output
+      # directory the VPN workflow uploads: that repo's artifact is the source
+      # of a shipped portable zip, so dropping Assets\Fonts from it was a real
+      # bug. Here the artifact answers "what did this commit compile to", and
+      # the output directory additionally contains the four licensed commercial
+      # typefaces (see README, open question 1) — which building is allowed to
+      # do, and which a downloadable artifact on the mainstream repo should not
+      # do casually. The MSI built above installs that whole directory, fonts
+      # included, which is one reason it is not uploaded either.
+      - name: Upload the built executable
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: urmessage-windows-x64-exe
+          path: app/build/x64/Release/URmessage.exe
+          if-no-files-found: error
+
+  # THE SDK DLL. The job above builds the app with no Go and no dll: it links an
+  # import library made from the vendored .def and delay-loads the dll. This job
+  # builds that dll, from urnetwork/message's native composition at the commits
+  # app/third_party/urnetwork-sdk/composition.txt pins: the core SDK's cgo
+  # package main with message's messaging exports laid beside it, one library,
+  # built by message's own sdk/cgo/build.sh under the toolchain message pins.
+  # It holds the three vendored ABI files to that composition byte for byte,
+  # and the dll to the vendored .def both ways, then loads the dll in a fresh
+  # process, which runs every package init, the place a second registration of
+  # message.proto panics. app/tools/build-sdk-dll.ps1 does all of it and lists
+  # its eleven checks in its header; a failed check prints a FAIL line naming
+  # itself, and every check runs. The dll is not uploaded: this workflow
+  # publishes nothing, and an artifact is not a release.
+  #
+  # No `needs`: it shares nothing with the job above, so a red app build does
+  # not hide whether the dll still builds, nor the other way round.
+  sdk-composition:
+    name: Build URnetworkSdk.dll from its pinned composition (x64)
+    # windows-2022, like the job above: dumpbin comes from its Visual Studio
+    # 2022, and cgo uses the mingw-w64 gcc the image puts on PATH (the build
+    # step prints which).
+    runs-on: windows-2022
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      # Every check's mechanism over fixtures it must pass and fixtures it must
+      # refuse, before any of them is trusted with the real composition. A check
+      # that can no longer fail would pass every run below.
+      - name: Self-test the composition checks
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\build-sdk-dll.ps1 -SelfTest
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::the composition checks' self-test failed (exit code $LASTEXITCODE) -- its output is above"
+            exit $LASTEXITCODE
+          }
+
+      # Each pinned commit, fetched by its SHA into its own directory with
+      # core.autocrlf=false. RUNNER_TEMP is a short root, and some of the
+      # sibling repositories' paths are long.
+      - name: Check out the pinned commits
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\build-sdk-dll.ps1 -Workspace "$env:RUNNER_TEMP\sdk" -CheckoutOnly
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::the pinned commits could not be checked out (exit code $LASTEXITCODE) -- the FAIL lines above name each"
+            exit $LASTEXITCODE
+          }
+
+      # A go command, from message's root go.mod, where message pins its
+      # toolchain. Which release this step installs does not decide what
+      # builds the dll: a go.mod toolchain line is a minimum, so the script
+      # forces message's pin on every go command (GOTOOLCHAIN), the go command
+      # fetches that release when it is not the one installed, and the dll is
+      # asked which toolchain built it. No cache: every run builds the dll
+      # from nothing but the pinned commits and the module proxy.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ runner.temp }}/sdk/message/go.mod
+          cache: false
+
+      - name: Build the dll and hold the vendored ABI to it
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\build-sdk-dll.ps1 -Workspace "$env:RUNNER_TEMP\sdk"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::the composition build or one of its checks failed (exit code $LASTEXITCODE) -- the FAIL lines above name each"
+            exit $LASTEXITCODE
+          }
