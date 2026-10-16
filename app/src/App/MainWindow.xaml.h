@@ -147,6 +147,10 @@ struct MainWindow : MainWindowT<MainWindow> {
   // cached: a Conversation const* into World::conversations is invalidated by
   // anything that appends, and ambient activity appends.
   int OpenConversationIndex() const;
+  // THE OPEN CONVERSATION'S GROUP, as the 64 lower-case hex every live verb names its group by
+  // (Live/LiveMesh.h), or "" when nothing is open. Every action the window hands the worker names
+  // this group, and the worker does it to that group alone (the conversation-list design 2.2).
+  std::string OpenGroupIdHex() const;
 
   // The ONE subscriber of urmsg::OnAdvancedModeChanged (contract v2 section
   // 5, the d7 distillation's 1.2 ruling: N6/S4/A4 only SEED at their build

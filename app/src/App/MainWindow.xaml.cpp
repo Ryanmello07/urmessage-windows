@@ -951,7 +951,8 @@ void MainWindow::ApplyLiveWorld() {
   // AND THE SEND BUTTON, on the same beat and for the same reason the caption is: the composer bar
   // is built once and is not among the surfaces rebuilt below.
   //
-  // urmsg::live::CanSend() AND NOT ActiveRunMode(), which is the narrower of the two and has to be.
+  // urmsg::live::CanSend(the open group) AND NOT ActiveRunMode(), which is the narrower of the two
+  // and has to be.
   // The latch above is "a live world is on screen" and that is a weaker statement than "a send
   // would work": a group the server closes under a running app keeps its last published world on
   // screen, and the mode stays Live for the life of the process by design. The button asks the
@@ -960,11 +961,11 @@ void MainWindow::ApplyLiveWorld() {
   // AND THE ROSTER'S CONTROLS, by the same predicate and on the same beat (item 242 R3): a role
   // change is a commit into the same open group a send goes into.
   //
-  // urmsg::live::CanSend() ALONE HERE, and not the composer's pair: the role verbs are COMMITS and
-  // an OBSERVER may still commit its own device add or remove (item 242 ruling 5). R4 gates the
-  // APPLICATION RECORD path, which is a different path with different rules, and folding the two
-  // would refuse a control the protocol allows.
-  urmsg::views::SetInspectRailRosterEnabled(urmsg::live::CanSend());
+  // urmsg::live::CanSend(the open group) ALONE HERE, and not the composer's pair: the role verbs
+  // are COMMITS and an OBSERVER may still commit its own device add or remove (item 242 ruling 5).
+  // R4 gates the APPLICATION RECORD path, which is a different path with different rules, and
+  // folding the two would refuse a control the protocol allows.
+  urmsg::views::SetInspectRailRosterEnabled(urmsg::live::CanSend(OpenGroupIdHex()));
 
   // The three content views exist only under --demo (BuildDemoViews is demo-gated, and its own
   // comment says why). A live world with nothing built to draw it is not an error: the worker
@@ -1075,7 +1076,7 @@ bool MainWindow::SendFromComposer(std::wstring text, std::wstring replacesRowId,
                   "limit is {}. The text is still in the box.", utf8.size(), limit);
     return false;
   }
-  const bool queued = urmsg::live::QueueSend(utf8, urnw::Narrow(replacesLocalId),
+  const bool queued = urmsg::live::QueueSend(OpenGroupIdHex(), utf8, urnw::Narrow(replacesLocalId),
                                              urnw::Narrow(replyToRowId));
 
   // The TEXT IS NOT LOGGED HERE. Live\LiveMesh.cpp logs the conversation under --live and states
@@ -1089,7 +1090,7 @@ bool MainWindow::SendFromComposer(std::wstring text, std::wstring replacesRowId,
     urnw::LogWarn(
         "window: the composer's send was REFUSED before it was queued ({} octets; live session can "
         "send: {}). The text is still in the box.",
-        utf8.size(), urmsg::live::CanSend());
+        utf8.size(), urmsg::live::CanSend(OpenGroupIdHex()));
   }
   return queued;
 }
@@ -1098,40 +1099,41 @@ bool MainWindow::RoleChangeFromRail(std::wstring identityPubHex, std::wstring ro
   // The identity key and the role cross as the ASCII they are: the ABI takes identity_pub_hex
   // back exactly as its member info handed it over, and the role by its protocol spelling.
   const bool queued =
-      urmsg::live::QueueRoleChange(urnw::Narrow(identityPubHex), urnw::Narrow(role));
+      urmsg::live::QueueRoleChange(OpenGroupIdHex(), urnw::Narrow(identityPubHex), urnw::Narrow(role));
   if (queued) {
     urnw::LogInfo("window: rail handed a role change ({} -> {}) to the live worker",
                   urnw::Narrow(identityPubHex), urnw::Narrow(role));
   } else {
     urnw::LogWarn("window: the rail's role change was REFUSED before it was queued (live session "
                   "can send: {})",
-                  urmsg::live::CanSend());
+                  urmsg::live::CanSend(OpenGroupIdHex()));
   }
   return queued;
 }
 
 bool MainWindow::TransferOwnershipFromRail(std::wstring identityPubHex) {
-  const bool queued = urmsg::live::QueueTransferOwnership(urnw::Narrow(identityPubHex));
+  const bool queued =
+      urmsg::live::QueueTransferOwnership(OpenGroupIdHex(), urnw::Narrow(identityPubHex));
   if (queued) {
     urnw::LogInfo("window: rail handed a transfer of ownership (to {}) to the live worker",
                   urnw::Narrow(identityPubHex));
   } else {
     urnw::LogWarn("window: the rail's transfer of ownership was REFUSED before it was queued "
                   "(live session can send: {})",
-                  urmsg::live::CanSend());
+                  urmsg::live::CanSend(OpenGroupIdHex()));
   }
   return queued;
 }
 
 bool MainWindow::RemoveMemberFromRail(std::wstring identityPubHex) {
-  const bool queued = urmsg::live::QueueRemoveMember(urnw::Narrow(identityPubHex));
+  const bool queued = urmsg::live::QueueRemoveMember(OpenGroupIdHex(), urnw::Narrow(identityPubHex));
   if (queued) {
     urnw::LogInfo("window: rail handed a removal (of {}) to the live worker",
                   urnw::Narrow(identityPubHex));
   } else {
     urnw::LogWarn("window: the rail's removal was REFUSED before it was queued (live session can "
                   "send: {})",
-                  urmsg::live::CanSend());
+                  urmsg::live::CanSend(OpenGroupIdHex()));
   }
   return queued;
 }
@@ -1141,7 +1143,8 @@ bool MainWindow::ReactFromBubble(std::wstring rowId, std::wstring emoji, bool re
   // ABI checks it as 1..64 octets of valid UTF-8 and folds nothing, so the octets queued here are
   // the octets every member sees.
   const std::string utf8Emoji = urnw::Narrow(emoji);
-  const bool queued = urmsg::live::QueueReaction(urnw::Narrow(rowId), utf8Emoji, remove);
+  const bool queued =
+      urmsg::live::QueueReaction(OpenGroupIdHex(), urnw::Narrow(rowId), utf8Emoji, remove);
   if (queued) {
     // the emoji is content (W10): its length is logged, never the emoji
     urnw::LogInfo("window: bubble handed a {} ({} octets) on {} to the live worker",
@@ -1149,7 +1152,7 @@ bool MainWindow::ReactFromBubble(std::wstring rowId, std::wstring emoji, bool re
   } else {
     urnw::LogWarn("window: the bubble's {} was REFUSED before it was queued (live session can "
                   "send: {})",
-                  remove ? "unreact" : "react", urmsg::live::CanSend());
+                  remove ? "unreact" : "react", urmsg::live::CanSend(OpenGroupIdHex()));
   }
   return queued;
 }
@@ -1157,8 +1160,8 @@ bool MainWindow::ReactFromBubble(std::wstring rowId, std::wstring emoji, bool re
 // THE COMPOSER'S TWO FACTS, ARMED TOGETHER AND FROM ONE PLACE (item 242 R4).
 //
 // Every caller of SetThreadSendEnabled goes through here, so the pair can never be assembled two
-// ways: the SESSION fact is the worker's own urmsg::live::CanSend(), and the ROLE fact is the OPEN
-// conversation's myRole — the same field the rail's control table reads, carried in both worlds
+// ways: the SESSION fact is the worker's own urmsg::live::CanSend(the open group), and the ROLE
+// fact is the OPEN conversation's myRole — the same field the rail's control table reads, carried in both worlds
 // (urnet_message_group_my_role since item 242 R3; the fixture fabricates it). R4 needed no new ABI.
 //
 // NO OPEN CONVERSATION ANSWERS "may send". That is the same reading the library takes for an
@@ -1173,7 +1176,7 @@ bool MainWindow::ReactFromBubble(std::wstring rowId, std::wstring emoji, bool re
 // carries what it may and may not be read as claiming.
 void MainWindow::ArmComposer() {
   if (!thread_.root) return;
-  bool session = urmsg::live::CanSend();
+  bool session = urmsg::live::CanSend(OpenGroupIdHex());
   bool mayRoleSend = OpenConversationMaySend();
   switch (options_.composer) {
     case urmsg::demo::DemoComposer::AsIs:
@@ -1207,6 +1210,12 @@ bool MainWindow::OpenConversationMaySend() const {
   // function's own and is the one half of the pair no gate can reach without a window.
   return urmsg::demo::RoleMaySend(
       ActiveWorld().conversations[static_cast<size_t>(index)].myRole);
+}
+
+std::string MainWindow::OpenGroupIdHex() const {
+  const int index = OpenConversationIndex();
+  if (index < 0) return {};
+  return urnw::Narrow(ActiveWorld().conversations[static_cast<size_t>(index)].groupIdHex);
 }
 
 int MainWindow::OpenConversationIndex() const {
@@ -1364,14 +1373,17 @@ void MainWindow::BuildDemoViews() {
       });
   // DELETE FOR EVERYONE, at any time (the owner's ruling of 2026-10-02). The row id is the
   // message_id, exactly as for a reaction.
-  urmsg::views::SetThreadDeleteVerb([](std::wstring rowId) -> bool {
-    const bool queued = urmsg::live::QueueDelete(urnw::Narrow(rowId));
+  urmsg::views::SetThreadDeleteVerb([weak = get_weak()](std::wstring rowId) -> bool {
+    auto self = weak.get();
+    if (!self) return false;
+    const std::string gid = self->OpenGroupIdHex();
+    const bool queued = urmsg::live::QueueDelete(gid, urnw::Narrow(rowId));
     if (queued) {
       urnw::LogInfo("window: bubble handed a deletion of {} to the live worker", urnw::Narrow(rowId));
     } else {
       urnw::LogWarn("window: the bubble's deletion was REFUSED before it was queued (live session "
                     "can send: {})",
-                    urmsg::live::CanSend());
+                    urmsg::live::CanSend(gid));
     }
     return queued;
   });
@@ -1459,17 +1471,26 @@ void MainWindow::BuildDemoViews() {
   };
   // DELETE ALL MY MESSAGES: the per-message delete, queued once per line (the owner's ruling of
   // 2026-10-02: a person may delete their own messages at any time).
-  roster.deleteMine = [](std::vector<std::wstring> rowIds) -> int {
+  roster.deleteMine = [weak = get_weak()](std::vector<std::wstring> rowIds) -> int {
+    auto self = weak.get();
+    if (!self) return 0;
+    const std::string gid = self->OpenGroupIdHex();
     int queued = 0;
     for (auto const& id : rowIds)
-      if (urmsg::live::QueueDelete(urnw::Narrow(id))) ++queued;
+      if (urmsg::live::QueueDelete(gid, urnw::Narrow(id))) ++queued;
     urnw::LogInfo("window: delete-all-mine queued {} of {} deletion(s)", queued, rowIds.size());
     return queued;
   };
-  roster.leaveInFlight = [] { return urmsg::live::LeaveInFlight(); };
+  roster.leaveInFlight = [weak = get_weak()] {
+    auto self = weak.get();
+    return self && urmsg::live::LeaveInFlight(self->OpenGroupIdHex());
+  };
   // DELETE FOR ME AND LEAVE (ledger 273): the hand-over, when there is one, rides with it.
-  roster.leave = [](std::wstring transferToIdentityHex) -> bool {
-    const bool queued = urmsg::live::QueueLeave(urnw::Narrow(transferToIdentityHex));
+  roster.leave = [weak = get_weak()](std::wstring transferToIdentityHex) -> bool {
+    auto self = weak.get();
+    if (!self) return false;
+    const bool queued =
+        urmsg::live::QueueLeave(self->OpenGroupIdHex(), urnw::Narrow(transferToIdentityHex));
     urnw::LogInfo("window: leave{} {} by the live worker",
                   transferToIdentityHex.empty() ? "" : " with a hand-over",
                   queued ? "taken" : "REFUSED");

@@ -179,12 +179,101 @@ std::wstring ConversationOrderLine() {
                           got, want, clampOk ? L"yes" : L"NO", adoptedOk ? L"yes" : L"NO"));
 }
 
+// conv gate: EACH ACTION GOES TO THE GROUP IT NAMES. Three groups, each in a different state; an
+// action for each, one for a group not held, and stamps from an older incarnation and from another
+// group, before and after one of the groups is left.
+std::wstring ConversationGateLine() {
+  const std::string g1(64, 'a');
+  const std::string g2(64, 'b');
+  const std::string g3(64, 'c');
+  std::vector<GroupGate> gates = {{g1, 7, true, false}, {g2, 8, false, false}, {g3, 9, true, true}};
+  struct Ask {
+    std::string const* gid;
+    ActionClass cls;
+    GateVerdict want;
+    wchar_t const* what;
+  };
+  const std::string none(64, 'f');
+  const std::vector<Ask> asks = {
+      {&g1, ActionClass::Commit, GateVerdict::Take, L"a send to an open group is taken"},
+      {&g2, ActionClass::Commit, GateVerdict::Closed, L"a send to a closed group is refused"},
+      {&g2, ActionClass::Leave, GateVerdict::Take, L"a closed group can still be left"},
+      {&g2, ActionClass::LeaveHandOver, GateVerdict::Closed, L"a hand-over needs an open group"},
+      {&g3, ActionClass::Commit, GateVerdict::Leaving, L"nothing is taken while its leave is in flight"},
+      {&g3, ActionClass::Leave, GateVerdict::Leaving, L"one leave at a time"},
+      {&none, ActionClass::Commit, GateVerdict::NotHeld, L"a group not held takes nothing"},
+  };
+  std::size_t asked = 0;
+  std::size_t right = 0;
+  std::wstring firstBad;
+  for (auto const& a : asks) {
+    ++asked;
+    const GateVerdict got = GateAction(gates, *a.gid, a.cls);
+    if (got == a.want) {
+      ++right;
+    } else if (firstBad.empty()) {
+      firstBad = std::format(L"{} (got {})", a.what, GateVerdictName(got));
+    }
+  }
+  // the stamps: the current incarnation holds; an older one of the same group, or another
+  // group's number under this group's id, does not
+  const bool stampsOk = ActionStillHeld(gates, g1, 7) && !ActionStillHeld(gates, g1, 6) &&
+                        !ActionStillHeld(gates, g2, 7) && !ActionStillHeld(gates, none, 7);
+  // A LEAVE ENDS ONE GROUP: g2 goes, and g1 and g3 are exactly as they were
+  gates.erase(gates.begin() + 1);
+  const bool leaveOk = GateAction(gates, g1, ActionClass::Commit) == GateVerdict::Take &&
+                       ActionStillHeld(gates, g1, 7) && !ActionStillHeld(gates, g2, 8) &&
+                       GateAction(gates, g2, ActionClass::Commit) == GateVerdict::NotHeld &&
+                       GateAction(gates, g3, ActionClass::Commit) == GateVerdict::Leaving;
+  const bool ok = firstBad.empty() && stampsOk && leaveOk;
+  return Line(L"conv gate", ok,
+              std::format(L"{} of {} actions answered by their own group's gate{}{}; stamps of an "
+                          L"older incarnation or another group dropped {}; a leave of one group "
+                          L"leaves the others as they were {}   [query: GateAction and "
+                          L"ActionStillHeld over three gates, the conversation-list design 2.2]",
+                          right, asked,
+                          firstBad.empty() ? L"" : L", first wrong: ", firstBad,
+                          stampsOk ? L"yes" : L"NO", leaveOk ? L"yes" : L"NO"));
+}
+
 }  // namespace
+
+GroupGate const* FindGate(std::vector<GroupGate> const& gates, std::string const& groupIdHex) {
+  for (auto const& gate : gates)
+    if (gate.groupIdHex == groupIdHex) return &gate;
+  return nullptr;
+}
+
+GateVerdict GateAction(std::vector<GroupGate> const& gates, std::string const& groupIdHex,
+                       ActionClass cls) {
+  GroupGate const* gate = FindGate(gates, groupIdHex);
+  if (gate == nullptr) return GateVerdict::NotHeld;
+  if (gate->leaving) return GateVerdict::Leaving;
+  if (cls != ActionClass::Leave && !gate->open) return GateVerdict::Closed;
+  return GateVerdict::Take;
+}
+
+bool ActionStillHeld(std::vector<GroupGate> const& gates, std::string const& groupIdHex,
+                     uint64_t incarnation) {
+  GroupGate const* gate = FindGate(gates, groupIdHex);
+  return gate != nullptr && gate->incarnation == incarnation;
+}
+
+std::wstring_view GateVerdictName(GateVerdict verdict) {
+  switch (verdict) {
+    case GateVerdict::Take: return L"Take";
+    case GateVerdict::NotHeld: return L"NotHeld";
+    case GateVerdict::Closed: return L"Closed";
+    case GateVerdict::Leaving: return L"Leaving";
+  }
+  return L"?";
+}
 
 std::vector<std::wstring> CollectConversationRulesDiagnostics() {
   std::vector<std::wstring> lines;
   lines.push_back(ConversationWorldLine());
   lines.push_back(ConversationOrderLine());
+  lines.push_back(ConversationGateLine());
   return lines;
 }
 

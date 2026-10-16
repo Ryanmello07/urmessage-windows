@@ -48,6 +48,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "Live/ConversationRules.h"
 #include "Live/HeldGroupRules.h"
 #include "Live/RefusalCopy.h"
 #include "Live/LiveWorld.h"
@@ -512,7 +513,10 @@ struct Outbound {
   std::string identityPub;  // the member named, as the roster spells it (SetRole, Transfer,
                             // RemoveMember), or the hand-over before a Leave ("" for none)
   std::string role;         // "admin" | "member" | "observer" (SetRole); "owner" (Transfer)
-  uint64_t pass = 0;        // the group pass this was queued for (g_pass); stale ones are dropped
+  // THE GROUP THIS WAS QUEUED FOR, by id, and its incarnation (the conversation-list design 2.2):
+  // the worker does it to that group in that incarnation, and drops it otherwise.
+  std::string groupIdHex;
+  uint64_t incarnation = 0;
 };
 
 std::mutex g_sendMutex;
@@ -521,26 +525,90 @@ std::deque<Outbound> g_sendQueue;
 // Set by the push waiter under g_sendMutex and consumed by WaitForSendOrPoll: a push wakes the
 // fetch loop exactly the way a queued send does.
 bool g_pushPending = false;
-// Written by the worker (one writer), read by the UI thread. Relaxed is enough: a stale read costs
-// one refused click or one accepted send the worker then refuses by name, and the fetch loop
-// rewrites it every poll.
-std::atomic<bool> g_canSend{false};
+// ── the gates (the conversation-list design 2.2, Live/ConversationRules.h) ──────────────────────
+//
+// ONE GATE PER GROUP THIS DEVICE HOLDS, written by the worker and read by the verbs on the UI thread,
+// under one mutex. A gate says whether the server holds the group open (a commit may go), whether a
+// leave of it is in flight (nothing else is taken), and the group's INCARNATION: the number this
+// device gave it when it took it up. Every verb stamps its entry with both, and the worker does an
+// entry only to the group it names and only in that incarnation, so a line typed, or a second leave
+// confirmed, while a leave was in flight is never done to anything else. These replace the one send
+// gate, the one "pass" and the one leave flag a device that held a single group had.
+std::mutex g_gateMutex;
+std::vector<urmsg::live::GroupGate> g_gates;  // guarded by g_gateMutex
+uint64_t g_nextIncarnation = 1;               // guarded by g_gateMutex
 
-// THE GROUP PASS EVERY QUEUED ACTION WAS MADE FOR (msgrepo ledger §7, 2026-10-03, review M1). A
-// pass is one group this device holds, and a granted leave ends it. Every Queue* reads this BEFORE
-// its gate and stamps the entry with it, and the worker drops an entry stamped for any pass but its
-// own: a line typed, or a second leave confirmed, while a leave was in flight is never done to the
-// NEXT group.
-std::atomic<uint64_t> g_pass{1};
-// A LEAVE IS IN FLIGHT: one at a time, and nothing else is taken while it is (review M1).
-std::atomic<bool> g_leaving{false};
-
-// The gate every send-like verb asks: an open group, and no leave in flight.
-bool SendGateOpen() {
-  return g_canSend.load(std::memory_order_relaxed) && !g_leaving.load(std::memory_order_relaxed);
+urmsg::live::GroupGate* MutableGate(std::string const& gid) {
+  for (auto& gate : g_gates)
+    if (gate.groupIdHex == gid) return &gate;
+  return nullptr;
 }
 
-// IS THERE A GROUP AT ALL? A WEAKER QUESTION THAN g_canSend ABOVE AND IT HAS TO BE. CanSend asks
+// TAKE A GROUP UP: a fresh incarnation, closed and not leaving until the worker reads it open.
+uint64_t AdoptGate(std::string const& gid) {
+  std::lock_guard<std::mutex> lock(g_gateMutex);
+  const uint64_t incarnation = g_nextIncarnation++;
+  if (auto* gate = MutableGate(gid)) {
+    *gate = urmsg::live::GroupGate{gid, incarnation, false, false};
+  } else {
+    g_gates.push_back(urmsg::live::GroupGate{gid, incarnation, false, false});
+  }
+  return incarnation;
+}
+
+void SetGateOpen(std::string const& gid, bool open) {
+  std::lock_guard<std::mutex> lock(g_gateMutex);
+  if (auto* gate = MutableGate(gid)) gate->open = open;
+}
+
+void SetGateLeaving(std::string const& gid, bool leaving) {
+  std::lock_guard<std::mutex> lock(g_gateMutex);
+  if (auto* gate = MutableGate(gid)) gate->leaving = leaving;
+}
+
+bool GateOpen(std::string const& gid) {
+  std::lock_guard<std::mutex> lock(g_gateMutex);
+  auto const* gate = urmsg::live::FindGate(g_gates, gid);
+  return gate != nullptr && gate->open;
+}
+
+// A GROUP LEFT: its gate goes, and with it every entry stamped for it. No other gate moves.
+void DropGate(std::string const& gid) {
+  std::lock_guard<std::mutex> lock(g_gateMutex);
+  g_gates.erase(std::remove_if(g_gates.begin(), g_gates.end(),
+                               [&](urmsg::live::GroupGate const& gate) { return gate.groupIdHex == gid; }),
+                g_gates.end());
+}
+
+void DropAllGates() {
+  std::lock_guard<std::mutex> lock(g_gateMutex);
+  g_gates.clear();
+}
+
+std::vector<urmsg::live::GroupGate> GatesSnapshot() {
+  std::lock_guard<std::mutex> lock(g_gateMutex);
+  return g_gates;
+}
+
+// THE ONE ADMISSION every verb makes: the gate's verdict, and the incarnation to stamp, in one look.
+// A leave also marks the gate leaving in the same look, so two leaves of one group cannot both pass.
+bool Admit(std::string const& gid, urmsg::live::ActionClass cls, uint64_t& incarnation,
+           bool markLeaving = false) {
+  std::lock_guard<std::mutex> lock(g_gateMutex);
+  const urmsg::live::GateVerdict verdict = urmsg::live::GateAction(g_gates, gid, cls);
+  if (verdict != urmsg::live::GateVerdict::Take) {
+    urnw::LogWarn("live: an action for group {} was refused at its gate ({})",
+                  gid.substr(0, (std::min)(gid.size(), size_t{16})),
+                  urnw::Narrow(std::wstring(urmsg::live::GateVerdictName(verdict))));
+    return false;
+  }
+  auto* gate = MutableGate(gid);
+  incarnation = gate->incarnation;
+  if (markLeaving) gate->leaving = true;
+  return true;
+}
+
+// IS THERE A GROUP AT ALL? A WEAKER QUESTION THAN A GATE'S OPEN BIT AND IT HAS TO BE. CanSend asks
 // whether the SERVER says the group is open, which a freshly founded group of one is not; this
 // asks only whether the device holds one. The create verb needs the weaker reading, because the
 // state it must refuse in is exactly the one where a group exists and cannot send yet.
@@ -1904,7 +1972,11 @@ bool LeaveGroup(Session& s, std::string const& transferTo, std::string& refusal)
   // TO this device that it has not fetched would make it an owner who leaves, and strand the
   // group; fetched, the library refuses the leave by name. Offline it is skipped: a leave needs no
   // session, and a device that cannot fetch cannot learn of the transfer either way.
-  if (g_canSend.load(std::memory_order_relaxed)) {
+  uint8_t openGid[32] = {};
+  int32_t openGidLen = static_cast<int32_t>(sizeof(openGid));
+  const bool open = urnet_message_group_id(s.group, openGid, &openGidLen) &&
+                    GateOpen(ToHex(openGid, openGidLen));
+  if (open) {
     const uint64_t fetched = urnet_message_group_receive(s.group, s.ctx, &err);
     const std::string fetchError = TakeError(&err);
     if (!fetchError.empty()) urnw::LogWarn("live: leave: the receive before it reported: {}", fetchError);
@@ -2184,13 +2256,13 @@ void RunSession() {
       s.Close();
       return;
     }
-    // the pass every action this group runs was queued for (review M1)
-    const uint64_t thisPass = g_pass.load(std::memory_order_acquire);
-
     uint8_t gid[32] = {};
     int32_t gidLen = static_cast<int32_t>(sizeof(gid));
     std::string gidHex;
     if (urnet_message_group_id(s.group, gid, &gidLen)) gidHex = ToHex(gid, gidLen);
+    // THIS GROUP'S GATE, and the incarnation every action it runs was queued for (review M1; the
+    // conversation-list design 2.2)
+    const uint64_t incarnation = AdoptGate(gidHex);
     urnw::LogInfo("live: group {} at epoch {}, open on the server: {}", gidHex,
                   urnet_message_group_epoch(s.group),
                   urnet_message_group_is_open(s.group) ? "yes" : "no");
@@ -2276,7 +2348,7 @@ void RunSession() {
       // THE SEND BUTTON'S ONE GATE, re-read off the library every time rather than latched when the
       // group opened: a group the server has closed under us stops accepting sends, and a button
       // that learns that only from a failed click is the enabled-but-dead control design §9.1 bans.
-      g_canSend.store(live.open, std::memory_order_relaxed);
+      SetGateOpen(gidHex, live.open);
       g_hasGroup.store(true, std::memory_order_relaxed);
 
       // Log a changed log, and only a changed one: this loop runs every three
@@ -2305,19 +2377,18 @@ void RunSession() {
     //   the loop's own   — everything the far side has said since.
     auto drainSends = [&] {
       std::deque<Outbound> queued = TakeSendQueue();
-      // NOTHING QUEUED FOR ANOTHER PASS IS DONE IN THIS ONE (review M1): it was asked of a group this
-      // device has since left, and done here it would be done to a different conversation.
+      // NOTHING QUEUED FOR ANOTHER GROUP, OR FOR AN EARLIER INCARNATION OF THIS ONE, IS DONE HERE
+      // (review M1; the conversation-list design 2.2): it was asked of a group this device has since
+      // left, or of another conversation, and done here it would be done to the wrong one.
       const size_t asked = queued.size();
-      bool staleLeave = false;
+      const std::vector<urmsg::live::GroupGate> gates = GatesSnapshot();
       queued.erase(std::remove_if(queued.begin(), queued.end(),
                                   [&](Outbound const& o) {
-                                    const bool stale = o.pass != thisPass;
-                                    staleLeave = staleLeave || (stale && o.kind == OutboundKind::Leave);
-                                    return stale;
+                                    return o.groupIdHex != gidHex || o.incarnation != incarnation ||
+                                           !urmsg::live::ActionStillHeld(gates, o.groupIdHex,
+                                                                         o.incarnation);
                                   }),
                    queued.end());
-      // a leave dropped here was asked of a group already left, and it holds the flag (re-check NIT)
-      if (staleLeave) g_leaving.store(false, std::memory_order_release);
       if (queued.size() != asked)
         urnw::LogWarn("live: {} queued action(s) were for a group this device has left; dropped",
                       asked - queued.size());
@@ -2427,8 +2498,8 @@ void RunSession() {
             left = true;
             return;
           }
-          // REFUSED: nothing changed, and another leave may be asked for
-          g_leaving.store(false, std::memory_order_relaxed);
+          // REFUSED: nothing changed, and another leave of this group may be asked for
+          SetGateLeaving(gidHex, false);
           publishWorld(false);
           continue;
         }
@@ -2671,7 +2742,7 @@ void RunSession() {
       if (0 < devLeaveAfterMs && !devLeaveQueued && devLeaveAfterMs <= NowMs() - passStartedMs) {
         devLeaveQueued = true;
         urnw::LogWarn("live: DEV: URMESSAGE_DEV_LEAVE_AFTER_MS ({} ms) reached; a plain leave was {}",
-                      devLeaveAfterMs, QueueLeave() ? "queued" : "REFUSED");
+                      devLeaveAfterMs, QueueLeave(gidHex) ? "queued" : "REFUSED");
       }
 
       // AND THE ADDS, which is how the third person and the fifth get in. Served HERE as well as in
@@ -2704,10 +2775,9 @@ void RunSession() {
     // goes round. The push waiter stops within a second as this scope closes.
     urnet_release(s.group);
     s.group = 0;
-    // THE PASS ENDS FIRST, so anything queued from here on is stamped for the next one; g_leaving is
-    // still set, so nothing passes a gate in between (review M1)
-    g_pass.fetch_add(1, std::memory_order_acq_rel);
-    g_canSend.store(false, std::memory_order_relaxed);
+    // THE GATE GOES FIRST, and with it every entry stamped for this group: nothing queued from here
+    // on can name it (review M1; the conversation-list design 2.2)
+    DropGate(gidHex);
     g_hasGroup.store(false, std::memory_order_relaxed);
     if (const auto stale = TakeSendQueue(); !stale.empty())
       urnw::LogWarn("live: {} action(s) queued behind the leave were dropped", stale.size());
@@ -2740,7 +2810,6 @@ void RunSession() {
     urnw::LogInfo("live: left group {}; this device holds no group now and waits for an "
                   "invitation",
                   gidHex);
-    g_leaving.store(false, std::memory_order_relaxed);
   }
 }
 
@@ -2802,7 +2871,7 @@ bool StartIfEnabled() {
     // left that could make a send work — so the button must go dark. Written here rather than on
     // each of RunSession's nine early returns because a tenth one added later would silently miss
     // it, and the failure mode of missing it is an enabled Send whose clicks vanish.
-    g_canSend.store(false, std::memory_order_relaxed);
+    DropAllGates();
     g_hasGroup.store(false, std::memory_order_relaxed);
   });
 
@@ -2815,7 +2884,11 @@ bool StartIfEnabled() {
   return true;
 }
 
-bool CanSend() { return SendGateOpen(); }
+bool CanSend(std::string const& groupIdHex) {
+  std::lock_guard<std::mutex> lock(g_gateMutex);
+  return urmsg::live::GateAction(g_gates, groupIdHex, urmsg::live::ActionClass::Commit) ==
+         urmsg::live::GateVerdict::Take;
+}
 
 namespace {
 
@@ -2832,13 +2905,14 @@ void Enqueue(Outbound out) {
 
 }  // namespace
 
-bool QueueSend(std::string utf8Body, std::string replacesLocalId, std::string replyToMessageIdHex) {
+bool QueueSend(std::string groupIdHex, std::string utf8Body, std::string replacesLocalId,
+               std::string replyToMessageIdHex) {
   // REFUSED HERE RATHER THAN QUEUED AND REFUSED LATER, and the difference is what the caller can
   // do about it: a false answer lets the composer keep the text the person typed. A queued send
   // that the worker then refuses has already emptied the box.
   if (utf8Body.empty()) return false;
-  const uint64_t pass = g_pass.load(std::memory_order_acquire);
-  if (!SendGateOpen()) return false;
+  uint64_t incarnation = 0;
+  if (!Admit(groupIdHex, urmsg::live::ActionClass::Commit, incarnation)) return false;
 
   Outbound out;
   out.localId = std::to_string(g_nextLocalId.fetch_add(1));
@@ -2858,7 +2932,8 @@ bool QueueSend(std::string utf8Body, std::string replacesLocalId, std::string re
     out.kind = OutboundKind::Reply;
     out.targetHex = std::move(replyToMessageIdHex);
   }
-  out.pass = pass;
+  out.groupIdHex = std::move(groupIdHex);
+  out.incarnation = incarnation;
   Enqueue(std::move(out));
   return true;
 }
@@ -2879,9 +2954,9 @@ bool IsHex(std::string const& hex) {
 
 }  // namespace
 
-bool QueueRoleChange(std::string identityPubHex, std::string role) {
-  const uint64_t pass = g_pass.load(std::memory_order_acquire);
-  if (!SendGateOpen()) return false;
+bool QueueRoleChange(std::string groupIdHex, std::string identityPubHex, std::string role) {
+  uint64_t incarnation = 0;
+  if (!Admit(groupIdHex, urmsg::live::ActionClass::Commit, incarnation)) return false;
   // The three roles set_role takes, by name. "owner" is refused here on purpose: the ABI answers
   // INVALID for it (ownership moves through transfer_ownership), and a caller that reached for
   // it has the wrong verb, not a bad member.
@@ -2902,14 +2977,15 @@ bool QueueRoleChange(std::string identityPubHex, std::string role) {
   out.localId = std::to_string(g_nextLocalId.fetch_add(1));
   out.identityPub = std::move(identityPubHex);
   out.role = std::move(role);
-  out.pass = pass;
+  out.groupIdHex = std::move(groupIdHex);
+  out.incarnation = incarnation;
   Enqueue(std::move(out));
   return true;
 }
 
-bool QueueTransferOwnership(std::string identityPubHex) {
-  const uint64_t pass = g_pass.load(std::memory_order_acquire);
-  if (!SendGateOpen()) return false;
+bool QueueTransferOwnership(std::string groupIdHex, std::string identityPubHex) {
+  uint64_t incarnation = 0;
+  if (!Admit(groupIdHex, urmsg::live::ActionClass::Commit, incarnation)) return false;
   if (!IsHex(identityPubHex)) {
     urnw::LogWarn("live: a transfer named an identity that is not hex ({} chars); refused before "
                   "it was queued",
@@ -2921,7 +2997,8 @@ bool QueueTransferOwnership(std::string identityPubHex) {
   out.localId = std::to_string(g_nextLocalId.fetch_add(1));
   out.identityPub = std::move(identityPubHex);
   out.role = "owner";
-  out.pass = pass;
+  out.groupIdHex = std::move(groupIdHex);
+  out.incarnation = incarnation;
   Enqueue(std::move(out));
   return true;
 }
@@ -3026,9 +3103,9 @@ bool QueueAddMemberFromCode(std::string base64JoinCode) {
   return true;
 }
 
-bool QueueRemoveMember(std::string identityPubHex) {
-  const uint64_t pass = g_pass.load(std::memory_order_acquire);
-  if (!SendGateOpen()) return false;
+bool QueueRemoveMember(std::string groupIdHex, std::string identityPubHex) {
+  uint64_t incarnation = 0;
+  if (!Admit(groupIdHex, urmsg::live::ActionClass::Commit, incarnation)) return false;
   if (!IsHex(identityPubHex)) {
     urnw::LogWarn("live: a removal named an identity that is not hex ({} chars); refused before "
                   "it was queued",
@@ -3042,51 +3119,48 @@ bool QueueRemoveMember(std::string identityPubHex) {
   // NO ROLE, DELIBERATELY LEFT EMPTY. The two verbs above fill this because the ABI takes it; this
   // one does not, and the outbox entry carries the empty string so that any note drawn from it
   // cannot name a role the commit never asked for.
-  out.pass = pass;
+  out.groupIdHex = std::move(groupIdHex);
+  out.incarnation = incarnation;
   Enqueue(std::move(out));
   return true;
 }
 
-bool QueueLeave(std::string transferToIdentityHex) {
-  const uint64_t pass = g_pass.load(std::memory_order_acquire);
-  // ONE LEAVE AT A TIME (review M1), and the flag is taken FIRST and given back on every refusal
-  // below (re-check NIT): checked after the group gate, a leave that finished in between could reset
-  // it under this call, and a refused leave would leave it set and the composer dead.
-  if (g_leaving.exchange(true, std::memory_order_acq_rel)) {
-    urnw::LogWarn("live: a leave was asked for while one is already in flight; refused");
+bool QueueLeave(std::string groupIdHex, std::string transferToIdentityHex) {
+  // A HAND-OVER NAMES ITS MEMBER AS HEX, checked before the gate so a refusal here marks nothing.
+  if (!transferToIdentityHex.empty() && !IsHex(transferToIdentityHex)) {
+    urnw::LogWarn("live: a leave named a hand-over identity that is not hex ({} chars); "
+                  "refused before it was queued",
+                  transferToIdentityHex.size());
     return false;
   }
-  // A LEAVE NEEDS A GROUP AND NOT A SESSION: a device whose group the server closed, or that was
+  // ONE LEAVE OF A GROUP AT A TIME (review M1), and only of a group this device holds: the admission
+  // marks the gate leaving in the same look, so a second press finds it leaving and is refused. A
+  // LEAVE NEEDS A GROUP AND NOT A SESSION: a device whose group the server closed, or that was
   // removed from it, can still erase its own copy. A HAND-OVER is a commit and needs both.
-  bool refused = !g_hasGroup.load(std::memory_order_relaxed);
-  if (!refused && !transferToIdentityHex.empty()) {
-    if (!g_canSend.load(std::memory_order_relaxed)) {
-      refused = true;
-    } else if (!IsHex(transferToIdentityHex)) {
-      urnw::LogWarn("live: a leave named a hand-over identity that is not hex ({} chars); "
-                    "refused before it was queued",
-                    transferToIdentityHex.size());
-      refused = true;
-    }
-  }
-  if (refused) {
-    g_leaving.store(false, std::memory_order_release);
-    return false;
-  }
+  uint64_t incarnation = 0;
+  const urmsg::live::ActionClass cls = transferToIdentityHex.empty()
+                                           ? urmsg::live::ActionClass::Leave
+                                           : urmsg::live::ActionClass::LeaveHandOver;
+  if (!Admit(groupIdHex, cls, incarnation, /*markLeaving=*/true)) return false;
   Outbound out;
   out.kind = OutboundKind::Leave;
   out.localId = std::to_string(g_nextLocalId.fetch_add(1));
   out.identityPub = std::move(transferToIdentityHex);
-  out.pass = pass;
+  out.groupIdHex = std::move(groupIdHex);
+  out.incarnation = incarnation;
   Enqueue(std::move(out));
   return true;
 }
 
-bool LeaveInFlight() { return g_leaving.load(std::memory_order_relaxed); }
+bool LeaveInFlight(std::string const& groupIdHex) {
+  std::lock_guard<std::mutex> lock(g_gateMutex);
+  auto const* gate = urmsg::live::FindGate(g_gates, groupIdHex);
+  return gate != nullptr && gate->leaving;
+}
 
-bool QueueDelete(std::string targetMessageIdHex) {
-  const uint64_t pass = g_pass.load(std::memory_order_acquire);
-  if (!SendGateOpen()) return false;
+bool QueueDelete(std::string groupIdHex, std::string targetMessageIdHex) {
+  uint64_t incarnation = 0;
+  if (!Admit(groupIdHex, urmsg::live::ActionClass::Commit, incarnation)) return false;
   Outbound out;
   out.kind = OutboundKind::Delete;
   out.localId = std::to_string(g_nextLocalId.fetch_add(1));
@@ -3097,15 +3171,17 @@ bool QueueDelete(std::string targetMessageIdHex) {
     return false;
   }
   out.targetHex = std::move(targetMessageIdHex);
-  out.pass = pass;
+  out.groupIdHex = std::move(groupIdHex);
+  out.incarnation = incarnation;
   Enqueue(std::move(out));
   return true;
 }
 
-bool QueueReaction(std::string targetMessageIdHex, std::string utf8Emoji, bool remove) {
+bool QueueReaction(std::string groupIdHex, std::string targetMessageIdHex, std::string utf8Emoji,
+                   bool remove) {
   if (utf8Emoji.empty()) return false;
-  const uint64_t pass = g_pass.load(std::memory_order_acquire);
-  if (!SendGateOpen()) return false;
+  uint64_t incarnation = 0;
+  if (!Admit(groupIdHex, urmsg::live::ActionClass::Commit, incarnation)) return false;
 
   Outbound out;
   out.kind = remove ? OutboundKind::ReactRemove : OutboundKind::ReactAdd;
@@ -3118,7 +3194,8 @@ bool QueueReaction(std::string targetMessageIdHex, std::string utf8Emoji, bool r
   }
   out.targetHex = std::move(targetMessageIdHex);
   out.emoji = std::move(utf8Emoji);
-  out.pass = pass;
+  out.groupIdHex = std::move(groupIdHex);
+  out.incarnation = incarnation;
   Enqueue(std::move(out));
   return true;
 }
