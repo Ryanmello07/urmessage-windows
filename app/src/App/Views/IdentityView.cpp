@@ -338,10 +338,7 @@ IdentityScreenView MakeIdentityScreen(id::ScreenModel const& model,
   card.BorderThickness(ThicknessHelper::FromUniformLength(1));
   card.CornerRadius(CornerRadiusHelper::FromUniformRadius(12));
   card.Padding(ThicknessHelper::FromLengths(32, 28, 32, 28));
-  // STRETCH UNDER A MAXIMUM, so every screen is one width (centred in a wider window) and a
-  // narrow window still fits it; TOP, so the card is as tall as what it holds and no taller.
-  card.MaxWidth(model.dialog ? kDialogWidth : kCardWidth);
-  card.HorizontalAlignment(HorizontalAlignment::Stretch);
+  // TOP, so the card is as tall as what it holds and no taller.
   card.VerticalAlignment(VerticalAlignment::Top);
   card.Margin(ThicknessHelper::FromLengths(16, 36, 16, 36));
   // the alarm wears the danger colour on its edge as well as in its words (SCOPE G6)
@@ -350,10 +347,28 @@ IdentityScreenView MakeIdentityScreen(id::ScreenModel const& model,
     card.BorderThickness(ThicknessHelper::FromUniformLength(2));
   }
 
+  // ONE WIDTH FOR EVERY SCREEN, CENTRED, and narrower in a narrow window: the card stands in the
+  // middle column of three, a star column capped at the card's width with a weight that takes all
+  // the room below the cap, and the two outer columns share what is left. Measured twice: a
+  // centred card sized to its content was a different width on every screen and cut the longest
+  // words (ci/i1-shots, run 38899303355); a stretched card under a MaxWidth was not centred, sitting
+  // 10 to 130 px right of the middle by screen (ci/i1-shots-3, run 38901507747).
+  Grid frame;
+  ColumnDefinition leftColumn, cardColumn, rightColumn;
+  leftColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
+  cardColumn.Width(GridLengthHelper::FromValueAndType(1000, GridUnitType::Star));
+  cardColumn.MaxWidth((model.dialog ? kDialogWidth : kCardWidth) + 32);
+  rightColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
+  frame.ColumnDefinitions().Append(leftColumn);
+  frame.ColumnDefinitions().Append(cardColumn);
+  frame.ColumnDefinitions().Append(rightColumn);
+  Grid::SetColumn(card, 1);
+  frame.Children().Append(card);
+
   StackPanel column;
   column.Spacing(14);
   card.Child(column);
-  scroller.Content(card);
+  scroller.Content(frame);
   root.Children().Append(scroller);
 
   for (id::Block const& b : model.blocks) {
