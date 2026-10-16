@@ -415,23 +415,10 @@ struct Session {
   uint64_t reserver = 0;
   uint64_t stateStore = 0;
   uint64_t device = 0;
-  // THE SESSION THREAD'S OWN GROUP HANDLE, and only while it is the one road in: JoinFromPeer puts
-  // the group it founded, joined or brought back here, and RunSession hands it to a loop at once.
-  // No group loop ever reads this field (the conversation-list design 2.1).
-  uint64_t group = 0;
-  // Every OTHER group a held leave's restore brings back (A10): handed straight to a loop of its
-  // own. Set by RunSession before the join road runs; empty, they are released as before.
-  std::function<void(uint64_t)> adoptExtra;
+  // NO GROUP: each group this device holds is its own loop's (the conversation-list design 2.1).
 
   void Close() {
     char* err = nullptr;
-    if (group != 0) {
-      if (!urnet_message_group_close(group, &err)) {
-        const std::string text = TakeError(&err);
-        if (!text.empty()) urnw::LogWarn("live: group_close: {}", text);
-      }
-      urnet_release(group);
-    }
     if (device != 0) {
       if (!urnet_message_device_close(device, &err)) {
         const std::string text = TakeError(&err);
@@ -507,7 +494,10 @@ int64_t WallClockMs() {
 // constraint that put the queue here: each one is a round trip inside a single ABI call, and only
 // the worker may hold the group handle.
 enum class OutboundKind {
-  Text, Reply, ReactAdd, ReactRemove, SetRole, TransferOwnership, RemoveMember, Delete, Leave
+  Text, Reply, ReactAdd, ReactRemove, SetRole, TransferOwnership, RemoveMember, Delete, Leave,
+  // AN ADD FROM A JOIN CODE (the conversation-list design 2.3): `body` holds the code as pasted,
+  // and the outcome is the group's add state, not a row
+  AddMember
 };
 
 struct Outbound {
@@ -549,6 +539,10 @@ struct GroupSlot {
   // g_tableMutex.
   urmsg::live::LiveConversation conversation;
   bool built = false;
+  // A GROUP OF ONE: founded here, and nobody else in it yet. It is not open on the server, so its
+  // loop fetches nothing until its first add opens it, and a create is refused while it waits
+  // (ConversationRules.h CreateAction). Guarded by g_tableMutex.
+  bool groupOfOne = false;
 };
 
 std::mutex g_tableMutex;
@@ -560,10 +554,6 @@ std::condition_variable g_slotsChanged;
 // A push for an id this device does not hold is logged once per id (the conversation-list design
 // 2.1, the self group: a push never adopts anything).
 std::set<std::string> g_unknownPushLogged;        // guarded by g_tableMutex
-// TRUE WHILE THE SESSION THREAD RUNS THE JOIN ROAD (JoinFromPeer). Its own wait loop serves a pasted
-// join code then, as it did when a device held one group, and no group loop takes the code from
-// under it (AddRoadGroup).
-std::atomic<bool> g_joinRoadRunning{false};
 // ONE SLOT LEAVES AT A TIME (RetireSlot): whether it is the last conversation, the neutral state that
 // then goes first, and its removal are one step, so two loops leaving at once cannot both find
 // another conversation still there and leave the window an empty world with no neutral state first.
@@ -651,11 +641,6 @@ bool Admit(std::string const& gid, urmsg::live::ActionClass cls, uint64_t& incar
   return true;
 }
 
-// IS THERE A GROUP AT ALL? A WEAKER QUESTION THAN A GATE'S OPEN BIT AND IT HAS TO BE. CanSend asks
-// whether the SERVER says the group is open, which a freshly founded group of one is not; this
-// asks only whether the device holds one. The create verb needs the weaker reading, because the
-// state it must refuse in is exactly the one where a group exists and cannot send yet.
-std::atomic<bool> g_hasGroup{false};
 std::atomic<uint64_t> g_nextLocalId{1};
 
 // A group's whole queue, taken at once. Called on that group's loop only.
@@ -686,13 +671,23 @@ size_t SlotCount() {
   return g_slots.size();
 }
 
-// THE ADD ROAD (the founder's dialog and its pasted join code): the one group this device holds,
-// and none while it holds several, until the window names the group an add is for (the
-// conversation-list design 2.3). With one group this is exactly what the one pass did.
-std::string AddRoadGroup() {
-  if (g_joinRoadRunning.load(std::memory_order_acquire)) return std::string();
+bool IsGroupOfOne(GroupSlot& slot) {
   std::lock_guard<std::mutex> lock(g_tableMutex);
-  return g_slots.size() == 1 ? g_slots.front()->gidHex : std::string();
+  return slot.groupOfOne;
+}
+
+void SetGroupOfOne(GroupSlot& slot, bool groupOfOne) {
+  std::lock_guard<std::mutex> lock(g_tableMutex);
+  slot.groupOfOne = groupOfOne;
+}
+
+// The table as the create rule reads it (ConversationRules.h CreateAction).
+std::vector<urmsg::live::HeldForCreate> HeldForCreateSnapshot() {
+  std::lock_guard<std::mutex> lock(g_tableMutex);
+  std::vector<urmsg::live::HeldForCreate> held;
+  held.reserve(g_slots.size());
+  for (auto const& slot : g_slots) held.push_back({slot->gidHex, slot->groupOfOne});
+  return held;
 }
 
 // THE WORLD OF EVERY CONVERSATION BUILT SO FAR, published. g_tableMutex is held by the caller.
@@ -900,10 +895,9 @@ bool DecodeBase64(std::string_view text, std::vector<uint8_t>& out) {
 std::mutex g_onboardMutex;
 urmsg::live::OnboardPtr g_onboard;          // guarded by g_onboardMutex
 std::string g_pastedInvite;                 // guarded by g_onboardMutex; consumed by the worker
-std::string g_pastedJoinCode;               // guarded by g_onboardMutex; consumed by the worker
 // WHAT THE JOIN DIALOG SAYS FIRST after a leave whose erase did not finish (review H1), or after a
 // restore that refused a group founded before invitations were sealed (Task 58), or "".
-// Guarded by g_onboardMutex; written by the worker and consumed by the next JoinFromPeer.
+// Guarded by g_onboardMutex; written by the worker and consumed when the join road opens again.
 std::string g_afterLeaveNote;
 bool g_createGroupAsked = false;            // guarded by g_onboardMutex; consumed by the worker
 std::atomic<uint64_t> g_onboardGeneration{0};
@@ -929,20 +923,22 @@ bool g_holdsUnopenedGroup = false;
 urmsg::live::ReadClass g_lastRestoreClass = urmsg::live::ReadClass::None;
 
 void PublishOnboard(urmsg::live::OnboardStep step, std::string joinCode, std::string message,
-                    std::string inviteCode = {}, bool offerLeaveHeldGroup = false,
-                    bool addRoad = false, bool offerNewJoinCode = false) {
+                    bool offerLeaveHeldGroup = false, bool offerNewJoinCode = false,
+                    std::string groupIdHex = {}) {
   auto next = std::make_shared<urmsg::live::OnboardState>();
   next->step = step;
   next->joinCode = std::move(joinCode);
-  next->inviteCode = std::move(inviteCode);
   next->message = std::move(message);
+  next->groupIdHex = std::move(groupIdHex);
   next->offerLeaveHeldGroup = offerLeaveHeldGroup;
-  next->addRoad = addRoad;
   next->offerNewJoinCode = offerNewJoinCode;
+  // THE TABLE AS IT STANDS, read before the onboarding lock (never the table's lock inside it)
+  next->holdsConversation = SlotCount() > 0;
   {
     std::lock_guard<std::mutex> lock(g_onboardMutex);
     if (step == urmsg::live::OnboardStep::Joined) g_holdsUnopenedGroup = false;
-    next->holdsGroup = g_holdsUnopenedGroup;
+    // "NOT IN A GROUP YET" COUNTS THE CONVERSATIONS HELD TOO (the conversation-list design A13)
+    next->holdsGroup = g_holdsUnopenedGroup || next->holdsConversation;
     g_onboard = std::move(next);
     g_heldLeaveOffered.store(offerLeaveHeldGroup, std::memory_order_release);
     g_newJoinCodeOffered.store(offerNewJoinCode, std::memory_order_release);
@@ -952,6 +948,62 @@ void PublishOnboard(urmsg::live::OnboardStep step, std::string joinCode, std::st
   // everything else, so a join code that has just been minted reaches the screen on the next beat
   // rather than on the next fetch.
   urmsg::live::NotifyPublished();
+}
+
+// ── the published add states, one per group (the conversation-list design 2.3, A8) ─────────────
+std::mutex g_addMutex;
+std::vector<urmsg::live::AddPtr> g_adds;  // guarded by g_addMutex; at most one per group
+std::atomic<uint64_t> g_addGeneration{0};
+
+// The add state of one group, replacing the one before it: an invitation is shown until the
+// group's next add, and a group's add never shows under another group's.
+void PublishAdd(std::string const& gid, urmsg::live::AddStep step, std::string message,
+                std::string inviteCode = {}) {
+  auto next = std::make_shared<urmsg::live::AddState>();
+  next->groupIdHex = gid;
+  next->step = step;
+  next->message = std::move(message);
+  next->inviteCode = std::move(inviteCode);
+  {
+    std::lock_guard<std::mutex> lock(g_addMutex);
+    g_adds.erase(std::remove_if(g_adds.begin(), g_adds.end(),
+                                [&](urmsg::live::AddPtr const& a) { return a->groupIdHex == gid; }),
+                 g_adds.end());
+    g_adds.push_back(std::move(next));
+  }
+  g_addGeneration.fetch_add(1, std::memory_order_release);
+  urmsg::live::NotifyPublished();
+}
+
+// A GROUP LEFT TAKES ITS ADD STATE WITH IT, the invitation it may still hold included.
+void DropAdd(std::string const& gid) {
+  bool dropped = false;
+  {
+    std::lock_guard<std::mutex> lock(g_addMutex);
+    const auto before = g_adds.size();
+    g_adds.erase(std::remove_if(g_adds.begin(), g_adds.end(),
+                                [&](urmsg::live::AddPtr const& a) { return a->groupIdHex == gid; }),
+                 g_adds.end());
+    dropped = g_adds.size() != before;
+  }
+  if (dropped) {
+    g_addGeneration.fetch_add(1, std::memory_order_release);
+    urmsg::live::NotifyPublished();
+  }
+}
+
+// THE FOUNDER'S SENTENCE (R43 A13): the add panel's join-code box is above it, and a group of one
+// cannot send until its first member is added.
+constexpr const char* kFoundedSentence =
+    "Your group is made, but it has only you in it and nothing can be sent yet. Ask somebody for "
+    "their join code and paste it above - adding them is what opens the group.";
+
+// A group's id as 64 hex, read off its handle, or "" when it will not say.
+std::string GroupIdHexOf(uint64_t group) {
+  uint8_t gid[32] = {};
+  int32_t gidLen = static_cast<int32_t>(sizeof(gid));
+  if (!urnet_message_group_id(group, gid, &gidLen)) return std::string();
+  return ToHex(gid, gidLen);
 }
 
 // THE SYSTEM ENTROPY SOURCE, and it is BCryptGenRandom rather than anything in <random>. A group
@@ -973,14 +1025,13 @@ bool RandomOctets(uint8_t* out, size_t len) {
 // urnet_message_group_is_open is the only reading that cannot drift from the truth -- a count of
 // how many people this session has added would be wrong after a restart, and wrong in the
 // direction that refuses every later add with a sentence about the wrong call.
-bool AddMemberFromCode(Session& s, uint64_t group, const std::string& theirCode,
-                       const std::string& joinCode) {
+bool AddMemberFromCode(Session& s, uint64_t group, std::string const& gidHex,
+                       const std::string& theirCode) {
   std::vector<uint8_t> keyPackage;
   if (!DecodeBase64(theirCode, keyPackage)) {
-    PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
-                   "That join code could not be read. Ask for the whole code again - it is one "
-                   "long line with no spaces inside it.",
-                   {}, false, true);
+    PublishAdd(gidHex, urmsg::live::AddStep::Refused,
+               "That join code could not be read. Ask for the whole code again - it is one "
+               "long line with no spaces inside it.");
     urnw::LogWarn("live: a pasted join code was not decodable base64; refused");
     return false;
   }
@@ -1004,11 +1055,9 @@ bool AddMemberFromCode(Session& s, uint64_t group, const std::string& theirCode,
     urnw::LogError("live: {} refused the add ({}): {}",
                    wasOpen ? "add_member_and_publish" : "add_member", urmsg::live::AddCopyName(row),
                    why);
-    PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
-                   row != urmsg::live::AddCopy::Other
-                       ? std::string(urmsg::live::AddCopySentence(row))
-                       : "That person could not be added: " + why,
-                   {}, false, true);
+    PublishAdd(gidHex, urmsg::live::AddStep::Refused,
+               row != urmsg::live::AddCopy::Other ? std::string(urmsg::live::AddCopySentence(row))
+                                                  : "That person could not be added: " + why);
     return false;
   }
 
@@ -1038,10 +1087,9 @@ bool AddMemberFromCode(Session& s, uint64_t group, const std::string& theirCode,
     // server and that person IS in the group's next epoch. They simply cannot be told how to
     // open it from here. Saying "could not be added" would be false and would invite a second
     // add of the same person.
-    PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
-                   "They were added, but the invitation could not be written out, so there is "
-                   "nothing to send them. Ask them for a fresh join code and add them again.",
-                   {}, false, true);
+    PublishAdd(gidHex, urmsg::live::AddStep::Refused,
+               "They were added, but the invitation could not be written out, so there is "
+               "nothing to send them. Ask them for a fresh join code and add them again.");
     return true;
   }
 
@@ -1059,10 +1107,9 @@ bool AddMemberFromCode(Session& s, uint64_t group, const std::string& theirCode,
       urnw::LogError("live: group_open{}: {}",
                      row.empty() ? "" : " (the group is open on the server and this device could not finish saving it)",
                      why);
-      PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
-                     !row.empty() ? std::string(row)
-                                  : "They were added, but the group could not be published to the server: " + why,
-                     {}, false, true);
+      PublishAdd(gidHex, urmsg::live::AddStep::Refused,
+                 !row.empty() ? std::string(row)
+                              : "They were added, but the group could not be published to the server: " + why);
       return false;
     }
   }
@@ -1074,8 +1121,7 @@ bool AddMemberFromCode(Session& s, uint64_t group, const std::string& theirCode,
   // WHAT THE INVITATION IS, the dialog's label says (Live/RefusalCopy.h, kAdderInviteLabel). Since
   // invite version 3 only the joiner's device can open it, so "whoever has it is in the group" is
   // no longer true, and it is no longer said.
-  PublishOnboard(urmsg::live::OnboardStep::Invited, joinCode, "Send this invitation to that person.",
-                 code);
+  PublishAdd(gidHex, urmsg::live::AddStep::Invited, "Send this invitation to that person.", code);
   return true;
 }
 
@@ -1121,20 +1167,24 @@ struct ErasedOnExit {
 
 enum class HeldLeave {
   Left,      // this device holds nothing under the id now: open the same invitation again
-  CameBack,  // the restore brought the group back, and s.group is it
+  CameBack,  // the restore brought the group back, and `cameBack` is it
   Offered,   // the group is still held; the state says why, and whether the leave is on offer
 };
 
 // THE RESTORE THE LEAVE RUNS FIRST: device_restore, and the group it brings back under the held
-// id, if any. `back` is true with s.group set to it; every other group it answered is released.
+// id, if any. `back` is true with `group` set to it, for the caller to take up; every other group it
+// answered is handed to a loop of its own (`adopt`, A10).
 // `error` is the restore's own report, which says whether a file of a group could not be read just
 // now (R28): the leave reads it before it decides anything.
 struct HeldRestore {
   bool back = false;
+  uint64_t group = 0;
   std::string error;
 };
 
-HeldRestore RestoreHeldGroup(Session& s, HeldInvite const& held) {
+using AdoptFn = std::function<void(uint64_t, bool)>;
+
+HeldRestore RestoreHeldGroup(Session& s, HeldInvite const& held, AdoptFn const& adopt) {
   char* err = nullptr;
   const int32_t gidLen = static_cast<int32_t>(held.groupId.size());
   const uint64_t restored = urnet_message_device_restore(s.device, s.ctx, &err);
@@ -1155,13 +1205,11 @@ HeldRestore RestoreHeldGroup(Session& s, HeldInvite const& held) {
                       std::memcmp(gid, held.groupId.data(), sizeof(gid)) == 0;
     if (same) {
       back = group;
-    } else if (s.adoptExtra) {
+    } else {
       // A GROUP THE LIBRARY NOW HOLDS OPEN: it gets a loop of its own, like every other group
       // handed over (the conversation-list design 2.1, A10). Released, it would be held by the
-      // library and served by nobody.
-      s.adoptExtra(group);
-    } else {
-      urnet_release(group);
+      // library and served by nobody. One already served keeps its loop (StartGroupLoop).
+      adopt(group, false);
     }
   }
   if (restored != 0) urnet_release(restored);
@@ -1170,7 +1218,7 @@ HeldRestore RestoreHeldGroup(Session& s, HeldInvite const& held) {
     g_lastRestoreClass = urmsg::live::NextRestoreClass(g_lastRestoreClass, restoreError);
   }
   if (back == 0) return out;
-  s.group = back;
+  out.group = back;
   out.back = true;
   return out;
 }
@@ -1193,19 +1241,23 @@ HeldRestore RestoreHeldGroup(Session& s, HeldInvite const& held) {
 // connected restores first again. The report names no group for a record that could not be read
 // (R12), so a sentinel stops the leave of any group. Only a group that did not come back for some
 // other reason is forgotten, and the library then decides on its own fresh evidence (R30).
-HeldLeave LeaveHeldGroup(Session& s, HeldInvite const& held, std::string const& joinCode) {
+HeldLeave LeaveHeldGroup(Session& s, HeldInvite const& held, std::string const& joinCode,
+                         AdoptFn const& adopt, uint64_t& cameBack) {
   char* err = nullptr;
   const std::string gidHex = urmsg::live::GroupIdHex(held.groupId);
   const int32_t gidLen = static_cast<int32_t>(held.groupId.size());
   urnw::LogInfo("live: held leave: restoring first, in case group {} opens now", gidHex);
-  const HeldRestore restore = RestoreHeldGroup(s, held);
+  const HeldRestore restore = RestoreHeldGroup(s, held, adopt);
   const urmsg::live::HeldLeaveStep step = urmsg::live::StepAfterRestoreFirst(restore.back, restore.error);
+  // A GROUP THAT CAME BACK IS SERVED, whatever the step: the caller takes it up on CameBack, and
+  // any other step that finds it back hands it to a loop here rather than hold it unserved.
+  if (restore.back && step != urmsg::live::HeldLeaveStep::CameBack) adopt(restore.group, false);
   switch (step) {
     case urmsg::live::HeldLeaveStep::CameBack:
       urnw::LogInfo("live: *** RESTORED *** group {} came back at epoch {}; this device is in it, "
                     "and nothing was left",
-                    gidHex, urnet_message_group_epoch(s.group));
-      PublishOnboard(urmsg::live::OnboardStep::Joined, std::string(), "You are in the group.");
+                    gidHex, urnet_message_group_epoch(restore.group));
+      cameBack = restore.group;
       return HeldLeave::CameBack;
     case urmsg::live::HeldLeaveStep::NotReadNow:
     case urmsg::live::HeldLeaveStep::Unproven:
@@ -1228,7 +1280,7 @@ HeldLeave LeaveHeldGroup(Session& s, HeldInvite const& held, std::string const& 
         std::lock_guard<std::mutex> lock(g_onboardMutex);
         g_holdsUnopenedGroup = true;
       }
-      PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode, std::string(copy.sentence), {},
+      PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode, std::string(copy.sentence),
                      copy.offerLeave);
       return HeldLeave::Offered;
     }
@@ -1282,7 +1334,7 @@ HeldLeave LeaveHeldGroup(Session& s, HeldInvite const& held, std::string const& 
                   "again",
                   gidHex, why);
     PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
-                   std::string(urmsg::live::kHeldNotLiveSentence), {}, true);
+                   std::string(urmsg::live::kHeldNotLiveSentence), true);
     return HeldLeave::Offered;
   }
 
@@ -1295,12 +1347,12 @@ HeldLeave LeaveHeldGroup(Session& s, HeldInvite const& held, std::string const& 
     urnw::LogWarn("live: held leave: forget_group asked the owner's question for group {} "
                   "(ErrOwnerMustTransfer); restoring once more, so the conversation shows (R33): {}",
                   gidHex, why);
-    const HeldRestore again = RestoreHeldGroup(s, held);
+    const HeldRestore again = RestoreHeldGroup(s, held, adopt);
     if (again.back) {
       urnw::LogInfo("live: *** RESTORED *** group {} came back at epoch {} after the owner's question; "
                     "this device is in it, and nothing was left",
-                    gidHex, urnet_message_group_epoch(s.group));
-      PublishOnboard(urmsg::live::OnboardStep::Joined, std::string(), "You are in the group.");
+                    gidHex, urnet_message_group_epoch(again.group));
+      cameBack = again.group;
       return HeldLeave::CameBack;
     }
     urnw::LogWarn("live: held leave: group {} did not come back after the owner's question: {}", gidHex,
@@ -1327,7 +1379,7 @@ HeldLeave LeaveHeldGroup(Session& s, HeldInvite const& held, std::string const& 
     PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
                    urmsg::live::ShowsLibraryWords(refusal) ? urmsg::live::WithLibraryWords(copy.sentence, why)
                                                            : std::string(copy.sentence),
-                   {}, copy.offerLeave);
+                   copy.offerLeave);
     return HeldLeave::Offered;
   }
 
@@ -1335,7 +1387,7 @@ HeldLeave LeaveHeldGroup(Session& s, HeldInvite const& held, std::string const& 
   PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
                  "The old copy of this group could not be left: " +
                      (why.empty() ? std::string("the library gave no reason") : why),
-                 {}, true);
+                 true);
   return HeldLeave::Offered;
 }
 
@@ -1386,8 +1438,10 @@ Mint MintJoinCode(Session& s, std::string& joinCode, size_t& octets, std::string
   return Mint::Ok;
 }
 
-// Publish this device's key package, wait for the peer's invite, and join.
-// Answers true with s.group set, or false having said why.
+// THE JOIN ROAD (the conversation-list design 2.3): publish this device's key package, wait for an
+// invitation, join, and keep waiting. It runs for the life of the session, beside every conversation
+// this device holds: what it joins, founds or brings back is handed to a loop of its own (`adopt`).
+// It returns only when this installation cannot make a join code, having said why.
 //
 // THE KEY PACKAGE IS NOT A SECRET, AND THE INVITE IS PRIVATE. A key package is a
 // public offer to be added. An invite carries the Welcome, and since invite
@@ -1395,7 +1449,7 @@ Mint MintJoinCode(Session& s, std::string& joinCode, size_t& octets, std::string
 // this device can open it (R40 A12). It still names the group and its members, so
 // it is never logged, and the invite is deleted the moment it has been used. The
 // key package is deleted by the peer that consumes it.
-bool JoinFromPeer(Session& s) {
+void JoinRoad(Session& s, AdoptFn const& adopt) {
   char* err = nullptr;
   const std::filesystem::path dir = HandshakeDir();
   const std::filesystem::path keyPackagePath = dir / kKeyPackageName;
@@ -1410,10 +1464,15 @@ bool JoinFromPeer(Session& s) {
                    std::string(urmsg::live::kSayNoDeviceWrapKey));
   };
   std::string joinCode;
-  size_t keyPackageOctets = 0;
-  {
+  // THE ROAD'S OPENING, as a device that holds no group has always seen it: a fresh join code, the
+  // line that says it is published, and the Waiting state with the note first. At the start of a
+  // session that holds no conversation, and again whenever the last one is left (ledger 273). A
+  // session that restored a conversation mints nothing until then, as before.
+  auto openRoad = [&]() -> bool {
+    std::string fresh;
+    size_t keyPackageOctets = 0;
     std::string why;
-    switch (MintJoinCode(s, joinCode, keyPackageOctets, why)) {
+    switch (MintJoinCode(s, fresh, keyPackageOctets, why)) {
       case Mint::Ok:
         break;
       case Mint::NoWrapKey:
@@ -1423,23 +1482,29 @@ bool JoinFromPeer(Session& s) {
         urnw::LogError("live: device_key_package: {}", why);
         return false;
     }
-  }
-  urnw::LogInfo(
-      "live: published this device's key package ({} octets) to {}. WAITING for a second party: a "
-      "solo device cannot open a group — group_open comes after add_member, the alpha accepts "
-      "exactly one, and one credential is one key package. Run sdk/livepeer under the OTHER "
-      "account, pointed at this file.",
-      keyPackageOctets, Utf8Path(keyPackagePath));
+    joinCode = std::move(fresh);
+    urnw::LogInfo(
+        "live: published this device's key package ({} octets) to {}. WAITING for a second party: a "
+        "solo device cannot open a group — group_open comes after add_member, the alpha accepts "
+        "exactly one, and one credential is one key package. Run sdk/livepeer under the OTHER "
+        "account, pointed at this file.",
+        keyPackageOctets, Utf8Path(keyPackagePath));
 
-  // THE NOTE FIRST, and "not in a group yet" only when it is true (R25 Q4): a device whose group is
-  // on its disk and did not open is not told it holds none (Live/RefusalCopy.h, WaitingText).
-  std::string waiting;
-  {
-    std::lock_guard<std::mutex> lock(g_onboardMutex);
-    waiting = urmsg::live::WaitingText(g_afterLeaveNote, g_holdsUnopenedGroup);
-    g_afterLeaveNote.clear();
-  }
-  PublishOnboard(urmsg::live::OnboardStep::Waiting, joinCode, waiting);
+    // THE NOTE FIRST, and "not in a group yet" only when it is true (R25 Q4; A13): a device whose
+    // group is on its disk and did not open, or that holds a conversation, is not told it holds none
+    // (Live/RefusalCopy.h, WaitingText).
+    const bool conversations = SlotCount() > 0;
+    std::string waiting;
+    {
+      std::lock_guard<std::mutex> lock(g_onboardMutex);
+      waiting = urmsg::live::WaitingText(g_afterLeaveNote, g_holdsUnopenedGroup || conversations);
+      g_afterLeaveNote.clear();
+    }
+    PublishOnboard(urmsg::live::OnboardStep::Waiting, joinCode, waiting);
+    return true;
+  };
+  size_t heldBefore = SlotCount();
+  if (heldBefore == 0 && !openRoad()) return;
 
   // ── wait for an invite, from EITHER road ────────────────────────────────────
   //
@@ -1459,6 +1524,13 @@ bool JoinFromPeer(Session& s) {
   // on offer (Task 39). Erased when it is superseded and when this function returns.
   HeldInvite held;
   for (;;) {
+    // THE LAST CONVERSATION WAS LEFT: the road opens again, as it always did after a leave.
+    {
+      const size_t heldNow = SlotCount();
+      if (heldBefore > 0 && heldNow == 0 && !openRoad()) return;
+      heldBefore = heldNow;
+    }
+
     std::vector<uint8_t> encoded;
     const ErasedOnExit encodedErased{encoded};
     bool fromPaste = false;
@@ -1514,11 +1586,11 @@ bool JoinFromPeer(Session& s) {
           case Mint::NoWrapKey:
             // THAT ROW, as at startup: this installation cannot make a join code at all.
             cannotMakeJoinCode(why);
-            return false;
+            return;
           case Mint::Failed:
             urnw::LogError("live: a new join code could not be minted: {}", why);
             PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
-                           "A new join code could not be made: " + why, {}, false, false, true);
+                           "A new join code could not be made: " + why, false, true);
             break;
         }
       }
@@ -1534,7 +1606,8 @@ bool JoinFromPeer(Session& s) {
         g_heldLeaveAsked = false;
       }
       if (asked && held.valid) {
-        switch (LeaveHeldGroup(s, held, joinCode)) {
+        uint64_t cameBack = 0;
+        switch (LeaveHeldGroup(s, held, joinCode, adopt, cameBack)) {
           case HeldLeave::Left:
             // THE SAME INVITATION: the refusal came before the join code was touched, so it is
             // still good. It goes through the one join path below, like any other.
@@ -1546,9 +1619,13 @@ bool JoinFromPeer(Session& s) {
             fromPaste = held.fromPaste;
             break;
           case HeldLeave::CameBack: {
-            // The group is this device's again, so the invitation into it has done its job. Only
-            // this device can open it, but a file copy of it still names the group and its members,
-            // so it goes (R40 A12).
+            // THE GROUP IS THIS DEVICE'S AGAIN, and a loop of its own serves it from here; the road
+            // keeps waiting. The invitation into it has done its job. Only this device can open it,
+            // but a file copy of it still names the group and its members, so it goes (R40 A12).
+            const std::string backHex = GroupIdHexOf(cameBack);
+            adopt(cameBack, false);
+            PublishOnboard(urmsg::live::OnboardStep::Joined, joinCode, "You are in the group.", false,
+                           false, backHex);
             std::error_code ec;
             if (!held.fromPaste && std::filesystem::exists(invitePath, ec) &&
                 !std::filesystem::remove(invitePath, ec)) {
@@ -1557,7 +1634,8 @@ bool JoinFromPeer(Session& s) {
                             Utf8Path(invitePath), ec.message());
             }
             held.Drop();
-            return true;
+            previous.clear();
+            continue;
           }
           case HeldLeave::Offered:
             break;
@@ -1577,6 +1655,16 @@ bool JoinFromPeer(Session& s) {
         std::lock_guard<std::mutex> lock(g_onboardMutex);
         make = g_createGroupAsked;
         g_createGroupAsked = false;
+      }
+      // THE RULE AGAIN, ON THE ROAD (ConversationRules.h CreateAction): QueueCreateGroup asked it,
+      // and this is the one thread that makes a group of one, so nothing can have changed it since.
+      std::string waitingGroup;
+      if (make && urmsg::live::CreateAction(HeldForCreateSnapshot(), waitingGroup) !=
+                      urmsg::live::CreateVerdict::Take) {
+        urnw::LogWarn("live: a create reached the road while group {} is still a group of one; "
+                      "nothing was made",
+                      waitingGroup.substr(0, (std::min)(waitingGroup.size(), size_t{16})));
+        make = false;
       }
       if (make) {
         // A GROUP ID IS 32 OCTETS AND IT IS NOT A SECRET, but it must not be guessable either:
@@ -1599,48 +1687,27 @@ bool JoinFromPeer(Session& s) {
             PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
                            "The group could not be made: " + why);
           } else {
-            s.group = made;
-            // SET HERE AND NOT ONLY IN THE FETCH LOOP. A founded group of one never reaches the
-            // fetch loop until somebody is added, and between those two moments a second create
-            // would replace it. QueueCreateGroup reads this.
-            g_hasGroup.store(true, std::memory_order_relaxed);
+            const std::string madeHex = ToHex(gid, static_cast<int32_t>(sizeof(gid)));
             urnw::LogInfo("live: *** GROUP CREATED *** {} at epoch {}, open on the server: {}",
-                          ToHex(gid, static_cast<int32_t>(sizeof(gid))),
-                          urnet_message_group_epoch(s.group),
-                          urnet_message_group_is_open(s.group) ? "yes" : "no");
+                          madeHex, urnet_message_group_epoch(made),
+                          urnet_message_group_is_open(made) ? "yes" : "no");
             // AND IT IS NOT USABLE YET, WHICH THE MESSAGE SAYS RATHER THAN THE UI GUESSING. A
             // group of one is at epoch 0 and the server has never been told about it; the commit
-            // that opens it is the one adding the first other person.
-            PublishOnboard(urmsg::live::OnboardStep::Founded, joinCode,
-                           "Your group is made, but it has only you in it and nothing can be "
-                           "sent yet. Ask somebody for their join code and paste it above - "
-                           "adding them is what opens the group.");
-            // The fetch loop does NOT take over here: a group that is not open has nothing to
-            // fetch, and the add below is served from this same loop.
+            // that opens it is the one adding the first other person. Its add state says so first,
+            // then it is taken up as a group of one, whose own loop serves every add (the first of
+            // them opens it) and fetches nothing until then, and then the road says what it made.
+            PublishAdd(madeHex, urmsg::live::AddStep::Founded, kFoundedSentence);
+            adopt(made, /*groupOfOne=*/true);
+            PublishOnboard(urmsg::live::OnboardStep::Founded, joinCode, kFoundedSentence, false, false,
+                           madeHex);
           }
         }
       }
     }
 
-    // THE ADD, which is the founder's second half and the only road out of Founded. Served here
-    // as well as in the fetch loop, because a founder sits in THIS loop until their group opens.
-    if (s.group != 0) {
-      std::string theirCode;
-      {
-        std::lock_guard<std::mutex> lock(g_onboardMutex);
-        theirCode.swap(g_pastedJoinCode);
-      }
-      if (!theirCode.empty()) {
-        if (AddMemberFromCode(s, s.group, theirCode, joinCode)) {
-          // An add that opened the group is the moment this device has a session. The fetch loop
-          // below takes it from here.
-          if (urnet_message_group_is_open(s.group)) return true;
-        }
-      }
-    }
-
-    // The developer's road: the file sdk/livehost writes.
-    if (encoded.empty()) {
+    // The developer's road: the file sdk/livehost writes. Read only once this run has published a
+    // join code for it to have been made from (a session that restored its conversations has not).
+    if (encoded.empty() && !joinCode.empty()) {
       std::vector<uint8_t> raw;
       if (ReadOctets(invitePath, raw)) {
         // Two identical reads before accepting it: the writer is another process and a partially
@@ -1691,9 +1758,9 @@ bool JoinFromPeer(Session& s) {
       ::Sleep(static_cast<DWORD>(kInvitePollMs));
       continue;
     }
-    s.group = urnet_message_device_join(s.device, s.ctx, invite, &err);
+    const uint64_t joined = urnet_message_device_join(s.device, s.ctx, invite, &err);
     urnet_release(invite);
-    if (s.group == 0) {
+    if (joined == 0) {
       const std::string why = TakeError(&err);
       // A REFUSAL OVER A GROUP THAT COULD NOT BE READ KEEPS ITS INVITATION, with no leave on offer, so
       // the file road does not open the same file again and again while nothing has changed. This
@@ -1759,7 +1826,7 @@ bool JoinFromPeer(Session& s) {
                             "just now; no leave is offered (R28): {}",
                             gidHex, why);
             }
-            PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode, std::string(copy.sentence), {},
+            PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode, std::string(copy.sentence),
                            copy.offerLeave);
           } else {
             // NOT EXPECTED, AND NOT PAPERED OVER: a sentence that says to leave would name an
@@ -1784,7 +1851,7 @@ bool JoinFromPeer(Session& s) {
                           "finished; the leave is offered again: {}",
                           urmsg::live::GroupIdHex(held.groupId), why);
             PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
-                           std::string(urmsg::live::kHeldNotLiveSentence), {}, true);
+                           std::string(urmsg::live::kHeldNotLiveSentence), true);
             break;
           }
           // THE JOIN SEAL'S REFUSALS (Task 58), each in the person's words and each true about what
@@ -1815,7 +1882,7 @@ bool JoinFromPeer(Session& s) {
                            urmsg::live::ShowsLibraryWords(row)
                                ? urmsg::live::WithLibraryWords(urmsg::live::JoinCopySentence(row), why)
                                : std::string(urmsg::live::JoinCopySentence(row)),
-                           {}, false, false, urmsg::live::OffersNewJoinCode(row));
+                           false, urmsg::live::OffersNewJoinCode(row));
             break;
           }
           urnw::LogError(
@@ -1833,8 +1900,29 @@ bool JoinFromPeer(Session& s) {
     }
 
     held.Drop();
-    urnw::LogInfo("live: *** JOINED the group *** at epoch {}", urnet_message_group_epoch(s.group));
-    PublishOnboard(urmsg::live::OnboardStep::Joined, std::string(), "You are in the group.");
+    urnw::LogInfo("live: *** JOINED the group *** at epoch {}", urnet_message_group_epoch(joined));
+    const std::string joinedHex = GroupIdHexOf(joined);
+    adopt(joined, false);
+    // THE JOIN SPENT THE JOIN CODE, because a key package is single use. A fresh one replaces it, in
+    // the box and in the handshake file, and the road keeps waiting for the next invitation (the
+    // conversation-list design 2.3). A code that cannot be minted now is not shown at all, rather
+    // than a spent one.
+    {
+      std::string fresh;
+      size_t octets = 0;
+      std::string why;
+      if (MintJoinCode(s, fresh, octets, why) == Mint::Ok) {
+        joinCode = std::move(fresh);
+        urnw::LogInfo("live: the join spent this device's join code; a fresh one ({} octets) is in "
+                      "{} for the next invitation",
+                      octets, Utf8Path(keyPackagePath));
+      } else {
+        joinCode.clear();
+        urnw::LogError("live: after the join, a fresh join code could not be minted: {}", why);
+      }
+    }
+    PublishOnboard(urmsg::live::OnboardStep::Joined, joinCode, "You are in the group.", false, false,
+                   joinedHex);
 
     // CONSUMED, SO DELETED. It has done its job. Only this device can open it, but left on disk it
     // still names the group and its members (R40 A12). Only the FILE road leaves anything behind - a
@@ -1850,7 +1938,7 @@ bool JoinFromPeer(Session& s) {
         urnw::LogInfo("live: the invite has been consumed and deleted");
       }
     }
-    return true;
+    previous.clear();
   }
 }
 
@@ -2199,10 +2287,13 @@ struct SessionContext {
 // touched (the conversation-list design 2.2). Called on the group's own loop, which owns the handle.
 // Answers whether this device now holds no group.
 //
-// THE LAST CONVERSATION takes the pasted codes with it, which carry no group (re-check R5), and
-// publishes a neutral onboarding state (`sentence`) BEFORE the empty world (re-check R4), exactly as
-// when this device held one group: the window re-arms its join dialog when the empty world arrives
-// and draws the last state it holds, which for a founder is the old invitation, a secret.
+// ITS ADD STATE GOES WITH IT, the invitation it may hold included, and so does its queued add (the
+// conversation-list design 2.2). A pasted invitation is the device's, and stays for the join road.
+//
+// THE LAST CONVERSATION publishes a neutral onboarding state (`sentence`) BEFORE the empty world
+// (re-check R4): the window re-arms its join dialog when the empty world arrives and draws the last
+// state it holds, which would otherwise say this device is in the group it just left. The join road
+// opens again a moment later, with its join code (JoinRoad).
 bool RetireSlot(GroupSlot& slot, std::string const& sentence) {
   if (slot.handle != 0) {
     urnet_release(slot.handle);
@@ -2212,18 +2303,10 @@ bool RetireSlot(GroupSlot& slot, std::string const& sentence) {
   if (const auto stale = TakeSlotQueue(slot); !stale.empty())
     urnw::LogWarn("live: {} action(s) queued for group {} were dropped with it", stale.size(),
                   slot.gidHex);
+  DropAdd(slot.gidHex);
   std::lock_guard<std::mutex> retire(g_retireMutex);
-  if (SlotCount() == 1) {
-    {
-      std::lock_guard<std::mutex> lock(g_onboardMutex);
-      g_pastedJoinCode.clear();
-      g_pastedInvite.clear();
-    }
-    PublishOnboard(urmsg::live::OnboardStep::Idle, std::string(), sentence);
-  }
-  const bool empty = RemoveSlot(slot.gidHex);
-  if (empty) g_hasGroup.store(false, std::memory_order_relaxed);
-  return empty;
+  if (SlotCount() == 1) PublishOnboard(urmsg::live::OnboardStep::Idle, std::string(), sentence);
+  return RemoveSlot(slot.gidHex);
 }
 
 // WHAT ONE PASS WAS WHEN A DEVICE HELD ONE GROUP, bound to one slot: its fetch, its sends, its
@@ -2376,8 +2459,9 @@ void GroupLoop(std::shared_ptr<SessionContext> session, std::shared_ptr<GroupSlo
 
     for (auto& out : queued) {
       // A LEAVE ADDS NO ROW: it is granted, and the conversation goes, or it is refused, and the
-      // refusal is drawn at the foot (leaveError).
-      if (out.kind == OutboundKind::Leave) continue;
+      // refusal is drawn at the foot (leaveError). Nor does an add: its outcome is the group's add
+      // state.
+      if (out.kind == OutboundKind::Leave || out.kind == OutboundKind::AddMember) continue;
       // THE THREE COMMIT VERBS, and the name stays `isRole` because what it selects is "this
       // entry's outcome is drawn as a note under a MEMBER", which is true of a removal too.
       const bool isRole = out.kind == OutboundKind::SetRole ||
@@ -2481,6 +2565,14 @@ void GroupLoop(std::shared_ptr<SessionContext> session, std::shared_ptr<GroupSlo
         // REFUSED: nothing changed, and another leave of this group may be asked for
         SetGateLeaving(gidHex, false);
         publishWorld(false);
+        continue;
+      }
+      // THE ADD, this group's own (the conversation-list design 2.3): the founding add of a group of
+      // one, which opens it, and every add after it. The roster moved, so the world is published.
+      if (out.kind == OutboundKind::AddMember) {
+        AddMemberFromCode(s, group, gidHex, out.body);
+        if (urnet_message_group_is_open(group)) SetGroupOfOne(*slot, false);
+        publishWorld(true);
         continue;
       }
       char* sendErr = nullptr;
@@ -2684,6 +2776,13 @@ void GroupLoop(std::shared_ptr<SessionContext> session, std::shared_ptr<GroupSlo
     drainSends();
     if (left) break;
 
+    // A GROUP OF ONE HAS NOTHING TO FETCH: it is not open on the server until its first member is
+    // added, and that add is served by drainSends above. Its row stands, and it waits for the add.
+    if (IsGroupOfOne(*slot)) {
+      WaitSlot(*slot, kFetchPollMs);
+      continue;
+    }
+
     // SUBSCRIBE WHEN NOT CURRENT: no subscription yet, an epoch that moved past the one it was
     // authorized at, or a reconnect whose Hello the transport sent by itself. Cheap when current,
     // and the receive below reads whatever arrived before a new subscription took hold.
@@ -2731,26 +2830,6 @@ void GroupLoop(std::shared_ptr<SessionContext> session, std::shared_ptr<GroupSlo
                     devLeaveAfterMs, QueueLeave(gidHex) ? "queued" : "REFUSED");
     }
 
-    // AND THE ADDS, which is how the third person and the fifth get in. Served HERE as well as in
-    // the wait loop because a founder leaves that loop the moment their group opens, and every
-    // add after the first one happens with a live session and a fetch loop running. Same call,
-    // same branch inside it: AddMemberFromCode asks the group whether it is open rather than
-    // counting how many have been added.
-    // ONLY THE ADD ROAD'S GROUP takes a pasted join code (AddRoadGroup): with several groups the
-    // dialog names none, so none takes it.
-    if (AddRoadGroup() == gidHex) {
-      std::string theirCode;
-      {
-        std::lock_guard<std::mutex> lock(g_onboardMutex);
-        theirCode.swap(g_pastedJoinCode);
-      }
-      if (!theirCode.empty()) {
-        AddMemberFromCode(s, group, theirCode, std::string());
-        // The roster moved, so the world the UI is holding is a beat out of date.
-        publishWorld(true);
-      }
-    }
-
     // NOT ::Sleep. A send queued during the wait wakes this at once, and so does a push; with
     // neither it ticks on its own timer, which is long when the push subscription holds.
     WaitSlot(*slot, subscribed ? kPushedPollMs : kFetchPollMs);
@@ -2768,11 +2847,9 @@ void GroupLoop(std::shared_ptr<SessionContext> session, std::shared_ptr<GroupSlo
 // TAKE A GROUP UP: a slot, then its gate, then its loop. Every group the library hands over comes
 // through here: each one restore answers, the one a join or a create makes, and each one a held
 // leave's restore brings back (A2, A10).
-void StartGroupLoop(std::shared_ptr<SessionContext> const& session, uint64_t group) {
-  uint8_t gid[32] = {};
-  int32_t gidLen = static_cast<int32_t>(sizeof(gid));
-  std::string gidHex;
-  if (urnet_message_group_id(group, gid, &gidLen)) gidHex = ToHex(gid, gidLen);
+void StartGroupLoop(std::shared_ptr<SessionContext> const& session, uint64_t group,
+                    bool groupOfOne = false) {
+  const std::string gidHex = GroupIdHexOf(group);
   if (gidHex.empty()) {
     urnw::LogError("live: a group was handed over with no id; it is released, not served");
     urnet_release(group);
@@ -2782,6 +2859,7 @@ void StartGroupLoop(std::shared_ptr<SessionContext> const& session, uint64_t gro
   slot->gidHex = gidHex;
   slot->handle = group;
   slot->adoptedAtMs = WallClockMs();
+  slot->groupOfOne = groupOfOne;
   {
     std::lock_guard<std::mutex> lock(g_tableMutex);
     for (auto const& held : g_slots) {
@@ -2798,10 +2876,9 @@ void StartGroupLoop(std::shared_ptr<SessionContext> const& session, uint64_t gro
   // THE SLOT FIRST, THEN THE GATE: a verb is admitted only by a gate, so every admitted verb finds a
   // slot to queue into.
   slot->incarnation = AdoptGate(gidHex);
-  g_hasGroup.store(true, std::memory_order_relaxed);
   g_slotsChanged.notify_all();
-  urnw::LogInfo("live: group {} taken up (incarnation {}); its loop starts", gidHex,
-                slot->incarnation);
+  urnw::LogInfo("live: group {} taken up (incarnation {}{}); its loop starts", gidHex,
+                slot->incarnation, groupOfOne ? ", a group of one" : "");
   // A LOOP THAT THROWS ENDS ITS OWN GROUP AND NO OTHER, the way the session's worker ends the
   // session (StartIfEnabled): logged, its gate dark and its conversation gone, so nothing is queued
   // for a group nobody serves. The neutral state names nothing, because nothing was left.
@@ -3065,38 +3142,16 @@ void RunSession() {
     g_lastRestoreClass = urmsg::live::RestoreReadClass(restoreError);
   }
 
-  // ── THE JOIN ROAD, while this device holds no group ───────────────────────────────────────────
-  // Each group this device holds is served by its own loop (StartGroupLoop). The join road below
-  // runs while it holds none, as it did when a device held one group; the conversation-list design
-  // 2.3 opens it for good, in its own commit.
-  s.adoptExtra = [weak = std::weak_ptr<SessionContext>(session)](uint64_t extra) {
-    if (auto held = weak.lock()) {
-      StartGroupLoop(held, extra);
-    } else {
-      urnet_release(extra);
-    }
+  // ── THE JOIN ROAD, for the life of the session (the conversation-list design 2.3) ──────────────
+  // Beside every conversation this device holds, each served by its own loop: what the road joins,
+  // founds or brings back is handed to a loop of its own, and it keeps waiting for the next
+  // invitation. It returns only when this installation cannot make a join code, and the session
+  // then ends as it did, closed by whoever lets go of it last (~SessionContext): here, unless a loop
+  // still runs over its handles.
+  const AdoptFn adopt = [&session](uint64_t group, bool groupOfOne) {
+    StartGroupLoop(session, group, groupOfOne);
   };
-  for (;;) {
-    {
-      std::unique_lock<std::mutex> lock(g_tableMutex);
-      g_slotsChanged.wait(lock, [] { return g_slots.empty(); });
-    }
-    bool joined = false;
-    {
-      struct JoinRoadMark {
-        JoinRoadMark() { g_joinRoadRunning.store(true, std::memory_order_release); }
-        ~JoinRoadMark() { g_joinRoadRunning.store(false, std::memory_order_release); }
-      } mark;
-      joined = JoinFromPeer(s);
-    }
-    if (!joined) {
-      // THE SESSION ENDS, as it did. It is closed by whoever lets go of it last (~SessionContext):
-      // here, unless a loop still runs over its handles.
-      return;
-    }
-    StartGroupLoop(session, s.group);
-    s.group = 0;
-  }
+  JoinRoad(s, adopt);
 }
 
 }  // namespace
@@ -3159,10 +3214,7 @@ bool StartIfEnabled() {
     // it, and the failure mode of missing it is an enabled Send whose clicks vanish.
     // ...BUT A GROUP STILL SERVED BY ITS OWN LOOP KEEPS ITS GATE: the loop holds the session's
     // handles and goes on serving its conversation (the conversation-list design 2.1).
-    if (SlotCount() == 0) {
-      DropAllGates();
-      g_hasGroup.store(false, std::memory_order_relaxed);
-    }
+    if (SlotCount() == 0) DropAllGates();
   });
 
   // DETACHED, AND NOT AS A SHORTCUT. This is called from the UI thread of a
@@ -3194,6 +3246,14 @@ bool Enqueue(Outbound out) {
   }
   {
     std::lock_guard<std::mutex> lock(slot->mutex);
+    // AN ADD REPLACES THE ADD STILL QUEUED FOR ITS GROUP, as a pasted code always replaced the one
+    // before it: somebody who pastes twice has corrected themselves, and adding both would spend two
+    // epochs on one intention.
+    if (out.kind == OutboundKind::AddMember) {
+      slot->queue.erase(std::remove_if(slot->queue.begin(), slot->queue.end(),
+                                       [](Outbound const& o) { return o.kind == OutboundKind::AddMember; }),
+                        slot->queue.end());
+    }
     slot->queue.push_back(std::move(out));
   }
   // OUTSIDE THE LOCK: the loop wakes, takes the same mutex, and would be woken only to block on
@@ -3299,6 +3359,17 @@ bool QueueTransferOwnership(std::string groupIdHex, std::string identityPubHex) 
   return Enqueue(std::move(out));
 }
 
+AddPtr AddSnapshot(std::string const& groupIdHex) {
+  std::lock_guard<std::mutex> lock(g_addMutex);
+  for (auto const& add : g_adds)
+    if (add->groupIdHex == groupIdHex) return add;
+  return nullptr;
+}
+
+uint64_t AddGeneration() {
+  return g_addGeneration.load(std::memory_order_acquire);
+}
+
 OnboardPtr OnboardSnapshot() {
   std::lock_guard<std::mutex> lock(g_onboardMutex);
   return g_onboard;
@@ -3362,13 +3433,16 @@ bool QueueNewJoinCode() {
   return true;
 }
 
-bool QueueCreateGroup() {
-  // REFUSED WHEN THERE IS ALREADY A GROUP. A device holds one group in this build, and a second
-  // create would silently replace the one on screen along with its whole transcript. The worker
-  // can only act on this while it is in the wait loop, which is exactly when there is none - but
-  // the UI can call at any time, so the refusal is stated here rather than relied on there.
-  if (g_hasGroup.load(std::memory_order_relaxed)) {
-    urnw::LogWarn("live: a create was asked for while this device already holds a group; refused");
+bool QueueCreateGroup(std::string* waitingGroupIdHex) {
+  // REFUSED ONLY WHILE A GROUP OF ONE WAITS (ConversationRules.h CreateAction; the conversation-list
+  // design 2.3, A7). A device holds many conversations, and a create beside them makes one more; but
+  // a group of one is lost on a restart and a second would be a second invitation to send with one
+  // panel to send it from. The refusal names that group, so the dialog opens its add panel again.
+  std::string waiting;
+  if (urmsg::live::CreateAction(HeldForCreateSnapshot(), waiting) != urmsg::live::CreateVerdict::Take) {
+    urnw::LogWarn("live: a create was asked for while group {} is still a group of one; refused",
+                  waiting.substr(0, (std::min)(waiting.size(), size_t{16})));
+    if (waitingGroupIdHex != nullptr) *waitingGroupIdHex = waiting;
     return false;
   }
   {
@@ -3379,7 +3453,7 @@ bool QueueCreateGroup() {
   return true;
 }
 
-bool QueueAddMemberFromCode(std::string base64JoinCode) {
+bool QueueAddMemberFromCode(std::string groupIdHex, std::string base64JoinCode) {
   // Decoded here and the result thrown away, for the same reason QueueJoinFromInviteCode does it:
   // text that cannot be a join code is refused while the person is still looking at the box.
   std::vector<uint8_t> probe;
@@ -3389,14 +3463,20 @@ bool QueueAddMemberFromCode(std::string base64JoinCode) {
                   base64JoinCode.size());
     return false;
   }
-  {
-    std::lock_guard<std::mutex> lock(g_onboardMutex);
-    // REPLACES rather than queues, like a pasted invitation: somebody who pastes twice has
-    // corrected themselves, and adding both would spend two epochs on one intention.
-    g_pastedJoinCode = std::move(base64JoinCode);
-  }
+  // THE GROUP'S OWN GATE: held, and no leave of it in flight. Not open: the first add of a group of
+  // one is the commit that opens it (ConversationRules.h, ActionClass::Add).
+  uint64_t incarnation = 0;
+  if (!Admit(groupIdHex, urmsg::live::ActionClass::Add, incarnation)) return false;
+  Outbound out;
+  out.kind = OutboundKind::AddMember;
+  out.localId = std::to_string(g_nextLocalId.fetch_add(1));
+  // REPLACES rather than queues, like a pasted invitation (Enqueue): somebody who pastes twice has
+  // corrected themselves, and adding both would spend two epochs on one intention.
+  out.body = std::move(base64JoinCode);
+  out.groupIdHex = std::move(groupIdHex);
+  out.incarnation = incarnation;
   urnw::LogInfo("live: a join code of {} octets was handed to the worker", probe.size());
-  return true;
+  return Enqueue(std::move(out));
 }
 
 bool QueueRemoveMember(std::string groupIdHex, std::string identityPubHex) {
