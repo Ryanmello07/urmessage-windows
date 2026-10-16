@@ -108,6 +108,27 @@ void App::OnLaunched(LaunchActivatedEventArgs const&) {
 
     window_.Activate();
 
+    // THROWAWAY PROBE (ci/i1-affinity-probe, never merged): does PrintWindow honour
+    // SetWindowDisplayAffinity on this WinUI 3 window? URMSG_PROBE_AFFINITY=1 excludes the window
+    // from capture (0x11), =2 asks for WDA_MONITOR (0x01).
+    {
+      wchar_t probe[8] = {};
+      if (::GetEnvironmentVariableW(L"URMSG_PROBE_AFFINITY", probe, 8) > 0 &&
+          (probe[0] == L'1' || probe[0] == L'2')) {
+        if (auto native = window_.try_as<::IWindowNative>()) {
+          HWND hwnd = nullptr;
+          native->get_WindowHandle(&hwnd);
+          const DWORD want = probe[0] == L'1' ? 0x11u : 0x01u;
+          const BOOL ok = ::SetWindowDisplayAffinity(hwnd, want);
+          const DWORD err = ok ? 0 : ::GetLastError();
+          DWORD got = 0xFFFFFFFFu;
+          ::GetWindowDisplayAffinity(hwnd, &got);
+          urnw::LogInfo("probe: SetWindowDisplayAffinity(0x{:x}) -> {} (error {}), readback 0x{:x}",
+                        want, ok ? "ok" : "FAILED", err, got);
+        }
+      }
+    }
+
     // The reveal was ARMED in MainWindow's constructor — it has to write its
     // start pose before the first composed frame, or the window appears settled
     // and then jumps. Starting it is the other half, and it belongs AFTER

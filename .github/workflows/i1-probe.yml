@@ -1,0 +1,62 @@
+# THROWAWAY, NEVER MERGE, NEVER IN AN UPSTREAM PULL REQUEST. Identity phase 1, Task 6: does
+# PrintWindow honour SetWindowDisplayAffinity on this WinUI 3 window? The probe build is main
+# 864354e1 plus a few lines in App.xaml.cpp that ask for an affinity when URMSG_PROBE_AFFINITY is
+# set. Nothing is published.
+name: I1 affinity probe (throwaway)
+
+on:
+  push:
+    branches:
+      - 'ci/i1-affinity-probe'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: PrintWindow and display affinity (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build the app (Release x64)
+        shell: pwsh
+        working-directory: app
+        run: |
+          $pin = '10.0.22621.0'
+          $roots = @("${env:ProgramFiles(x86)}\Windows Kits\10", "$env:ProgramFiles\Windows Kits\10") | Where-Object { Test-Path -LiteralPath $_ }
+          $usable = @(foreach ($r in $roots) {
+            Get-ChildItem (Join-Path $r 'Include') -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' -and
+                (Test-Path -LiteralPath (Join-Path $r "Include\$($_.Name)\um\windows.h")) -and
+                (Test-Path -LiteralPath (Join-Path $r "Lib\$($_.Name)\um\x64\kernel32.lib")) } |
+              Select-Object -ExpandProperty Name
+          }) | Select-Object -Unique | Sort-Object { [version]$_ }
+          $usable = @($usable)
+          $sdk = if ($usable -contains $pin) { $pin } else { $usable[-1] }
+          Write-Host "Windows SDK $sdk"
+          msbuild URmessage.sln /restore /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=$sdk /m /v:minimal /clp:Summary
+          exit $LASTEXITCODE
+
+      - name: Probe
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github\i1probe\probe.ps1 -Exe "$env:GITHUB_WORKSPACE\app\build\x64\Release\URmessage.exe" -Out "$env:GITHUB_WORKSPACE\probeout"
+          exit 0
+
+      - name: Upload the captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: i1-probe-${{ matrix.os }}
+          path: probeout
+          if-no-files-found: warn
