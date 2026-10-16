@@ -124,9 +124,9 @@
                 </DataTemplate>
             </muxc:NavigationView.HeaderTemplate>
             <muxc:NavigationView.MenuItems>
-                <!-- Glyphs are Segoe Fluent Icons, named explicitly via
-                     UrIconFontFamily: FontIcon otherwise defaults to the older
-                     Segoe MDL2 Assets, whose metrics differ. -->
+                <!-- Glyphs come from UrIconFontFamily, the one icon font: Segoe
+                     Fluent Icons, falling back to Segoe MDL2 Assets where
+                     Windows 10 lacks it (App.xaml). -->
                 <muxc:NavigationViewItem x:Name="ChatsNavItem" Tag="chats" IsSelected="True">
                     <muxc:NavigationViewItem.Icon>
                         <FontIcon FontFamily="{StaticResource UrIconFontFamily}" FontSize="20" Glyph="&#xE8BD;" />
