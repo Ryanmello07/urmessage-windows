@@ -57,6 +57,11 @@ std::wstring BubbleActionName(BubbleAction action, ComposerState state) {
           return std::wstring(L"Reply, disabled. ") + kObserverComposerReason;
         case ComposerState::MaySend:
           return L"Reply to this message";
+        case ComposerState::Removed:
+          // THE REMOVAL, NOT THE SESSION (the conversation-list design 2.1): the session is live and
+          // the group took this device out, so "no live session" would be false here. The observer
+          // arm's shape: the control named, then the reason.
+          return std::wstring(L"Reply, disabled. ") + demo::kRemovedLine;
       }
       break;
     case BubbleAction::React:
@@ -67,6 +72,8 @@ std::wstring BubbleActionName(BubbleAction action, ComposerState state) {
           return std::wstring(L"React, disabled. ") + kObserverComposerReason;
         case ComposerState::MaySend:
           return L"React to this message";
+        case ComposerState::Removed:
+          return std::wstring(L"React, disabled. ") + demo::kRemovedLine;
       }
       break;
     case BubbleAction::Retry:
@@ -77,6 +84,8 @@ std::wstring BubbleActionName(BubbleAction action, ComposerState state) {
           return std::wstring(L"Try again, disabled. ") + kObserverComposerReason;
         case ComposerState::MaySend:
           return L"Try again: send this message again";
+        case ComposerState::Removed:
+          return std::wstring(L"Try again, disabled. ") + demo::kRemovedLine;
       }
       break;
     case BubbleAction::Delete:
@@ -87,6 +96,8 @@ std::wstring BubbleActionName(BubbleAction action, ComposerState state) {
           return std::wstring(L"Delete, disabled. ") + kObserverComposerReason;
         case ComposerState::MaySend:
           return L"Delete this message for everyone";
+        case ComposerState::Removed:
+          return std::wstring(L"Delete, disabled. ") + demo::kRemovedLine;
       }
       break;
     case BubbleAction::RailRetry:
@@ -99,6 +110,8 @@ std::wstring BubbleActionName(BubbleAction action, ComposerState state) {
           return std::wstring(L"Try again, disabled. ") + kObserverComposerReason;
         case ComposerState::MaySend:
           return L"Try again, send this message again";
+        case ComposerState::Removed:
+          return std::wstring(L"Try again, disabled. ") + demo::kRemovedLine;
       }
       break;
   }
@@ -109,6 +122,8 @@ std::wstring BubbleActionName(BubbleAction action, ComposerState state) {
       return std::wstring(L"Disabled. ") + kObserverComposerReason;
     case ComposerState::MaySend:
       return L"Act on this message";
+    case ComposerState::Removed:
+      return std::wstring(L"Disabled. ") + demo::kRemovedLine;
   }
   return L"Act on this message";
 }

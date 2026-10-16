@@ -1006,6 +1006,88 @@ std::vector<std::wstring> ObserverDiagnostics() {
         EscapeNonAscii(hint), says ? L"yes" : L"NO", noDenial ? L"yes" : L"NO", dead ? L"yes" : L"NO"));
   }
 
+  // 1c. THE REMOVED CONVERSATION'S OTHER CONTROLS (the conversation-list design 2.1; lead ruling
+  //     R67): every bubble action, both [ Try again ]s and every role control on the roster name the
+  //     removal, act on nothing, and never deny a session, which is live. The sentence is typed HERE,
+  //     not read off demo::kRemovedLine, so a rewording anywhere in the app fails this line.
+  {
+    constexpr std::wstring_view kSessionDenial = L"no live session";
+    constexpr std::wstring_view kRemoved = L"You were removed from this conversation.";
+    std::size_t asked = 0;
+    std::size_t right = 0;
+    std::wstring firstBad;
+    std::wstring listing;
+    std::vector<std::wstring> seen;
+    auto ask = [&](std::wstring const& name, bool acts, wchar_t const* what) {
+      ++asked;
+      const bool endsWithIt = kRemoved.size() < name.size() &&
+                              name.compare(name.size() - kRemoved.size(), kRemoved.size(), kRemoved) == 0;
+      const bool named = name.find(L"disabled") != std::wstring::npos;
+      const bool noDenial = name.find(kSessionDenial) == std::wstring::npos;
+      const bool apart = std::find(seen.begin(), seen.end(), name) == seen.end();
+      seen.push_back(name);
+      if (endsWithIt && named && noDenial && !acts && apart) {
+        ++right;
+      } else if (firstBad.empty()) {
+        firstBad = std::format(L"{} \"{}\"", what, EscapeNonAscii(name));
+      }
+      listing += std::format(L"{}{} \"{}\"", listing.empty() ? L"" : L"; ", what, EscapeNonAscii(name));
+    };
+    struct BubbleRow {
+      BubbleAction action;
+      wchar_t const* label;
+    };
+    constexpr BubbleRow kBubbles[] = {{BubbleAction::Reply, L"reply"},
+                                      {BubbleAction::React, L"react"},
+                                      {BubbleAction::Delete, L"delete"},
+                                      {BubbleAction::Retry, L"thread retry"}};
+    for (auto const& b : kBubbles)
+      ask(BubbleActionName(b.action, ComposerState::Removed),
+          BubbleActionCanAct(ComposerState::Removed, true), b.label);
+    // THE RAIL'S [ Try again ] keeps its own commas and so says what the thread's says: it is asked on
+    // its own, for the removal and no denial, and not for being apart from the thread's
+    {
+      const std::wstring rail = BubbleActionName(BubbleAction::RailRetry, ComposerState::Removed);
+      const bool railOk = rail.ends_with(kRemoved) && rail.find(kSessionDenial) == std::wstring::npos &&
+                          !BubbleActionCanAct(ComposerState::Removed, true);
+      ++asked;
+      if (railOk) {
+        ++right;
+      } else if (firstBad.empty()) {
+        firstBad = std::format(L"rail retry \"{}\"", EscapeNonAscii(rail));
+      }
+      listing += std::format(L"; rail retry \"{}\"", EscapeNonAscii(rail));
+    }
+    struct RoleRow {
+      RoleVerb verb;
+      wchar_t const* label;
+    };
+    constexpr RoleRow kRoles[] = {{RoleVerb::MakeAdmin, L"make admin"},
+                                  {RoleVerb::MakeMember, L"make member"},
+                                  {RoleVerb::MakeObserver, L"make observer"},
+                                  {RoleVerb::TransferOwnership, L"transfer"},
+                                  {RoleVerb::Remove, L"remove"}};
+    for (auto const& r : kRoles) ask(RoleControlName(r.verb, RoleControlState::Removed), false, r.label);
+    // THE OTHER ARMS KEEP THEIR OWN: a session that is really missing is still named so
+    const bool othersKept =
+        BubbleActionName(BubbleAction::Reply, ComposerState::NoSession).find(kSessionDenial) != std::wstring::npos &&
+        RoleControlName(RoleVerb::Remove, RoleControlState::NoSession).find(kSessionDenial) != std::wstring::npos &&
+        BubbleActionName(BubbleAction::Reply, ComposerState::MaySend) == L"Reply to this message";
+    // AND THE STATE EVERY AFFORDANCE ASKS FOR (SendAffordanceState): the removal first, with the
+    // session dark, which is how a removed conversation's group stands
+    const bool machine = ComposerStateFor(false, true, true) == ComposerState::Removed &&
+                         ComposerStateFor(false, false, true) == ComposerState::Removed;
+    const bool ok = right == asked && othersKept && machine;
+    out.push_back(std::format(
+        L"  removed controls : {}  {} of {} controls name the removal, are dark and deny no session{}{} "
+        L"| the other arms kept {} | removed asked first {} | {}   [query: BubbleActionName for reply, "
+        L"react, delete and both retries and RoleControlName for the five role verbs, in a removed "
+        L"conversation, end with the removed sentence typed here, say \"disabled\", never say \"no live "
+        L"session\" and act on nothing; the conversation-list design 2.1, lead ruling R67]",
+        Verdict(ok), right, asked, firstBad.empty() ? L"" : L", first wrong: ", firstBad,
+        othersKept ? L"yes" : L"NO", machine ? L"yes" : L"NO", listing));
+  }
+
   // 2. the hidden row, over the fabricated world, with BOTH sets printed
   {
     demo::World const& w = demo::GetWorld();

@@ -167,6 +167,11 @@ struct ThreadSendVerb {
   // control has to be able to say which of the two facts stopped it. True by default, so a host
   // that wired no role is never silently read as an observer.
   bool mayRoleSend = true;
+  // THE OPEN CONVERSATION REMOVED THIS DEVICE (the conversation-list design 2.1), written by
+  // SetThreadRemoved on the beat the composer's own removed state is: every per-bubble action and
+  // [ Try again ] then names the removal, and not "no live session", which is false of a device whose
+  // session is live and whose group took it out.
+  bool removed = false;
 };
 ThreadSendVerb const& SendVerb();
 // The delete verb, handed over once by the window: the bubble's Delete reads it at click time.

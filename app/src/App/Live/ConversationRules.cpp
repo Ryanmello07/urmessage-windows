@@ -397,6 +397,65 @@ std::wstring ConversationNoticeLine() {
                           nextOk ? L"yes" : L"NO"));
 }
 
+// conv receive: A RECEIVE'S REPORT IS DRAWN ON ITS OWN CONVERSATION. Two groups, the first's last
+// receive reporting: its conversation ends with the report, verbatim, and the second's carries none;
+// the report goes with a clean receive, is not drawn over a removal, and moves the conversation's
+// digest both ways (the open thread redraws when it comes and when it goes). Drawing it on every
+// conversation, on none, or on the wrong one fails a clause.
+std::wstring ConversationReceiveLine() {
+  const int64_t now = 1'800'000'000'000;
+  const std::string report =
+      "urmessage: the peer heads could not be written: group aaaa: the diagnostic file is held";
+  LiveGroup g1 = MakeGroup(std::string(64, 'a'), 1, {{"first group, line 1", now - 3000}}, '2');
+  const LiveGroup g2 = MakeGroup(std::string(64, 'b'), 1, {{"second group, line 1", now - 2000}}, '3');
+  const LiveGroup clean = g1;
+  g1.receiveError = report;
+  LiveSession session;
+  session.serverClientId = "diagnostic-server";
+  session.platformUrl = "wss://diagnostic.invalid/urmessage/v1";
+  session.host = "direct";
+  session.keyPinned = true;
+  std::vector<LiveConversation> two;
+  two.push_back(BuildLiveConversation(g1, now));
+  two.push_back(BuildLiveConversation(g2, now));
+  const urmsg::demo::World w = BuildWorld(session, std::move(two));
+  const std::wstring want = std::wstring(kReceiveReportedLead) + urnw::Widen(report);
+  auto lastIsReport = [&](urmsg::demo::Conversation const& c) {
+    return !c.rows.empty() && c.rows.back().kind == urmsg::demo::RowKind::System &&
+           c.rows.back().systemText == want;
+  };
+  auto carries = [&](urmsg::demo::Conversation const& c) {
+    for (auto const& row : c.rows)
+      if (row.systemText.rfind(kReceiveReportedLead, 0) == 0) return true;
+    return false;
+  };
+  std::size_t carrying = 0;
+  bool own = false;
+  for (auto const& c : w.conversations) {
+    if (carries(c)) ++carrying;
+    if (c.id == L"live-" + urnw::Widen(g1.groupIdHex)) own = lastIsReport(c);
+  }
+  // gone with a clean receive, and not over a removal
+  const urmsg::demo::Conversation cleared = BuildConversation(clean);
+  LiveGroup removed = g1;
+  removed.removed = true;
+  const urmsg::demo::Conversation removedConv = BuildConversation(removed);
+  const bool gone = !carries(cleared);
+  const bool notOverRemoval = !carries(removedConv) && !removedConv.rows.empty() &&
+                              removedConv.rows.back().systemText == urmsg::demo::kRemovedLine;
+  // the open thread redraws when it comes and when it goes
+  const bool redraws = ConversationDigest(BuildConversation(g1)) != ConversationDigest(cleared);
+  const bool ok = own && carrying == 1 && gone && notOverRemoval && redraws;
+  return Line(L"conv receive", ok,
+              std::format(L"the reporting group's conversation ends with the report, verbatim {}; "
+                          L"{} of 2 conversations carry one; gone with a clean receive {}; not over "
+                          L"a removal {}; the thread redraws when it comes and goes {}   [query: "
+                          L"BuildWorld over two LiveGroups, the first's last receive reporting, the "
+                          L"conversation-list design 2.1, lead ruling R67]",
+                          own ? L"yes" : L"NO", carrying, gone ? L"yes" : L"NO",
+                          notOverRemoval ? L"yes" : L"NO", redraws ? L"yes" : L"NO"));
+}
+
 // conv start: WHICH ROW OPENS. At the start, after the open one is left, while another conversation
 // moves above the open one, when a group is just joined (before its row is there and after), and
 // with nothing but a notice. Index 0 of the worker's list (the one-group rule) fails the kept and
@@ -550,6 +609,7 @@ std::vector<std::wstring> CollectConversationRulesDiagnostics() {
   lines.push_back(ConversationCreateLine());
   lines.push_back(ConversationNoticeLine());
   lines.push_back(ConversationStartLine());
+  lines.push_back(ConversationReceiveLine());
   return lines;
 }
 

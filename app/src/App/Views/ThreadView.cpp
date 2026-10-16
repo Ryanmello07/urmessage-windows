@@ -2395,7 +2395,9 @@ ComposerState SendAffordanceState() {
   // drawing the fabricated world has fabricated roles and a real absence of a session, and the
   // absence is the true thing to say there.
   auto const& verb = MutableSendVerb();
-  return ComposerStateFor(CanRetrySend(), verb.mayRoleSend);
+  // THE REMOVAL FIRST, as the composer takes it (ComposerStateFor): a removed conversation's group is
+  // dark for that reason alone, and its controls say so rather than deny a live session.
+  return ComposerStateFor(CanRetrySend(), verb.mayRoleSend, verb.removed);
 }
 
 ThreadView MakeThread(std::function<void(std::wstring)> onSelectMessage,
@@ -3797,6 +3799,9 @@ void SetThreadRemoved(ThreadView& v, bool removed) {
   auto parts = Find(v.root);
   if (!parts) return;
   parts->removed = removed;
+  // AND THE AFFORDANCES BESIDE THE COMPOSER: a bubble's Reply, React, Delete and [ Try again ], and
+  // the rail's, read the verb as they are built (SendAffordanceState)
+  MutableSendVerb().removed = removed;
   UpdateComposerSend(parts);
 }
 

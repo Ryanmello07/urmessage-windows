@@ -217,6 +217,11 @@ struct LiveGroup {
   // read-only and its transcript stays.
   bool removed = false;
   uint64_t removedEpoch = 0;
+  // WHAT THIS GROUP'S LAST RECEIVE REPORTED (the conversation-list design 2.1: one group's failure is
+  // drawn on its own conversation), the library's out_error verbatim, or "" when that receive
+  // reported nothing. It stands while this group's receives keep reporting and goes with the first
+  // that does not. Never another group's: each loop keeps its own.
+  std::string receiveError;
   // A GROUP OF ONE (the conversation-list design 3): founded here, and nobody else in it yet. Its row
   // and its thread say so, because it cannot send yet and is not kept until somebody joins.
   bool groupOfOne = false;
@@ -260,6 +265,11 @@ using urmsg::demo::kUnavailable;
 // of one across a restart (lib restore.go:240-254).
 inline constexpr wchar_t kGroupOfOneLine[] =
     L"Only you so far. Add someone to start it. It is not kept until they join.";
+
+// THE LEAD OF A RECEIVE'S REPORT (the conversation-list design 2.1), at the foot of that group's own
+// conversation and followed by the library's sentence, verbatim. It claims no more than the report
+// does: the receive may still have answered lines, and the next one may read the rest.
+inline constexpr wchar_t kReceiveReportedLead[] = L"Checking for new messages reported a problem: ";
 
 // ── the mapping ───────────────────────────────────────────────────────────────
 // ONE GROUP'S CONVERSATION, one row per message: the whole of what the views draw for it.
