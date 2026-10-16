@@ -214,6 +214,11 @@ struct Conversation {
   // name (a two-party conversation is called what you call the other party). It is kept apart
   // so the rename dialog edits the conversation's own name and never a member's.
   std::wstring localName;
+  // THIS CONVERSATION'S OWN EPOCH (the conversation-list design, A14 and A20): a live world holds
+  // many groups, each at its own epoch, so the one World::currentEpoch cannot say it for all of
+  // them. A protocol-backed world sets it per group; the fixture never writes it, and
+  // WorldFingerprint mixes named fields only, so the fabricated world is unchanged by it.
+  uint64_t epoch = 0;
 };
 
 struct ServerInfo {
