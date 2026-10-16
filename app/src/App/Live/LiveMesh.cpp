@@ -2323,6 +2323,10 @@ struct SessionContext {
   Route route = Route::Direct;
   std::string clientId;
   std::string platformUrl;
+  // THE FOLDERS THIS SESSION GIVES THE LIBRARY, the store's root first, and the user's profile: a
+  // receive report is drawn with them named, never spelled (DrawnReceiveReport, lead ruling R71).
+  std::vector<std::string> appRoots;
+  std::string profileRoot;
   // ONE PUSH WAITER FOR THE DEVICE (RoutePushToLoops), made once the device is connected.
   std::unique_ptr<PushWaiter> pushWaiter;
 
@@ -2911,11 +2915,17 @@ void GroupLoop(std::shared_ptr<SessionContext> session, std::shared_ptr<GroupSlo
       urnw::LogWarn("live: group_receive reported: {} (and still answered {} record(s))",
                     fetchError, fetchedCount);
     }
-    // THIS CONVERSATION DRAWS IT, and only this one: a receive that reported nothing takes it away
-    if (fetchError != receiveError) {
+    // THIS CONVERSATION DRAWS IT, and only this one: a receive that reported nothing takes it away.
+    // DRAWN WITH THE APP'S FOLDERS NAMED, NOT SPELLED (lead ruling R71): the log line above keeps the
+    // library's sentence whole, and the window never draws a path under the user's profile.
+    const std::string drawn =
+        fetchError.empty()
+            ? std::string()
+            : urmsg::live::DrawnReceiveReport(fetchError, session->appRoots, session->profileRoot);
+    if (drawn != receiveError) {
       urnw::LogInfo("live: group {}'s receive report is {}; its conversation draws it", gidHex,
-                    fetchError.empty() ? "cleared" : "standing");
-      receiveError = fetchError;
+                    drawn.empty() ? "cleared" : "standing");
+      receiveError = drawn;
     }
     if (0 < fetchedCount) {
       urnw::LogInfo("live: group_receive answered {} NEW record(s) in {} ms", fetchedCount,
@@ -3103,6 +3113,9 @@ void RunSession() {
   // handles it uses stay valid however this function ends.
   auto session = std::make_shared<SessionContext>();
   Session& s = session->s;
+  session->appRoots = {Utf8Path(stateDir), Utf8Path(streamDir), Utf8Path(liveRoot),
+                       Utf8Path(urnw::StorageRoot())};
+  session->profileRoot = urnw::Narrow(EnvVar(L"USERPROFILE"));
   char* err = nullptr;
 
   s.ctx = urnet_message_context_new();

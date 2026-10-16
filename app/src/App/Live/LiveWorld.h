@@ -218,7 +218,8 @@ struct LiveGroup {
   bool removed = false;
   uint64_t removedEpoch = 0;
   // WHAT THIS GROUP'S LAST RECEIVE REPORTED (the conversation-list design 2.1: one group's failure is
-  // drawn on its own conversation), the library's out_error verbatim, or "" when that receive
+  // drawn on its own conversation), the library's out_error as it is DRAWN (DrawnReceiveReport, lead
+  // ruling R71: no path under the user's profile; the log keeps it whole), or "" when that receive
   // reported nothing. It stands while this group's receives keep reporting and goes with the first
   // that does not. Never another group's: each loop keeps its own.
   std::string receiveError;

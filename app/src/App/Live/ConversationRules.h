@@ -129,6 +129,17 @@ std::wstring ConversationToOpen(std::vector<std::wstring> const& rowIds, std::ws
 std::string NextListNotice(std::string_view previous, std::string_view restoreError,
                            int restoredCount);
 
+// THE RECEIVE REPORT AS A CONVERSATION DRAWS IT (lead ruling R71): the library's sentence, kept, with
+// the store's root and every other folder the app gives the library (`appRoots`) shown as "the app's
+// data folder", and any other path under the user's profile (`profileRoot`, %USERPROFILE%) from "the
+// user's folder". So the window never draws an absolute path under the user's profile; the log keeps
+// the sentence whole. The longest root is replaced first, a root matches only as a whole folder (the
+// next character is a separator, or not part of a name), and ASCII case is ignored, as Windows does.
+inline constexpr char kAppDataFolder[] = "the app's data folder";
+inline constexpr char kUserFolder[] = "the user's folder";
+std::string DrawnReceiveReport(std::string_view report, std::vector<std::string> const& appRoots,
+                               std::string_view profileRoot);
+
 // This file's --diagnose lines, in the "  key              : PASS  detail" shape.
 std::vector<std::wstring> CollectConversationRulesDiagnostics();
 
