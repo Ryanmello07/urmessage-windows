@@ -1425,6 +1425,12 @@ void MainWindow::ArmComposer() {
       break;
   }
   urmsg::views::SetThreadSendEnabled(thread_, session, mayRoleSend);
+  // A CONVERSATION THAT REMOVED THIS DEVICE says so in its composer (the conversation-list design 2.1)
+  {
+    const int open = OpenConversationIndex();
+    urmsg::views::SetThreadRemoved(
+        thread_, 0 <= open && ActiveWorld().conversations[static_cast<size_t>(open)].removed);
+  }
   if (options_.composer == urmsg::demo::DemoComposer::OverLimit) {
     // 70,000 octets of ASCII against the 65,333 limit: over by 4,667
     urmsg::views::SetThreadComposerText(thread_, std::wstring(70000, L'a'));
@@ -1832,6 +1838,9 @@ void MainWindow::SelectConversation(int index) {
   // only read drew a thread full of live Reply and React buttons that the next rebuild silently
   // corrected. SetInspectRailConversation follows for the same reason (its [ Try again ]).
   ArmComposer();
+  // AND THE RAIL'S CAPABILITY, for THIS conversation's group (the conversation-list design 2.2): the
+  // rail is built below from it, and the value the last beat set was the conversation open then.
+  urmsg::views::SetInspectRailRosterEnabled(urmsg::live::CanSend(OpenGroupIdHex()));
   urmsg::views::SetThreadConversation(thread_, conversation);
   // F3: THIS CONVERSATION'S OWN DRAFT, or an empty composer: never the one typed in another. In a
   // live world: the fabricated one's composer is what the demo switches put there (ArmComposer).

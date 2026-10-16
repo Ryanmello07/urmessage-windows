@@ -105,6 +105,8 @@ uint64_t ConversationDigestImpl(urmsg::demo::Conversation const& conv) {
   // with no row id and no body moving.
   h ^= conv.epoch;
   h *= 1099511628211ull;
+  h ^= static_cast<uint64_t>(conv.removed) * 17;
+  h *= 1099511628211ull;
   Mix(h, conv.myRole);
   for (auto const& m : conv.members) {
     Mix(h, m.id);
@@ -547,6 +549,11 @@ urmsg::demo::Conversation BuildConversationImpl(LiveGroup const& group, int64_t&
   if (group.groupOfOne && group.messages.empty())
     conv.rows.push_back(MakeSystemRow(L"group-of-one", kGroupOfOneLine));
 
+  // REMOVED: the transcript stays, and its last line says why nothing more will come (the
+  // conversation-list design 3)
+  if (group.removed) conv.rows.push_back(MakeSystemRow(L"removed", urmsg::demo::kRemovedLine));
+  conv.removed = group.removed;
+
   // A LEAVE THAT WAS REFUSED (ledger 273), at the foot and in the library's own words: the person
   // pressed a button, and without this line its whole effect would be nothing at all.
   if (!group.leaveError.empty())
@@ -557,7 +564,8 @@ urmsg::demo::Conversation BuildConversationImpl(LiveGroup const& group, int64_t&
   // empty conversation says so rather than drawing a blank line. AN OUTBOX ENTRY IS DELIBERATELY
   // NOT A PREVIEW: the conversation list's second line is what the conversation last SAID, and a
   // message the server refused was never said to anybody.
-  conv.preview = !newestBody.empty()   ? newestBody
+  conv.preview = group.removed         ? std::wstring(urmsg::demo::kRemovedLine)
+                 : !newestBody.empty() ? newestBody
                  : group.groupOfOne    ? std::wstring(kGroupOfOneLine)
                                        : std::wstring(kUnavailable);
   conv.timeLabel = newestMs > 0 ? FormatClock(newestMs) : std::wstring(kUnavailable);
