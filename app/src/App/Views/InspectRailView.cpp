@@ -718,6 +718,18 @@ kit::PaneGroupHeader AppendCaption(StackPanel const& panel, std::wstring_view ti
 // The DRAWN blank and the SPOKEN blank are different strings and go in through
 // different parameters, so one row cannot acquire two writers of its name.
 #undef MakePaneKeyValueRow
+
+// S5 (R60): EVERY RAIL ROW TAKES THE RULE'S FIT (InspectRailFields.h RailKeyValueRowFit): its key
+// whole, its value cut with an ellipsis and whole in its tooltip and help text. A blank keeps no
+// tooltip: its dash is the whole of what it says.
+void ApplyRailRowFit(kit::PaneKeyValueRow const& row, std::wstring const& value) {
+  const RailRowFit rule = RailKeyValueRowFit();
+  kit::PaneKeyValueRowFit fit;
+  fit.keySizesToContent = rule.keySizesToContent;
+  fit.keyCut = rule.key == TextCut::Ellipsis;
+  fit.valueCut = rule.value == TextCut::Ellipsis;
+  kit::SetPaneKeyValueRowFit(row, fit, value.empty() ? winrt::hstring{} : H(value));
+}
 void AppendFieldRows(StackPanel const& panel, demo::Conversation const& conv,
                      std::vector<InspectField> const& fields, bool messageMode,
                      bool captionsAlreadyOpened = false) {
@@ -769,6 +781,7 @@ void AppendFieldRows(StackPanel const& panel, demo::Conversation const& conv,
     // surface reaches a blank today, so this branch is code-inspection only
     // until one does.
     if (field.value.empty()) row.value.Foreground(urnw::colors::FaintBrush());
+    ApplyRailRowFit(row, field.value);
     card.body.Children().Append(row.root);
   }
   if (card.root) kit::FinalizePaneCard(card);
@@ -786,6 +799,7 @@ Border MakeRailDetailRow(std::wstring const& key, std::wstring const& value) {
                                       winrt::hstring{RailSpokenValueOr(value)});
   if (auto style = kit::StyleByKey(L"UrCaptionTextStyle")) row.key.Style(style);
   if (value.empty()) row.value.Foreground(urnw::colors::FaintBrush());
+  ApplyRailRowFit(row, value);
   return row.root;
 }
 // <-- THE WINDOW ENDS HERE. New functions go BELOW this line, not above it.

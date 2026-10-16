@@ -316,6 +316,28 @@ bool ReadByIsSubsetOfDeliveredTo(demo::MessageInspect const& inspect) {
   return true;
 }
 
+RailRowFit RailKeyValueRowFit() {
+  return RailRowFit{};
+}
+
+std::wstring RailRowFitProbe() {
+  const RailRowFit fit = RailKeyValueRowFit();
+  const bool keyOk = fit.key == TextCut::None;
+  const bool valueOk = fit.value == TextCut::Ellipsis;
+  const bool columnsOk = fit.keySizesToContent;
+  // A LIVE CONVERSATION ID, typed here: the value the ADVANCED card carries in a live launch.
+  const std::wstring id = L"live-" + std::wstring(64, L'a');
+  const bool longOk = id.size() == 69 && kInspectValueMaxChars < id.size();
+  const bool ok = keyOk && valueOk && columnsOk && longOk;
+  return std::format(
+      L"  rail row fit     : {}  key cut {} | value cut {} | key sizes to content {} | a live "
+      L"conversation id is {} characters against a {}-character value budget   [query: S5 (R60), a "
+      L"rail row's key is never cut and its value is cut with an ellipsis, the whole value in its "
+      L"tooltip, help text and automation name]",
+      ok ? L"PASS" : L"FAIL", keyOk ? L"none" : L"NOT NONE", valueOk ? L"ellipsis" : L"NOT ELLIPSIS",
+      columnsOk ? L"true" : L"FALSE", id.size(), kInspectValueMaxChars);
+}
+
 std::wstring InspectRailFieldsProbe() {
   auto const& world = demo::GetWorld();
   if (world.conversations.empty())
