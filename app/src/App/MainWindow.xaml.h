@@ -181,6 +181,10 @@ struct MainWindow : MainWindowT<MainWindow> {
   // IMMUTABLE snapshot; a newer publish replaces the pointer and cannot mutate the world a caller
   // is already walking.
   urmsg::demo::World const& ActiveWorld() const;
+  // THE WORLD THE STATUS STRIP AND THE DEVELOPER PAGE DRAW (the conversation-list design 2.6, A20):
+  // the one on screen, its epoch the OPEN conversation's own in a live world, and none when none is
+  // open. The fabricated world keeps its fixture's epoch.
+  urmsg::demo::World StripWorld() const;
 
   // Subscribe to the live worker's publications and marshal them onto this thread. Called once,
   // from the constructor, and only when the live path is switched on.
@@ -243,6 +247,10 @@ struct MainWindow : MainWindowT<MainWindow> {
   urmsg::views::InspectRailView rail_{};
   std::wstring openConversationId_;
   std::wstring selectedMessageId_;
+  // A GROUP JUST JOINED OR FOUNDED, as its conversation id, until its row is there and opens (the
+  // conversation-list design 2.4), and the onboarding generation that named it.
+  std::wstring takenUpConversationId_;
+  std::uint64_t takenUpDrawn_ = 0;
 
   // Ambient activity (design doc 9.2). Off unless --demo-autoplay. None of
   // these may change destination, move the selection, or open or close the

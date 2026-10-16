@@ -17,6 +17,7 @@
 #include "Demo/DemoSwitches.h"
 #include "Demo/DemoWorld.h"
 #include "Identicon.h"
+#include "Live/ConversationRules.h"
 #include "Live/HeldGroupRules.h"
 #include "Live/LiveMesh.h"
 #include "Live/RefusalCopy.h"
@@ -775,6 +776,14 @@ void MainWindow::ApplyOnboard() {
   const bool newAddState = addGeneration != onboardAddDrawn_;
   onboardDrawn_ = generation;
   onboardAddDrawn_ = addGeneration;
+  // A GROUP JUST JOINED OR FOUNDED OPENS AT ONCE (the conversation-list design 2.4): named once per
+  // state the road published, and opened the moment its row is in the world (ApplyLiveWorld).
+  if (generation != takenUpDrawn_) {
+    takenUpDrawn_ = generation;
+    if (!state->groupIdHex.empty() && (state->step == urmsg::live::OnboardStep::Joined ||
+                                       state->step == urmsg::live::OnboardStep::Founded))
+      takenUpConversationId_ = urmsg::live::ConversationIdOf(state->groupIdHex);
+  }
 
   if (state->step == urmsg::live::OnboardStep::Joined) {
     onboardAddGroup_.clear();
@@ -1047,6 +1056,17 @@ void MainWindow::ApplyLiveWorld() {
   urmsg::views::SetNetworkPageAdvanced(network_, advanced_);
   urmsg::views::SetStatusStripAdvanced(statusStrip_, advanced_);
 
+  // WHICH CONVERSATION IS OPEN (Live/ConversationRules.h ConversationToOpen; the conversation-list
+  // design 2.4): the open one by its id, a group just joined or founded at once, else the first row.
+  std::vector<std::wstring> rowIds;
+  rowIds.reserve(liveWorld_->conversations.size());
+  for (auto const& c : liveWorld_->conversations) rowIds.push_back(c.id);
+  const std::wstring toOpen =
+      urmsg::live::ConversationToOpen(rowIds, openConversationId_, takenUpConversationId_);
+  if (!takenUpConversationId_.empty() && toOpen == takenUpConversationId_) takenUpConversationId_.clear();
+  int toOpenIndex = -1;
+  for (std::size_t i = 0; i < rowIds.size(); ++i)
+    if (rowIds[i] == toOpen) toOpenIndex = static_cast<int>(i);
   const int open = OpenConversationIndex();
   if (liveWorld_->conversations.empty()) {
     // NO CONVERSATION: this device LEFT its group (ledger 273) and the worker published the empty
@@ -1065,12 +1085,12 @@ void MainWindow::ApplyLiveWorld() {
       onboardDrawn_ = 0;
       ApplyOnboard();
     }
-  } else if (first || open < 0) {
-    // SelectConversation is a no-op on the conversation that is already open, and the live
-    // conversation's id is the group id and never changes — so this opens it once and every later
-    // beat falls through to the refresh below.
+  } else if (first || toOpen != openConversationId_) {
+    // SelectConversation is a no-op on the conversation that is already open, and a live
+    // conversation's id is its group's and never changes, so this opens the one the rule names and
+    // every later beat that keeps it open falls through to the refresh below.
     openConversationId_.clear();
-    SelectConversation(0);
+    SelectConversation(toOpenIndex);
   } else {
     RefreshOpenThread();
     // AND THE RAIL, in place (item 242 R3): the roster's roles move on another member's commit,
@@ -1079,9 +1099,14 @@ void MainWindow::ApplyLiveWorld() {
     urmsg::views::RefreshInspectRail(rail_, ActiveWorld().conversations[static_cast<size_t>(open)]);
   }
   if (options_.names != urmsg::demo::DemoNames::None && !namesShown_) ShowNamesSurfaceOnce();
-  urnw::LogInfo("window: live world generation {} drawn: {} row(s) in conversation 0", generation,
-                liveWorld_->conversations.empty() ? size_t{0}
-                                                  : liveWorld_->conversations.front().rows.size());
+  {
+    const int drawn = OpenConversationIndex();
+    urnw::LogInfo("window: live world generation {} drawn: {} conversation(s); the open one has {} "
+                  "row(s)",
+                  generation, liveWorld_->conversations.size(),
+                  drawn < 0 ? size_t{0}
+                            : liveWorld_->conversations[static_cast<size_t>(drawn)].rows.size());
+  }
 }
 
 bool MainWindow::SendFromComposer(std::wstring text, std::wstring replacesRowId,
@@ -1248,6 +1273,15 @@ bool MainWindow::OpenConversationMaySend() const {
   // function's own and is the one half of the pair no gate can reach without a window.
   return urmsg::demo::RoleMaySend(
       ActiveWorld().conversations[static_cast<size_t>(index)].myRole);
+}
+
+urmsg::demo::World MainWindow::StripWorld() const {
+  urmsg::demo::World world = ActiveWorld();
+  if (liveWorld_) {
+    const int open = OpenConversationIndex();
+    world.currentEpoch = open < 0 ? 0 : world.conversations[static_cast<size_t>(open)].epoch;
+  }
+  return world;
 }
 
 std::string MainWindow::OpenGroupIdHex() const {
@@ -1615,6 +1649,12 @@ void MainWindow::SelectConversation(int index) {
   ArmComposer();
   urmsg::views::SetThreadConversation(thread_, conversation);
   urmsg::views::SetInspectRailConversation(rail_, conversation);
+  // THE EPOCH FOLLOWS THE OPEN CONVERSATION (the conversation-list design 2.6, A20): the strip and
+  // the developer page are drawn again for it, in a live world.
+  if (liveWorld_) {
+    BuildDeveloper();
+    BuildStatusStrip();
+  }
   urnw::LogInfo("window: conversation -> {} (index {})",
                 urnw::Narrow(openConversationId_), index);
 }
@@ -1835,7 +1875,7 @@ void MainWindow::BuildDeveloper() {
   // does today). ContentShell(): Advanced Mode is a product feature, not a demo one.
   if (!ContentShell()) return;
 
-  developer_ = urmsg::views::MakeDeveloper(ActiveWorld());
+  developer_ = urmsg::views::MakeDeveloper(StripWorld());
   // DeveloperHost, NOT a Grid of this task's own: MainWindow.xaml:286 already
   // declares it and ShowDestination's developer arm routes to it (the d7
   // audit's A5 override — do not add a DeveloperPage Grid; that is "mounted
@@ -1865,7 +1905,7 @@ void MainWindow::BuildStatusStrip() {
     return;
   }
 
-  statusStrip_ = urmsg::views::MakeStatusStrip(ActiveWorld());
+  statusStrip_ = urmsg::views::MakeStatusStrip(StripWorld());
   // StatusStripHost (MainWindow.xaml:309) already exists with its Collapsed
   // markup default, and ApplyBreakpoint is the one writer of its Visibility
   // (options_.enabled && layout_.strip, at the foot of ApplyBreakpoint) — the
