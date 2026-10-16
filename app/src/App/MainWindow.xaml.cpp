@@ -19,6 +19,7 @@
 #include "Identicon.h"
 #include "Live/HeldGroupRules.h"
 #include "Live/LiveMesh.h"
+#include "Live/RefusalCopy.h"
 #include "Live/LiveWorld.h"
 #include "Live/LocalNames.h"
 #include "Localization.h"
@@ -368,7 +369,12 @@ urmsg::demo::World const& EmptyWorld() {
   static const urmsg::demo::World dialling = MakeEmptyWorld(urmsg::demo::ConnectState::Connecting);
   static const urmsg::demo::World stuck = MakeEmptyWorld(urmsg::demo::ConnectState::Offline);
   auto onboard = urmsg::live::OnboardSnapshot();
-  return onboard && onboard->step == urmsg::live::OnboardStep::NoCredential ? stuck : dialling;
+  // A launch that cannot make a join code (Task 58) has closed its session as well: nothing is
+  // dialling there either.
+  return onboard && (onboard->step == urmsg::live::OnboardStep::NoCredential ||
+                     onboard->step == urmsg::live::OnboardStep::NoJoinCode)
+             ? stuck
+             : dialling;
 }
 
 urmsg::demo::World const& MainWindow::ActiveWorld() const {
@@ -452,9 +458,7 @@ void MainWindow::BuildOnboardDialog() {
 
   onboardIntro_ = TextBlock();
   onboardIntro_.TextWrapping(TextWrapping::Wrap);
-  onboardIntro_.Text(
-      L"This device is connected but is not in a group yet. A group is opened by somebody who is "
-      L"already in one: send them the join code below, and paste the invitation they send back.");
+  onboardIntro_.Text(hstring{urmsg::live::kJoinIntro});
   panel.Children().Append(onboardIntro_);
 
   // THE JOIN CONTROLS AS ONE PANEL, so ApplyOnboard can hide them in a breath once this device
@@ -498,8 +502,7 @@ void MainWindow::BuildOnboardDialog() {
 
   TextBlock pasteLabel;
   pasteLabel.TextWrapping(TextWrapping::Wrap);
-  pasteLabel.Text(L"The invitation they send back. THIS ONE IS A SECRET \u2014 whoever has it is in the "
-                  L"group, and it can only be used once.");
+  pasteLabel.Text(hstring{urmsg::live::kJoinerPasteLabel});
   pasteLabel.Opacity(0.75);
   onboardJoinPanel_.Children().Append(pasteLabel);
 
@@ -595,8 +598,8 @@ void MainWindow::BuildOnboardDialog() {
   {
     TextBlock label;
     label.TextWrapping(TextWrapping::Wrap);
-    label.Text(L"Send this invitation to the person whose code you just pasted. WHOEVER HAS IT IS "
-               L"IN THE GROUP, and it works once \u2014 send it the way you would send a password.");
+    // THE ADDER'S COPY (Task 58, Step 3), verbatim from Live/RefusalCopy.h.
+    label.Text(hstring{urmsg::live::kAdderInviteLabel});
     label.Opacity(0.75);
     onboardInvitePanel_.Children().Append(label);
 
@@ -622,7 +625,8 @@ void MainWindow::BuildOnboardDialog() {
       winrt::Windows::ApplicationModel::DataTransfer::Clipboard::SetContent(package);
       if (self->onboardStatus_)
         self->onboardStatus_.Text(L"Invitation copied. Send it to that one person only.");
-      // The invitation is never logged: it is the group's secrets in full.
+      // The invitation is never logged. Only the device whose join code it was made for can open it
+      // (R40 A11), but it still names the group and its members.
       urnw::LogInfo("window: an invitation was copied to the clipboard");
     });
     onboardInvitePanel_.Children().Append(copyInvite);
@@ -657,6 +661,29 @@ void MainWindow::BuildOnboardDialog() {
                   taken ? "taken" : "REFUSED");
   });
   panel.Children().Append(onboardLeaveHeldButton_);
+
+  // ── MAKE A NEW JOIN CODE (R25 Q2) ───────────────────────────────────────────────────────────
+  // DIRECTLY UNDER THE SENTENCE THAT ASKS FOR ONE: an invitation no join code of this device can be
+  // read for, and a join that cost its join code, both say to make a new join code. This makes it;
+  // the worker puts it in the join-code box above. Shown only while the worker's state offers it.
+  onboardNewCodeButton_ = Button();
+  onboardNewCodeButton_.Content(box_value(hstring{urmsg::live::kNewJoinCodeButton}));
+  winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(
+      onboardNewCodeButton_, hstring{urmsg::live::kNewJoinCodeButton});
+  onboardNewCodeButton_.Visibility(Visibility::Collapsed);
+  onboardNewCodeButton_.Click([weak = get_weak()](auto const&, auto const&) {
+    auto self = weak.get();
+    if (!self) return;
+    const bool taken = urmsg::live::QueueNewJoinCode();
+    if (taken && self->onboardNewCodeButton_)
+      self->onboardNewCodeButton_.Visibility(Visibility::Collapsed);
+    if (self->onboardStatus_) {
+      self->onboardStatus_.Text(taken ? L"Making a new join code\u2026"
+                                      : L"A new join code is not on offer right now.");
+    }
+    urnw::LogInfo("window: a new join code was {} by the live worker", taken ? "taken" : "REFUSED");
+  });
+  panel.Children().Append(onboardNewCodeButton_);
 
   onboardDialog_ = ContentDialog();
   onboardDialog_.Opened([weak = get_weak()](auto const&, auto const&) {
@@ -740,6 +767,7 @@ void MainWindow::ApplyOnboard() {
       onboardPasteBox_ = nullptr;
       onboardStatus_ = nullptr;
       onboardLeaveHeldButton_ = nullptr;
+      onboardNewCodeButton_ = nullptr;
       urnw::LogInfo("window: the onboarding dialog closed \u2014 this device is in a group");
     }
     // AND IT MAY BE SHOWN AGAIN: a device that leaves its group (ledger 273) is back on the join
@@ -762,13 +790,20 @@ void MainWindow::ApplyOnboard() {
   // THE INVITATION IS SHOWN FOR EXACTLY ONE PUBLICATION AND THEN GOES. It can be used once, so
   // leaving it on screen past its moment is an invitation to send the same one to two people --
   // and the second of them is refused at the join with nothing here able to say why.
+  // A REFUSED ADD IS STILL THE FOUNDER'S ROAD (Task 58): its sentence asks for another join code,
+  // so the box that takes one stays, and the join road does not come back while this device holds
+  // the group it was adding to.
   const bool founded = state->step == urmsg::live::OnboardStep::Founded ||
-                       state->step == urmsg::live::OnboardStep::Invited;
+                       state->step == urmsg::live::OnboardStep::Invited ||
+                       (state->step == urmsg::live::OnboardStep::Refused && state->addRoad);
   const bool haveInvite = !state->inviteCode.empty();
   // NO CREDENTIAL: neither road can be taken, so neither is drawn - only the sentence that says
   // where the file goes. A join panel with an empty code in it would ask for a step that cannot
   // work yet.
-  const bool stuck = state->step == urmsg::live::OnboardStep::NoCredential;
+  // AND AN INSTALLATION THAT CANNOT MAKE A JOIN CODE (Task 58) is stuck the same way: no join code
+  // to show and no road it can take.
+  const bool noCredential = state->step == urmsg::live::OnboardStep::NoCredential;
+  const bool stuck = noCredential || state->step == urmsg::live::OnboardStep::NoJoinCode;
   if (onboardJoinPanel_)
     onboardJoinPanel_.Visibility(founded || stuck ? Visibility::Collapsed : Visibility::Visible);
   if (onboardFoundButton_)
@@ -785,19 +820,30 @@ void MainWindow::ApplyOnboard() {
   if (onboardLeaveHeldButton_)
     onboardLeaveHeldButton_.Visibility(state->offerLeaveHeldGroup && !stuck ? Visibility::Visible
                                                                             : Visibility::Collapsed);
+  // "MAKE A NEW JOIN CODE", exactly while the state offers it (R25 Q2).
+  if (onboardNewCodeButton_)
+    onboardNewCodeButton_.Visibility(state->offerNewJoinCode && !stuck ? Visibility::Visible
+                                                                       : Visibility::Collapsed);
   // THE PRIMARY BUTTON IS THE JOIN, so it has no job on the founder's road: an owner adds people
   // with the button inside the add panel, and a Join here would try to join a group with an empty
   // box. Hidden rather than disabled, because a dark button invites a person to look for what
   // would light it.
   // The opening paragraph says "This device is connected", which a computer with no credential
   // is not; and "Or join a group..." introduces the join panel, so it goes where the panel goes.
-  if (onboardIntro_)
+  if (onboardIntro_) {
     onboardIntro_.Visibility(stuck ? Visibility::Collapsed : Visibility::Visible);
+    // WHILE THIS DEVICE HOLDS A GROUP the intro does not say it is "not in a group yet": with the
+    // leave of a held group on offer (R20), on the founder's road, where the group it made is the
+    // one it is adding to, and while its group is on its disk and did not open (R25 Q4). The
+    // sentence under it says the rest (Live/RefusalCopy.h, OnboardIntro).
+    onboardIntro_.Text(
+        hstring{urmsg::live::OnboardIntro(state->offerLeaveHeldGroup, founded, state->holdsGroup)});
+  }
   if (onboardOrElse_)
     onboardOrElse_.Visibility(founded || stuck ? Visibility::Collapsed : Visibility::Visible);
   if (onboardDialog_) {
-    onboardDialog_.Title(box_value(stuck ? hstring{L"URmessage needs its credential"}
-                                         : hstring{L"Join a group"}));
+    onboardDialog_.Title(box_value(noCredential ? hstring{L"URmessage needs its credential"}
+                                                : hstring{L"Join a group"}));
     onboardDialog_.PrimaryButtonText(founded || stuck ? hstring{} : hstring{L"Join"});
     // AND THE CLOSE BUTTON SAYS WHAT CLOSING MEANS, which changes with the road. "Not now" is
     // right for somebody who has not joined anything: they are putting it off. It is WRONG for a

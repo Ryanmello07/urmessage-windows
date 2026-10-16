@@ -49,6 +49,7 @@
 #include <nlohmann/json.hpp>
 
 #include "Live/HeldGroupRules.h"
+#include "Live/RefusalCopy.h"
 #include "Live/LiveWorld.h"
 #include "Live/LocalNames.h"
 #include "Log.h"
@@ -697,7 +698,8 @@ std::mutex g_onboardMutex;
 urmsg::live::OnboardPtr g_onboard;          // guarded by g_onboardMutex
 std::string g_pastedInvite;                 // guarded by g_onboardMutex; consumed by the worker
 std::string g_pastedJoinCode;               // guarded by g_onboardMutex; consumed by the worker
-// WHAT THE JOIN DIALOG SAYS FIRST after a leave whose erase did not finish (review H1), or "".
+// WHAT THE JOIN DIALOG SAYS FIRST after a leave whose erase did not finish (review H1), or after a
+// restore that refused a group founded before invitations were sealed (Task 58), or "".
 // Guarded by g_onboardMutex; written by the worker and consumed by the next JoinFromPeer.
 std::string g_afterLeaveNote;
 bool g_createGroupAsked = false;            // guarded by g_onboardMutex; consumed by the worker
@@ -707,19 +709,40 @@ std::atomic<uint64_t> g_onboardGeneration{0};
 // the person pressed the button; guarded by g_onboardMutex and consumed by the worker.
 std::atomic<bool> g_heldLeaveOffered{false};
 bool g_heldLeaveAsked = false;
+// "MAKE A NEW JOIN CODE" (R25 Q2), on the same terms as the leave above: offered by the state on
+// screen, asked by the press, and consumed by the worker.
+std::atomic<bool> g_newJoinCodeOffered{false};
+bool g_newJoinCodeAsked = false;            // guarded by g_onboardMutex; consumed by the worker
+// THIS DEVICE HOLDS A GROUP ON ITS DISK THAT DID NOT OPEN (R25 Q4, Q5): set when a restore, a join
+// or a leave says so, cleared by a join and by a leave that left it. Every publication carries it,
+// so no state in between says "not in a group yet" of this device. Guarded by g_onboardMutex.
+bool g_holdsUnopenedGroup = false;
+// WHICH "NOT READ" CLASS THE LAST RESTORE REPORTED (R28, R29): ErrGroupRecordNotReadNow's or
+// ErrGroupReadUnproven's, or none. Set by the startup restore and by every restore a leave runs
+// first; a restore that could not be tried because this device is not connected leaves it as it
+// was (Live/RefusalCopy.h, NextRestoreClass). While it names a class, a held refusal says that
+// class's row and offers no leave, because that failure names no group (R12) and a leave erases.
+// Guarded by g_onboardMutex.
+urmsg::live::ReadClass g_lastRestoreClass = urmsg::live::ReadClass::None;
 
 void PublishOnboard(urmsg::live::OnboardStep step, std::string joinCode, std::string message,
-                    std::string inviteCode = {}, bool offerLeaveHeldGroup = false) {
+                    std::string inviteCode = {}, bool offerLeaveHeldGroup = false,
+                    bool addRoad = false, bool offerNewJoinCode = false) {
   auto next = std::make_shared<urmsg::live::OnboardState>();
   next->step = step;
   next->joinCode = std::move(joinCode);
   next->inviteCode = std::move(inviteCode);
   next->message = std::move(message);
   next->offerLeaveHeldGroup = offerLeaveHeldGroup;
+  next->addRoad = addRoad;
+  next->offerNewJoinCode = offerNewJoinCode;
   {
     std::lock_guard<std::mutex> lock(g_onboardMutex);
+    if (step == urmsg::live::OnboardStep::Joined) g_holdsUnopenedGroup = false;
+    next->holdsGroup = g_holdsUnopenedGroup;
     g_onboard = std::move(next);
     g_heldLeaveOffered.store(offerLeaveHeldGroup, std::memory_order_release);
+    g_newJoinCodeOffered.store(offerNewJoinCode, std::memory_order_release);
   }
   g_onboardGeneration.fetch_add(1, std::memory_order_release);
   // THE SAME BELL THE WORLD RINGS. The window's beat re-reads the onboarding state along with
@@ -752,7 +775,8 @@ bool AddMemberFromCode(Session& s, const std::string& theirCode, const std::stri
   if (!DecodeBase64(theirCode, keyPackage)) {
     PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
                    "That join code could not be read. Ask for the whole code again - it is one "
-                   "long line with no spaces inside it.");
+                   "long line with no spaces inside it.",
+                   {}, false, true);
     urnw::LogWarn("live: a pasted join code was not decodable base64; refused");
     return false;
   }
@@ -769,10 +793,18 @@ bool AddMemberFromCode(Session& s, const std::string& theirCode, const std::stri
   }
   if (invite == 0) {
     const std::string why = TakeError(&err);
-    urnw::LogError("live: {} refused the add: {}",
-                   wasOpen ? "add_member_and_publish" : "add_member", why);
+    // THE ADDER'S THREE REFUSALS OF A JOIN CODE (Task 58), each in the person's words and each
+    // made before anything was staged, so the group is where it was. Told apart by the library's
+    // own sentence (Live/RefusalCopy.h); anything else is said as it was before.
+    const urmsg::live::AddCopy row = urmsg::live::ClassifyAddCopy(why);
+    urnw::LogError("live: {} refused the add ({}): {}",
+                   wasOpen ? "add_member_and_publish" : "add_member", urmsg::live::AddCopyName(row),
+                   why);
     PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
-                   "That person could not be added: " + why);
+                   row != urmsg::live::AddCopy::Other
+                       ? std::string(urmsg::live::AddCopySentence(row))
+                       : "That person could not be added: " + why,
+                   {}, false, true);
     return false;
   }
 
@@ -804,7 +836,8 @@ bool AddMemberFromCode(Session& s, const std::string& theirCode, const std::stri
     // add of the same person.
     PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
                    "They were added, but the invitation could not be written out, so there is "
-                   "nothing to send them. Ask them for a fresh join code and add them again.");
+                   "nothing to send them. Ask them for a fresh join code and add them again.",
+                   {}, false, true);
     return true;
   }
 
@@ -813,10 +846,19 @@ bool AddMemberFromCode(Session& s, const std::string& theirCode, const std::stri
   if (!wasOpen) {
     if (!urnet_message_group_open(s.group, s.ctx, &err)) {
       const std::string why = TakeError(&err);
-      urnw::LogError("live: group_open: {}", why);
+      // THE GROUP IS OPEN ON THE SERVER, and this device could not finish saving it: its creation
+      // could not be recorded as finished (R34 item 3, R35 A8), or its record could not be persisted
+      // (R37 A9). "Could not be published" would be false of either, so its own row says what
+      // happened, and that the invitation was not shown. Every other refusal of the open is said as
+      // it was before.
+      const std::string_view row = urmsg::live::OpenRefusalCopy(why);
+      urnw::LogError("live: group_open{}: {}",
+                     row.empty() ? "" : " (the group is open on the server and this device could not finish saving it)",
+                     why);
       PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
-                     "They were added, but the group could not be published to the server: " +
-                         why);
+                     !row.empty() ? std::string(row)
+                                  : "They were added, but the group could not be published to the server: " + why,
+                     {}, false, true);
       return false;
     }
   }
@@ -825,9 +867,10 @@ bool AddMemberFromCode(Session& s, const std::string& theirCode, const std::stri
                 wasOpen ? "add_member_and_publish" : "add_member + open",
                 urnet_message_group_epoch(s.group),
                 urnet_message_group_is_open(s.group) ? "yes" : "no");
-  PublishOnboard(urmsg::live::OnboardStep::Invited, joinCode,
-                 "Send this invitation to that person. It works once, and whoever has it is in "
-                 "the group - send it the way you would send a password.",
+  // WHAT THE INVITATION IS, the dialog's label says (Live/RefusalCopy.h, kAdderInviteLabel). Since
+  // invite version 3 only the joiner's device can open it, so "whoever has it is in the group" is
+  // no longer true, and it is no longer said.
+  PublishOnboard(urmsg::live::OnboardStep::Invited, joinCode, "Send this invitation to that person.",
                  code);
   return true;
 }
@@ -875,16 +918,25 @@ struct ErasedOnExit {
 enum class HeldLeave {
   Left,      // this device holds nothing under the id now: open the same invitation again
   CameBack,  // the restore brought the group back, and s.group is it
-  Offered,   // the group is still held and the leave is on offer again; the state says why
+  Offered,   // the group is still held; the state says why, and whether the leave is on offer
 };
 
 // THE RESTORE THE LEAVE RUNS FIRST: device_restore, and the group it brings back under the held
-// id, if any. Answers true with s.group set to it; every other group it answered is released.
-bool RestoreHeldGroup(Session& s, HeldInvite const& held) {
+// id, if any. `back` is true with s.group set to it; every other group it answered is released.
+// `error` is the restore's own report, which says whether a file of a group could not be read just
+// now (R28): the leave reads it before it decides anything.
+struct HeldRestore {
+  bool back = false;
+  std::string error;
+};
+
+HeldRestore RestoreHeldGroup(Session& s, HeldInvite const& held) {
   char* err = nullptr;
   const int32_t gidLen = static_cast<int32_t>(held.groupId.size());
   const uint64_t restored = urnet_message_device_restore(s.device, s.ctx, &err);
-  const std::string restoreError = TakeError(&err);
+  HeldRestore out;
+  out.error = TakeError(&err);
+  const std::string& restoreError = out.error;
   const int32_t count = urnet_message_group_list_count(restored);
   if (!restoreError.empty())
     urnw::LogWarn("live: held leave: device_restore reported: {} (and answered {} group(s))",
@@ -904,31 +956,75 @@ bool RestoreHeldGroup(Session& s, HeldInvite const& held) {
     }
   }
   if (restored != 0) urnet_release(restored);
-  if (back == 0) return false;
+  {
+    std::lock_guard<std::mutex> lock(g_onboardMutex);
+    g_lastRestoreClass = urmsg::live::NextRestoreClass(g_lastRestoreClass, restoreError);
+  }
+  if (back == 0) return out;
   s.group = back;
-  return true;
+  out.back = true;
+  return out;
 }
 
 // THE LEAVE ITSELF, on the worker: forget_group with the invitation's group id, and no roster and
 // no owner's question, because ForgetGroup asks none of a group with no live roster (R9).
 //
-// THE RESTORE RUNS FIRST, ON EVERY PRESS (review F1). A group the startup restore could not bring
-// back is marked as not restored whatever the reason, a file locked or denied for a moment
-// included, and ForgetGroup erases a marked group at once, every epoch state and every line this
-// device sent with it. So the restore is tried again before anything is erased: a group that opens
-// now is this device's again (CameBack) and nothing is left, and only a group that still does not
-// open is forgotten.
+// THE RESTORE RUNS FIRST, ON EVERY PRESS (review F1). ForgetGroup erases at once a group that a
+// restore has noted as one that will not come back, every epoch state and every line this device
+// sent with it, and a note made at startup stands for the rest of the run. So the restore is tried
+// again before anything is erased: a group that opens now is this device's again (CameBack) and
+// nothing is left.
+//
+// AND A RESTORE THAT DECIDED NOTHING STOPS THE LEAVE (R28, R29, R32). It could not read a file of a
+// group just now (another process held it), or could not read one for a reason this build cannot
+// classify (a permission, the medium), or was not tried at all because this device is not
+// connected. Nothing is known to be wrong with the group. The leave stops there, with that row, and
+// forget_group is NOT called: a leave decided on no evidence is what R28 to R30 exist to stop. Q5's
+// and the unproven row offer no leave; the not-connected row keeps it offered, because a press once
+// connected restores first again. The report names no group for a record that could not be read
+// (R12), so a sentinel stops the leave of any group. Only a group that did not come back for some
+// other reason is forgotten, and the library then decides on its own fresh evidence (R30).
 HeldLeave LeaveHeldGroup(Session& s, HeldInvite const& held, std::string const& joinCode) {
   char* err = nullptr;
   const std::string gidHex = urmsg::live::GroupIdHex(held.groupId);
   const int32_t gidLen = static_cast<int32_t>(held.groupId.size());
   urnw::LogInfo("live: held leave: restoring first, in case group {} opens now", gidHex);
-  if (RestoreHeldGroup(s, held)) {
-    urnw::LogInfo("live: *** RESTORED *** group {} came back at epoch {}; this device is in it, "
-                  "and nothing was left",
-                  gidHex, urnet_message_group_epoch(s.group));
-    PublishOnboard(urmsg::live::OnboardStep::Joined, std::string(), "You are in the group.");
-    return HeldLeave::CameBack;
+  const HeldRestore restore = RestoreHeldGroup(s, held);
+  const urmsg::live::HeldLeaveStep step = urmsg::live::StepAfterRestoreFirst(restore.back, restore.error);
+  switch (step) {
+    case urmsg::live::HeldLeaveStep::CameBack:
+      urnw::LogInfo("live: *** RESTORED *** group {} came back at epoch {}; this device is in it, "
+                    "and nothing was left",
+                    gidHex, urnet_message_group_epoch(s.group));
+      PublishOnboard(urmsg::live::OnboardStep::Joined, std::string(), "You are in the group.");
+      return HeldLeave::CameBack;
+    case urmsg::live::HeldLeaveStep::NotReadNow:
+    case urmsg::live::HeldLeaveStep::Unproven:
+    case urmsg::live::HeldLeaveStep::NotConnected: {
+      const urmsg::live::HeldCopy copy = urmsg::live::LeaveStopCopy(step);
+      const bool notConnected = step == urmsg::live::HeldLeaveStep::NotConnected;
+      urnw::LogWarn("live: held leave: the restore before the leave {} ({}); group {} did not come "
+                    "back, nothing was left, and forget_group was not called ({}): {}",
+                    notConnected ? "could not be tried, because this device is not connected"
+                    : step == urmsg::live::HeldLeaveStep::Unproven
+                        ? "could not read a file of a group, for a reason this build cannot classify"
+                        : "could not read a file of a group just now",
+                    notConnected ? "ErrNotConnected"
+                    : step == urmsg::live::HeldLeaveStep::Unproven ? "ErrGroupReadUnproven"
+                                                                   : "ErrGroupRecordNotReadNow",
+                    gidHex,
+                    notConnected ? "R32" : step == urmsg::live::HeldLeaveStep::Unproven ? "R29" : "R28",
+                    restore.error);
+      if (!notConnected) {
+        std::lock_guard<std::mutex> lock(g_onboardMutex);
+        g_holdsUnopenedGroup = true;
+      }
+      PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode, std::string(copy.sentence), {},
+                     copy.offerLeave);
+      return HeldLeave::Offered;
+    }
+    case urmsg::live::HeldLeaveStep::Forget:
+      break;
   }
   urnw::LogWarn("live: held leave: group {} did not come back; leaving it", gidHex);
   int32_t kind = urnet_message_device_forget_group(s.device, held.groupId.data(), gidLen, &err);
@@ -963,16 +1059,66 @@ HeldLeave LeaveHeldGroup(Session& s, HeldInvite const& held, std::string const& 
       break;
   }
 
-  // ErrGroupNotRestored: the record reads and no restore has tried it, so the library will not
-  // leave it unasked -- a device that has merely restarted is asked the owner's question like any
-  // other. The restore above stopped before it reached this group (a listing that failed, say), so
-  // nothing was erased, and the leave is offered again: the next press restores first again.
+  // ErrGroupNotRestored: the record reads and no restore holds a verdict on this group, so the
+  // library will not leave it unasked -- a device that has merely restarted is asked the owner's
+  // question like any other. WHAT REACHES THIS NOW (R28, R30): a restore above that did not reach
+  // this group at all. Its listing of the groups failed, say, so it tried, noted and kept no group.
+  // A group it did try and could not read is in the library's not-read set, and its leave is
+  // refused by class (below); a restore that could not read a file of a group (just now, or for a
+  // reason this build cannot classify), or could not be tried because this device is not
+  // connected, stopped above, before forget_group. Nothing was erased, and the leave is offered
+  // again: the next press restores first again.
   if (urmsg::live::IsNotRestoredRefusal(why)) {
     urnw::LogWarn("live: held leave: the restore did not reach group {} ({}); the leave is offered "
                   "again",
                   gidHex, why);
     PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
                    std::string(urmsg::live::kHeldNotLiveSentence), {}, true);
+    return HeldLeave::Offered;
+  }
+
+  const urmsg::live::LeaveRefusal refusal = urmsg::live::ClassifyLeaveRefusal(why);
+  // THE LEAVE REACHED THE OWNER'S QUESTION (R33 X2). The library's own re-try brought the group back,
+  // and this device owns a group others are in, so the leave asks for the ownership to be handed over
+  // first. The library keeps nothing held after that refusal, and the next Restore hands the group
+  // back: the app restores once more, so the conversation shows, and the hand-over is made there.
+  if (urmsg::live::RestoresOnceMore(refusal)) {
+    urnw::LogWarn("live: held leave: forget_group asked the owner's question for group {} "
+                  "(ErrOwnerMustTransfer); restoring once more, so the conversation shows (R33): {}",
+                  gidHex, why);
+    const HeldRestore again = RestoreHeldGroup(s, held);
+    if (again.back) {
+      urnw::LogInfo("live: *** RESTORED *** group {} came back at epoch {} after the owner's question; "
+                    "this device is in it, and nothing was left",
+                    gidHex, urnet_message_group_epoch(s.group));
+      PublishOnboard(urmsg::live::OnboardStep::Joined, std::string(), "You are in the group.");
+      return HeldLeave::CameBack;
+    }
+    urnw::LogWarn("live: held leave: group {} did not come back after the owner's question: {}", gidHex,
+                  again.error.empty() ? std::string("the restore gave no reason") : again.error);
+  }
+
+  // THE LIBRARY'S OWN REFUSAL, BY THE CLASS INSIDE IT (R25 Q5, R29, R32): its fresh re-try of the
+  // group's restore, or its read of the record, could not read a file (just now, or for a reason it
+  // cannot classify), or the re-try could not be tried because this device is not connected. The
+  // library left nothing. Q5's and the unproven row offer no leave; the not-connected row keeps it. A
+  // leave mark that names another group (FIX 6) has its own row, with no leave: no press moves it. A
+  // refusal of any other kind (the leave mark could not be written, say) keeps Task 39's fallback.
+  if (const urmsg::live::HeldCopy copy = urmsg::live::LeaveRefusalCopy(refusal); !copy.sentence.empty()) {
+    const bool notConnected = refusal == urmsg::live::LeaveRefusal::NotConnected;
+    urnw::LogWarn("live: held leave: forget_group refused group {} ({}); nothing was left, and the "
+                  "leave is {}: {}",
+                  gidHex, urmsg::live::LeaveRefusalName(refusal),
+                  copy.offerLeave ? "offered again" : "not offered", why);
+    if (!notConnected) {
+      std::lock_guard<std::mutex> lock(g_onboardMutex);
+      g_holdsUnopenedGroup = true;
+    }
+    // R40 A10: a row that names a folder is followed by the library's own words, which name it
+    PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
+                   urmsg::live::ShowsLibraryWords(refusal) ? urmsg::live::WithLibraryWords(copy.sentence, why)
+                                                           : std::string(copy.sentence),
+                   {}, copy.offerLeave);
     return HeldLeave::Offered;
   }
 
@@ -986,66 +1132,103 @@ HeldLeave LeaveHeldGroup(Session& s, HeldInvite const& held, std::string const& 
 
 // ── the two-party handshake ───────────────────────────────────────────────────
 
-// Publish this device's key package, wait for the peer's invite, and join.
-// Answers true with s.group set, or false having said why.
-//
-// THE KEY PACKAGE IS NOT A SECRET and the INVITE IS. A key package is a public
-// offer to be added; an invite carries the Welcome and the group's secrets, so
-// whoever reads it is in the group. The invite is deleted the moment it has been
-// used, and the key package is deleted by the peer that consumes it.
-bool JoinFromPeer(Session& s) {
-  char* err = nullptr;
-  const std::filesystem::path dir = HandshakeDir();
-  const std::filesystem::path keyPackagePath = dir / kKeyPackageName;
-  const std::filesystem::path invitePath = dir / kInviteName;
+enum class Mint {
+  Ok,         // `joinCode` holds a fresh key package, as base64, and the handshake file holds it
+  NoWrapKey,  // ErrNoDeviceWrapKey: this installation cannot make a join code (Task 58)
+  Failed,     // anything else; `why` says what
+};
 
-  // Buffer-out: call once with out == NULL to size, allocate, call again.
+// MINT A JOIN CODE: a fresh key package off urnet_message_device_key_package, written to the
+// handshake file for the developer's road and kept as text for the screen. At startup, and again
+// on "Make a new join code" (R25 Q2). Buffer-out: call once with out == NULL to size, allocate,
+// call again.
+Mint MintJoinCode(Session& s, std::string& joinCode, size_t& octets, std::string& why) {
+  char* err = nullptr;
   int32_t needed = 0;
   if (!urnet_message_device_key_package(s.device, nullptr, &needed, &err)) {
     const std::string sizing = TakeError(&err);
     if (needed <= 0) {
-      urnw::LogError("live: device_key_package could not be sized: {}",
-                     sizing.empty() ? "no reason given" : sizing);
-      return false;
+      why = sizing.empty() ? std::string("no reason given") : sizing;
+      return urmsg::live::IsNoDeviceWrapKey(sizing) ? Mint::NoWrapKey : Mint::Failed;
     }
   }
   std::vector<uint8_t> keyPackage(static_cast<size_t>(needed));
   int32_t capacity = needed;
   if (!urnet_message_device_key_package(s.device, keyPackage.data(), &capacity, &err)) {
-    urnw::LogError("live: device_key_package: {}", TakeError(&err));
-    return false;
+    why = TakeError(&err);
+    return urmsg::live::IsNoDeviceWrapKey(why) ? Mint::NoWrapKey : Mint::Failed;
   }
   keyPackage.resize(static_cast<size_t>(capacity));
 
   // A KEY PACKAGE IS SINGLE USE AND THIS ONE HAS JUST BEEN MINTED, so any file
   // already at that path is a previous run's and is worthless to a peer.
   // Overwriting it is the point.
+  const std::filesystem::path keyPackagePath = HandshakeDir() / kKeyPackageName;
   if (!WriteOctets(keyPackagePath, keyPackage.data(), keyPackage.size())) {
-    urnw::LogError("live: could not write this device's key package to {}",
-                   Utf8Path(keyPackagePath));
-    return false;
+    why = "could not write this device's key package to " + Utf8Path(keyPackagePath);
+    return Mint::Failed;
+  }
+  // THE SAME OCTETS AS TEXT. A key package is a public offer to be added, so this is not a secret
+  // and the UI may show it, copy it and let a person send it down any channel they like. The code
+  // itself is still never LOGGED: a log line is a different audience from a screen, it outlives
+  // the moment, and there is no reason to put two kilobytes of base64 in one.
+  joinCode = EncodeBase64(keyPackage.data(), keyPackage.size());
+  octets = keyPackage.size();
+  return Mint::Ok;
+}
+
+// Publish this device's key package, wait for the peer's invite, and join.
+// Answers true with s.group set, or false having said why.
+//
+// THE KEY PACKAGE IS NOT A SECRET, AND THE INVITE IS PRIVATE. A key package is a
+// public offer to be added. An invite carries the Welcome, and since invite
+// version 3 its join secrets are sealed to the join code it was made for, so only
+// this device can open it (R40 A12). It still names the group and its members, so
+// it is never logged, and the invite is deleted the moment it has been used. The
+// key package is deleted by the peer that consumes it.
+bool JoinFromPeer(Session& s) {
+  char* err = nullptr;
+  const std::filesystem::path dir = HandshakeDir();
+  const std::filesystem::path keyPackagePath = dir / kKeyPackageName;
+  const std::filesystem::path invitePath = dir / kInviteName;
+
+  // A DEVICE THAT CANNOT MAKE A JOIN CODE IS TOLD SO ON THE SCREEN (Task 58). Its store holds no
+  // X-Wing seed (ErrNoDeviceWrapKey), so the library will not publish a join code for it. The
+  // session ends here as it did before, with the reason in the window and not only in the log.
+  auto cannotMakeJoinCode = [](std::string const& why) {
+    urnw::LogError("live: device_key_package refused (ErrNoDeviceWrapKey): {}", why);
+    PublishOnboard(urmsg::live::OnboardStep::NoJoinCode, std::string(),
+                   std::string(urmsg::live::kSayNoDeviceWrapKey));
+  };
+  std::string joinCode;
+  size_t keyPackageOctets = 0;
+  {
+    std::string why;
+    switch (MintJoinCode(s, joinCode, keyPackageOctets, why)) {
+      case Mint::Ok:
+        break;
+      case Mint::NoWrapKey:
+        cannotMakeJoinCode(why);
+        return false;
+      case Mint::Failed:
+        urnw::LogError("live: device_key_package: {}", why);
+        return false;
+    }
   }
   urnw::LogInfo(
       "live: published this device's key package ({} octets) to {}. WAITING for a second party: a "
       "solo device cannot open a group — group_open comes after add_member, the alpha accepts "
       "exactly one, and one credential is one key package. Run sdk/livepeer under the OTHER "
       "account, pointed at this file.",
-      keyPackage.size(), Utf8Path(keyPackagePath));
+      keyPackageOctets, Utf8Path(keyPackagePath));
 
-  // THE SAME OCTETS AS TEXT. A key package is a public offer to be added, so this is not a secret
-  // and the UI may show it, copy it and let a person send it down any channel they like. The code
-  // itself is still never LOGGED: a log line is a different audience from a screen, it outlives
-  // the moment, and there is no reason to put two kilobytes of base64 in one.
-  const std::string joinCode = EncodeBase64(keyPackage.data(), keyPackage.size());
-  std::string waiting =
-      "This device is not in a group yet. Send your join code to whoever is setting the group up, "
-      "and paste the invitation they send back.";
+  // THE NOTE FIRST, and "not in a group yet" only when it is true (R25 Q4): a device whose group is
+  // on its disk and did not open is not told it holds none (Live/RefusalCopy.h, WaitingText).
+  std::string waiting;
   {
     std::lock_guard<std::mutex> lock(g_onboardMutex);
-    if (!g_afterLeaveNote.empty()) {
-      waiting = g_afterLeaveNote + " " + waiting;
-      g_afterLeaveNote.clear();
-    }
+    waiting = urmsg::live::WaitingText(g_afterLeaveNote, g_holdsUnopenedGroup);
+    g_afterLeaveNote.clear();
   }
   PublishOnboard(urmsg::live::OnboardStep::Waiting, joinCode, waiting);
 
@@ -1097,6 +1280,41 @@ bool JoinFromPeer(Session& s) {
     // its leave is no longer theirs to ask for. (The file road's own new invitation drops it below.)
     if (!encoded.empty()) held.Drop();
 
+    // "MAKE A NEW JOIN CODE" (R25 Q2): the press on a row that asked for one. The fresh code
+    // replaces the one in the box and in the handshake file; the one shown before stays valid
+    // until it is used.
+    {
+      bool asked = false;
+      {
+        std::lock_guard<std::mutex> lock(g_onboardMutex);
+        asked = g_newJoinCodeAsked;
+        g_newJoinCodeAsked = false;
+      }
+      if (asked) {
+        std::string fresh;
+        size_t octets = 0;
+        std::string why;
+        switch (MintJoinCode(s, fresh, octets, why)) {
+          case Mint::Ok:
+            joinCode = std::move(fresh);
+            urnw::LogInfo("live: *** NEW JOIN CODE *** minted ({} octets) and published to {}",
+                          octets, Utf8Path(keyPackagePath));
+            PublishOnboard(urmsg::live::OnboardStep::Waiting, joinCode,
+                           std::string(urmsg::live::kSayNewJoinCode));
+            break;
+          case Mint::NoWrapKey:
+            // THAT ROW, as at startup: this installation cannot make a join code at all.
+            cannotMakeJoinCode(why);
+            return false;
+          case Mint::Failed:
+            urnw::LogError("live: a new join code could not be minted: {}", why);
+            PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
+                           "A new join code could not be made: " + why, {}, false, false, true);
+            break;
+        }
+      }
+    }
+
     // THE LEAVE OF A GROUP THAT IS NOT LIVE, AND THEN THE SAME INVITATION AGAIN (Task 39). Served
     // before the file road, so a file still on the disk cannot race the leave the person asked for.
     {
@@ -1111,17 +1329,22 @@ bool JoinFromPeer(Session& s) {
           case HeldLeave::Left:
             // THE SAME INVITATION: the refusal came before the join code was touched, so it is
             // still good. It goes through the one join path below, like any other.
+            {
+              std::lock_guard<std::mutex> lock(g_onboardMutex);
+              g_holdsUnopenedGroup = false;
+            }
             encoded = held.octets;
             fromPaste = held.fromPaste;
             break;
           case HeldLeave::CameBack: {
-            // The group is this device's again, so the invitation into it has done its job: a file
-            // copy of it is key material for a group anyone who reads it is in.
+            // The group is this device's again, so the invitation into it has done its job. Only
+            // this device can open it, but a file copy of it still names the group and its members,
+            // so it goes (R40 A12).
             std::error_code ec;
             if (!held.fromPaste && std::filesystem::exists(invitePath, ec) &&
                 !std::filesystem::remove(invitePath, ec)) {
-              urnw::LogWarn("live: the invite at {} could not be deleted ({}). Delete it by hand: it "
-                            "is key material and whoever reads it is in this group.",
+              urnw::LogWarn("live: the invite at {} could not be deleted ({}). Delete it by hand: only "
+                            "this device can open it, but it names the group and its members.",
                             Utf8Path(invitePath), ec.message());
             }
             held.Drop();
@@ -1181,7 +1404,7 @@ bool JoinFromPeer(Session& s) {
             // that opens it is the one adding the first other person.
             PublishOnboard(urmsg::live::OnboardStep::Founded, joinCode,
                            "Your group is made, but it has only you in it and nothing can be "
-                           "sent yet. Ask somebody for their join code and paste it below - "
+                           "sent yet. Ask somebody for their join code and paste it above - "
                            "adding them is what opens the group.");
             // The fetch loop does NOT take over here: a group that is not open has nothing to
             // fetch, and the add below is served from this same loop.
@@ -1243,10 +1466,18 @@ bool JoinFromPeer(Session& s) {
     const uint64_t invite =
         urnet_message_parse_invite(encoded.data(), static_cast<int32_t>(encoded.size()), &err);
     if (invite == 0) {
-      urnw::LogError("live: parse_invite refused it: {}", TakeError(&err));
+      const std::string why = TakeError(&err);
+      // AN INVITATION FROM AN OLDER URMESSAGE is refused here, by its version (Task 58). Every other
+      // refusal of the parse is said as it was before.
+      const bool older =
+          urmsg::live::ClassifyJoinCopy(why) == urmsg::live::JoinCopy::InviteVersion;
+      urnw::LogError("live: parse_invite refused it ({}): {}", older ? "ErrInviteVersion" : "other",
+                     why);
       PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
-                     "That invitation was refused: it did not survive the journey intact. Ask for "
-                     "a fresh one - an invitation can only be used once.");
+                     older ? std::string(urmsg::live::kSayInviteVersion)
+                           : std::string("That invitation was refused: it did not survive the "
+                                         "journey intact. Ask for a fresh one - an invitation can "
+                                         "only be used once."));
       previous.clear();
       ::Sleep(static_cast<DWORD>(kInvitePollMs));
       continue;
@@ -1255,6 +1486,24 @@ bool JoinFromPeer(Session& s) {
     urnet_release(invite);
     if (s.group == 0) {
       const std::string why = TakeError(&err);
+      // A REFUSAL OVER A GROUP THAT COULD NOT BE READ KEEPS ITS INVITATION, with no leave on offer, so
+      // the file road does not open the same file again and again while nothing has changed. This
+      // keeps it for the gate's refusals that carry a class's own sentinel and no held sentence: its
+      // read of the group's record (heldUnread); its refusal of a record missing from a folder where
+      // the store's own files stand (R34 item 1, in heldUnread's clause, carrying the unproven
+      // sentinel); and its answer for a group the last Restore could not read (R33 X3, "group <hex>
+      // is on this device's disk and the last Restore could not read it, ..."). The class's row
+      // answers each below, with no leave: the leave Task 39's sentence names would be decided on no
+      // evidence.
+      auto keepRefusedInvite = [&]() {
+        std::array<uint8_t, urmsg::live::kGroupIdOctets> gid{};
+        const bool read = urmsg::live::InviteGroupId(encoded.data(), encoded.size(), gid);
+        held.Drop();
+        held.octets = encoded;
+        if (read) held.groupId = gid;
+        held.fromPaste = fromPaste;
+        held.valid = true;
+      };
       // A GROUP THIS DEVICE ALREADY HOLDS (Task 39): told apart by the library's own sentence,
       // because the bridge carries sentences and not types (HeldGroupRules.h).
       switch (urmsg::live::ClassifyJoinRefusal(why)) {
@@ -1275,11 +1524,34 @@ bool JoinFromPeer(Session& s) {
             held.groupId = gid;
             held.fromPaste = fromPaste;
             held.valid = true;
-            urnw::LogWarn("live: device_join refused: this device holds group {} on its disk and it "
-                          "is not live; the leave is offered: {}",
-                          gidHex, why);
-            PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
-                           std::string(urmsg::live::kHeldNotLiveSentence), {}, true);
+            // AFTER A RESTORE THAT COULD NOT READ A FILE OF A GROUP (R28, R29: just now, or for a
+            // reason this build cannot classify), the group may be that one, and nothing is known
+            // to be wrong with it: that class's row, and no leave. The invitation is kept all the
+            // same, so the file road does not open it again and again.
+            urmsg::live::ReadClass lastClass = urmsg::live::ReadClass::None;
+            {
+              std::lock_guard<std::mutex> lock(g_onboardMutex);
+              lastClass = g_lastRestoreClass;
+              if (lastClass != urmsg::live::ReadClass::None) g_holdsUnopenedGroup = true;
+            }
+            const urmsg::live::HeldCopy copy = urmsg::live::HeldNotLiveCopy(lastClass);
+            if (copy.offerLeave) {
+              urnw::LogWarn("live: device_join refused: this device holds group {} on its disk and "
+                            "it is not live; the leave is offered: {}",
+                            gidHex, why);
+            } else if (lastClass == urmsg::live::ReadClass::Unproven) {
+              urnw::LogWarn("live: device_join refused: this device holds group {} on its disk and "
+                            "it is not live, and the last restore could not read a file of a group, "
+                            "for a reason this build cannot classify; no leave is offered (R29): {}",
+                            gidHex, why);
+            } else {
+              urnw::LogWarn("live: device_join refused: this device holds group {} on its disk and "
+                            "it is not live, and the last restore could not read a file of a group "
+                            "just now; no leave is offered (R28): {}",
+                            gidHex, why);
+            }
+            PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode, std::string(copy.sentence), {},
+                           copy.offerLeave);
           } else {
             // NOT EXPECTED, AND NOT PAPERED OVER: a sentence that says to leave would name an
             // action this screen cannot take, so it is not shown.
@@ -1306,6 +1578,37 @@ bool JoinFromPeer(Session& s) {
                            std::string(urmsg::live::kHeldNotLiveSentence), {}, true);
             break;
           }
+          // THE JOIN SEAL'S REFUSALS (Task 58), each in the person's words and each true about what
+          // it cost: the window's own sentence says the join code is still good, and the one
+          // refusal that does not carry it (ErrNoJoinCodeForInvite) is never said that way (R13).
+          // The two rows that ask for a new join code offer the button that makes one (R25 Q2). A
+          // record that could not be read (just now, R25 Q5, or for a reason this build cannot
+          // classify, R29), and a group the last Restore could not read (R33 X3), are of a group this
+          // device holds: the class's row, no leave, and the invitation kept. So is a leave mark in the
+          // group's folder that names another group (FIX 6), which no press moves. The window's
+          // refusal of a join the store would not serve (R34 A1) is handled as the window's own row
+          // is: no button, and the invitation is not kept, so a person pastes it again once the
+          // folder is fixed.
+          if (const urmsg::live::JoinCopy row = urmsg::live::ClassifyJoinCopy(why);
+              row != urmsg::live::JoinCopy::Other) {
+            const bool notReadRow = row == urmsg::live::JoinCopy::GroupRecordNotReadNow ||
+                                    row == urmsg::live::JoinCopy::GroupReadUnproven ||
+                                    row == urmsg::live::JoinCopy::LeaveMarkForeign;
+            urnw::LogWarn("live: device_join refused ({}){}: {}", urmsg::live::JoinCopyName(row),
+                          notReadRow ? "; no leave is offered" : "", why);
+            if (notReadRow) keepRefusedInvite();
+            if (notReadRow) {
+              std::lock_guard<std::mutex> lock(g_onboardMutex);
+              g_holdsUnopenedGroup = true;
+            }
+            // R40 A10: a row that names a folder is followed by the library's own words, which name it
+            PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
+                           urmsg::live::ShowsLibraryWords(row)
+                               ? urmsg::live::WithLibraryWords(urmsg::live::JoinCopySentence(row), why)
+                               : std::string(urmsg::live::JoinCopySentence(row)),
+                           {}, false, false, urmsg::live::OffersNewJoinCode(row));
+            break;
+          }
           urnw::LogError(
               "live: device_join: {} - if this names a key package this device does not hold, the "
               "invite was built from a STALE join code. Send the code the app is showing NOW.",
@@ -1324,14 +1627,15 @@ bool JoinFromPeer(Session& s) {
     urnw::LogInfo("live: *** JOINED the group *** at epoch {}", urnet_message_group_epoch(s.group));
     PublishOnboard(urmsg::live::OnboardStep::Joined, std::string(), "You are in the group.");
 
-    // CONSUMED, SO DELETED. It is key material and it has done its job; leaving it on disk is a
-    // group anyone who reads that file is in. Only the FILE road leaves anything behind - a pasted
-    // code was never written down by this process, which is the better of the two for that reason.
+    // CONSUMED, SO DELETED. It has done its job. Only this device can open it, but left on disk it
+    // still names the group and its members (R40 A12). Only the FILE road leaves anything behind - a
+    // pasted code was never written down by this process, which is the better of the two for that
+    // reason.
     std::error_code ec;
     if (!fromPaste && std::filesystem::exists(invitePath, ec)) {
       if (!std::filesystem::remove(invitePath, ec)) {
-        urnw::LogWarn("live: the invite at {} could not be deleted ({}). Delete it by hand: it is "
-                      "key material and whoever reads it is in this group.",
+        urnw::LogWarn("live: the invite at {} could not be deleted ({}). Delete it by hand: only "
+                      "this device can open it, but it names the group and its members.",
                       Utf8Path(invitePath), ec.message());
       } else {
         urnw::LogInfo("live: the invite has been consumed and deleted");
@@ -1852,6 +2156,25 @@ void RunSession() {
     urnw::LogInfo("live: restored an existing group from disk — no handshake needed");
   }
   if (restored != 0) urnet_release(restored);
+  // A GROUP FOUNDED BEFORE INVITATIONS WERE SEALED does not restore (ErrGroupPredatesJoinSeal), and
+  // R9 has the app say so in a sentence, never in the library's words (Task 58). Nor does a group
+  // whose record could not be read just now (ErrGroupRecordNotReadNow, R25 Q5). The join dialog's
+  // first state opens with its sentence, and does not say this device is not in a group (R25 Q4).
+  if (const std::string_view note = urmsg::live::RestoreNote(restoreError, restoredCount);
+      !note.empty()) {
+    urnw::LogWarn("live: device_restore refused a group ({}); the join dialog says so",
+                  urmsg::live::JoinCopyName(urmsg::live::ClassifyJoinCopy(restoreError)));
+    std::lock_guard<std::mutex> lock(g_onboardMutex);
+    g_afterLeaveNote = std::string(note);
+    g_holdsUnopenedGroup = true;
+  }
+  // R28, R29: whether a held refusal after this restore offers the leave. Asked of the report
+  // whatever came back, because a group that did come back is the one this device is in, and the one
+  // a held refusal is about is another.
+  {
+    std::lock_guard<std::mutex> lock(g_onboardMutex);
+    g_lastRestoreClass = urmsg::live::RestoreReadClass(restoreError);
+  }
 
   // ONE PASS PER GROUP THIS DEVICE HOLDS (ledger 273). A pass ends only when the device LEAVES its
   // group, and then the next one waits for an invitation exactly as a device that never had a
@@ -2648,6 +2971,21 @@ bool QueueLeaveHeldGroup() {
     g_heldLeaveAsked = true;
   }
   urnw::LogInfo("live: the leave of a group that is not live was handed to the worker");
+  return true;
+}
+
+bool QueueNewJoinCode() {
+  // ONLY WHILE IT IS ON OFFER: the state on screen asks for a new join code, and nothing else asks
+  // for this. A press that lands after a later state withdrew the offer mints nothing.
+  if (!g_newJoinCodeOffered.load(std::memory_order_acquire)) {
+    urnw::LogWarn("live: a new join code was asked for while none is on offer; refused");
+    return false;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_onboardMutex);
+    g_newJoinCodeAsked = true;
+  }
+  urnw::LogInfo("live: a new join code was asked for and handed to the worker");
   return true;
 }
 

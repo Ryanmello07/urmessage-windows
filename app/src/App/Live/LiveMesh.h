@@ -190,8 +190,9 @@ bool LeaveInFlight();
 // THE TWO ARE NOT THE SAME KIND OF SECRET AND THE UI MUST NOT TREAT THEM ALIKE:
 //   * a JOIN CODE is a public offer to be added. Showing it to the wrong person costs nothing;
 //     they can add this device to a group it will simply ignore.
-//   * an INVITE CODE carries the group's secrets. WHOEVER READS IT IS IN THE GROUP. It is consumed
-//     on use and must never be stored, logged or shown twice.
+//   * an INVITE CODE is sealed to the join code it was made for: since invite version 3 only the
+//     device that holds that join code can open it (R40 A12). It still names the group and its
+//     members. It is consumed on use and must never be stored, logged or shown twice.
 // Neither is ever written to the log by this module, and the code text itself is never formatted
 // into any log line.
 
@@ -204,6 +205,10 @@ enum class OnboardStep {
   // THIS COMPUTER HOLDS NO CREDENTIAL, and `message` says where the file goes. A dead end that
   // used to be a log line only: a tester who skipped a step saw an empty window and no reason.
   NoCredential,
+  // THIS INSTALLATION CANNOT MAKE A JOIN CODE (ErrNoDeviceWrapKey, Task 58): its store holds no
+  // X-Wing seed, so it can neither be added to a group nor open an invitation into one. Another dead
+  // end that was a log line only; `message` says it on screen, and no road is drawn.
+  NoJoinCode,
   // ── the founder's road, which is the other half of the same screen ──────────
   Founded,    // this device made a group. IT CANNOT SEND YET: a group of one sits at epoch 0 and
               // is not open on the server, and the commit that opens it is the one that adds the
@@ -230,6 +235,18 @@ struct OnboardState {
   // (QueueLeaveHeldGroup). Never set where there is no such group to leave, because a sentence
   // that names an action the screen does not offer is the dead end this flag exists to close.
   bool offerLeaveHeldGroup = false;
+  // THE REFUSAL CAME FROM AN ADD, by a device that holds the group it was adding to (Task 58). The
+  // dialog keeps the add panel up under it: the sentence asks for another join code, and the box
+  // to paste it into must still be there. Never set on the join road.
+  bool addRoad = false;
+  // "MAKE A NEW JOIN CODE" IS ON OFFER (R25 Q2). Set only on the Refused states whose sentence asks
+  // for a new join code (ErrNoJoinCodeForInvite, ErrJoinCodeSpent): the dialog draws the button
+  // that mints one (QueueNewJoinCode), and every later state withdraws it.
+  bool offerNewJoinCode = false;
+  // THIS DEVICE HOLDS A GROUP ON ITS DISK THAT DID NOT OPEN (R25 Q4, Q5): it predates the join
+  // seal, or its record could not be read just now. The intro then says only "This device is
+  // connected.", because "not in a group yet" is false of it.
+  bool holdsGroup = false;
 };
 
 using OnboardPtr = std::shared_ptr<const OnboardState>;
@@ -271,6 +288,16 @@ bool QueueJoinFromInviteCode(std::string base64Invite);
 // outcome arrives as a published OnboardState.
 bool QueueLeaveHeldGroup();
 
+// MAKE A NEW JOIN CODE (R25 Q2). Offered only by the Refused state whose offerNewJoinCode is set:
+// the sentence there asks for a new join code, and this is the press that makes one. On the worker,
+// urnet_message_device_key_package mints a fresh key package, which replaces the code in the
+// join-code box (and the handshake file); the code shown before stays valid until it is used. A
+// device that cannot mint one (ErrNoDeviceWrapKey) is shown that row.
+//
+// Answers false, having asked for nothing, when no such offer stands. Never blocks; the outcome
+// arrives as a published OnboardState.
+bool QueueNewJoinCode();
+
 // MAKE A GROUP, with this device as its owner. Answers false, having queued nothing, when this
 // device already holds one - a device is in one group in this build, and a second create would
 // quietly replace the group on screen.
@@ -292,7 +319,9 @@ bool QueueCreateGroup();
 //
 // THE OUTCOME IS AN INVITATION TO SEND BACK, published as OnboardState::inviteCode. A refusal -
 // a role that may not add, a lost epoch race, a stale join code - arrives as Refused with the
-// library's own sentence.
+// library's own sentence, except the adder's three refusals of a join code (invalid, from a build
+// that cannot open a sealed invitation, an identity whose entry stands), which arrive in the
+// person's words (Live/RefusalCopy.h, Task 58). Either way the add panel stays (addRoad).
 bool QueueAddMemberFromCode(std::string base64JoinCode);
 
 // ── how this app reaches the message server (ledger 268) ──────────────────────
