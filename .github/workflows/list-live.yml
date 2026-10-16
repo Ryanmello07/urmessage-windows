@@ -1,0 +1,245 @@
+# THROWAWAY, NEVER MERGE, NEVER IN AN UPSTREAM PULL REQUEST. feat/conversation-list (ci/list-live-1): the
+# list's LIVE run (lead ruling R67) on the list's head 50f17eac0e34. The app AS BUILT, on the DIRECT route to
+# the alpha's own pinned endpoint with CI's placeholder credential file (the DIRECT route reads no
+# credential), and sdk/livepeer (message 03192c2b, on the library at the app's own pin) as the other
+# party, on this same runner, with a state folder of its own per conversation. No account, no JWT and
+# no secret: this workflow reads none. One live run at a time (the concurrency group below), and one
+# livepeer at a time inside it.
+name: List live run (throwaway)
+
+on:
+  push:
+    branches:
+      - 'ci/list-live**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: list-live-alpha
+  cancel-in-progress: false
+
+env:
+  LIST_HEAD: 50f17eac0e342b2a7a1e66ea5b0954cfa8e6381a
+  T1_COMMIT: c7949cfdf9a6c243d64a8933e02476487515a26a
+  LIVEPEER_COMMIT: 03192c2bd74aa896fee28a122bc577f7087aafb6
+
+jobs:
+  live:
+    name: List live run
+    runs-on: windows-2022
+    timeout-minutes: 150
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Prove the checkout is the list's head plus CI files only (no endpoint patch)
+        shell: pwsh
+        run: |
+          $head = git rev-parse HEAD
+          $parent = git rev-parse HEAD^
+          Write-Host "checkout $head"
+          Write-Host "parent   $parent"
+          if ($parent -ne $env:LIST_HEAD) { Write-Host "::error::the parent is not $env:LIST_HEAD"; exit 1 }
+          $changed = @(git diff --name-only HEAD^ HEAD)
+          $changed | ForEach-Object { Write-Host "  changed by the CI commit: $_" }
+          $outside = @($changed | Where-Object { $_ -notlike '.github/*' })
+          if ($outside.Count -gt 0) { Write-Host "::error::the CI commit changes $($outside -join ', ')"; exit 1 }
+          Write-Host "the CI commit changes .github only: the app is the list's head, with no endpoint patch"
+          exit 0
+
+      - name: Read the alpha the app is built to dial, from its own source
+        shell: pwsh
+        run: |
+          $src = Get-Content -Raw app/src/App/Live/LiveMesh.cpp
+          $endpoint = [regex]::Match($src, 'kServerEndpoint = "([^"]+)"').Groups[1].Value
+          $pin = [regex]::Match($src, 'kServerEndpointPin =\s*"([0-9a-f]{64})"').Groups[1].Value
+          $server = [regex]::Match($src, 'kServerClientId = "([^"]+)"').Groups[1].Value
+          Write-Host "kServerEndpoint    $endpoint"
+          Write-Host "kServerEndpointPin $pin"
+          Write-Host "kServerClientId    $server"
+          if ($endpoint -ne 'wss://74.50.11.53/urmessage/v1') { Write-Host "::error::the app does not dial the alpha's own endpoint"; exit 1 }
+          if ($pin -notmatch '^[0-9a-f]{64}$' -or $server -eq '') { Write-Host '::error::no pin or no server id in the source'; exit 1 }
+          "LIVE_ENDPOINT=$endpoint" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "LIVE_PIN=$pin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "LIVE_SERVER=$server" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          exit 0
+
+      - name: Check the app's library pin against T1, and livepeer's commit against the pin
+        shell: pwsh
+        run: |
+          $line = Get-Content app/third_party/urnetwork-sdk/composition.txt | Where-Object { $_ -match '^message\s' } | Select-Object -First 1
+          $pin = ($line -split '\s+')[2]
+          Write-Host "the app's library pin (composition.txt): message $pin"
+          $dir = Join-Path $env:RUNNER_TEMP 'msgcheck'
+          git clone -q --filter=blob:none --no-checkout https://github.com/urnetwork/message.git $dir
+          if ($LASTEXITCODE -ne 0) { Write-Host '::error::could not clone urnetwork/message'; exit 1 }
+          foreach ($c in @($pin, $env:T1_COMMIT, $env:LIVEPEER_COMMIT)) {
+            git -C $dir cat-file -e "$c^{commit}" 2>$null
+            if ($LASTEXITCODE -ne 0) { git -C $dir fetch -q --filter=blob:none origin $c }
+          }
+          $pinTree = git -C $dir rev-parse "$pin^{tree}"
+          $t1Tree = git -C $dir rev-parse "$($env:T1_COMMIT)^{tree}"
+          Write-Host "the pin's tree $pinTree; T1's ($($env:T1_COMMIT.Substring(0, 12))) tree $t1Tree"
+          # THE PROTOCOL PACKAGES: the wire, MLS, the group and message layers, and the client library
+          # and transport the app links
+          $protocol = @('protocol', 'mls', 'message', 'messagegroup', 'internal', 'syntax', 'sdk/urmessage', 'sdk/message*.go')
+          if ($pin -eq $env:T1_COMMIT) {
+            Write-Host "PIN: the app's library pin IS T1's merge $($env:T1_COMMIT.Substring(0, 12)) (tree $pinTree, T1's tree)"
+          } else {
+            git -C $dir merge-base --is-ancestor $env:T1_COMMIT $pin
+            if ($LASTEXITCODE -ne 0) { Write-Host "::error::the pin $pin does not descend from T1"; exit 1 }
+            $moved = @(git -C $dir diff --name-only $env:T1_COMMIT $pin -- $protocol)
+            $moved | ForEach-Object { Write-Host "  T1..pin changes protocol file $_" }
+            if ($moved.Count -gt 0) { Write-Host '::error::the pin changed the protocol packages since T1'; exit 1 }
+            Write-Host "PIN: the app's library pin descends from T1, and its protocol packages are T1's ($($protocol -join ', '))"
+          }
+          git -C $dir merge-base --is-ancestor $pin $env:LIVEPEER_COMMIT
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::livepeer's commit does not descend from the pin"; exit 1 }
+          $changed = @(git -C $dir diff --name-only $pin $env:LIVEPEER_COMMIT)
+          $changed | ForEach-Object { Write-Host "  pin..livepeer changes $_" }
+          $outside = @($changed | Where-Object { $_ -notlike 'sdk/livepeer/*' -and $_ -notlike '*_test.go' })
+          if ($outside.Count -gt 0) { Write-Host "::error::livepeer's commit changes more than sdk/livepeer and tests: $($outside -join ', ')"; exit 1 }
+          Write-Host "LIVEPEER: $($env:LIVEPEER_COMMIT.Substring(0, 12)) descends from the pin and changes only sdk/livepeer and test files; it is built below from the pin's own checkout with sdk/livepeer laid over it"
+          "APP_PIN=$pin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          exit 0
+
+      - name: Make the screen wide enough for the inspector rail (1920 x 1080)
+        shell: powershell
+        run: |
+          $code = @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class NamesDisplay {
+            [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+            public struct DEVMODE {
+              [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+              public short dmSpecVersion; public short dmDriverVersion; public short dmSize; public short dmDriverExtra;
+              public int dmFields; public int dmPositionX; public int dmPositionY; public int dmDisplayOrientation;
+              public int dmDisplayFixedOutput; public short dmColor; public short dmDuplex; public short dmYResolution;
+              public short dmTTOption; public short dmCollate;
+              [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+              public short dmLogPixels; public int dmBitsPerPel; public int dmPelsWidth; public int dmPelsHeight;
+              public int dmDisplayFlags; public int dmDisplayFrequency; public int dmICMMethod; public int dmICMIntent;
+              public int dmMediaType; public int dmDitherType; public int dmReserved1; public int dmReserved2;
+              public int dmPanningWidth; public int dmPanningHeight;
+            }
+            [DllImport("user32.dll", CharSet = CharSet.Ansi)] public static extern int EnumDisplaySettings(string deviceName, int modeNum, ref DEVMODE devMode);
+            [DllImport("user32.dll", CharSet = CharSet.Ansi)] public static extern int ChangeDisplaySettings(ref DEVMODE devMode, int flags);
+            [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
+            public static string Size() { return GetSystemMetrics(0) + " x " + GetSystemMetrics(1); }
+            public static int Set(int w, int h) {
+              DEVMODE dm = new DEVMODE();
+              dm.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
+              if (EnumDisplaySettings(null, -1, ref dm) == 0) return -100;
+              dm.dmPelsWidth = w; dm.dmPelsHeight = h; dm.dmFields = 0x80000 | 0x100000;
+              return ChangeDisplaySettings(ref dm, 0);
+            }
+          }
+          '@
+          Add-Type -TypeDefinition $code
+          # GetSystemMetrics reads the screen as it is NOW; System.Windows.Forms.Screen caches it per
+          # process, which is why the first run printed 1024 x 768 after a change that had worked
+          Write-Host "the primary screen was $([NamesDisplay]::Size()) (GetSystemMetrics)"
+          try { Set-DisplayResolution -Width 1920 -Height 1080 -Force -ErrorAction Stop; Write-Host 'Set-DisplayResolution answered' } catch { Write-Host "Set-DisplayResolution: $_" }
+          Write-Host "after Set-DisplayResolution: $([NamesDisplay]::Size())"
+          if ([NamesDisplay]::GetSystemMetrics(0) -lt 1920) {
+            Write-Host "ChangeDisplaySettings answered $([NamesDisplay]::Set(1920, 1080)) (0 is DISP_CHANGE_SUCCESSFUL)"
+            Write-Host "after ChangeDisplaySettings: $([NamesDisplay]::Size())"
+          }
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Check out the pinned commits
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\build-sdk-dll.ps1 -Workspace "$env:RUNNER_TEMP\sdk" -CheckoutOnly
+          exit $LASTEXITCODE
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ runner.temp }}/sdk/message/go.mod
+          cache: false
+
+      - name: Build the dll from the composition and stage it
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\build-sdk-dll.ps1 -Workspace "$env:RUNNER_TEMP\sdk" -Stage
+          exit $LASTEXITCODE
+
+      - name: Build the app (Release x64, the dll required)
+        shell: pwsh
+        working-directory: app
+        run: |
+          $pin = '10.0.22621.0'
+          $roots = @("${env:ProgramFiles(x86)}\Windows Kits\10", "$env:ProgramFiles\Windows Kits\10") | Where-Object { Test-Path -LiteralPath $_ }
+          $usable = @(foreach ($r in $roots) {
+            Get-ChildItem (Join-Path $r 'Include') -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' -and
+                (Test-Path -LiteralPath (Join-Path $r "Include\$($_.Name)\um\windows.h")) -and
+                (Test-Path -LiteralPath (Join-Path $r "Lib\$($_.Name)\um\x64\kernel32.lib")) } |
+              Select-Object -ExpandProperty Name
+          }) | Select-Object -Unique | Sort-Object { [version]$_ }
+          $usable = @($usable)
+          $sdk = if ($usable -contains $pin) { $pin } else { $usable[-1] }
+          msbuild URmessage.sln /restore /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=$sdk /p:UrmRequireSdkDll=true /m /v:minimal /clp:Summary
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path -LiteralPath build\x64\Release\URnetworkSdk.dll)) { Write-Host '::error::no URnetworkSdk.dll beside the exe'; exit 1 }
+          Get-Item build\x64\Release\URmessage.exe, build\x64\Release\URnetworkSdk.dll | Format-Table Name, Length | Out-String | Write-Host
+
+      - name: Build livepeer (message 03192c2b's sdk/livepeer, on the library at the app's pin)
+        shell: pwsh
+        run: |
+          $msg = Join-Path $env:RUNNER_TEMP 'sdk\message'
+          $at = git -C $msg rev-parse HEAD
+          Write-Host "the message checkout the dll was built from: $at"
+          if ($at -ne $env:APP_PIN) { Write-Host "::error::the message checkout is not the app's pin $env:APP_PIN"; exit 1 }
+          git -C $msg -c core.autocrlf=false fetch -q --depth 1 https://github.com/urnetwork/message.git $env:LIVEPEER_COMMIT
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          git -C $msg -c core.autocrlf=false checkout FETCH_HEAD -- sdk/livepeer
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $status = @(git -C $msg status --porcelain)
+          $status | ForEach-Object { Write-Host "  laid over the pin: $_" }
+          $outside = @($status | Where-Object { $_.Substring(3) -notlike 'sdk/livepeer/*' })
+          if ($outside.Count -gt 0) { Write-Host '::error::the overlay touched more than sdk/livepeer'; exit 1 }
+          $toolchain = (Select-String -Path (Join-Path $msg 'go.mod') -Pattern '^toolchain\s+(\S+)').Matches[0].Groups[1].Value
+          $env:GOTOOLCHAIN = $toolchain
+          $env:GOWORK = 'off'
+          Write-Host "toolchain $toolchain"
+          Push-Location (Join-Path $msg 'sdk\livepeer')
+          go version
+          go build -o (Join-Path $env:RUNNER_TEMP 'livepeer.exe') .
+          $code = $LASTEXITCODE
+          Pop-Location
+          if ($code -ne 0) { exit $code }
+          Get-Item (Join-Path $env:RUNNER_TEMP 'livepeer.exe') | Format-Table Name, Length | Out-String | Write-Host
+          exit 0
+
+      - name: The live run
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github\live\live.ps1 `
+            -Exe "$env:GITHUB_WORKSPACE\app\build\x64\Release\URmessage.exe" `
+            -Peer "$env:RUNNER_TEMP\livepeer.exe" `
+            -Endpoint $env:LIVE_ENDPOINT -Pin $env:LIVE_PIN -ServerId $env:LIVE_SERVER `
+            -Work "$env:RUNNER_TEMP\live" `
+            -Out "$env:GITHUB_WORKSPACE\liveout" | Tee-Object -FilePath "$env:RUNNER_TEMP\live.out"
+          $code = $LASTEXITCODE
+          $fails = @(Get-Content -LiteralPath "$env:RUNNER_TEMP\live.out" | Where-Object { $_ -match '\] FAIL  ' })
+          $passes = @(Get-Content -LiteralPath "$env:RUNNER_TEMP\live.out" | Where-Object { $_ -match '\] PASS  ' })
+          Write-Host "the driver exited ${code}: $($passes.Count) PASS, $($fails.Count) FAIL"
+          $fails | ForEach-Object { Write-Host "  $_" }
+          if ($code -ne 0 -or $fails.Count -ne 0 -or $passes.Count -eq 0) { exit 1 }
+          exit 0
+
+      - name: Upload the screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: list-live
+          path: liveout/
+          if-no-files-found: warn
