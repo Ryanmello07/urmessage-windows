@@ -37,11 +37,12 @@ namespace urnw::ids {
 // never touch the real app's; and its own window-placement key and user model id. Its values are
 // none of the VPN app's either.
 //
-// THE STANDARD BUILD'S ARM COMES FIRST in each pair below, and that is load bearing:
-// app\tools\verify-msi-payload.ps1 reads kAppUserModelId out of this file as TEXT, the first
-// literal it finds, and holds the MSI's shortcut to it. The MSI is the standard build's, so the first
-// literal must be the standard build's (measured: with the preview's first, the check failed on
-// identity/i1's first CI run, 38900446335).
+// app\tools\verify-msi-payload.ps1 reads kAppUserModelId out of this file and holds the MSI's
+// shortcut to it. It evaluates these conditions with URM_IDENTITY_PREVIEW undefined, as the standard
+// build's compiler does, so it reads the standard build's value whichever arm of a pair comes first.
+// Its first version read the first literal in the file, and failed the MSI the day the preview's
+// arm came first (identity/i1's first CI run, 38900446335). The standard arm still comes first here,
+// for the reader.
 #if defined(URM_IDENTITY_PREVIEW) && URM_IDENTITY_PREVIEW
 inline constexpr bool kIdentityPreviewIds = true;
 #else

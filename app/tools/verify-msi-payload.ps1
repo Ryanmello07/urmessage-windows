@@ -67,7 +67,11 @@ param(
   # 2.2.0, no SDK dll staged): 299 harvested, plus the exe and the four fonts.
   # The floor sits far enough below that for a Windows App SDK bump not to make
   # this flaky, and far above what a harvest of the wrong folder leaves.
-  [int]$MinFileCount = 250
+  [int]$MinFileCount = 250,
+
+  # The Ids.h to read the AppUserModelID from. Empty, the default, is the
+  # repository's own src\Common\Ids.h; a control passes a changed copy.
+  [string]$IdsPath = ''
 )
 
 $ErrorActionPreference = "Stop"
@@ -114,13 +118,89 @@ $MsiPath = (Resolve-Path -LiteralPath $MsiPath).Path
 
 # The AppUserModelID the shortcut must carry, read from the one place the app
 # defines it, so the two cannot drift apart unnoticed.
-$idsPath = Join-Path $PSScriptRoot "..\src\Common\Ids.h"
-$idsText = Get-Content -LiteralPath $idsPath -Raw
-$aumidMatch = [regex]::Match($idsText, 'kAppUserModelId\[\]\s*=\s*L"([^"]+)"')
-if (-not $aumidMatch.Success) {
-  throw "could not read kAppUserModelId from $idsPath"
+#
+# READ AS THE STANDARD BUILD COMPILES IT. Ids.h gives some ids a second value
+# for the identity preview build (URM_IDENTITY_PREVIEW, which ships as a zip
+# and never as this MSI), each pair under #if and #else. So the file's
+# conditions are evaluated with URM_IDENTITY_PREVIEW undefined, as the
+# standard build's compiler sees them, and the one definition left is the
+# value. The order of a pair's arms cannot change which value is read: the
+# first version of this read the first literal in the file, and failed the
+# MSI the day the preview's arm came first (identity/i1, run 38900446335). A
+# condition this does not understand is an error, never a guess.
+function Test-StandardBuildCondition([string]$expression) {
+  $e = ($expression -replace '//.*$', '').Trim()
+  $e = $e -replace 'defined\s*\(\s*URM_IDENTITY_PREVIEW\s*\)', '0'
+  $e = $e -replace 'defined\s+URM_IDENTITY_PREVIEW\b', '0'
+  $e = $e -replace '\bURM_IDENTITY_PREVIEW\b', '0'
+  if ($e -notmatch '^[01!&|()\s]+$') {
+    throw "Ids.h has a preprocessor condition this check does not understand: '$expression'"
+  }
+  $ps = $e -replace '&&', ' -and ' -replace '\|\|', ' -or ' -replace '!', ' -not '
+  $ps = $ps -replace '\b1\b', '$true' -replace '\b0\b', '$false'
+  return [bool](Invoke-Expression $ps)
 }
-$expectedAumid = $aumidMatch.Groups[1].Value
+
+function Get-StandardBuildText([string[]]$lines) {
+  $stack = New-Object System.Collections.Generic.List[object]
+  $active = $true
+  $kept = New-Object System.Collections.Generic.List[string]
+  foreach ($line in $lines) {
+    $t = $line.Trim()
+    if ($t -match '^#\s*ifdef\s+(\w+)') {
+      $cond = Test-StandardBuildCondition ("defined(" + $Matches[1] + ")")
+      $stack.Add(@{ parent = $active; taken = $cond })
+      $active = $active -and $cond
+      continue
+    }
+    if ($t -match '^#\s*ifndef\s+(\w+)') {
+      $cond = -not (Test-StandardBuildCondition ("defined(" + $Matches[1] + ")"))
+      $stack.Add(@{ parent = $active; taken = $cond })
+      $active = $active -and $cond
+      continue
+    }
+    if ($t -match '^#\s*if\s+(.+)$') {
+      $cond = Test-StandardBuildCondition $Matches[1]
+      $stack.Add(@{ parent = $active; taken = $cond })
+      $active = $active -and $cond
+      continue
+    }
+    if ($t -match '^#\s*elif\s+(.+)$') {
+      if ($stack.Count -eq 0) { throw "an #elif with no #if in Ids.h" }
+      $top = $stack[$stack.Count - 1]
+      $cond = (-not $top.taken) -and (Test-StandardBuildCondition $Matches[1])
+      if ($cond) { $top.taken = $true }
+      $active = $top.parent -and $cond
+      continue
+    }
+    if ($t -match '^#\s*else\b') {
+      if ($stack.Count -eq 0) { throw "an #else with no #if in Ids.h" }
+      $top = $stack[$stack.Count - 1]
+      $active = $top.parent -and (-not $top.taken)
+      $top.taken = $true
+      continue
+    }
+    if ($t -match '^#\s*endif\b') {
+      if ($stack.Count -eq 0) { throw "an #endif with no #if in Ids.h" }
+      $top = $stack[$stack.Count - 1]
+      $stack.RemoveAt($stack.Count - 1)
+      $active = $top.parent
+      continue
+    }
+    if ($active) { $kept.Add($line) }
+  }
+  if ($stack.Count -ne 0) { throw "Ids.h leaves $($stack.Count) #if open" }
+  return ($kept -join "`n")
+}
+
+if ($IdsPath -eq '') { $IdsPath = Join-Path $PSScriptRoot "..\src\Common\Ids.h" }
+$idsText = Get-StandardBuildText @(Get-Content -LiteralPath $IdsPath)
+$aumidMatches = @([regex]::Matches($idsText, 'kAppUserModelId\[\]\s*=\s*L"([^"]+)"'))
+if ($aumidMatches.Count -ne 1) {
+  throw "the standard build of $IdsPath defines kAppUserModelId $($aumidMatches.Count) times, not once"
+}
+$expectedAumid = $aumidMatches[0].Groups[1].Value
+Write-Host "the standard build's AppUserModelID, from $IdsPath with URM_IDENTITY_PREVIEW undefined: $expectedAumid"
 
 function Invoke-ComMethod($target, [string]$name, [object[]]$arguments) {
   return $target.GetType().InvokeMember($name, [System.Reflection.BindingFlags]::InvokeMethod, $null, $target, $arguments)
