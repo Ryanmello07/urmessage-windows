@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "Live/LiveWorld.h"
+#include "Live/RefusalCopy.h"
 #include "Strings.h"
 
 // The kind codes. This TU does not link the SDK; the header is include-only for these defines, as
@@ -339,7 +340,76 @@ std::wstring ConversationCreateLine() {
                           right, asked, firstBad.empty() ? L"" : L", first wrong: ", firstBad));
 }
 
+// conv notice: A GROUP THAT DOES NOT RESTORE IS SAID BESIDE THE ONES THAT DO. Each class's restore
+// error with no group back and with two back, a clean restore, a damaged record (Task 58 says
+// nothing of it), and a restore that could not be tried. The one-group rule (RestoreNote's
+// suppression, which drops the sentence when any group came back) fails the two-back cases.
+std::wstring ConversationNoticeLine() {
+  const std::string hex(64, 'a');
+  const std::string predates =
+      "urmessage: restore: group " + hex + " at epoch 1: " + std::string(kLibGroupPredatesJoinSeal);
+  const std::string notRead = "urmessage: restore: group " + hex + ": " +
+                              std::string(kLibGroupRecordNotReadNow);
+  const std::string unproven = "urmessage: restore: group " + hex + ": " +
+                               std::string(kLibGroupReadUnproven);
+  const std::string notConnected = std::string(kLibNotConnected);
+  struct Case {
+    std::string error;
+    int restored;
+    std::string_view want;
+    wchar_t const* what;
+  };
+  const std::vector<Case> cases = {
+      {predates, 0, kSayGroupPredatesJoinSeal, L"predates, none back"},
+      {predates, 2, kSayGroupPredatesJoinSeal, L"predates, two back"},
+      {notRead, 2, kSayGroupRecordNotReadNow, L"not read now, two back"},
+      {unproven, 1, kSayGroupReadUnproven, L"unproven, one back"},
+      {std::string(), 2, std::string_view(), L"a clean restore, two back"},
+      {"urmessage: this group could not be restored from the durable state store: the record in " +
+           hex + ": short",
+       2, std::string_view(), L"a damaged record, two back"},
+  };
+  std::size_t asked = 0;
+  std::size_t right = 0;
+  std::wstring firstBad;
+  for (auto const& c : cases) {
+    ++asked;
+    if (ListNoticeAfterRestore(c.error, c.restored) == c.want) {
+      ++right;
+    } else if (firstBad.empty()) {
+      firstBad = c.what;
+    }
+  }
+  // the next notice: a restore not tried keeps it, a clean one clears it, another class replaces it
+  const std::string kept = NextListNotice(kSayGroupPredatesJoinSeal, notConnected, 0);
+  const std::string cleared = NextListNotice(kSayGroupPredatesJoinSeal, std::string(), 1);
+  const std::string replaced = NextListNotice(kSayGroupPredatesJoinSeal, notRead, 1);
+  const bool nextOk = kept == kSayGroupPredatesJoinSeal && cleared.empty() &&
+                      replaced == kSayGroupRecordNotReadNow;
+  const bool ok = firstBad.empty() && nextOk;
+  return Line(L"conv notice", ok,
+              std::format(L"{} of {} restores give the list the sentence for their class, whatever "
+                          L"came back{}{}; a restore not tried keeps the notice, a clean one clears "
+                          L"it, another class replaces it {}   [query: ListNoticeAfterRestore and "
+                          L"NextListNotice over Task 58's restore errors, the conversation-list "
+                          L"design 2.5]",
+                          right, asked, firstBad.empty() ? L"" : L", first wrong: ", firstBad,
+                          nextOk ? L"yes" : L"NO"));
+}
+
 }  // namespace
+
+std::string_view ListNoticeAfterRestore(std::string_view restoreError, int /*restoredCount*/) {
+  // THE DIALOG'S RULE WITH NOTHING COUNTED AS BACK: RestoreNote drops the sentence when a group came
+  // back, because the join dialog is then not opened at all; the list draws it beside those groups.
+  return RestoreNote(restoreError, 0);
+}
+
+std::string NextListNotice(std::string_view previous, std::string_view restoreError,
+                           int restoredCount) {
+  if (IsNotConnected(restoreError)) return std::string(previous);
+  return std::string(ListNoticeAfterRestore(restoreError, restoredCount));
+}
 
 CreateVerdict CreateAction(std::vector<HeldForCreate> const& held, std::string& waiting) {
   waiting.clear();
@@ -422,6 +492,7 @@ std::vector<std::wstring> CollectConversationRulesDiagnostics() {
   lines.push_back(ConversationGateLine());
   lines.push_back(ConversationPushLine());
   lines.push_back(ConversationCreateLine());
+  lines.push_back(ConversationNoticeLine());
   return lines;
 }
 

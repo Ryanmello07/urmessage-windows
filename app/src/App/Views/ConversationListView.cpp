@@ -448,10 +448,25 @@ urnw::kit::PaneTwoLineRowButton MakeConversationRow(urmsg::demo::Conversation co
 }  // namespace
 
 ConversationListView MakeConversationList(urmsg::demo::World const& world,
-                                          std::function<void(int)> onSelect) {
+                                          std::function<void(int)> onSelect,
+                                          std::wstring const& notice) {
   ConversationListView view;
 
   Controls::StackPanel stack;
+  // THE NOTICE FIRST (the conversation-list design 2.5, A12): a group on this device's disk that did
+  // not restore, in Task 58's sentence for its class, above the conversations that did. It is NOT A
+  // CONVERSATION and is never drawn as one: a line of text, not a button, so nothing selects it, the
+  // filter and the pane's count leave it alone, and the entrance does not hide it.
+  if (!notice.empty()) {
+    Controls::TextBlock text;
+    text.Text(winrt::hstring{notice});
+    text.TextWrapping(TextWrapping::Wrap);
+    text.FontSize(12);
+    text.Foreground(urnw::colors::MutedBrush());
+    text.Margin(ThicknessHelper::FromLengths(16, 10, 16, 10));
+    stack.Children().Append(text);
+    view.notice = text;
+  }
   // The 28px group rhythm the pane already uses, with NO count on it.
   // ListPaneCount in the pane header is the ONE "how many rows are on screen"
   // readout and L5's filter updates it; a second count that the filter did not
@@ -495,8 +510,8 @@ ConversationListView MakeConversationList(urmsg::demo::World const& world,
   }
 
   view.root = stack;
-  urnw::LogInfo("list: built {} conversation rows at {:.0f} dip", view.rows.size(),
-                kConversationRowHeight);
+  urnw::LogInfo("list: built {} conversation rows at {:.0f} dip{}", view.rows.size(),
+                kConversationRowHeight, view.notice ? ", under the notice" : "");
   return view;
 }
 
