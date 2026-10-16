@@ -264,6 +264,10 @@ void OrderConversations(std::vector<LiveConversation>& conversations);
 // reads the open conversation's own (Conversation::epoch).
 urmsg::demo::World BuildWorld(LiveSession const& session, std::vector<LiveConversation> conversations);
 
+// A LIVE CONVERSATION'S ID: "live-" and its group's 64 hex. The one spelling, for the world and for
+// the window that opens a conversation by its group.
+std::wstring ConversationIdOf(std::string const& groupIdHex);
+
 // The session facts a LiveGroup carries, for the one-group callers.
 LiveSession SessionOf(LiveGroup const& group);
 

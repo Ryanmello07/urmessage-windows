@@ -114,6 +114,15 @@ std::wstring_view CreateVerdictName(CreateVerdict verdict);
 // library reports only its first failure, so one notice stands at a time.
 std::string_view ListNoticeAfterRestore(std::string_view restoreError, int restoredCount);
 
+// ── which conversation is open (the conversation-list design 2.4, A16) ─────────────────────────
+//
+// THE CONVERSATION THE PERSON HAS OPEN STAYS OPEN, by its id, across every publish, however the
+// list's order moves under it. A group just joined or founded (`takenUpId`) opens at once, the
+// moment its row is there. With neither, the first row opens (the list is newest first), and with
+// no row, nothing does. The notice above the list is never a row, so it never opens.
+std::wstring ConversationToOpen(std::vector<std::wstring> const& rowIds, std::wstring const& openId,
+                                std::wstring const& takenUpId);
+
 // The notice after one more restore: a restore that could not be tried (this device is not
 // connected) read nothing and leaves `previous` as it was; any other replaces it, with nothing
 // when it read every group.

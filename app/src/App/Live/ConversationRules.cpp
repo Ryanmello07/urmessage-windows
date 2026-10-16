@@ -397,7 +397,63 @@ std::wstring ConversationNoticeLine() {
                           nextOk ? L"yes" : L"NO"));
 }
 
+// conv start: WHICH ROW OPENS. At the start, after the open one is left, while another conversation
+// moves above the open one, when a group is just joined (before its row is there and after), and
+// with nothing but a notice. Index 0 of the worker's list (the one-group rule) fails the kept and
+// the just-joined cases.
+std::wstring ConversationStartLine() {
+  const std::wstring a = L"live-" + std::wstring(64, L'a');
+  const std::wstring b = L"live-" + std::wstring(64, L'b');
+  const std::wstring c = L"live-" + std::wstring(64, L'c');
+  const std::wstring d = L"live-" + std::wstring(64, L'd');
+  struct Case {
+    std::vector<std::wstring> rows;
+    std::wstring open;
+    std::wstring takenUp;
+    std::wstring want;
+    wchar_t const* what;
+  };
+  const std::vector<Case> cases = {
+      {{a, b, c}, L"", L"", a, L"at the start, the first row"},
+      {{a, b, c}, b, L"", b, L"the open one stays open when another moves above it"},
+      {{a, c}, b, L"", a, L"the open one left: the new first row"},
+      {{d, a, b}, b, d, d, L"a group just joined opens at once"},
+      {{a, b}, b, d, b, L"before its row is there, the open one stays"},
+      {{}, b, L"", L"", L"nothing but a notice: nothing opens"},
+  };
+  std::size_t asked = 0;
+  std::size_t right = 0;
+  std::wstring firstBad;
+  for (auto const& k : cases) {
+    ++asked;
+    if (ConversationToOpen(k.rows, k.open, k.takenUp) == k.want) {
+      ++right;
+    } else if (firstBad.empty()) {
+      firstBad = k.what;
+    }
+  }
+  const bool ok = firstBad.empty();
+  return Line(L"conv start", ok,
+              std::format(L"{} of {} lists open the row the rule names{}{}: the open one by its id, "
+                          L"a group just joined at once, else the first row   [query: "
+                          L"ConversationToOpen over six lists, the conversation-list design 2.4]",
+                          right, asked, firstBad.empty() ? L"" : L", first wrong: ", firstBad));
+}
+
 }  // namespace
+
+std::wstring ConversationToOpen(std::vector<std::wstring> const& rowIds, std::wstring const& openId,
+                                std::wstring const& takenUpId) {
+  auto has = [&](std::wstring const& id) {
+    if (id.empty()) return false;
+    for (auto const& row : rowIds)
+      if (row == id) return true;
+    return false;
+  };
+  if (has(takenUpId)) return takenUpId;
+  if (has(openId)) return openId;
+  return rowIds.empty() ? std::wstring() : rowIds.front();
+}
 
 std::string_view ListNoticeAfterRestore(std::string_view restoreError, int /*restoredCount*/) {
   // THE DIALOG'S RULE WITH NOTHING COUNTED AS BACK: RestoreNote drops the sentence when a group came
@@ -493,6 +549,7 @@ std::vector<std::wstring> CollectConversationRulesDiagnostics() {
   lines.push_back(ConversationPushLine());
   lines.push_back(ConversationCreateLine());
   lines.push_back(ConversationNoticeLine());
+  lines.push_back(ConversationStartLine());
   return lines;
 }
 

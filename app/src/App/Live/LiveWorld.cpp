@@ -240,7 +240,7 @@ namespace {
 urmsg::demo::Conversation BuildConversationImpl(LiveGroup const& group, int64_t& newestOut) {
   // ── the conversation ────────────────────────────────────────────────────────
   urmsg::demo::Conversation conv;
-  conv.id = L"live-" + urnw::Widen(group.groupIdHex);
+  conv.id = ConversationIdOf(group.groupIdHex);
   // THE KIND IS SET BELOW, FROM THE ROSTER. It used to be Direct unconditionally, on two premises
   // that are no longer true: that the alpha's group is exactly two parties (onboarding adds as
   // many as the founder invites), and that the protocol carries no member list (item 242 R3 hands
@@ -583,6 +583,10 @@ void OrderConversations(std::vector<LiveConversation>& conversations) {
                      if (a.activityMs != b.activityMs) return a.activityMs > b.activityMs;
                      return a.groupIdHex < b.groupIdHex;
                    });
+}
+
+std::wstring ConversationIdOf(std::string const& groupIdHex) {
+  return L"live-" + urnw::Widen(groupIdHex);
 }
 
 LiveSession SessionOf(LiveGroup const& group) {
