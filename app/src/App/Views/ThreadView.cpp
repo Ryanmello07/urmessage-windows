@@ -74,11 +74,11 @@ CornerRadius CornerRadiusFromCorners(double const c[4]) {
   return cr;
 }
 
-// The icon face, named EVERY time. FontIcon defaults to the older
-// "Segoe MDL2 Assets", whose metrics differ and whose coverage is not the same
-// set of codepoints, so a glyph picked from the Fluent set can land on a
-// different drawing - or on nothing - if the family is left to the default.
-Media::FontFamily IconFont() { return Media::FontFamily(L"Segoe Fluent Icons"); }
+// The icon face, named EVERY time, and it is the one icon font (kIconFontFamily,
+// UrComponents.h): Segoe Fluent Icons, falling back to Segoe MDL2 Assets where
+// Windows 10 lacks it. Every glyph this file draws is in kIconGlyphs, and
+// --diagnose's `icon glyphs` line says which family draws each one.
+Media::FontFamily IconFont() { return Media::FontFamily(urnw::kit::kIconFontFamily); }
 
 namespace anim = winrt::Microsoft::UI::Xaml::Media::Animation;
 

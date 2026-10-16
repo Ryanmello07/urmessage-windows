@@ -90,6 +90,26 @@ jobs:
             exit $LASTEXITCODE
           }
 
+      # EVERY ICON NAMES THE ICON FONT WITH ITS FALLBACK, AND --diagnose NAMES EVERY GLYPH
+      # (urnetwork/windows#12, ported). Windows 10 and Windows Server 2022 do not ship Segoe Fluent
+      # Icons, so an icon that names it alone draws as an empty box there. app\tools\verify-icon-font.ps1
+      # holds every source that names an icon font to "Segoe Fluent Icons,Segoe MDL2 Assets", and
+      # UrComponents.h's kIconGlyphs, the table --diagnose's `icon glyphs` line asks the machine about,
+      # to every glyph the sources draw, both ways. Its self-test runs first.
+      - name: Check that every icon names the icon font with its fallback, and that --diagnose names every glyph
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\verify-icon-font.ps1 -SelfTest
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::the icon font check's self-test failed (exit code $LASTEXITCODE) -- its output is above"
+            exit $LASTEXITCODE
+          }
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\verify-icon-font.ps1
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::an icon names a font without its fallback, or a glyph is not in kIconGlyphs (exit code $LASTEXITCODE) -- its output is above"
+            exit $LASTEXITCODE
+          }
+
       - name: Add msbuild to PATH
         uses: microsoft/setup-msbuild@v2
 
