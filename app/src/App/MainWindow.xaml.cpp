@@ -524,8 +524,15 @@ void MainWindow::BuildOnboardDialog() {
   onboardFoundButton_.Click([weak = get_weak()](auto const&, auto const&) {
     auto self = weak.get();
     if (!self) return;
-    const bool taken = urmsg::live::QueueCreateGroup();
-    if (self->onboardStatus_) {
+    std::string waiting;
+    const bool taken = urmsg::live::QueueCreateGroup(&waiting);
+    // REFUSED BECAUSE A GROUP OF ONE WAITS (the conversation-list design 2.3): that group's add panel
+    // opens again, with its own state, rather than a second group being made.
+    if (!taken && !waiting.empty()) {
+      self->onboardAddGroup_ = waiting;
+      self->onboardAddDrawn_ = 0;
+      self->ApplyOnboard();
+    } else if (self->onboardStatus_) {
       self->onboardStatus_.Text(taken ? L"Making the group\u2026"
                                       : L"A group could not be started right now.");
     }
@@ -579,7 +586,9 @@ void MainWindow::BuildOnboardDialog() {
           self->onboardStatus_.Text(L"Paste their join code into the box above first.");
         return;
       }
-      const bool taken = urmsg::live::QueueAddMemberFromCode(urnw::Narrow(text));
+      // INTO THE GROUP THE PANEL IS FOR, and no other (the conversation-list design 2.3)
+      const bool taken = !self->onboardAddGroup_.empty() &&
+                         urmsg::live::QueueAddMemberFromCode(self->onboardAddGroup_, urnw::Narrow(text));
       if (self->onboardStatus_) {
         self->onboardStatus_.Text(taken ? L"Adding them\u2026"
                                         : L"That does not look like a join code. Ask for the "
@@ -690,7 +699,11 @@ void MainWindow::BuildOnboardDialog() {
     if (auto self = weak.get()) self->onboardOpen_ = true;
   });
   onboardDialog_.Closed([weak = get_weak()](auto const&, auto const&) {
-    if (auto self = weak.get()) self->onboardOpen_ = false;
+    if (auto self = weak.get()) {
+      self->onboardOpen_ = false;
+      // THE ADD PANEL LETS GO OF ITS GROUP WITH THE DIALOG: opened again, it is on the join road
+      self->onboardAddGroup_.clear();
+    }
   });
   onboardDialog_.Title(box_value(hstring{L"Join a group"}));
   onboardDialog_.Content(panel);
@@ -733,7 +746,8 @@ void MainWindow::ApplyOnboard() {
   // never joined.
   if (!urmsg::live::IsEnabled()) return;
   const uint64_t generation = urmsg::live::OnboardGeneration();
-  if (generation == onboardDrawn_) return;
+  const uint64_t addGeneration = urmsg::live::AddGeneration();
+  if (generation == onboardDrawn_ && addGeneration == onboardAddDrawn_) return;
   auto state = urmsg::live::OnboardSnapshot();
   if (!state) return;
   // A DIALOG NEEDS A XamlRoot, AND THE WINDOW'S CONTENT HAS NONE UNTIL IT IS IN THE TREE. A state
@@ -757,9 +771,13 @@ void MainWindow::ApplyOnboard() {
       return;
     }
   }
+  const bool newJoinState = generation != onboardDrawn_;
+  const bool newAddState = addGeneration != onboardAddDrawn_;
   onboardDrawn_ = generation;
+  onboardAddDrawn_ = addGeneration;
 
   if (state->step == urmsg::live::OnboardStep::Joined) {
+    onboardAddGroup_.clear();
     if (onboardDialog_) {
       onboardDialog_.Hide();
       onboardDialog_ = nullptr;
@@ -777,10 +795,24 @@ void MainWindow::ApplyOnboard() {
   }
 
   BuildOnboardDialog();
+  // THE ADD PANEL'S GROUP (the conversation-list design 2.3): the group the join road just founded,
+  // bound when the road says so, and let go once that group has no add state (it was left).
+  const std::string boundBefore = onboardAddGroup_;
+  if (newJoinState && state->step == urmsg::live::OnboardStep::Founded && !state->groupIdHex.empty())
+    onboardAddGroup_ = state->groupIdHex;
+  const urmsg::live::AddPtr add =
+      onboardAddGroup_.empty() ? nullptr : urmsg::live::AddSnapshot(onboardAddGroup_);
+  if (!onboardAddGroup_.empty() && !add) onboardAddGroup_.clear();
   if (onboardCodeBox_ && !state->joinCode.empty())
     onboardCodeBox_.Text(winrt::to_hstring(state->joinCode));
-  if (onboardStatus_ && !state->message.empty())
-    onboardStatus_.Text(winrt::to_hstring(state->message));
+  // THE SENTENCE OF THE ROAD THE DIALOG IS ON, when that road moved: the add's while the panel is
+  // bound to a group, else the join road's.
+  if (onboardStatus_) {
+    if (add && (newAddState || onboardAddGroup_ != boundBefore) && !add->message.empty())
+      onboardStatus_.Text(winrt::to_hstring(add->message));
+    else if (!add && newJoinState && !state->message.empty())
+      onboardStatus_.Text(winrt::to_hstring(state->message));
+  }
 
   // ── WHICH ROAD IS THIS PERSON ON ───────────────────────────────────────────────────────────
   // Three panels, and the rule is one sentence each: the JOIN panel is for somebody who holds no
@@ -793,10 +825,9 @@ void MainWindow::ApplyOnboard() {
   // A REFUSED ADD IS STILL THE FOUNDER'S ROAD (Task 58): its sentence asks for another join code,
   // so the box that takes one stays, and the join road does not come back while this device holds
   // the group it was adding to.
-  const bool founded = state->step == urmsg::live::OnboardStep::Founded ||
-                       state->step == urmsg::live::OnboardStep::Invited ||
-                       (state->step == urmsg::live::OnboardStep::Refused && state->addRoad);
-  const bool haveInvite = !state->inviteCode.empty();
+  const bool founded = add != nullptr;
+  const bool haveInvite =
+      add && add->step == urmsg::live::AddStep::Invited && !add->inviteCode.empty();
   // NO CREDENTIAL: neither road can be taken, so neither is drawn - only the sentence that says
   // where the file goes. A join panel with an empty code in it would ask for a step that cannot
   // work yet.
@@ -814,7 +845,7 @@ void MainWindow::ApplyOnboard() {
     onboardInvitePanel_.Visibility(haveInvite && !stuck ? Visibility::Visible
                                                         : Visibility::Collapsed);
   if (onboardInviteBox_ && haveInvite)
-    onboardInviteBox_.Text(winrt::to_hstring(state->inviteCode));
+    onboardInviteBox_.Text(winrt::to_hstring(add->inviteCode));
   // THE LEAVE OF A GROUP THAT IS NOT LIVE, exactly while the state offers it (Task 39): the
   // sentence above names it, and every later state withdraws it.
   if (onboardLeaveHeldButton_)
@@ -865,7 +896,14 @@ void MainWindow::ApplyOnboard() {
 
   // SHOWN ONCE. ShowAsync on a dialog that is already open throws, so the open-ness is the flag:
   // a beat that arrives while it is up only re-points the text.
-  if (!onboardShown_) {
+  //
+  // AND BY ITSELF ONLY ON A DEVICE THAT HOLDS NO CONVERSATION (the conversation-list design 2.4): the
+  // join road stays open beside every conversation, and its states must not put the dialog over
+  // conversations nobody asked to leave. Asked of the worker's table as it stood at this state, and
+  // of the world on screen.
+  const bool holdsConversation =
+      state->holdsConversation || (liveWorld_ && !liveWorld_->conversations.empty());
+  if (!onboardShown_ && !holdsConversation) {
     // THE FLAG IS SET ONLY ONCE ShowAsync HAS TAKEN (re-check R4). It throws while another
     // ContentDialog is open, and a flag set first would keep this dialog away for the rest of the
     // run. On a throw it is asked again in a second, from a fresh draw.

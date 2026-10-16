@@ -202,6 +202,9 @@ std::wstring ConversationGateLine() {
       {&g2, ActionClass::LeaveHandOver, GateVerdict::Closed, L"a hand-over needs an open group"},
       {&g3, ActionClass::Commit, GateVerdict::Leaving, L"nothing is taken while its leave is in flight"},
       {&g3, ActionClass::Leave, GateVerdict::Leaving, L"one leave at a time"},
+      {&g2, ActionClass::Add, GateVerdict::Take, L"an add to a group not open yet (a group of one) is taken"},
+      {&g3, ActionClass::Add, GateVerdict::Leaving, L"no add while its leave is in flight"},
+      {&none, ActionClass::Add, GateVerdict::NotHeld, L"an add to a group not held is refused"},
       {&none, ActionClass::Commit, GateVerdict::NotHeld, L"a group not held takes nothing"},
   };
   std::size_t asked = 0;
@@ -290,7 +293,72 @@ std::wstring ConversationPushLine() {
                           leftOk ? L"yes" : L"NO", noneOk ? L"yes" : L"NO"));
 }
 
+// conv create: A NEW CONVERSATION IS REFUSED ONLY WHILE A GROUP OF ONE WAITS. None held, three open,
+// three held of which one is closed on the server but not a group of one, one of them a group of
+// one, and that group after its first member opened it. The one-group refusal (no create while
+// anything is held) fails it, and so does a create that ignores the group of one.
+std::wstring ConversationCreateLine() {
+  const std::string g1(64, 'a');
+  const std::string g2(64, 'b');
+  const std::string g3(64, 'c');
+  struct Case {
+    std::vector<HeldForCreate> held;
+    CreateVerdict want;
+    std::string wantWaiting;
+    wchar_t const* what;
+  };
+  const std::vector<Case> cases = {
+      {{}, CreateVerdict::Take, std::string(), L"none held: made"},
+      {{{g1, false}, {g2, false}, {g3, false}}, CreateVerdict::Take, std::string(),
+       L"three conversations held: a fourth is made"},
+      {{{g1, false}, {g2, true}, {g3, false}}, CreateVerdict::GroupOfOneWaits, g2,
+       L"a group of one waits: refused, naming it"},
+      {{{g2, true}}, CreateVerdict::GroupOfOneWaits, g2, L"only a group of one: refused, naming it"},
+      {{{g1, false}, {g2, false}}, CreateVerdict::Take, std::string(),
+       L"the group of one opened by its first member: made"},
+  };
+  std::size_t asked = 0;
+  std::size_t right = 0;
+  std::wstring firstBad;
+  for (auto const& c : cases) {
+    ++asked;
+    std::string waiting = "unset";
+    const CreateVerdict got = CreateAction(c.held, waiting);
+    const bool waitingOk = got == CreateVerdict::Take ? waiting.empty() : waiting == c.wantWaiting;
+    if (got == c.want && waitingOk) {
+      ++right;
+    } else if (firstBad.empty()) {
+      firstBad = std::format(L"{} (got {})", c.what, CreateVerdictName(got));
+    }
+  }
+  const bool ok = firstBad.empty();
+  return Line(L"conv create", ok,
+              std::format(L"{} of {} creates answered by the rule{}{}: refused only while a group "
+                          L"of one waits, and the refusal names it   [query: CreateAction over five "
+                          L"tables of held groups, the conversation-list design 2.3]",
+                          right, asked, firstBad.empty() ? L"" : L", first wrong: ", firstBad));
+}
+
 }  // namespace
+
+CreateVerdict CreateAction(std::vector<HeldForCreate> const& held, std::string& waiting) {
+  waiting.clear();
+  for (auto const& group : held) {
+    if (group.groupOfOne) {
+      waiting = group.groupIdHex;
+      return CreateVerdict::GroupOfOneWaits;
+    }
+  }
+  return CreateVerdict::Take;
+}
+
+std::wstring_view CreateVerdictName(CreateVerdict verdict) {
+  switch (verdict) {
+    case CreateVerdict::Take: return L"Take";
+    case CreateVerdict::GroupOfOneWaits: return L"GroupOfOneWaits";
+  }
+  return L"?";
+}
 
 std::string PushGroupKey(std::string_view pushed) {
   std::string key(pushed);
@@ -327,7 +395,7 @@ GateVerdict GateAction(std::vector<GroupGate> const& gates, std::string const& g
   GroupGate const* gate = FindGate(gates, groupIdHex);
   if (gate == nullptr) return GateVerdict::NotHeld;
   if (gate->leaving) return GateVerdict::Leaving;
-  if (cls != ActionClass::Leave && !gate->open) return GateVerdict::Closed;
+  if (cls != ActionClass::Leave && cls != ActionClass::Add && !gate->open) return GateVerdict::Closed;
   return GateVerdict::Take;
 }
 
@@ -353,6 +421,7 @@ std::vector<std::wstring> CollectConversationRulesDiagnostics() {
   lines.push_back(ConversationOrderLine());
   lines.push_back(ConversationGateLine());
   lines.push_back(ConversationPushLine());
+  lines.push_back(ConversationCreateLine());
   return lines;
 }
 

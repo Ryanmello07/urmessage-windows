@@ -202,12 +202,16 @@ bool LeaveInFlight(std::string const& groupIdHex);
 // Neither is ever written to the log by this module, and the code text itself is never formatted
 // into any log line.
 
+// THE JOIN ROAD'S STATE, the device's own (the conversation-list design 2.3). The join road stays
+// open for the life of the session, beside every conversation this device holds, so these steps
+// say what the road last did and never what a conversation is doing. An ADD, which belongs to one
+// group, has its own state (AddState, below).
 enum class OnboardStep {
-  Idle,       // no group, nothing asked for yet
+  Idle,       // nothing asked for yet, or a conversation was just left
   Waiting,    // a join code exists and this device is waiting to be let in
   Joining,    // an invite is being parsed and applied
-  Joined,     // there is a group; the fetch loop owns the session now
-  Refused,    // the last invite or add was refused, and `message` says why
+  Joined,     // an invitation was opened: groupIdHex is the group joined, and joinCode a fresh code
+  Refused,    // the last invite (or create, or new join code) was refused, and `message` says why
   // THIS COMPUTER HOLDS NO CREDENTIAL, and `message` says where the file goes. A dead end that
   // used to be a log line only: a tester who skipped a step saw an empty window and no reason.
   NoCredential,
@@ -215,47 +219,76 @@ enum class OnboardStep {
   // X-Wing seed, so it can neither be added to a group nor open an invitation into one. Another dead
   // end that was a log line only; `message` says it on screen, and no road is drawn.
   NoJoinCode,
-  // ── the founder's road, which is the other half of the same screen ──────────
-  Founded,    // this device made a group. IT CANNOT SEND YET: a group of one sits at epoch 0 and
-              // is not open on the server, and the commit that opens it is the one that adds the
-              // first other person. So this state is "waiting for somebody's join code", not
-              // "ready".
-  Invited,    // an add succeeded and `inviteCode` holds the invitation to send to that person
+  // THE JOIN ROAD MADE A GROUP (a create): groupIdHex names it, and the dialog's add panel is that
+  // group's from here. IT CANNOT SEND YET: a group of one sits at epoch 0 and is not open on the
+  // server, and the commit that opens it is the one that adds the first other person. Its own
+  // AddState says so.
+  Founded,
 };
 
 struct OnboardState {
   OnboardStep step = OnboardStep::Idle;
   // The join code to show, base64. Empty until the device has minted one.
   std::string joinCode;
-  // AN INVITATION THIS DEVICE JUST MINTED FOR SOMEBODY ELSE, base64, and empty except at Invited.
-  // Set by an add that succeeded and cleared by the next publication, because an invitation is
-  // used ONCE: leaving it on screen past its moment invites a second person to be sent the same
-  // one, and the second of them is refused at the join with no way to tell why from here.
-  std::string inviteCode;
   // One sentence for the person, in their words rather than the library's. Never empty except at
   // Idle, and never carries a code.
   std::string message;
+  // THE GROUP THIS STEP IS ABOUT: the one joined (Joined) or made (Founded), as 64 hex. Empty on
+  // every other step.
+  std::string groupIdHex;
   // THE LEAVE OF A GROUP THAT IS NOT LIVE IS ON OFFER (Task 39). Set only on the Refused state
   // that answers an invitation refused over a group this device holds on its disk and cannot open:
   // the message then says to leave it, and the dialog draws the button that does
   // (QueueLeaveHeldGroup). Never set where there is no such group to leave, because a sentence
   // that names an action the screen does not offer is the dead end this flag exists to close.
   bool offerLeaveHeldGroup = false;
-  // THE REFUSAL CAME FROM AN ADD, by a device that holds the group it was adding to (Task 58). The
-  // dialog keeps the add panel up under it: the sentence asks for another join code, and the box
-  // to paste it into must still be there. Never set on the join road.
-  bool addRoad = false;
   // "MAKE A NEW JOIN CODE" IS ON OFFER (R25 Q2). Set only on the Refused states whose sentence asks
   // for a new join code (ErrNoJoinCodeForInvite, ErrJoinCodeSpent): the dialog draws the button
   // that mints one (QueueNewJoinCode), and every later state withdraws it.
   bool offerNewJoinCode = false;
-  // THIS DEVICE HOLDS A GROUP ON ITS DISK THAT DID NOT OPEN (R25 Q4, Q5): it predates the join
-  // seal, or its record could not be read just now. The intro then says only "This device is
-  // connected.", because "not in a group yet" is false of it.
+  // THIS DEVICE HOLDS A GROUP (R25 Q4, Q5; the conversation-list design A13): a conversation, or a
+  // group on its disk that did not open (it predates the join seal, or its record could not be read
+  // just now). The intro then says only "This device is connected.", because "not in a group yet"
+  // is false of it.
   bool holdsGroup = false;
+  // THIS DEVICE HOLDS A CONVERSATION, as the worker's table stood at this publication. The dialog
+  // opens by itself only on a device that holds none (the conversation-list design 2.4): a join
+  // road that stays open must not put its dialog over conversations nobody asked to leave.
+  bool holdsConversation = false;
 };
 
 using OnboardPtr = std::shared_ptr<const OnboardState>;
+
+// ── adding somebody to one group (the conversation-list design 2.3, A8) ────────────────────────────
+//
+// ONE PER GROUP, because an add is done to one group: the founder's first add, which opens a group
+// of one, and every add after it. A group left takes its state with it.
+enum class AddStep {
+  Founded,  // this device made the group and nobody else is in it yet: a group of one
+  Invited,  // an add succeeded, and inviteCode holds the invitation to send to that one person
+  Refused,  // the last add was refused, and message says why; the box for a join code stays
+};
+
+struct AddState {
+  std::string groupIdHex;
+  AddStep step = AddStep::Founded;
+  // AN INVITATION THIS DEVICE JUST MINTED FOR SOMEBODY ELSE, base64, and empty except at Invited.
+  // Replaced by the group's next add, because an invitation is used ONCE: leaving it on screen past
+  // its moment invites a second person to be sent the same one, and the second of them is refused
+  // at the join with no way to tell why from here.
+  std::string inviteCode;
+  // One sentence for the person, in their words rather than the library's; never carries a code.
+  std::string message;
+};
+
+using AddPtr = std::shared_ptr<const AddState>;
+
+// The add state of `groupIdHex`, or nullptr when that group has none (no add asked of it, or it was
+// left). Safe from any thread, like OnboardSnapshot.
+AddPtr AddSnapshot(std::string const& groupIdHex);
+
+// Bumped on every add publication of any group, so the UI can tell a new state from one it drew.
+uint64_t AddGeneration();
 
 // The most recent onboarding state, or nullptr before the worker has published one. Safe from any
 // thread; the pointer is swapped under a lock and the pointee is immutable, exactly as the world
@@ -304,18 +337,21 @@ bool QueueLeaveHeldGroup();
 // arrives as a published OnboardState.
 bool QueueNewJoinCode();
 
-// MAKE A GROUP, with this device as its owner. Answers false, having queued nothing, when this
-// device already holds one - a device is in one group in this build, and a second create would
-// quietly replace the group on screen.
+// MAKE A GROUP, with this device as its owner, beside every conversation it holds. Answers false,
+// having queued nothing, only while a group this device founded is still waiting for its first
+// member (ConversationRules.h CreateAction): `waitingGroupIdHex`, when given, is then that group's
+// id, so the dialog can open its add panel again.
 //
 // WHAT COMES BACK IS NOT A USABLE GROUP AND THE UI MUST NOT SAY IT IS. A group of one stands at
 // epoch 0 and is not open on the server; every send into it is refused. The commit that opens it
 // is the one that adds the FIRST other person, which is why OnboardStep::Founded's message is
 // about somebody else's join code rather than about being ready.
-bool QueueCreateGroup();
+bool QueueCreateGroup(std::string* waitingGroupIdHex = nullptr);
 
-// BRING SOMEBODY IN, from the join code they sent. Answers false, having queued nothing, when
-// there is no group or the text is not a decodable code.
+// BRING SOMEBODY INTO `groupIdHex`, from the join code they sent. Answers false, having queued
+// nothing, when this device does not hold that group, a leave of it is in flight, or the text is
+// not a decodable code. The add is that group's: it is done on the group's own loop, and a second
+// paste before it is done replaces the first.
 //
 // TWO DIFFERENT ABI CALLS SIT BEHIND THIS AND THE WORKER CHOOSES BY ASKING THE GROUP, not by
 // counting: urnet_message_group_add_member builds the FOUNDING commit and is refused once the
@@ -323,12 +359,12 @@ bool QueueCreateGroup();
 // branches on urnet_message_group_is_open, so the first person in and the fifth take the same
 // road through this call.
 //
-// THE OUTCOME IS AN INVITATION TO SEND BACK, published as OnboardState::inviteCode. A refusal -
+// THE OUTCOME IS AN INVITATION TO SEND BACK, published as that group's AddState. A refusal -
 // a role that may not add, a lost epoch race, a stale join code - arrives as Refused with the
 // library's own sentence, except the adder's three refusals of a join code (invalid, from a build
 // that cannot open a sealed invitation, an identity whose entry stands), which arrive in the
-// person's words (Live/RefusalCopy.h, Task 58). Either way the add panel stays (addRoad).
-bool QueueAddMemberFromCode(std::string base64JoinCode);
+// person's words (Live/RefusalCopy.h, Task 58). Either way the add panel stays.
+bool QueueAddMemberFromCode(std::string groupIdHex, std::string base64JoinCode);
 
 // ── how this app reaches the message server (ledger 268) ──────────────────────
 

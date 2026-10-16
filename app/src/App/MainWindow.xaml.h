@@ -106,6 +106,11 @@ struct MainWindow : MainWindowT<MainWindow> {
   void BuildOnboardDialog();
 
   uint64_t onboardDrawn_ = 0;
+  // THE ADD STATES' GENERATION LAST DRAWN, and THE GROUP THE DIALOG'S ADD PANEL IS FOR (the
+  // conversation-list design 2.3): the group the join road founded from this dialog, or the group of
+  // one a refused create named. Empty while the dialog is on the join road.
+  uint64_t onboardAddDrawn_ = 0;
+  std::string onboardAddGroup_;
   bool onboardShown_ = false;
   // Whether the dialog is ON SCREEN right now, which onboardShown_ is not once it has been
   // dismissed: kept by its Opened and Closed events (review M2).

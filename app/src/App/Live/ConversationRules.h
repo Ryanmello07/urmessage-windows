@@ -37,6 +37,9 @@ enum class ActionClass {
   Commit,         // a send, a reply, a reaction, a deletion, a role change, a hand-over, a removal
   Leave,          // a plain leave: the group must be held, and need not be open
   LeaveHandOver,  // a leave that hands the group over first: that is a commit, so it must be open
+  // AN ADD FROM A JOIN CODE: the group must be held and not leaving, and need not be open, because
+  // the first add of a group of one is the commit that opens it (the conversation-list design 2.3)
+  Add,
 };
 
 enum class GateVerdict {
@@ -80,6 +83,27 @@ std::string PushGroupKey(std::string_view pushed);
 PushRoute RoutePush(std::vector<std::string> const& heldIds, std::string_view pushed);
 
 std::wstring_view PushRouteName(PushRoute route);
+
+// ── a new conversation (the conversation-list design 2.3, A7) ───────────────────────────────────
+//
+// ONE GROUP OF ONE AT A TIME. A group this device founds waits for its first member before it is
+// open, and the library keeps no group of one across a restart (lib restore.go:240-254): a second
+// one would be a second invitation to send, with one panel to send it from, and lost the same way.
+// Every other group held, open or not, leaves the create alone, because a device holds many
+// conversations.
+struct HeldForCreate {
+  std::string groupIdHex;
+  bool groupOfOne = false;  // founded here, and nobody else in it yet
+};
+
+enum class CreateVerdict {
+  Take,             // make the group
+  GroupOfOneWaits,  // refused: `waiting` names the group of one, whose add panel opens again
+};
+
+CreateVerdict CreateAction(std::vector<HeldForCreate> const& held, std::string& waiting);
+
+std::wstring_view CreateVerdictName(CreateVerdict verdict);
 
 // This file's --diagnose lines, in the "  key              : PASS  detail" shape.
 std::vector<std::wstring> CollectConversationRulesDiagnostics();
