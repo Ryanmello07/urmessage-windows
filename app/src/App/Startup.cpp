@@ -6,6 +6,8 @@
 #include "Startup.h"
 
 #include <shellapi.h>  // CommandLineToArgvW
+#include <dwrite.h>    // the icon font's glyphs, asked of this machine (IconGlyphsLine)
+#pragma comment(lib, "dwrite.lib")
 
 #include <algorithm>  // sort/unique, for the T5 badge-table assertion
 #include <array>
@@ -25,6 +27,7 @@
 #include "Log.h"
 #include "Paths.h"
 #include "Strings.h"
+#include "UrComponents.h"  // kIconFontFamily and kIconGlyphs, for the icon glyphs line
 #include "UrMotion.h"
 #include "Views/ConversationRowModel.h"
 #include "RunMode.h"  // RunModeCopyDiagnostics - the mode-dependent honesty copy's gate
@@ -3349,6 +3352,148 @@ void StartupLogInit() {
             Narrow(logFile.wstring()));
 }
 
+// THE ICON FONT ON THE MACHINE THIS RUNS ON (urnetwork/windows#12, ported). Every glyph the app draws
+// (urnw::kit::kIconGlyphs), and the family of urnw::kit::kIconFontFamily that draws it here: the
+// first family of the list that is installed and maps the code point, the one a XAML family list
+// falls back to, or, where none maps it, the first that maps its fallback (kIconGlyphs). A glyph that
+// nothing draws is an empty box, and fails the line. Where every family of the list is installed the
+// line also says which glyphs only the FIRST (Segoe Fluent Icons) maps HERE: on a machine with only the
+// second (Segoe MDL2 Assets), each of those is drawn through its fallback, or is an empty box. Which
+// those are is that machine's to say: Windows 10's Segoe MDL2 Assets maps fewer glyphs than Windows
+// 11's. NO FAMILY IS NAMED HERE BUT THROUGH kIconFontFamily: app/tools/verify-icon-font.ps1 holds every
+// string that names an icon font to the list, so the names come from splitting it.
+std::wstring IconGlyphsLine() {
+  using urnw::kit::kIconFontFamily;
+  using urnw::kit::kIconGlyphs;
+  // the list's families, in order, each trimmed
+  std::vector<std::wstring> families;
+  {
+    const std::wstring_view list = kIconFontFamily;
+    size_t at = 0;
+    for (;;) {
+      const size_t comma = list.find(L',', at);
+      std::wstring_view one =
+          list.substr(at, comma == std::wstring_view::npos ? std::wstring_view::npos : comma - at);
+      while (!one.empty() && one.front() == L' ') one.remove_prefix(1);
+      while (!one.empty() && one.back() == L' ') one.remove_suffix(1);
+      if (!one.empty()) families.emplace_back(one);
+      if (comma == std::wstring_view::npos) break;
+      at = comma + 1;
+    }
+  }
+  winrt::com_ptr<IDWriteFactory> factory;
+  HRESULT hr = ::DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+                                     reinterpret_cast<::IUnknown**>(factory.put()));
+  winrt::com_ptr<IDWriteFontCollection> system;
+  if (SUCCEEDED(hr)) hr = factory->GetSystemFontCollection(system.put(), FALSE);
+  if (FAILED(hr) || !system)
+    return std::format(L"  icon glyphs      : FAIL  DirectWrite could not list this machine's fonts "
+                       L"(0x{:08X})",
+                       static_cast<uint32_t>(hr));
+  // the installed font of one family name, or none
+  auto fontOf = [&](std::wstring_view name) -> winrt::com_ptr<IDWriteFont> {
+    UINT32 index = 0;
+    BOOL exists = FALSE;
+    const std::wstring z(name);
+    if (FAILED(system->FindFamilyName(z.c_str(), &index, &exists)) || !exists) return nullptr;
+    winrt::com_ptr<IDWriteFontFamily> family;
+    if (FAILED(system->GetFontFamily(index, family.put())) || !family) return nullptr;
+    winrt::com_ptr<IDWriteFont> font;
+    if (FAILED(family->GetFirstMatchingFont(DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                            DWRITE_FONT_STYLE_NORMAL, font.put())))
+      return nullptr;
+    return font;
+  };
+  auto has = [](winrt::com_ptr<IDWriteFont> const& font, char32_t cp) {
+    BOOL exists = FALSE;
+    return font && SUCCEEDED(font->HasCharacter(static_cast<UINT32>(cp), &exists)) && exists;
+  };
+  std::vector<winrt::com_ptr<IDWriteFont>> listFonts;
+  std::wstring installed;
+  for (auto const& f : families) {
+    listFonts.push_back(fontOf(f));
+    installed += std::format(L"{}{} {}", installed.empty() ? L"" : L", ", f,
+                             listFonts.back() ? L"installed" : L"not installed");
+  }
+  // THE FAMILY THAT DRAWS EACH GLYPH: the first of the list that maps it, as XAML falls back; where
+  // none does, the first that maps its fallback (kIconGlyphs), which IconGlyphText then draws instead
+  std::vector<std::wstring> drawnBy(families.size());
+  std::wstring none;
+  std::wstring throughFallback;
+  size_t drawn = 0;
+  size_t textAgrees = 0;
+  auto firstMapping = [&](char32_t cp) -> int {
+    for (size_t i = 0; i < families.size(); ++i)
+      if (has(listFonts[i], cp)) return static_cast<int>(i);
+    return -1;
+  };
+  for (auto const& g : kIconGlyphs) {
+    const int by = firstMapping(g.codePoint);
+    const int byFallback = (by < 0 && g.fallback != 0) ? firstMapping(g.fallback) : -1;
+    if (by >= 0) {
+      drawnBy[static_cast<size_t>(by)] += std::format(L" {:04X}", static_cast<uint32_t>(g.codePoint));
+      ++drawn;
+    } else if (byFallback >= 0) {
+      throughFallback += std::format(L" {:04X} as its fallback {:04X} ({}, by {})",
+                                     static_cast<uint32_t>(g.codePoint),
+                                     static_cast<uint32_t>(g.fallback), g.what,
+                                     families[static_cast<size_t>(byFallback)]);
+      ++drawn;
+    } else {
+      none += std::format(L" {:04X} ({})", static_cast<uint32_t>(g.codePoint), g.what);
+    }
+    // AND IconGlyphText ANSWERS THAT GLYPH: the one, or its fallback, this line says is drawn. Every draw
+    // of a glyph with a fallback goes through IconGlyphText (verify-icon-font.ps1 fails any other), so
+    // what it answers is what the app draws
+    const wchar_t primary[2] = {static_cast<wchar_t>(g.codePoint), L'\0'};
+    const winrt::hstring text = urnw::kit::IconGlyphText(primary);
+    const char32_t want = (by < 0 && byFallback >= 0) ? g.fallback : g.codePoint;
+    if (text.size() == 1 && static_cast<char32_t>(text[0]) == want) ++textAgrees;
+  }
+  std::wstring by;
+  for (size_t i = 0; i < families.size(); ++i)
+    if (!drawnBy[i].empty())
+      by += std::format(L"; drawn by {}:{}", families[i], drawnBy[i]);
+  // ONLY IN THE FIRST FAMILY: asked where every family of the list is installed, and said not to be
+  // askable elsewhere
+  std::wstring onlyFluent;
+  std::wstring missing;
+  for (size_t i = 0; i < families.size(); ++i)
+    if (!listFonts[i]) missing += std::format(L"{}{}", missing.empty() ? L"" : L", ", families[i]);
+  if (families.size() < 2) {
+    onlyFluent = L"only in the first family: not askable, the list has one family";
+  } else if (!missing.empty()) {
+    onlyFluent = std::format(L"only in {}: not askable here, {} is not installed", families[0], missing);
+  } else {
+    std::wstring which;
+    for (auto const& g : kIconGlyphs) {
+      bool elsewhere = false;
+      for (size_t i = 1; i < families.size() && !elsewhere; ++i) elsewhere = has(listFonts[i], g.codePoint);
+      if (has(listFonts[0], g.codePoint) && !elsewhere)
+        which += std::format(L" {:04X} ({})", static_cast<uint32_t>(g.codePoint), g.what);
+    }
+    // THIS MACHINE'S second family, which is not every machine's: Windows 10's Segoe MDL2 Assets maps
+    // fewer glyphs than Windows 11's, and only a machine without the first family shows which
+    onlyFluent = which.empty()
+                     ? std::format(L"only in {} here: none (this machine's {} maps every one)",
+                                   families[0], families[1])
+                     : std::format(L"only in {} here, each drawn through its fallback or as an empty box "
+                                   L"where only {} is installed:{}",
+                                   families[0], families[1], which);
+  }
+  const bool agrees = textAgrees == std::size(kIconGlyphs);
+  const bool ok = !families.empty() && none.empty() && agrees;
+  return std::format(
+      L"  icon glyphs      : {}  family \"{}\" ({}); {} of {} glyphs drawn{}{}{}{}{}; IconGlyphText "
+      L"draws that glyph for {} of {}; {}   [query: DirectWrite's system fonts, for each code point "
+      L"of kIconGlyphs the first family of kIconFontFamily that maps it, or that maps its fallback; "
+      L"urnetwork/windows#12, ported]",
+      ok ? L"PASS" : L"FAIL", kIconFontFamily, installed, drawn, std::size(kIconGlyphs),
+      none.empty() ? L"" : L"; drawn by NO family of the list, an empty box:", none,
+      throughFallback.empty() ? L"" : L"; drawn through a fallback:", throughFallback, by, textAgrees,
+      std::size(kIconGlyphs), onlyFluent);
+}
+
 std::vector<std::wstring> CollectDiagnostics() {
   const std::filesystem::path exe = ExePath();
   const std::filesystem::path dir = exe.parent_path();
@@ -3388,6 +3533,9 @@ std::vector<std::wstring> CollectDiagnostics() {
   lines.push_back(std::format(L"  fonts            : {}",
                               Presence(dir / L"Assets" / L"Fonts" /
                                        L"pp_neue_bit_bold.ttf")));
+  // THE ICON FONT ON THIS MACHINE (urnetwork/windows#12, ported): every glyph, and the family that
+  // draws it here
+  lines.push_back(IconGlyphsLine());
   {
     const urmsg::demo::DemoOptions o = urmsg::demo::ParseDemoOptions();
     constexpr const wchar_t* kScreens[] = {L"none", L"chats", L"thread", L"inspect",

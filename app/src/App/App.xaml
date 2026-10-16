@@ -628,10 +628,15 @@
                  iOS's 16 ur.symbols; a list row with no leading mark is the
                  single largest reason a panel reads as text on black.
 
-                 Naming the family matters: FontIcon defaults to the OLDER
-                 "Segoe MDL2 Assets", whose metrics differ, so a mixed screen
-                 comes out with two icon weights. -->
-            <FontFamily x:Key="UrIconFontFamily">Segoe Fluent Icons</FontFamily>
+                 Windows 10 does not ship Segoe Fluent Icons, and neither does
+                 Windows Server 2022, so the family falls back to Segoe MDL2
+                 Assets, which both ship: naming Segoe Fluent Icons alone drew
+                 every icon as an empty box there. This is WinUI's own FontIcon
+                 default and its SymbolThemeFontFamily; code names the same list
+                 as kIconFontFamily (UrComponents.h), and
+                 app/tools/verify-icon-font.ps1 holds the two to it. Ported from
+                 urnetwork/windows#12. -->
+            <FontFamily x:Key="UrIconFontFamily">Segoe Fluent Icons,Segoe MDL2 Assets</FontFamily>
 
             <!-- the leading mark on a row or a section header -->
             <Style x:Key="UrRowIconStyle" TargetType="FontIcon">
