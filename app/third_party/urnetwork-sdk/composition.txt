@@ -41,15 +41,16 @@
 # checked at. A branch that moves on is ahead of its pin, and the pin stays until it is moved.
 #
 # message: sdk/cgo, the messaging half, its .def, its header, and the scripts that compose, build
-# and check the library. Pinned to e4eb247d4840, the head of the hardening plan's phase T1 (the
-# join seal) after its sixth fix round and its add-on (FIX 6b), on the owner's fork's
-# hardening/t1-join-seal, fetched by its SHA through this url; Task 58's refusal copy answers its
-# sentences. It moves to T1's merge commit on urnetwork/message's main when T1 merges. The pin
-# before, 215a0696 (the merge of pull request 6, phase T1a), is an ancestor of this one. Between
-# the two, sdk/cgo's .def and header did not change and scripts/siblings.txt did not change; the
-# composition job holds the vendored export list and headers to the composition's, byte for byte.
-# Its own pins are the two merge commits below.
-message https://github.com/urnetwork/message.git e4eb247d4840874bfe13ba8a5bf4df015d97f63c
+# and check the library. Pinned to c7949cfdf9a6, the merge of pull request 7 on urnetwork/message's
+# main: the hardening plan's phase T1, the join seal. Task 58's refusal copy answers its sentences.
+# Its tree is that of c7501a19, T1's last commit (FIX 6c), and its first parent is 215a0696 (the
+# merge of pull request 6, phase T1a), the pin main had. The pin before this one, e4eb247d4840 (T1
+# after its sixth fix round and FIX 6b), is an ancestor of it. Between e4eb247 and this pin,
+# sdk/cgo (its .def, its header and its scripts) and scripts/siblings.txt did not change, and no
+# library sentence changed: FIX 6c changed the store's internals. The composition job holds the
+# vendored export list and headers to the composition's, byte for byte. Its own pins are the two
+# merge commits below.
+message https://github.com/urnetwork/message.git c7949cfdf9a6c243d64a8933e02476487515a26a
 #
 # sdk: the core SDK. Pinned to urnetwork/sdk main as the removal of messaging merged there
 # (b8209d9d, 2026-10-09 12:25 UTC). compose.sh refuses a core that still carries the messaging
