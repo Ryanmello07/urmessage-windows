@@ -1,0 +1,235 @@
+# THROWAWAY, NEVER MERGE, NEVER IN AN UPSTREAM PULL REQUEST. fix/live-row-names: the conversation
+# list's row names (F1) and the inspector rail's Advanced Mode redraw (F2), in a LIVE launch, read
+# with UI Automation as text.
+#
+# The names leg of .github/task58/drive.ps1, on the fix's head, three times:
+#   as-built     the head as committed: the driver must pass every check.
+#   control-f1   F1 put back: selection names the rows from demo::GetWorld() again. Green only
+#                when the names check FAILED and the rail's checks did NOT, so the mutant fails
+#                for its own reason.
+#   control-f2   F2 put back: the rail looks its conversation up in demo::GetWorld() again. Green
+#                only when the rail's Advanced check FAILED and the names check did NOT.
+# The screen is set to 1920 x 1080 first, because the inspector rail shows only from 1500 content
+# dip and the runner's screen is 1024 x 768. The server and the founder are urnetwork/message's
+# loopback rig (.github/task58/zz_task58_rig_test.go, its held road). Nothing is published.
+name: Names screenshots (throwaway)
+
+on:
+  push:
+    branches:
+      - 'ci/names-shots**'
+
+permissions:
+  contents: read
+
+env:
+  NAMES_HEAD: efdba5f74e54a32c66fbc1eac1ed21a10da79b72
+
+jobs:
+  shots:
+    name: Names and rail (${{ matrix.variant }})
+    runs-on: windows-2022
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [as-built, control-f1, control-f2]
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Prove the checkout is the fix's head plus CI files only
+        shell: pwsh
+        run: |
+          $head = git rev-parse HEAD
+          $parent = git rev-parse HEAD^
+          Write-Host "checkout $head"
+          Write-Host "parent   $parent"
+          if ($parent -ne $env:NAMES_HEAD) { Write-Host "::error::the parent is not $env:NAMES_HEAD"; exit 1 }
+          $changed = @(git diff --name-only HEAD^ HEAD)
+          $changed | ForEach-Object { Write-Host "  changed by the CI commit: $_" }
+          $outside = @($changed | Where-Object { $_ -notlike '.github/*' -and $_ -ne 'app/src/App/Live/LiveMesh.cpp' })
+          if ($outside.Count -gt 0) { Write-Host "::error::the CI commit changes $($outside -join ', ')"; exit 1 }
+          git diff HEAD^ HEAD -- app/src/App/Live/LiveMesh.cpp | Select-String -Pattern '^[+-][^+-]' | ForEach-Object { Write-Host "  LiveMesh.cpp (the CI endpoint): $($_.Line)" }
+
+      - name: Put the defect back (the controls only)
+        if: matrix.variant != 'as-built'
+        shell: pwsh
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          if ($env:VARIANT -eq 'control-f1') {
+            $path = 'app\src\App\Views\ConversationListView.cpp'
+            $old = "    if (i < v.names.size())`n      Automation::AutomationProperties::SetName(`n          row.root, winrt::hstring{selected ? v.names[i].selected : v.names[i].unselected});`n"
+            $new = "    if (i < urmsg::demo::GetWorld().conversations.size())`n      Automation::AutomationProperties::SetName(`n          row.root, winrt::hstring{ConversationRowAutomationName(urmsg::demo::GetWorld().conversations[i], selected)});`n"
+          } else {
+            $path = 'app\src\App\Views\InspectRailView.cpp'
+            $old = "    auto const* conv = FindConversation(world, RailConversationId(v));`n    if (conv) PopulateConversation(v, *conv, advanced);`n"
+            $new = "    auto const* conv = FindConversation(demo::GetWorld(), RailConversationId(v));`n    if (conv) PopulateConversation(v, *conv, advanced);`n"
+          }
+          $text = [IO.File]::ReadAllText($path)
+          $n = ([regex]::Matches($text, [regex]::Escape($old))).Count
+          if ($n -ne 1) { Write-Host "::error::the control's edit occurs $n times, not once"; exit 1 }
+          [IO.File]::WriteAllText($path, $text.Replace($old, $new), (New-Object Text.UTF8Encoding($false)))
+          git --no-pager diff --stat -- $path
+          git --no-pager diff -- $path
+
+      - name: Make the screen wide enough for the inspector rail (1920 x 1080)
+        shell: powershell
+        run: |
+          Add-Type -AssemblyName System.Windows.Forms
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          Write-Host "the primary screen was $($b.Width) x $($b.Height)"
+          try { Set-DisplayResolution -Width 1920 -Height 1080 -Force -ErrorAction Stop; Write-Host 'Set-DisplayResolution answered' } catch { Write-Host "Set-DisplayResolution: $_" }
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          if ($b.Width -lt 1920) {
+            $code = @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class NamesDisplay {
+            [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+            public struct DEVMODE {
+              [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+              public short dmSpecVersion; public short dmDriverVersion; public short dmSize; public short dmDriverExtra;
+              public int dmFields; public int dmPositionX; public int dmPositionY; public int dmDisplayOrientation;
+              public int dmDisplayFixedOutput; public short dmColor; public short dmDuplex; public short dmYResolution;
+              public short dmTTOption; public short dmCollate;
+              [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+              public short dmLogPixels; public int dmBitsPerPel; public int dmPelsWidth; public int dmPelsHeight;
+              public int dmDisplayFlags; public int dmDisplayFrequency; public int dmICMMethod; public int dmICMIntent;
+              public int dmMediaType; public int dmDitherType; public int dmReserved1; public int dmReserved2;
+              public int dmPanningWidth; public int dmPanningHeight;
+            }
+            [DllImport("user32.dll", CharSet = CharSet.Ansi)] public static extern int EnumDisplaySettings(string deviceName, int modeNum, ref DEVMODE devMode);
+            [DllImport("user32.dll", CharSet = CharSet.Ansi)] public static extern int ChangeDisplaySettings(ref DEVMODE devMode, int flags);
+            public static int Set(int w, int h) {
+              DEVMODE dm = new DEVMODE();
+              dm.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
+              if (EnumDisplaySettings(null, -1, ref dm) == 0) return -100;
+              dm.dmPelsWidth = w; dm.dmPelsHeight = h; dm.dmFields = 0x80000 | 0x100000;
+              return ChangeDisplaySettings(ref dm, 0);
+            }
+          }
+          '@
+            Add-Type -TypeDefinition $code
+            Write-Host "ChangeDisplaySettings answered $([NamesDisplay]::Set(1920, 1080)) (0 is DISP_CHANGE_SUCCESSFUL)"
+          }
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          Write-Host "the primary screen is now $($b.Width) x $($b.Height)"
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Check out the pinned commits
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\build-sdk-dll.ps1 -Workspace "$env:RUNNER_TEMP\sdk" -CheckoutOnly
+          exit $LASTEXITCODE
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ runner.temp }}/sdk/message/go.mod
+          cache: false
+
+      - name: Build the dll from the composition and stage it
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\build-sdk-dll.ps1 -Workspace "$env:RUNNER_TEMP\sdk" -Stage
+          exit $LASTEXITCODE
+
+      - name: Build the app (Release x64, the dll required)
+        shell: pwsh
+        working-directory: app
+        run: |
+          $pin = '10.0.22621.0'
+          $roots = @("${env:ProgramFiles(x86)}\Windows Kits\10", "$env:ProgramFiles\Windows Kits\10") | Where-Object { Test-Path -LiteralPath $_ }
+          $usable = @(foreach ($r in $roots) {
+            Get-ChildItem (Join-Path $r 'Include') -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' -and
+                (Test-Path -LiteralPath (Join-Path $r "Include\$($_.Name)\um\windows.h")) -and
+                (Test-Path -LiteralPath (Join-Path $r "Lib\$($_.Name)\um\x64\kernel32.lib")) } |
+              Select-Object -ExpandProperty Name
+          }) | Select-Object -Unique | Sort-Object { [version]$_ }
+          $usable = @($usable)
+          $sdk = if ($usable -contains $pin) { $pin } else { $usable[-1] }
+          msbuild URmessage.sln /restore /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=$sdk /p:UrmRequireSdkDll=true /m /v:minimal /clp:Summary
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-Item build\x64\Release\URmessage.exe, build\x64\Release\URnetworkSdk.dll | Format-Table Name, Length | Out-String | Write-Host
+
+      - name: Check out message-server beside message, and build the rig
+        shell: pwsh
+        run: |
+          $ws = Join-Path $env:RUNNER_TEMP 'sdk'
+          $line = Get-Content (Join-Path $ws 'message\scripts\siblings.txt') | Where-Object { $_ -match '^message-server\s' } | Select-Object -First 1
+          $parts = $line -split '\s+'
+          Write-Host "message-server: $($parts[1]) $($parts[2])"
+          git init -q (Join-Path $ws 'message-server')
+          git -C (Join-Path $ws 'message-server') -c core.autocrlf=false fetch -q --depth 1 $parts[1] $parts[2]
+          git -C (Join-Path $ws 'message-server') -c core.autocrlf=false checkout -q FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "message: $(git -C (Join-Path $ws 'message') rev-parse HEAD)"
+          Copy-Item .github\task58\zz_task58_rig_test.go (Join-Path $ws 'message\sdk\cp3b\zz_task58_rig_test.go')
+          $toolchain = (Select-String -Path (Join-Path $ws 'message\go.mod') -Pattern '^toolchain\s+(\S+)').Matches[0].Groups[1].Value
+          $env:GOTOOLCHAIN = $toolchain
+          $env:GOWORK = 'off'
+          Write-Host "toolchain $toolchain"
+          Push-Location (Join-Path $ws 'message\sdk\cp3b')
+          go version
+          go test -c -o (Join-Path $env:RUNNER_TEMP 'rig.exe') .
+          $code = $LASTEXITCODE
+          Pop-Location
+          exit $code
+
+      - name: Drive the app (names, ${{ matrix.variant }})
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github\task58\drive.ps1 -Leg names `
+            -Exe "$env:GITHUB_WORKSPACE\app\build\x64\Release\URmessage.exe" `
+            -Rig "$env:RUNNER_TEMP\rig.exe" `
+            -RigWorkDir "$env:RUNNER_TEMP\sdk\message\sdk\cp3b" `
+            -Work "$env:RUNNER_TEMP\t58" `
+            -Out "$env:GITHUB_WORKSPACE\t58out" | Tee-Object -FilePath "$env:RUNNER_TEMP\drive.out"
+          $code = $LASTEXITCODE
+          Set-Content -LiteralPath "$env:RUNNER_TEMP\drive.code" -Value $code
+          Write-Host "the driver exited $code"
+          exit 0
+
+      - name: Judge (as-built passes every check; each control fails its own check and no other)
+        shell: powershell
+        env:
+          VARIANT: ${{ matrix.variant }}
+          F1: "N1-typical: the selected row's name is its own conversation's"
+          F2: "N3-advanced-on: Advanced Mode redraws the rail at once"
+        run: |
+          $code = [int](Get-Content -LiteralPath "$env:RUNNER_TEMP\drive.code")
+          $out = @(Get-Content -LiteralPath "$env:RUNNER_TEMP\drive.out")
+          $fails = @($out | Where-Object { $_ -match '\] FAIL  ' })
+          Write-Host "the driver exited $code, with $($fails.Count) FAIL line(s):"
+          $fails | ForEach-Object { Write-Host "  $_" }
+          function Failed([string]$check) { return @($fails | Where-Object { $_.Contains($check) }).Count -gt 0 }
+          function Passed([string]$check) { return @($out | Where-Object { $_ -match '\] PASS  ' -and $_.Contains($check) }).Count -gt 0 }
+          if ($env:VARIANT -eq 'as-built') {
+            if ($code -eq 0 -and $fails.Count -eq 0 -and (Passed $env:F1) -and (Passed $env:F2)) { Write-Host 'as-built: every check passed, both F1''s and F2''s among them'; exit 0 }
+            Write-Host '::error::as-built: the driver did not pass every check'
+            exit 1
+          }
+          $mine = if ($env:VARIANT -eq 'control-f1') { $env:F1 } else { $env:F2 }
+          $other = if ($env:VARIANT -eq 'control-f1') { $env:F2 } else { $env:F1 }
+          $killed = ($code -ne 0) -and (Failed $mine)
+          $ownReason = (Passed $other) -and -not (Failed $other)
+          Write-Host "  MUST FAIL:     $mine -> $(if (Failed $mine) { 'FAIL' } else { 'not FAIL' })"
+          Write-Host "  MUST NOT FAIL: $other -> $(if (Passed $other) { 'PASS' } else { 'not PASS' })"
+          if ($killed -and $ownReason) { Write-Host "$($env:VARIANT) KILLED by its own check, and only by it: $mine"; exit 0 }
+          Write-Host "::error::$($env:VARIANT) is not killed for its own reason: killed=$killed, the other check PASS=$ownReason"
+          exit 1
+
+      - name: Upload the screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: names-${{ matrix.variant }}
+          path: t58out/
+          if-no-files-found: warn
