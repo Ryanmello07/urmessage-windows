@@ -171,10 +171,18 @@ void AppendWordFields(StackPanel const& column, id::Block const& b, IdentityScre
                     urnw::Narrow(std::wstring{e.message()}));
     }
     if (i < b.prefill.size()) box.Text(hstring{b.prefill[i]});
-    if (static_cast<int>(i) == b.wrongIndex) box.BorderBrush(urnw::colors::DangerBrush());
+    TextBlock number = MakeNumber(i);
+    // THE WRONG WORD IS MARKED ON ITS NUMBER as well as on the field: a focused TextBox's own visual
+    // states repaint its border, and the number keeps the mark whatever has focus
+    if (static_cast<int>(i) == b.wrongIndex) {
+      box.BorderBrush(urnw::colors::DangerBrush());
+      number.Foreground(urnw::colors::DangerBrush());
+      number.FontWeight(winrt::Windows::UI::Text::FontWeights::SemiBold());
+    }
     automation::AutomationProperties::SetName(box, hstring{L"Word " + std::to_wstring(i + 1)});
-    cell.Children().Append(MakeNumber(i));
+    cell.Children().Append(number);
     cell.Children().Append(box);
+    view.wordNumbers.push_back(number);
     Grid::SetRow(cell, static_cast<int32_t>(i % 5));
     Grid::SetColumn(cell, static_cast<int32_t>(i / 5));
     g.Children().Append(cell);
@@ -452,6 +460,10 @@ bool CheckIdentityWords(IdentityScreenView const& view, urmsg::RunMode mode) {
   for (auto const& field : view.wordFields) typed.emplace_back(field.Text());
   const int wrong = id::FirstWrongWord(typed, view.expectedWords);
   for (auto const& field : view.wordFields) field.ClearValue(Control::BorderBrushProperty());
+  for (auto const& number : view.wordNumbers) {
+    number.Foreground(urnw::colors::MutedBrush());
+    number.FontWeight(winrt::Windows::UI::Text::FontWeights::Normal());
+  }
   bool empty = wrong >= 0;
   if (wrong >= 0 && static_cast<size_t>(wrong) < typed.size()) {
     for (wchar_t c : typed[static_cast<size_t>(wrong)])
@@ -459,6 +471,11 @@ bool CheckIdentityWords(IdentityScreenView const& view, urmsg::RunMode mode) {
   }
   if (wrong >= 0 && static_cast<size_t>(wrong) < view.wordFields.size())
     view.wordFields[static_cast<size_t>(wrong)].BorderBrush(urnw::colors::DangerBrush());
+  if (wrong >= 0 && static_cast<size_t>(wrong) < view.wordNumbers.size()) {
+    view.wordNumbers[static_cast<size_t>(wrong)].Foreground(urnw::colors::DangerBrush());
+    view.wordNumbers[static_cast<size_t>(wrong)].FontWeight(
+        winrt::Windows::UI::Text::FontWeights::SemiBold());
+  }
   if (view.wordStatus) {
     view.wordStatus.Text(hstring{id::WordCheckLine(mode, wrong, empty)});
     view.wordStatus.Foreground(wrong >= 0 ? urnw::colors::DangerBrush()

@@ -30,6 +30,7 @@ struct IdentityScreenView {
   winrt::Microsoft::UI::Xaml::FrameworkElement root{nullptr};
   // the word fields, in order, and the words they are checked against
   std::vector<winrt::Microsoft::UI::Xaml::Controls::TextBox> wordFields;
+  std::vector<winrt::Microsoft::UI::Xaml::Controls::TextBlock> wordNumbers;  // marked when wrong
   std::vector<std::wstring> expectedWords;
   winrt::Microsoft::UI::Xaml::Controls::TextBlock wordStatus{nullptr};
   winrt::Microsoft::UI::Xaml::Controls::TextBox nameField{nullptr};

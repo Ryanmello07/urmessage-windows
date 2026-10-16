@@ -214,8 +214,10 @@ size_t ThisDeviceIndex(Fixture const& f) {
 
 // The Remove dialog and the lock-out, one builder: the selection decides what it asks.
 void BuildRemove(ScreenModel& m, RunMode mode, Fixture const& f, Selection const& sel) {
-  m.dialog = true;
   const bool asked = PhraseAsked(f, sel);
+  // a dialog that takes the 25 words is drawn at the full width, or the fifth column of fields is
+  // cut off (measured: at the dialog width only words 1 to 20 showed, ci/i1-shots-2)
+  m.dialog = !asked;
   const size_t self = ThisDeviceIndex(f);
   m.blocks.push_back(BannerBlock());
   if (sel.lockOut) {
