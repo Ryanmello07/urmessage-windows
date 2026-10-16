@@ -5818,6 +5818,7 @@ std::vector<std::wstring> CollectDiagnostics() {
   if (WantsDiagnose()) {
     lines.push_back(urmsg::views::InspectRailFieldsProbe());
     lines.push_back(urmsg::views::InspectRailDeviceProbe());
+    lines.push_back(urmsg::views::RailRowFitProbe());
   }
 
   // ---- demo stress: the --demo-stress=N generator ---------------------------

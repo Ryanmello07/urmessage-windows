@@ -210,6 +210,29 @@ PaneKeyValueRow MakePaneKeyValueRow(winrt::hstring const& key, winrt::hstring co
   return out;
 }
 
+void SetPaneKeyValueRowFit(PaneKeyValueRow const& row, PaneKeyValueRowFit const& fit,
+                           winrt::hstring const& wholeValue) {
+  if (!row.root || !row.key || !row.value) return;
+  // The grid MakePaneKeyValueRow made, read from the ROOT, whose only child it is: the same
+  // reading SetPaneListRowFit takes, for the same measured reason.
+  auto grid = row.root.Child().try_as<Controls::Grid>();
+  if (grid && 2 <= grid.ColumnDefinitions().Size()) {
+    const auto star = GridLengthHelper::FromValueAndType(1, GridUnitType::Star);
+    grid.ColumnDefinitions().GetAt(0).Width(fit.keySizesToContent ? GridLengthHelper::Auto() : star);
+    grid.ColumnDefinitions().GetAt(1).Width(fit.keySizesToContent ? star : GridLengthHelper::Auto());
+  } else {
+    urnw::LogWarn("kit: a key/value row has no grid of its own; its columns keep the species' sizing");
+  }
+  // LOCAL values, over the styles' CharacterEllipsis setters, so this instance's trimming is the
+  // fit's and nothing else's.
+  row.key.TextTrimming(fit.keyCut ? TextTrimming::CharacterEllipsis : TextTrimming::None);
+  row.value.TextTrimming(fit.valueCut ? TextTrimming::CharacterEllipsis : TextTrimming::None);
+  if (!wholeValue.empty()) {
+    Controls::ToolTipService::SetToolTip(row.value, winrt::box_value(wholeValue));
+    Automation::AutomationProperties::SetHelpText(row.value, wholeValue);
+  }
+}
+
 namespace {
 // The three elements and the grid that carries them. Shared by the static row
 // and the selectable one so the two CANNOT drift: they are the same row species

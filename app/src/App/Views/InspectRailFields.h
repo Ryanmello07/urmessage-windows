@@ -50,6 +50,7 @@
 #include <vector>
 
 #include "Demo/DemoSwitches.h"  // DemoScreen, for InitialRailMode - pure, no winrt
+#include "Views/StatusStripRules.h"  // TextCut - pure, no winrt
 #include "Demo/DemoWorld.h"
 #include "RunMode.h"            // urmsg::RunMode - pure, no winrt
 
@@ -273,5 +274,20 @@ DeviceListPlan PlanDeviceList(std::vector<demo::DeviceRef> const& devices, bool 
 // every surface task.
 std::wstring InspectRailFieldsProbe();
 std::wstring InspectRailDeviceProbe();
+
+// ── S5 (R60): a rail row's key is never cut ──────────────────────────────────────────────────
+// A RAIL ROW'S KEY IS NEVER CUT AND SIZES TO ITS CONTENT; ITS VALUE TAKES THE REST OF THE ROW AND IS
+// CUT WITH AN ELLIPSIS. A live conversation id is "live-" and 64 hex, 69 characters against the
+// value column's 28-character budget (kInspectValueMaxChars): in a row whose value sized to its
+// content, it pushed the key out of the row and ran past the card's edge. A cut value is still
+// there whole: in its tooltip and its help text, and in the row's automation name.
+struct RailRowFit {
+  TextCut key = TextCut::None;
+  TextCut value = TextCut::Ellipsis;
+  bool keySizesToContent = true;  // the key's column is Auto, the value's Star
+};
+RailRowFit RailKeyValueRowFit();
+// The rail row fit's --diagnose line.
+std::wstring RailRowFitProbe();
 
 }  // namespace urmsg::views

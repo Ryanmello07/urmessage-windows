@@ -348,6 +348,20 @@ PaneKeyValueRow MakePaneKeyValueRow(winrt::hstring const& key,
                                     double height = 34,
                                     winrt::hstring const& accessibleValue = {});
 
+// S5 (R60): THE KEY/VALUE ROW'S FIT, set on ONE INSTANCE the way SetPaneListRowFit sets a list row's.
+// The species is unchanged: the same two TextBlocks on the same grid at the same height. Only this
+// row's column sizing and trimming follow the fit. The defaults are the species as
+// MakePaneKeyValueRow builds it.
+struct PaneKeyValueRowFit {
+  bool keySizesToContent = false;  // true: the key's column is Auto and the value's Star
+  bool keyCut = true;              // the key is cut with an ellipsis
+  bool valueCut = true;            // the value is cut with an ellipsis, given a Star column
+};
+// `wholeValue`, when not empty, becomes the value's tooltip and its help text, so a cut value is
+// still there whole. The row's automation name, which MakePaneKeyValueRow composed, is whole already.
+void SetPaneKeyValueRowFit(PaneKeyValueRow const& row, PaneKeyValueRowFit const& fit,
+                           winrt::hstring const& wholeValue = {});
+
 // A list row: a leading state dot, a title that trims, and a right-aligned
 // figure. The connections table, the contracts list and the split rules are all
 // this one shape on purpose — one row species per pane layout, not three.
