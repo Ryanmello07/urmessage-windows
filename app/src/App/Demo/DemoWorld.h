@@ -219,6 +219,11 @@ struct Conversation {
   // them. A protocol-backed world sets it per group; the fixture never writes it, and
   // WorldFingerprint mixes named fields only, so the fabricated world is unchanged by it.
   uint64_t epoch = 0;
+  // THIS DEVICE WAS REMOVED FROM THIS CONVERSATION (the conversation-list design 2.1 and 3): a valid
+  // commit took it out, and it never clears. The conversation is read-only from here: its composer
+  // says why (ComposerState::Removed), and its transcript stays. The fixture never writes it, and
+  // WorldFingerprint mixes named fields only, so the fabricated world is unchanged by it.
+  bool removed = false;
 };
 
 struct ServerInfo {
@@ -268,6 +273,11 @@ inline constexpr wchar_t kInspectTargetRowId[] = L"c0-r12";
 // no sender names, no receipts past "the server took it", and no read cursor. It lives here, beside the structs, because every view that renders one of those
 // fields already includes this header and none of them may reach into Live\.
 inline constexpr wchar_t kUnavailable[] = L"unavailable";
+
+// THE REMOVED LINE (the conversation-list design 3): a live conversation this device was removed
+// from. Its thread's last line, its row's second line and its composer's reason all say it. One
+// spelling, here beside the placeholder, so the views and the live world share it.
+inline constexpr wchar_t kRemovedLine[] = L"You were removed from this conversation.";
 
 // THE "NOT AVAILABLE" SENTINEL FOR THE TWO NUMERIC INSPECT FIELDS, and why it is a constant rather
 // than a field. MessageInspect::senderLeafIndex and ::wireSizeBytes are uint32_t, so a source that

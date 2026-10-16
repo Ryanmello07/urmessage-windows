@@ -1180,6 +1180,8 @@ struct ThreadParts {
   // (ruling 20 — an unnamed member is a MEMBER) and for a conversation whose role could not be read
   // at all. Only the word "observer" takes it away.
   bool mayRoleSend = true;
+  // The open conversation removed this device (SetThreadRemoved): the composer's removed state.
+  bool removed = false;
   // The no-selection empty state (one centred muted line under the identicon
   // lattice), built Visible and collapsed by the first SetThreadConversation.
   FrameworkElement emptyState{nullptr};
@@ -1870,7 +1872,7 @@ Button MakeInertIconButton(wchar_t const* glyph, wchar_t const* name) {
 void UpdateComposerSend(std::shared_ptr<ThreadParts> const& parts) {
   if (!parts || !parts->composerSend || !parts->composerBox) return;
   const bool sessionCanSend = parts->sendEnabled && parts->onSend != nullptr;
-  const ComposerState state = ComposerStateFor(sessionCanSend, parts->mayRoleSend);
+  const ComposerState state = ComposerStateFor(sessionCanSend, parts->mayRoleSend, parts->removed);
   const std::wstring boxText{parts->composerBox.Text()};
   const bool hasText = !boxText.empty();
   // "Send reply" while the strip is up: what the button does has changed, and the name is the
@@ -1898,9 +1900,10 @@ void UpdateComposerSend(std::shared_ptr<ThreadParts> const& parts) {
   // failed-send line takes: in the faint brush, Enter doing nothing read as the app ignoring you.
   if (parts->composerNote) {
     parts->composerNote.Text(
-        overLimit ? winrt::hstring{ComposerTooLongNote(octets, limit)}
-                  : winrt::hstring{urmsg::ComposerNote(parts->noteMode, parts->mayRoleSend,
-                                                       parts->noteNoSession)});
+        overLimit                            ? winrt::hstring{ComposerTooLongNote(octets, limit)}
+        : state == ComposerState::Removed    ? winrt::hstring{ComposerRemovedNote()}
+                                             : winrt::hstring{urmsg::ComposerNote(parts->noteMode, parts->mayRoleSend,
+                                                                                  parts->noteNoSession)});
     parts->composerNote.Foreground(overLimit ? urnw::colors::DangerBrush()
                                              : urnw::colors::FaintBrush());
   }
@@ -3787,6 +3790,13 @@ void SetThreadSendEnabled(ThreadView& v, bool enabled, bool mayRoleSend) {
   if (!parts) return;
   parts->sendEnabled = enabled;
   parts->mayRoleSend = mayRoleSend;
+  UpdateComposerSend(parts);
+}
+
+void SetThreadRemoved(ThreadView& v, bool removed) {
+  auto parts = Find(v.root);
+  if (!parts) return;
+  parts->removed = removed;
   UpdateComposerSend(parts);
 }
 

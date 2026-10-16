@@ -129,7 +129,9 @@ wchar_t const* HiddenObserverToggleName(bool expanded) {
                   : L"Show the message this observer sent";
 }
 
-ComposerState ComposerStateFor(bool sessionCanSend, bool mayRoleSend) {
+ComposerState ComposerStateFor(bool sessionCanSend, bool mayRoleSend, bool removed) {
+  // REMOVED FIRST: the session is live and the gate is closed for this reason alone.
+  if (removed) return ComposerState::Removed;
   // SESSION FIRST. The header carries the argument; in one line, a fabricated
   // world drawn during a --live dial has fabricated roles and a real absence of
   // a session, and the absence is the true thing to say there.
@@ -154,6 +156,8 @@ std::wstring ComposerSendName(ComposerState state, bool hasText, bool replying) 
       // does has changed, and the name is the channel that says so to a reader
       // who cannot see the strip.
       return hasText ? (replying ? L"Send reply" : L"Send") : L"Send: type a message first";
+    case ComposerState::Removed:
+      return std::wstring(L"Send: ") + demo::kRemovedLine;
   }
   return L"Send";
 }
@@ -169,6 +173,8 @@ std::wstring ComposerBoxName(ComposerState state, bool replying) {
       return std::wstring(L"Message box, disabled. ") + kObserverComposerReason;
     case ComposerState::MaySend:
       return replying ? L"Reply" : L"Message";
+    case ComposerState::Removed:
+      return std::wstring(L"Message box, disabled. ") + demo::kRemovedLine;
   }
   return L"Message";
 }
@@ -177,11 +183,16 @@ std::wstring ComposerBoxPlaceholder(ComposerState state) {
   // The SEEN half of the observer reason. The other two arms keep the shipped
   // placeholder: in the no-session state a person may still type, and the box
   // must not start arguing about a role nothing has read.
+  if (state == ComposerState::Removed) return std::wstring(demo::kRemovedLine);
   return state == ComposerState::ObserverOnly ? std::wstring(kObserverComposerReason)
                                               : std::wstring(L"Message");
 }
 
-bool ComposerBoxEnabled(ComposerState state) { return state != ComposerState::ObserverOnly; }
+bool ComposerBoxEnabled(ComposerState state) {
+  return state != ComposerState::ObserverOnly && state != ComposerState::Removed;
+}
+
+std::wstring ComposerRemovedNote() { return std::wstring(demo::kRemovedLine); }
 
 std::wstring DeleteConfirmTitle() { return L"Delete for everyone?"; }
 

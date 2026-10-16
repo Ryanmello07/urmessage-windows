@@ -2416,6 +2416,29 @@ void GroupLoop(std::shared_ptr<SessionContext> session, std::shared_ptr<GroupSlo
   // FALSE UNTIL THIS GROUP'S FIRST RECEIVE: a restored group, or one joined above epoch 1, will not
   // seal before it (urnetwork_message.h), so its gate stays closed and nothing is queued for it.
   bool gateMayOpen = false;
+  // A GROUP THIS DEVICE WAS REMOVED FROM (urnet_message_group_removal; the conversation-list design
+  // 2.1): read at adoption, after a receive that failed, and after the sends. Once it says so it never
+  // clears, and the group turns read-only: no subscription, no fetch, its gate closed, its transcript
+  // kept. A leave is still served: a removed device can erase its own copy.
+  bool removed = false;
+  uint64_t removedEpoch = 0;
+  // Answers true the moment the removal is first read, so the caller publishes it once.
+  auto readRemoval = [&]() -> bool {
+    if (removed) return false;
+    const nlohmann::json r =
+        nlohmann::json::parse(TakeString(urnet_message_group_removal(group)), nullptr, false);
+    if (r.is_discarded() || !r.is_object() || !r.contains("removed") || !r["removed"].is_boolean() ||
+        !r["removed"].get<bool>())
+      return false;
+    removed = true;
+    if (r.contains("removed_epoch") && r["removed_epoch"].is_number_unsigned())
+      removedEpoch = r["removed_epoch"].get<uint64_t>();
+    SetGateOpen(gidHex, false);
+    urnw::LogWarn("live: *** REMOVED *** this device was removed from group {} after epoch {}; the "
+                  "conversation turns read-only and its loop stops fetching",
+                  gidHex, removedEpoch);
+    return true;
+  };
 
   auto publishWorld = [&](bool logIfChanged) {
     // THE WHOLE LOG, not just what a fetch answered — a reaction and a tombstone change a message
@@ -2425,6 +2448,8 @@ void GroupLoop(std::shared_ptr<SessionContext> session, std::shared_ptr<GroupSlo
     live.groupIdHex = gidHex;
     live.adoptedAtMs = slot->adoptedAtMs;
     live.groupOfOne = IsGroupOfOne(*slot);
+    live.removed = removed;
+    live.removedEpoch = removedEpoch;
     live.epoch = urnet_message_group_epoch(group);
     live.open = urnet_message_group_is_open(group);
     live.clientId = clientId;
@@ -2458,8 +2483,9 @@ void GroupLoop(std::shared_ptr<SessionContext> session, std::shared_ptr<GroupSlo
     // THE SEND BUTTON'S ONE GATE, re-read off the library every time rather than latched when the
     // group opened: a group the server has closed under us stops accepting sends, and a button
     // that learns that only from a failed click is the enabled-but-dead control design §9.1 bans.
-    // AND NOT BEFORE THIS GROUP'S FIRST RECEIVE (gateMayOpen, below).
-    SetGateOpen(gidHex, gateMayOpen && live.open);
+    // AND NOT BEFORE THIS GROUP'S FIRST RECEIVE (gateMayOpen, below), AND NEVER IN A GROUP THAT
+    // REMOVED THIS DEVICE.
+    SetGateOpen(gidHex, gateMayOpen && live.open && !removed);
 
     // Log a changed log, and only a changed one: this loop runs every three
     // seconds for the life of the process and an unconditional dump would bury
@@ -2813,7 +2839,9 @@ void GroupLoop(std::shared_ptr<SessionContext> session, std::shared_ptr<GroupSlo
   };
 
   // THE ROW FIRST, off the group as this device holds it, with the gate kept closed: the list shows
-  // the conversation while its first receive is still on the wire.
+  // the conversation while its first receive is still on the wire. A removal persisted while the app
+  // was closed is read first, so the row is right from the start.
+  readRemoval();
   publishWorld(false);
 
   for (;;) {
@@ -2822,6 +2850,14 @@ void GroupLoop(std::shared_ptr<SessionContext> session, std::shared_ptr<GroupSlo
     // round trip to every message this app writes.
     drainSends();
     if (left) break;
+
+    // A SEND OR A COMMIT THE GROUP REFUSED MAY HAVE BEEN ITS REMOVAL: read it, publish it once, and
+    // from then on fetch nothing (the library serves a removed device nothing above its last epoch).
+    if (readRemoval()) publishWorld(false);
+    if (removed) {
+      WaitSlot(*slot, kFetchPollMs);
+      continue;
+    }
 
     // A GROUP OF ONE HAS NOTHING TO FETCH: it is not open on the server until its first member is
     // added, and that add is served by drainSends above. Its row stands, and it waits for the add.
@@ -2866,6 +2902,9 @@ void GroupLoop(std::shared_ptr<SessionContext> session, std::shared_ptr<GroupSlo
                     NowMs() - fetchStartedMs);
     }
     if (fetched != 0) urnet_release(fetched);
+    // A RECEIVE MAY HAVE CARRIED THE COMMIT THAT REMOVED THIS DEVICE, and the next one fails by that
+    // name: the removal is read after every receive, before the publish below
+    readRemoval();
 
     // THE FIRST RECEIVE IS DONE, so the gate may open from here on.
     gateMayOpen = true;

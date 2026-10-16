@@ -577,10 +577,14 @@ enum class ComposerState {
   NoSession,    // no live session: nothing can be sent for a reason that is not the role
   ObserverOnly, // a live session, and this device may not write to this group
   MaySend,      // a live session and a role that permits sending
+  // THIS DEVICE WAS REMOVED FROM THIS CONVERSATION (the conversation-list design 2.1): asked FIRST,
+  // before the session, because the session is live (other conversations send) and the group's gate
+  // is closed for this reason alone, so "no live session" would be false of it.
+  Removed,
 };
 
-// Total over the two booleans. Session first; see above.
-ComposerState ComposerStateFor(bool sessionCanSend, bool mayRoleSend);
+// Total over the three booleans. Removed first, then session; see above.
+ComposerState ComposerStateFor(bool sessionCanSend, bool mayRoleSend, bool removed = false);
 
 // The Send button's automation name. `hasText` and `replying` refine only the
 // MaySend arm — an empty box and a reply strip are states OF a composer that can
@@ -598,6 +602,9 @@ std::wstring ComposerBoxPlaceholder(ComposerState state);
 // leaves the box live on purpose: a person may type while the mesh is dialling,
 // and the text is still there when it answers.
 bool ComposerBoxEnabled(ComposerState state);
+
+// The composer's caption in the removed state: the removed line, in place of the mode's caption.
+std::wstring ComposerRemovedNote();
 
 // ---- delete for everyone (Spec C 8.2; the owner's ruling of 2026-10-02: at any time) ------
 // The confirmation a Delete press opens. Close is the DEFAULT, so Enter keeps the message. The

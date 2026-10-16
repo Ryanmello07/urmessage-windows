@@ -98,6 +98,9 @@ void SetThreadNoSession(ThreadView& v, bool noSession);
 // Put text in the composer as though it had been typed, for the one demo switch that needs the
 // box full (--demo-composer=overlimit). The button and caption follow it through the one writer.
 void SetThreadComposerText(ThreadView& v, std::wstring const& text);
+// THE OPEN CONVERSATION REMOVED THIS DEVICE (the conversation-list design 2.1): the composer goes to
+// its removed state, whatever the session says. The window re-points it with the conversation.
+void SetThreadRemoved(ThreadView& v, bool removed);
 
 // THE COMPOSER'S DRAFT (the conversation-list design 2.6, F3): what the box holds and the row it
 // replies to. The window reads it before another conversation opens and puts it back when this one
