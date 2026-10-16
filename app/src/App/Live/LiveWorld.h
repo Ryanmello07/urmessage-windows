@@ -210,7 +210,7 @@ struct LiveGroup {
   // row it names.
   std::vector<LiveRoleOutboxEntry> roleOutbox;
   // A LEAVE THIS DEVICE ASKED FOR AND WAS REFUSED (ledger 273), as the library said it, or "".
-  // A granted one is never here: the worker publishes an empty world instead.
+  // A granted one is never here: the worker publishes the world without that conversation instead.
   std::string leaveError;
   // WHEN THIS DEVICE TOOK THE GROUP UP, wall-clock milliseconds: restored, joined or founded in this
   // run. The list's order falls back to it for a conversation with no line yet (the conversation-list

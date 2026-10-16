@@ -60,6 +60,27 @@ GroupGate const* FindGate(std::vector<GroupGate> const& gates, std::string const
 
 std::wstring_view GateVerdictName(GateVerdict verdict);
 
+// ── the push router (the conversation-list design 2.1) ─────────────────────────────────────────
+//
+// ONE PUSH WAITER PER DEVICE, and a push names the group it is for. An id this device holds wakes
+// that group's loop and no other. The empty id says the session was replaced (lib device.go:882-883),
+// and every subscription went with the old connection, so it wakes every loop. An id this device does
+// not hold wakes no loop, and adopts nothing.
+enum class PushRoute {
+  One,   // wake the loop of the group the push names, and only that one
+  All,   // wake every loop
+  None,  // wake none: this device does not hold that group
+};
+
+// The key a pushed id is matched by: the hex the library answered, in lower case, as this app
+// writes every group id (LiveMesh.cpp ToHex).
+std::string PushGroupKey(std::string_view pushed);
+
+// Which loops a push for `pushed` wakes, among the groups held (`heldIds`, each in lower case).
+PushRoute RoutePush(std::vector<std::string> const& heldIds, std::string_view pushed);
+
+std::wstring_view PushRouteName(PushRoute route);
+
 // This file's --diagnose lines, in the "  key              : PASS  detail" shape.
 std::vector<std::wstring> CollectConversationRulesDiagnostics();
 
