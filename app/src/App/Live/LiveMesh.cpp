@@ -37,9 +37,11 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -413,7 +415,13 @@ struct Session {
   uint64_t reserver = 0;
   uint64_t stateStore = 0;
   uint64_t device = 0;
+  // THE SESSION THREAD'S OWN GROUP HANDLE, and only while it is the one road in: JoinFromPeer puts
+  // the group it founded, joined or brought back here, and RunSession hands it to a loop at once.
+  // No group loop ever reads this field (the conversation-list design 2.1).
   uint64_t group = 0;
+  // Every OTHER group a held leave's restore brings back (A10): handed straight to a loop of its
+  // own. Set by RunSession before the join road runs; empty, they are released as before.
+  std::function<void(uint64_t)> adoptExtra;
 
   void Close() {
     char* err = nullptr;
@@ -519,12 +527,47 @@ struct Outbound {
   uint64_t incarnation = 0;
 };
 
-std::mutex g_sendMutex;
-std::condition_variable g_sendWake;
-std::deque<Outbound> g_sendQueue;
-// Set by the push waiter under g_sendMutex and consumed by WaitForSendOrPoll: a push wakes the
-// fetch loop exactly the way a queued send does.
-bool g_pushPending = false;
+// ── the table: one slot per group this device holds (the conversation-list design 2.1) ─────────
+//
+// ONE LOOP PER GROUP, each with its own queue, its own wake and its own push flag, so a fetch that
+// stalls in one conversation (S4 measured six one-minute stalls in 90 minutes on the URnetwork
+// route) holds up no other conversation's sends. The handle is the loop's alone: no other thread
+// touches it, which keeps the rule this file has always kept, one thread per group handle.
+//
+// LOCK ORDER: g_tableMutex, then LiveWorld's own (Publish). A slot's own mutex guards its queue and
+// its push flag only, and is never held while g_tableMutex is taken.
+struct GroupSlot {
+  std::string gidHex;
+  uint64_t incarnation = 0;
+  int64_t adoptedAtMs = 0;  // wall clock: a group with no line yet is ordered by this
+  uint64_t handle = 0;      // the loop's alone
+  std::mutex mutex;
+  std::condition_variable wake;
+  std::deque<Outbound> queue;  // guarded by mutex
+  bool pushPending = false;    // guarded by mutex
+  // The conversation this group's loop built last, for the world every loop publishes. Guarded by
+  // g_tableMutex.
+  urmsg::live::LiveConversation conversation;
+  bool built = false;
+};
+
+std::mutex g_tableMutex;
+std::vector<std::shared_ptr<GroupSlot>> g_slots;  // guarded by g_tableMutex, in adoption order
+// The session's facts, which every conversation of the world shares: the newest any loop read.
+urmsg::live::LiveSession g_liveSession;           // guarded by g_tableMutex
+// Signalled whenever a slot comes or goes; the session thread waits on it for an empty table.
+std::condition_variable g_slotsChanged;
+// A push for an id this device does not hold is logged once per id (the conversation-list design
+// 2.1, the self group: a push never adopts anything).
+std::set<std::string> g_unknownPushLogged;        // guarded by g_tableMutex
+// TRUE WHILE THE SESSION THREAD RUNS THE JOIN ROAD (JoinFromPeer). Its own wait loop serves a pasted
+// join code then, as it did when a device held one group, and no group loop takes the code from
+// under it (AddRoadGroup).
+std::atomic<bool> g_joinRoadRunning{false};
+// ONE SLOT LEAVES AT A TIME (RetireSlot): whether it is the last conversation, the neutral state that
+// then goes first, and its removal are one step, so two loops leaving at once cannot both find
+// another conversation still there and leave the window an empty world with no neutral state first.
+std::mutex g_retireMutex;
 // ── the gates (the conversation-list design 2.2, Live/ConversationRules.h) ──────────────────────
 //
 // ONE GATE PER GROUP THIS DEVICE HOLDS, written by the worker and read by the verbs on the UI thread,
@@ -615,28 +658,123 @@ bool Admit(std::string const& gid, urmsg::live::ActionClass cls, uint64_t& incar
 std::atomic<bool> g_hasGroup{false};
 std::atomic<uint64_t> g_nextLocalId{1};
 
-// The whole queue, taken at once. Called on the worker only.
-std::deque<Outbound> TakeSendQueue() {
-  std::lock_guard<std::mutex> lock(g_sendMutex);
+// A group's whole queue, taken at once. Called on that group's loop only.
+std::deque<Outbound> TakeSlotQueue(GroupSlot& slot) {
+  std::lock_guard<std::mutex> lock(slot.mutex);
   std::deque<Outbound> taken;
-  taken.swap(g_sendQueue);
+  taken.swap(slot.queue);
   return taken;
 }
 
-// Sleep until there is something to send or `ms` has passed, whichever comes first.
-void WaitForSendOrPoll(int64_t ms) {
-  std::unique_lock<std::mutex> lock(g_sendMutex);
-  g_sendWake.wait_for(lock, std::chrono::milliseconds(ms),
-                      [] { return !g_sendQueue.empty() || g_pushPending; });
-  g_pushPending = false;
+// Sleep until this group has something to send, a push named it, or `ms` has passed.
+void WaitSlot(GroupSlot& slot, int64_t ms) {
+  std::unique_lock<std::mutex> lock(slot.mutex);
+  slot.wake.wait_for(lock, std::chrono::milliseconds(ms),
+                     [&slot] { return !slot.queue.empty() || slot.pushPending; });
+  slot.pushPending = false;
 }
 
-// The push waiter: one thread, blocked in the library until the server announces a record, which
-// it turns into a wake of the fetch loop. It owns nothing but the device handle it is given, and
-// it is stopped and joined before that handle can be closed (PushWaiter's destructor).
+std::shared_ptr<GroupSlot> FindSlot(std::string const& gid) {
+  std::lock_guard<std::mutex> lock(g_tableMutex);
+  for (auto const& slot : g_slots)
+    if (slot->gidHex == gid) return slot;
+  return nullptr;
+}
+
+size_t SlotCount() {
+  std::lock_guard<std::mutex> lock(g_tableMutex);
+  return g_slots.size();
+}
+
+// THE ADD ROAD (the founder's dialog and its pasted join code): the one group this device holds,
+// and none while it holds several, until the window names the group an add is for (the
+// conversation-list design 2.3). With one group this is exactly what the one pass did.
+std::string AddRoadGroup() {
+  if (g_joinRoadRunning.load(std::memory_order_acquire)) return std::string();
+  std::lock_guard<std::mutex> lock(g_tableMutex);
+  return g_slots.size() == 1 ? g_slots.front()->gidHex : std::string();
+}
+
+// THE WORLD OF EVERY CONVERSATION BUILT SO FAR, published. g_tableMutex is held by the caller.
+void PublishTableLocked() {
+  std::vector<urmsg::live::LiveConversation> conversations;
+  conversations.reserve(g_slots.size());
+  for (auto const& slot : g_slots)
+    if (slot->built) conversations.push_back(slot->conversation);
+  urmsg::live::Publish(urmsg::live::BuildWorld(g_liveSession, std::move(conversations)));
+}
+
+// ONE GROUP'S NEW CONVERSATION, into the table, and the world of all of them out. Called on that
+// group's loop, off the group as it stands.
+void PublishSlot(GroupSlot& slot, urmsg::live::LiveGroup const& live) {
+  urmsg::live::LiveConversation conversation =
+      urmsg::live::BuildLiveConversation(live, WallClockMs());
+  std::lock_guard<std::mutex> lock(g_tableMutex);
+  slot.conversation = std::move(conversation);
+  slot.built = true;
+  g_liveSession = urmsg::live::SessionOf(live);
+  PublishTableLocked();
+}
+
+// A GROUP LEFT: its slot goes, and the world without it is published. Answers whether the table is
+// now empty. The gate went first (DropGate), so nothing can be queued for it any more.
+bool RemoveSlot(std::string const& gid) {
+  bool empty = false;
+  {
+    std::lock_guard<std::mutex> lock(g_tableMutex);
+    g_slots.erase(std::remove_if(g_slots.begin(), g_slots.end(),
+                                 [&](std::shared_ptr<GroupSlot> const& slot) {
+                                   return slot->gidHex == gid;
+                                 }),
+                  g_slots.end());
+    empty = g_slots.empty();
+    PublishTableLocked();
+  }
+  g_slotsChanged.notify_all();
+  return empty;
+}
+
+// A PUSH, ROUTED BY ITS GROUP ID (the conversation-list design 2.1; ConversationRules.h RoutePush):
+// a group this device holds wakes that group's loop, "" (the session was replaced) wakes every
+// loop, and an id this device does not hold wakes none, adopts nothing, and is logged once.
+void RoutePushToLoops(std::string const& pushed) {
+  std::vector<std::shared_ptr<GroupSlot>> wake;
+  {
+    std::lock_guard<std::mutex> lock(g_tableMutex);
+    std::vector<std::string> held;
+    held.reserve(g_slots.size());
+    for (auto const& slot : g_slots) held.push_back(slot->gidHex);
+    const urmsg::live::PushRoute route = urmsg::live::RoutePush(held, pushed);
+    if (route == urmsg::live::PushRoute::All) {
+      wake = g_slots;
+    } else if (route == urmsg::live::PushRoute::One) {
+      const std::string id = urmsg::live::PushGroupKey(pushed);
+      for (auto const& slot : g_slots)
+        if (slot->gidHex == id) wake.push_back(slot);
+    } else if (g_unknownPushLogged.insert(pushed).second) {
+      urnw::LogWarn("live: a push named group {}, which this device does not hold; it wakes no "
+                    "conversation and adopts nothing",
+                    pushed.substr(0, (std::min)(pushed.size(), size_t{16})));
+    }
+  }
+  for (auto const& slot : wake) {
+    {
+      std::lock_guard<std::mutex> lock(slot->mutex);
+      slot->pushPending = true;
+    }
+    slot->wake.notify_all();
+  }
+}
+
+// The push waiter: ONE PER DEVICE, for the life of the session, blocked in the library until the
+// server announces a record, which it routes to the loop of the group it names. It owns nothing but
+// the device handle it is given, and it is stopped and joined before that handle can be closed
+// (its destructor). GUARDED, now that routing a push allocates: a throw is named in the log.
 class PushWaiter {
  public:
-  explicit PushWaiter(uint64_t device) : device_(device), thread_([this] { Run(); }) {}
+  explicit PushWaiter(uint64_t device)
+      : device_(device),
+        thread_(urnw::StartGuardedThread("urmessage-live-push", [this] { Run(); })) {}
   ~PushWaiter() {
     stop_.store(true);
     if (thread_.joinable()) thread_.join();
@@ -650,12 +788,9 @@ class PushWaiter {
       // a short wait, so a stop is noticed within a second
       char* groupHex = urnet_message_device_wait_push(device_, 1000);
       if (groupHex == nullptr) continue;
+      const std::string pushed(groupHex);
       urnet_free_string(groupHex);
-      {
-        std::lock_guard<std::mutex> lock(g_sendMutex);
-        g_pushPending = true;
-      }
-      g_sendWake.notify_all();
+      RoutePushToLoops(pushed);
     }
   }
   const uint64_t device_;
@@ -838,7 +973,8 @@ bool RandomOctets(uint8_t* out, size_t len) {
 // urnet_message_group_is_open is the only reading that cannot drift from the truth -- a count of
 // how many people this session has added would be wrong after a restart, and wrong in the
 // direction that refuses every later add with a sentence about the wrong call.
-bool AddMemberFromCode(Session& s, const std::string& theirCode, const std::string& joinCode) {
+bool AddMemberFromCode(Session& s, uint64_t group, const std::string& theirCode,
+                       const std::string& joinCode) {
   std::vector<uint8_t> keyPackage;
   if (!DecodeBase64(theirCode, keyPackage)) {
     PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
@@ -850,14 +986,14 @@ bool AddMemberFromCode(Session& s, const std::string& theirCode, const std::stri
   }
 
   char* err = nullptr;
-  const bool wasOpen = urnet_message_group_is_open(s.group);
+  const bool wasOpen = urnet_message_group_is_open(group);
   uint64_t invite = 0;
   if (wasOpen) {
     invite = urnet_message_group_add_member_and_publish(
-        s.group, s.ctx, keyPackage.data(), static_cast<int32_t>(keyPackage.size()), &err);
+        group, s.ctx, keyPackage.data(), static_cast<int32_t>(keyPackage.size()), &err);
   } else {
     invite = urnet_message_group_add_member(
-        s.group, keyPackage.data(), static_cast<int32_t>(keyPackage.size()), &err);
+        group, keyPackage.data(), static_cast<int32_t>(keyPackage.size()), &err);
   }
   if (invite == 0) {
     const std::string why = TakeError(&err);
@@ -912,7 +1048,7 @@ bool AddMemberFromCode(Session& s, const std::string& theirCode, const std::stri
   // THE OPEN, and only on the founding road. add_member_and_publish has already published its
   // own commit; add_member has not, and group_open is what tells the server the group exists.
   if (!wasOpen) {
-    if (!urnet_message_group_open(s.group, s.ctx, &err)) {
+    if (!urnet_message_group_open(group, s.ctx, &err)) {
       const std::string why = TakeError(&err);
       // THE GROUP IS OPEN ON THE SERVER, and this device could not finish saving it: its creation
       // could not be recorded as finished (R34 item 3, R35 A8), or its record could not be persisted
@@ -933,8 +1069,8 @@ bool AddMemberFromCode(Session& s, const std::string& theirCode, const std::stri
 
   urnw::LogInfo("live: *** MEMBER ADDED *** by {}; the group is at epoch {}, open: {}",
                 wasOpen ? "add_member_and_publish" : "add_member + open",
-                urnet_message_group_epoch(s.group),
-                urnet_message_group_is_open(s.group) ? "yes" : "no");
+                urnet_message_group_epoch(group),
+                urnet_message_group_is_open(group) ? "yes" : "no");
   // WHAT THE INVITATION IS, the dialog's label says (Live/RefusalCopy.h, kAdderInviteLabel). Since
   // invite version 3 only the joiner's device can open it, so "whoever has it is in the group" is
   // no longer true, and it is no longer said.
@@ -1019,6 +1155,11 @@ HeldRestore RestoreHeldGroup(Session& s, HeldInvite const& held) {
                       std::memcmp(gid, held.groupId.data(), sizeof(gid)) == 0;
     if (same) {
       back = group;
+    } else if (s.adoptExtra) {
+      // A GROUP THE LIBRARY NOW HOLDS OPEN: it gets a loop of its own, like every other group
+      // handed over (the conversation-list design 2.1, A10). Released, it would be held by the
+      // library and served by nobody.
+      s.adoptExtra(group);
     } else {
       urnet_release(group);
     }
@@ -1490,7 +1631,7 @@ bool JoinFromPeer(Session& s) {
         theirCode.swap(g_pastedJoinCode);
       }
       if (!theirCode.empty()) {
-        if (AddMemberFromCode(s, theirCode, joinCode)) {
+        if (AddMemberFromCode(s, s.group, theirCode, joinCode)) {
           // An add that opened the group is the moment this device has a session. The fetch loop
           // below takes it from here.
           if (urnet_message_group_is_open(s.group)) return true;
@@ -1949,12 +2090,12 @@ std::string RouteLabel(Session const& s, Route route) {
 // THE HAND-OVER IS A COMMIT AND THE LEAVE IS NOT, and the order is the owner rule's: an owner who
 // is the last of its identity's leaves is refused while anybody else is in the group (MASTER
 // section 11), so ownership moves first, and a hand-over that is refused leaves nothing done.
-bool LeaveGroup(Session& s, std::string const& transferTo, std::string& refusal) {
+bool LeaveGroup(Session& s, uint64_t group, std::string const& transferTo, std::string& refusal) {
   char* err = nullptr;
   refusal.clear();
   if (!transferTo.empty()) {
     const int32_t kind =
-        urnet_message_group_transfer_ownership(s.group, s.ctx, transferTo.c_str(), &err);
+        urnet_message_group_transfer_ownership(group, s.ctx, transferTo.c_str(), &err);
     const std::string failure = TakeError(&err);
     if (kind != URNET_MESSAGE_COMMIT_OK) {
       refusal = failure.empty()
@@ -1966,7 +2107,7 @@ bool LeaveGroup(Session& s, std::string const& transferTo, std::string& refusal)
       return false;
     }
     urnw::LogInfo("live: leave: ownership handed to {}; the group is at epoch {}", transferTo,
-                  urnet_message_group_epoch(s.group));
+                  urnet_message_group_epoch(group));
   }
   // ONE RECEIVE FIRST, while there is a session to receive on (review L4). A transfer of ownership
   // TO this device that it has not fetched would make it an owner who leaves, and strand the
@@ -1974,17 +2115,17 @@ bool LeaveGroup(Session& s, std::string const& transferTo, std::string& refusal)
   // session, and a device that cannot fetch cannot learn of the transfer either way.
   uint8_t openGid[32] = {};
   int32_t openGidLen = static_cast<int32_t>(sizeof(openGid));
-  const bool open = urnet_message_group_id(s.group, openGid, &openGidLen) &&
+  const bool open = urnet_message_group_id(group, openGid, &openGidLen) &&
                     GateOpen(ToHex(openGid, openGidLen));
   if (open) {
-    const uint64_t fetched = urnet_message_group_receive(s.group, s.ctx, &err);
+    const uint64_t fetched = urnet_message_group_receive(group, s.ctx, &err);
     const std::string fetchError = TakeError(&err);
     if (!fetchError.empty()) urnw::LogWarn("live: leave: the receive before it reported: {}", fetchError);
     if (fetched != 0) urnet_release(fetched);
   }
   uint8_t gid[32] = {};
   int32_t gidLen = static_cast<int32_t>(sizeof(gid));
-  if (!urnet_message_group_id(s.group, gid, &gidLen)) {
+  if (!urnet_message_group_id(group, gid, &gidLen)) {
     refusal = "this computer could not read which group it is in, so it did not leave";
     urnw::LogError("live: leave: group_id answered nothing; not leaving");
     return false;
@@ -2026,6 +2167,658 @@ bool LeaveGroup(Session& s, std::string const& transferTo, std::string& refusal)
   if (!StoreConversationLocalName(ToHex(gid, gidLen), ""))
     urnw::LogWarn("live: leave: the conversation's own label could not be removed");
   return true;
+}
+
+// ── one group's loop (the conversation-list design 2.1) ─────────────────────────────────────────
+//
+// THE SESSION, SHARED: the handles every loop uses, on the heap and held by each loop, so no loop
+// ever outlives what it calls. RunSession closes the session only when no loop runs.
+struct SessionContext {
+  Session s;
+  Hellos hellos;
+  Route route = Route::Direct;
+  std::string clientId;
+  std::string platformUrl;
+  // ONE PUSH WAITER FOR THE DEVICE (RoutePushToLoops), made once the device is connected.
+  std::unique_ptr<PushWaiter> pushWaiter;
+
+  SessionContext() = default;
+  SessionContext(const SessionContext&) = delete;
+  SessionContext& operator=(const SessionContext&) = delete;
+  // CLOSED BY WHOEVER LETS GO OF IT LAST: RunSession, unless a loop still runs over its handles, and
+  // then the last loop to end. The waiter stops first, because it waits on the device. Close is
+  // idempotent, so a session RunSession closed on a path that gave up is not closed twice.
+  ~SessionContext() {
+    pushWaiter.reset();
+    s.Close();
+  }
+};
+
+// A GROUP'S SLOT GOES: its handle, its gate and with it every entry stamped for it, its queue, and
+// its conversation, and the world is published without it. No other conversation, gate or queue is
+// touched (the conversation-list design 2.2). Called on the group's own loop, which owns the handle.
+// Answers whether this device now holds no group.
+//
+// THE LAST CONVERSATION takes the pasted codes with it, which carry no group (re-check R5), and
+// publishes a neutral onboarding state (`sentence`) BEFORE the empty world (re-check R4), exactly as
+// when this device held one group: the window re-arms its join dialog when the empty world arrives
+// and draws the last state it holds, which for a founder is the old invitation, a secret.
+bool RetireSlot(GroupSlot& slot, std::string const& sentence) {
+  if (slot.handle != 0) {
+    urnet_release(slot.handle);
+    slot.handle = 0;
+  }
+  DropGate(slot.gidHex);
+  if (const auto stale = TakeSlotQueue(slot); !stale.empty())
+    urnw::LogWarn("live: {} action(s) queued for group {} were dropped with it", stale.size(),
+                  slot.gidHex);
+  std::lock_guard<std::mutex> retire(g_retireMutex);
+  if (SlotCount() == 1) {
+    {
+      std::lock_guard<std::mutex> lock(g_onboardMutex);
+      g_pastedJoinCode.clear();
+      g_pastedInvite.clear();
+    }
+    PublishOnboard(urmsg::live::OnboardStep::Idle, std::string(), sentence);
+  }
+  const bool empty = RemoveSlot(slot.gidHex);
+  if (empty) g_hasGroup.store(false, std::memory_order_relaxed);
+  return empty;
+}
+
+// WHAT ONE PASS WAS WHEN A DEVICE HELD ONE GROUP, bound to one slot: its fetch, its sends, its
+// subscription, its outboxes, its roster line and its leave. It ends only when its group is left.
+void GroupLoop(std::shared_ptr<SessionContext> session, std::shared_ptr<GroupSlot> slot) {
+  Session& s = session->s;
+  const Route route = session->route;
+  const std::string clientId = session->clientId;
+  const std::string platformUrl = session->platformUrl;
+  const uint64_t group = slot->handle;
+  const std::string gidHex = slot->gidHex;
+  // THIS GROUP'S GATE was adopted with its slot; every action it runs was queued for this
+  // incarnation (review M1; the conversation-list design 2.2)
+  const uint64_t incarnation = slot->incarnation;
+  char* err = nullptr;
+  urnw::LogInfo("live: group {} at epoch {}, open on the server: {}", gidHex,
+                urnet_message_group_epoch(group),
+                urnet_message_group_is_open(group) ? "yes" : "no");
+
+  // ── fetch, forever ──────────────────────────────────────────────────────────
+  // A LOOP THAT A PUSH WAKES. The server announces each new record to a subscribed
+  // connection (spec B 4.3.5, ledger 269) and the loop answers with the same fetch
+  // it polls with, so a push changes WHEN a record is read and never HOW. It runs
+  // until this device leaves its group (ledger 273), and otherwise for the life of the
+  // process; the worker is detached and the OS reclaims it at
+  // exit, which is why Session::Close below is only reached on the paths that give up.
+  urnw::LogInfo("live: entering the fetch loop, every {} ms until the push subscription holds", kFetchPollMs);
+  int64_t lastPublishedCount = -1;
+  // THE PUSH (ledger 269): the device's one waiter wakes this loop the moment the server announces
+  // a record for this group (RoutePushToLoops), and the subscription state the loop keeps current
+  // below
+  // the development switch above, read once per pass; it fires at most once per pass
+  const int64_t devLeaveAfterMs = DevLeaveAfterMs();
+  const int64_t passStartedMs = NowMs();
+  bool devLeaveQueued = false;
+  bool subscribed = false;
+  std::string lastSubscribeError;
+
+  // WHAT THIS DEVICE HAS TRIED TO SEND AND THE SERVER HAS NOT TAKEN. Owned by this thread and by
+  // nothing else — the UI hands over octets through the queue and reads the result back as a
+  // published world, so this vector needs no lock. See LiveWorld.h for why a row that is not a
+  // record is still not a fabrication.
+  std::vector<urmsg::live::LiveOutboxEntry> outbox;
+  // And the reactions and un-reactions it has tried. Same ownership, same reason.
+  std::vector<urmsg::live::LiveReactionOutboxEntry> reactionOutbox;
+  // And the deletions it has asked for. Same ownership, same reason.
+  std::vector<urmsg::live::LiveDeleteOutboxEntry> deleteOutbox;
+  // And the role changes it has asked for (item 242 R3). Same ownership, same reason.
+  std::vector<urmsg::live::LiveRoleOutboxEntry> roleOutbox;
+  // The roster line last logged, so the log carries a roster only when it moved.
+  std::string lastRosterLine;
+  std::string lastRouteLine;
+
+  // Build the world off the group AS IT STANDS and hand it to the UI. Every publish below goes
+  // through here, so the log and the outbox can never be drawn from two different moments — a send
+  // that succeeded between them would otherwise render as both a record and a pending row.
+  // A REFUSED LEAVE'S SENTENCE, drawn at the foot of the conversation until the next attempt, and
+  // the flag a granted one sets (ledger 273): drainSends sets it and the loop below reads it.
+  std::string leaveError;
+  bool left = false;
+  // FALSE UNTIL THIS GROUP'S FIRST RECEIVE: a restored group, or one joined above epoch 1, will not
+  // seal before it (urnetwork_message.h), so its gate stays closed and nothing is queued for it.
+  bool gateMayOpen = false;
+
+  auto publishWorld = [&](bool logIfChanged) {
+    // THE WHOLE LOG, not just what a fetch answered — a reaction and a tombstone change a message
+    // that ALREADY arrived and are never in the fetch's own list, so a reader of the fetch alone
+    // never sees either.
+    urmsg::live::LiveGroup live;
+    live.groupIdHex = gidHex;
+    live.adoptedAtMs = slot->adoptedAtMs;
+    live.epoch = urnet_message_group_epoch(group);
+    live.open = urnet_message_group_is_open(group);
+    live.clientId = clientId;
+    live.serverClientId = kServerClientId;
+    live.platformUrl = platformUrl;
+    live.host = RouteLabel(s, route);
+    live.keyPinned = s.routeClient;
+    if (s.routeClient) {
+      if (const std::string line = TakeString(urnet_message_route_client_status(s.client));
+          line != lastRouteLine) {
+        lastRouteLine = line;
+        urnw::LogInfo("live: ROUTE {}", line);
+      }
+    }
+    live.statsJson = TakeString(urnet_message_group_stats(group));
+    live.outbox = outbox;
+    live.reactionOutbox = reactionOutbox;
+    live.deleteOutbox = deleteOutbox;
+    live.roleOutbox = roleOutbox;
+    live.leaveError = leaveError;
+    CollectMessages(group, live.messages);
+    // THE ROSTER AND THIS DEVICE'S ROLE, on every publish and not once at the open: a role change
+    // is a commit another member makes, and it lands here on some later fetch as a moved row.
+    CollectMembers(group, live.members);
+    live.myRole = ReadMyRole(group);
+    if (const std::string roster = RosterLine(live); roster != lastRosterLine) {
+      lastRosterLine = roster;
+      urnw::LogInfo("live: ROSTER {}", roster);
+    }
+
+    // THE SEND BUTTON'S ONE GATE, re-read off the library every time rather than latched when the
+    // group opened: a group the server has closed under us stops accepting sends, and a button
+    // that learns that only from a failed click is the enabled-but-dead control design §9.1 bans.
+    // AND NOT BEFORE THIS GROUP'S FIRST RECEIVE (gateMayOpen, below).
+    SetGateOpen(gidHex, gateMayOpen && live.open);
+
+    // Log a changed log, and only a changed one: this loop runs every three
+    // seconds for the life of the process and an unconditional dump would bury
+    // the session it is evidence about.
+    if (logIfChanged && static_cast<int64_t>(live.messages.size()) != lastPublishedCount) {
+      lastPublishedCount = static_cast<int64_t>(live.messages.size());
+      LogMessages(live);
+      urnw::LogInfo("live: group stats {}", live.statsJson);
+    }
+
+    // PUBLISH EVERY TIME, changed or not. The count is a poor change detector —
+    // a reaction landing on an existing message, or a tombstone, moves nothing —
+    // and the UI's own generation counter already drops a beat it has drawn.
+    PublishSlot(*slot, live);
+  };
+
+  // ── the send verb, on the thread that owns the handles ──────────────────────
+  //
+  // THREE PUBLISHES PER BATCH AND EACH ONE IS A DIFFERENT SENTENCE:
+  //   before the call  — "Sending", so the composer empties into a row the reader can see rather
+  //                      than into nothing for however long the server takes;
+  //   after each call  — the record itself (it is in this device's own log the instant the submit
+  //                      is acknowledged, so the pending row is dropped in the same beat it
+  //                      appears), or "Not sent" carrying the library's own reason;
+  //   the loop's own   — everything the far side has said since.
+  auto drainSends = [&] {
+    std::deque<Outbound> queued = TakeSlotQueue(*slot);
+    // NOTHING QUEUED FOR ANOTHER GROUP, OR FOR AN EARLIER INCARNATION OF THIS ONE, IS DONE HERE
+    // (review M1; the conversation-list design 2.2): it was asked of a group this device has since
+    // left, or of another conversation, and done here it would be done to the wrong one.
+    const size_t asked = queued.size();
+    const std::vector<urmsg::live::GroupGate> gates = GatesSnapshot();
+    queued.erase(std::remove_if(queued.begin(), queued.end(),
+                                [&](Outbound const& o) {
+                                  return o.groupIdHex != gidHex || o.incarnation != incarnation ||
+                                         !urmsg::live::ActionStillHeld(gates, o.groupIdHex,
+                                                                       o.incarnation);
+                                }),
+                 queued.end());
+    if (queued.size() != asked)
+      urnw::LogWarn("live: {} queued action(s) were for a group this device has left; dropped",
+                    asked - queued.size());
+    if (queued.empty()) return;
+
+    for (auto& out : queued) {
+      // A LEAVE ADDS NO ROW: it is granted, and the conversation goes, or it is refused, and the
+      // refusal is drawn at the foot (leaveError).
+      if (out.kind == OutboundKind::Leave) continue;
+      // THE THREE COMMIT VERBS, and the name stays `isRole` because what it selects is "this
+      // entry's outcome is drawn as a note under a MEMBER", which is true of a removal too.
+      const bool isRole = out.kind == OutboundKind::SetRole ||
+                          out.kind == OutboundKind::TransferOwnership ||
+                          out.kind == OutboundKind::RemoveMember;
+      if (isRole) {
+        // ONE ATTEMPT PER MEMBER ON SCREEN, for the same reason a reaction retry supersedes its
+        // failure: a second press after a refusal is that change asked for again, not a second
+        // note under the first.
+        roleOutbox.erase(std::remove_if(roleOutbox.begin(), roleOutbox.end(),
+                                        [&](urmsg::live::LiveRoleOutboxEntry const& e) {
+                                          return e.done && e.identityPub == out.identityPub;
+                                        }),
+                         roleOutbox.end());
+        urmsg::live::LiveRoleOutboxEntry entry;
+        entry.localId = out.localId;
+        entry.identityPub = out.identityPub;
+        entry.role = out.role;
+        entry.attemptedAtMs = WallClockMs();
+        roleOutbox.push_back(std::move(entry));
+        continue;
+      }
+      if (out.kind == OutboundKind::Delete) {
+        // ONE ATTEMPT PER LINE ON SCREEN: a second press on a line whose last deletion failed is
+        // that deletion again, not a second note beside the first failure.
+        deleteOutbox.erase(std::remove_if(deleteOutbox.begin(), deleteOutbox.end(),
+                                          [&](urmsg::live::LiveDeleteOutboxEntry const& e) {
+                                            return e.targetId == out.targetHex;
+                                          }),
+                           deleteOutbox.end());
+        urmsg::live::LiveDeleteOutboxEntry entry;
+        entry.localId = out.localId;
+        entry.targetId = out.targetHex;
+        entry.attemptedAtMs = WallClockMs();
+        deleteOutbox.push_back(std::move(entry));
+        continue;
+      }
+      const bool isReaction =
+          out.kind == OutboundKind::ReactAdd || out.kind == OutboundKind::ReactRemove;
+      if (isReaction) {
+        // ONE ATTEMPT PER (target, emoji) ON SCREEN. A second tap on an emoji whose last attempt
+        // failed is that attempt again, not a second reaction beside the first failure - so the
+        // failed entry it supersedes goes in the same beat, exactly as a text retry replaces its
+        // failed row.
+        reactionOutbox.erase(
+            std::remove_if(reactionOutbox.begin(), reactionOutbox.end(),
+                           [&](urmsg::live::LiveReactionOutboxEntry const& e) {
+                             return e.failed && e.targetId == out.targetHex && e.emoji == out.emoji;
+                           }),
+            reactionOutbox.end());
+        urmsg::live::LiveReactionOutboxEntry entry;
+        entry.localId = out.localId;
+        entry.targetId = out.targetHex;
+        entry.emoji = out.emoji;
+        entry.remove = out.kind == OutboundKind::ReactRemove;
+        entry.attemptedAtMs = WallClockMs();
+        reactionOutbox.push_back(std::move(entry));
+        continue;
+      }
+      // A RETRY SUPERSEDES THE ENTRY IT CAME FROM rather than joining it. Without this the failed
+      // row stays on screen beside the second attempt and one message reads as two.
+      //
+      // AND IT INHERITS THE PARENT. The two [ Try again ] buttons name the row and nothing else -
+      // MessageRow has no reply-to slot - so a retry of a failed REPLY arrives here as a plain
+      // text naming the failed entry, and the entry is the one place that still knows which line
+      // it answered. Taken from there, before the entry goes, so the retry seals as the same
+      // reply rather than as a text that happens to have the same words.
+      if (!out.replaces.empty()) {
+        auto old = std::find_if(outbox.begin(), outbox.end(),
+                                [&](urmsg::live::LiveOutboxEntry const& e) {
+                                  return e.localId == out.replaces;
+                                });
+        if (old != outbox.end() && out.targetHex.empty() && !old->replyToId.empty() &&
+            FromHexId(old->replyToId, out.target)) {
+          out.kind = OutboundKind::Reply;
+          out.targetHex = old->replyToId;
+        }
+        outbox.erase(std::remove_if(outbox.begin(), outbox.end(),
+                                    [&](urmsg::live::LiveOutboxEntry const& e) {
+                                      return e.localId == out.replaces;
+                                    }),
+                     outbox.end());
+      }
+      urmsg::live::LiveOutboxEntry entry;
+      entry.localId = out.localId;
+      entry.body = out.body;
+      entry.replyToId = out.targetHex;
+      entry.attemptedAtMs = WallClockMs();
+      outbox.push_back(std::move(entry));
+    }
+    publishWorld(false);
+
+    for (auto const& out : queued) {
+      // FIRST IN THE LOOP, because nothing queued behind a granted leave is for a group this
+      // device still holds: it ends the batch and the pass.
+      if (out.kind == OutboundKind::Leave) {
+        if (LeaveGroup(s, group, out.identityPub, leaveError)) {
+          left = true;
+          return;
+        }
+        // REFUSED: nothing changed, and another leave of this group may be asked for
+        SetGateLeaving(gidHex, false);
+        publishWorld(false);
+        continue;
+      }
+      char* sendErr = nullptr;
+      const int64_t startedMs = NowMs();
+      std::string info;
+      const char* verb = "send";
+      // THE TWO ROLE VERBS ANSWER A KIND, NOT A HANDLE (urnetwork_message.h: "BRANCH ON THE KIND
+      // AND SHOW THE TEXT"), so they are handled here before the switch that reads `info`. OK
+      // drops the entry - the roster read on the publish below already shows the change; every
+      // other kind is kept on the entry with the library's own sentence, for the rail to draw as
+      // the outcome it is. The commit is one round trip inside the call, like a send.
+      if (out.kind == OutboundKind::SetRole || out.kind == OutboundKind::TransferOwnership ||
+          out.kind == OutboundKind::RemoveMember) {
+        const bool transfer = out.kind == OutboundKind::TransferOwnership;
+        const bool removal = out.kind == OutboundKind::RemoveMember;
+        verb = removal ? "remove_member" : transfer ? "transfer_ownership" : "set_role";
+        // THE REMOVAL TAKES NO ROLE, which is why it is a third arm here rather than a set_role
+        // with a different string: urnet_message_group_remove_member's only member argument is the
+        // identity, and every leaf that identity holds goes in the one commit it builds.
+        const int32_t kind =
+            removal  ? urnet_message_group_remove_member(group, s.ctx,
+                                                         out.identityPub.c_str(), &sendErr)
+            : transfer ? urnet_message_group_transfer_ownership(group, s.ctx,
+                                                                out.identityPub.c_str(), &sendErr)
+                       : urnet_message_group_set_role(group, s.ctx, out.identityPub.c_str(),
+                                                      out.role.c_str(), &sendErr);
+        const std::string failure = TakeError(&sendErr);
+        const int64_t tookMs = NowMs() - startedMs;
+        auto at = std::find_if(roleOutbox.begin(), roleOutbox.end(),
+                               [&](urmsg::live::LiveRoleOutboxEntry const& e) {
+                                 return e.localId == out.localId;
+                               });
+        const char* kindName = kind == URNET_MESSAGE_COMMIT_OK        ? "OK"
+                               : kind == URNET_MESSAGE_COMMIT_REFUSED ? "REFUSED"
+                               : kind == URNET_MESSAGE_COMMIT_LOST    ? "LOST"
+                               : kind == URNET_MESSAGE_COMMIT_INVALID ? "INVALID"
+                                                                      : "FAILED";
+        if (kind == URNET_MESSAGE_COMMIT_OK) {
+          // The removal's line names no role, because it asked for none. Printing `-> member`
+          // beside a member that is no longer in the group would be the log claiming the opposite
+          // of what the call did.
+          urnw::LogInfo("live: *** {} *** {}{} answered OK in {} ms; the group is at epoch {}",
+                        removal    ? "MEMBER REMOVED"
+                        : transfer ? "OWNERSHIP TRANSFERRED"
+                                   : "ROLE SET",
+                        out.identityPub, removal ? std::string() : " -> " + out.role, tookMs,
+                        urnet_message_group_epoch(group));
+          if (at != roleOutbox.end()) roleOutbox.erase(at);
+        } else {
+          urnw::LogError("live: {} {}{} answered {} after {} ms: {}", verb, out.identityPub,
+                         removal ? std::string() : " -> " + out.role, kindName, tookMs,
+                         failure.empty() ? "no reason given" : failure);
+          if (at != roleOutbox.end()) {
+            at->done = true;
+            at->kind = kind;
+            at->error = failure;
+          }
+        }
+        publishWorld(false);
+        continue;
+      }
+      switch (out.kind) {
+        case OutboundKind::Text:
+          // COUNTED OCTETS, NOT A char*. The body is whatever was typed and a UTF-8 encoding of it
+          // can hold a 0x00 nowhere except by a caller putting one there — but the ABI's rule for
+          // every binary value going in is a pointer and a length (cgo/ctest/message_abi_test.c's
+          // 21-octet body is two NULs and two multi-byte sequences precisely to hold this), and a
+          // length is what is passed here so that the rule is kept rather than relied on.
+          info = TakeString(urnet_message_group_send(
+              group, s.ctx, reinterpret_cast<const uint8_t*>(out.body.data()),
+              static_cast<int32_t>(out.body.size()), &sendErr));
+          break;
+        case OutboundKind::Reply:
+          // The parent as 32 counted octets, decoded at the queue. The library does not require
+          // the parent to be present - it may have been deleted or pruned - so a reply to a line
+          // that has since vanished is sealed all the same, and the far side names what it cannot
+          // show exactly as this side does.
+          verb = "send_reply";
+          info = TakeString(urnet_message_group_send_reply(
+              group, s.ctx, out.target.data(), static_cast<int32_t>(out.target.size()),
+              reinterpret_cast<const uint8_t*>(out.body.data()),
+              static_cast<int32_t>(out.body.size()), &sendErr));
+          break;
+        case OutboundKind::ReactAdd:
+          // The emoji IS a NUL-terminated char* here, and that is the ABI's own rule for this one
+          // argument (urnetwork_message.h: "the emoji is a NUL-terminated utf-8 string"), unlike
+          // every binary value above. It is checked as 1..64 octets of valid UTF-8 before anything
+          // is sealed, and refused by name otherwise.
+          verb = "react";
+          info = TakeString(urnet_message_group_react(group, s.ctx, out.target.data(),
+                                                      static_cast<int32_t>(out.target.size()),
+                                                      out.emoji.c_str(), &sendErr));
+          break;
+        case OutboundKind::ReactRemove:
+          verb = "unreact";
+          info = TakeString(urnet_message_group_unreact(group, s.ctx, out.target.data(),
+                                                        static_cast<int32_t>(out.target.size()),
+                                                        out.emoji.c_str(), &sendErr));
+          break;
+        case OutboundKind::Delete:
+          // The target as 32 counted octets, decoded at the queue. The library answers the
+          // tombstone's own message info, or refuses a target this device did not write.
+          verb = "delete";
+          info = TakeString(urnet_message_group_delete(group, s.ctx, out.target.data(),
+                                                       static_cast<int32_t>(out.target.size()),
+                                                       &sendErr));
+          break;
+        case OutboundKind::SetRole:
+        case OutboundKind::TransferOwnership:
+        case OutboundKind::RemoveMember:
+        case OutboundKind::Leave:
+          break;  // handled above; unreachable
+      }
+      const std::string failure = TakeError(&sendErr);
+      const int64_t tookMs = NowMs() - startedMs;
+
+      if (out.kind == OutboundKind::Delete) {
+        auto at = std::find_if(deleteOutbox.begin(), deleteOutbox.end(),
+                               [&](urmsg::live::LiveDeleteOutboxEntry const& e) {
+                                 return e.localId == out.localId;
+                               });
+        if (!info.empty()) {
+          // the tombstone's own record id and message_id, and no body: the TARGET changes and the
+          // next publish draws it as the placeholder
+          urnw::LogInfo("live: *** DELETED *** message {} for everyone in {} ms: {}", out.targetHex,
+                        tookMs, info);
+          if (at != deleteOutbox.end()) deleteOutbox.erase(at);
+        } else {
+          urnw::LogError("live: delete of message {} was REFUSED after {} ms: {}", out.targetHex,
+                         tookMs, failure.empty() ? "no reason given" : failure);
+          if (at != deleteOutbox.end()) {
+            at->failed = true;
+            at->error = failure.empty() ? std::string("the library refused the deletion and gave no reason")
+                                        : failure;
+          }
+        }
+        publishWorld(false);
+        continue;
+      }
+      if (out.kind == OutboundKind::ReactAdd || out.kind == OutboundKind::ReactRemove) {
+        auto at = std::find_if(reactionOutbox.begin(), reactionOutbox.end(),
+                               [&](urmsg::live::LiveReactionOutboxEntry const& e) {
+                                 return e.localId == out.localId;
+                               });
+        if (!info.empty()) {
+          // WHAT COMES BACK IS NOT A LINE: the record id and message_id of the reaction record
+          // itself, which changes the TARGET and adds nothing to the conversation. The entry is
+          // dropped, and the change is read off the target on the publish that follows.
+          urnw::LogInfo("live: *** {} *** {} on message {} in {} ms: {}",
+                        out.kind == OutboundKind::ReactAdd ? "REACTED" : "UNREACTED",
+                        LogBodies() ? out.emoji : std::string("a reaction"), out.targetHex,
+                        tookMs, info);
+          if (at != reactionOutbox.end()) reactionOutbox.erase(at);
+        } else {
+          urnw::LogError("live: {} {} on message {} was REFUSED after {} ms: {}", verb,
+                         LogBodies() ? out.emoji : std::string("a reaction"), out.targetHex,
+                         tookMs, failure.empty() ? "no reason given" : failure);
+          if (at != reactionOutbox.end()) {
+            at->failed = true;
+            at->error = failure.empty()
+                            ? std::string("the library refused the ") + verb + " and gave no reason"
+                            : failure;
+          }
+        }
+        publishWorld(false);
+        continue;
+      }
+
+      auto at = std::find_if(
+          outbox.begin(), outbox.end(),
+          [&](urmsg::live::LiveOutboxEntry const& e) { return e.localId == out.localId; });
+      if (!info.empty()) {
+        // The info json carries the record id, the message_id and body_len — and no body. On a
+        // reply it also carries reply_to_id, which is the parent this side named; the far side
+        // prints the same id, and the two agreeing is the whole proof.
+        urnw::LogInfo("live: *** SENT *** {} octets via {} in {} ms: {}", out.body.size(), verb,
+                      tookMs, info);
+        if (at != outbox.end()) outbox.erase(at);
+      } else {
+        urnw::LogError("live: {} of {} octets was REFUSED after {} ms: {}", verb, out.body.size(),
+                       tookMs, failure.empty() ? "no reason given" : failure);
+        if (at != outbox.end()) {
+          at->failed = true;
+          // A refusal with no out_error is a library bug, not an empty reason — but the row still
+          // has to say something, and "it failed and would not say why" is the true sentence.
+          at->error = failure.empty() ? "the library refused the send and gave no reason" : failure;
+        }
+      }
+      publishWorld(false);
+    }
+  };
+
+  // THE ROW FIRST, off the group as this device holds it, with the gate kept closed: the list shows
+  // the conversation while its first receive is still on the wire.
+  publishWorld(false);
+
+  for (;;) {
+    // SENDS FIRST, BEFORE THE FETCH. A fetch takes as long as the server takes and the person who
+    // just pressed Send is watching the composer; putting the send behind it would add a whole
+    // round trip to every message this app writes.
+    drainSends();
+    if (left) break;
+
+    // SUBSCRIBE WHEN NOT CURRENT: no subscription yet, an epoch that moved past the one it was
+    // authorized at, or a reconnect whose Hello the transport sent by itself. Cheap when current,
+    // and the receive below reads whatever arrived before a new subscription took hold.
+    {
+      const int32_t subscribedNow = urnet_message_group_ensure_subscribed(group, s.ctx, &err);
+      if (0 < subscribedNow) {
+        urnw::LogInfo("live: subscribed to push at epoch {}", urnet_message_group_epoch(group));
+        subscribed = true;
+        lastSubscribeError.clear();
+      } else if (subscribedNow < 0) {
+        const std::string why = TakeError(&err);
+        if (why != lastSubscribeError) {
+          urnw::LogWarn("live: push subscription refused, polling every {} ms: {}", kFetchPollMs, why);
+          lastSubscribeError = why;
+        }
+        subscribed = false;
+      }
+    }
+
+    const int64_t fetchStartedMs = NowMs();
+    const uint64_t fetched = urnet_message_group_receive(group, s.ctx, &err);
+    const std::string fetchError = TakeError(&err);
+    const int32_t fetchedCount = urnet_message_list_count(fetched);
+    if (!fetchError.empty()) {
+      // Code that reads this as "nothing arrived" drops real messages: a page
+      // bound reached with more to come, a server that named a high water above
+      // what it handed over, and a record given up on after every retry are all
+      // answers that carry messages AND a reason.
+      urnw::LogWarn("live: group_receive reported: {} (and still answered {} record(s))",
+                    fetchError, fetchedCount);
+    }
+    if (0 < fetchedCount) {
+      urnw::LogInfo("live: group_receive answered {} NEW record(s) in {} ms", fetchedCount,
+                    NowMs() - fetchStartedMs);
+    }
+    if (fetched != 0) urnet_release(fetched);
+
+    // THE FIRST RECEIVE IS DONE, so the gate may open from here on.
+    gateMayOpen = true;
+    publishWorld(true);
+
+    if (0 < devLeaveAfterMs && !devLeaveQueued && devLeaveAfterMs <= NowMs() - passStartedMs) {
+      devLeaveQueued = true;
+      urnw::LogWarn("live: DEV: URMESSAGE_DEV_LEAVE_AFTER_MS ({} ms) reached; a plain leave was {}",
+                    devLeaveAfterMs, QueueLeave(gidHex) ? "queued" : "REFUSED");
+    }
+
+    // AND THE ADDS, which is how the third person and the fifth get in. Served HERE as well as in
+    // the wait loop because a founder leaves that loop the moment their group opens, and every
+    // add after the first one happens with a live session and a fetch loop running. Same call,
+    // same branch inside it: AddMemberFromCode asks the group whether it is open rather than
+    // counting how many have been added.
+    // ONLY THE ADD ROAD'S GROUP takes a pasted join code (AddRoadGroup): with several groups the
+    // dialog names none, so none takes it.
+    if (AddRoadGroup() == gidHex) {
+      std::string theirCode;
+      {
+        std::lock_guard<std::mutex> lock(g_onboardMutex);
+        theirCode.swap(g_pastedJoinCode);
+      }
+      if (!theirCode.empty()) {
+        AddMemberFromCode(s, group, theirCode, std::string());
+        // The roster moved, so the world the UI is holding is a beat out of date.
+        publishWorld(true);
+      }
+    }
+
+    // NOT ::Sleep. A send queued during the wait wakes this at once, and so does a push; with
+    // neither it ticks on its own timer, which is long when the push subscription holds.
+    WaitSlot(*slot, subscribed ? kPushedPollMs : kFetchPollMs);
+  }
+
+  // ── THIS DEVICE LEFT THIS GROUP (ledger 273) ─────────────────────────────────────────────────
+  // The library has closed the group and erased this device's copy of it. What is left here is the
+  // handle, the gate and the conversation, and RetireSlot takes all three.
+  const bool empty = RetireSlot(*slot, "This computer left the conversation.");
+  urnw::LogInfo("live: left group {}; {}", gidHex,
+                empty ? "this device holds no group now and waits for an invitation"
+                      : "the other conversations go on");
+}
+
+// TAKE A GROUP UP: a slot, then its gate, then its loop. Every group the library hands over comes
+// through here: each one restore answers, the one a join or a create makes, and each one a held
+// leave's restore brings back (A2, A10).
+void StartGroupLoop(std::shared_ptr<SessionContext> const& session, uint64_t group) {
+  uint8_t gid[32] = {};
+  int32_t gidLen = static_cast<int32_t>(sizeof(gid));
+  std::string gidHex;
+  if (urnet_message_group_id(group, gid, &gidLen)) gidHex = ToHex(gid, gidLen);
+  if (gidHex.empty()) {
+    urnw::LogError("live: a group was handed over with no id; it is released, not served");
+    urnet_release(group);
+    return;
+  }
+  auto slot = std::make_shared<GroupSlot>();
+  slot->gidHex = gidHex;
+  slot->handle = group;
+  slot->adoptedAtMs = WallClockMs();
+  {
+    std::lock_guard<std::mutex> lock(g_tableMutex);
+    for (auto const& held : g_slots) {
+      if (held->gidHex == gidHex) {
+        // ONE LOOP PER GROUP: a second handle on a group already served is released, never
+        // served twice
+        urnw::LogWarn("live: group {} already has a loop; the second handle is released", gidHex);
+        urnet_release(group);
+        return;
+      }
+    }
+    g_slots.push_back(slot);
+  }
+  // THE SLOT FIRST, THEN THE GATE: a verb is admitted only by a gate, so every admitted verb finds a
+  // slot to queue into.
+  slot->incarnation = AdoptGate(gidHex);
+  g_hasGroup.store(true, std::memory_order_relaxed);
+  g_slotsChanged.notify_all();
+  urnw::LogInfo("live: group {} taken up (incarnation {}); its loop starts", gidHex,
+                slot->incarnation);
+  // A LOOP THAT THROWS ENDS ITS OWN GROUP AND NO OTHER, the way the session's worker ends the
+  // session (StartIfEnabled): logged, its gate dark and its conversation gone, so nothing is queued
+  // for a group nobody serves. The neutral state names nothing, because nothing was left.
+  std::thread loop = urnw::StartGuardedThread("urmessage-live-group", [session, slot] {
+    try {
+      GroupLoop(session, slot);
+    } catch (const std::exception& e) {
+      urnw::LogError("live: the loop of group {} ended with an exception: {}", slot->gidHex,
+                     e.what());
+      RetireSlot(*slot, std::string());
+    } catch (...) {
+      urnw::LogError("live: the loop of group {} ended with a non-std exception", slot->gidHex);
+      RetireSlot(*slot, std::string());
+    }
+  });
+  // DETACHED, as the session's worker is: nothing waits on a loop, and it ends with its group.
+  loop.detach();
 }
 
 void RunSession() {
@@ -2084,7 +2877,10 @@ void RunSession() {
   std::filesystem::create_directories(streamDir, ec);
   std::filesystem::create_directories(stateDir, ec);
 
-  Session s;
+  // THE SESSION ON THE HEAP, SHARED WITH EVERY GROUP LOOP (SessionContext): a loop holds it, so the
+  // handles it uses stay valid however this function ends.
+  auto session = std::make_shared<SessionContext>();
+  Session& s = session->s;
   char* err = nullptr;
 
   s.ctx = urnet_message_context_new();
@@ -2096,6 +2892,7 @@ void RunSession() {
   // THE ROUTE (ledger 268). URNETWORK and DIRECT reach the server's own endpoint with its key
   // pinned; the credential is used only by URNETWORK, to mint the tunnel's exit clients.
   const Route route = ChosenRoute();
+  session->route = route;
   if (route == Route::Platform) {
     s.client = urnet_message_client_new(credential.c_str(), kHost, nullptr, nullptr, kAppVersion, &err);
   } else {
@@ -2129,6 +2926,8 @@ void RunSession() {
     platformUrl = TakeString(urnet_message_client_platform_url(s.client));
     urnw::LogInfo("live: client_id {} dialling {}", clientId, platformUrl);
   }
+  session->clientId = clientId;
+  session->platformUrl = platformUrl;
 
   s.transport = urnet_message_transport_new(s.client, kServerClientId,
                                             URNET_MESSAGE_PROTOCOL_VERSION, 30000, &err);
@@ -2160,7 +2959,7 @@ void RunSession() {
     return;
   }
 
-  Hellos hellos;
+  Hellos& hellos = session->hellos;
   s.device = urnet_message_device_new(s.transport, s.reserver, s.stateStore, kConnectBudgetMs,
                                       kConnectAttemptMs, &OnConnectAttempt, &hellos, &err);
   if (s.device == 0) {
@@ -2212,6 +3011,18 @@ void RunSession() {
       "Hello(s), {} ms",
       connectCalls, hellos.unanswered.load(), connectMs);
 
+  // THE SESSION'S FACTS, which every conversation of the world shares, and ONE PUSH WAITER FOR THE
+  // DEVICE, routing each push to the loop of the group it names (the conversation-list design 2.1).
+  {
+    std::lock_guard<std::mutex> lock(g_tableMutex);
+    g_liveSession.clientId = clientId;
+    g_liveSession.serverClientId = kServerClientId;
+    g_liveSession.platformUrl = platformUrl;
+    g_liveSession.host = RouteLabel(s, route);
+    g_liveSession.keyPinned = s.routeClient;
+  }
+  session->pushWaiter = std::make_unique<PushWaiter>(s.device);
+
   // ── restore, or join ────────────────────────────────────────────────────────
   const uint64_t restored = urnet_message_device_restore(s.device, s.ctx, &err);
   // A NON-ZERO LIST AND A NON-NULL out_error CAN BOTH COME BACK.
@@ -2223,10 +3034,15 @@ void RunSession() {
   }
   urnw::LogInfo("live: device_restore rebuilt {} group(s) from durable state", restoredCount);
 
-  if (restoredCount > 0) {
-    s.group = urnet_message_group_list_at(restored, 0);
-    urnw::LogInfo("live: restored an existing group from disk — no handshake needed");
+  // EVERY GROUP RESTORE ANSWERS GETS A LOOP OF ITS OWN (A2), and not only the first: the library
+  // holds each of them open, and one not served here would be served by nobody.
+  for (int32_t i = 0; i < restoredCount; ++i) {
+    const uint64_t group = urnet_message_group_list_at(restored, i);
+    if (group != 0) StartGroupLoop(session, group);
   }
+  if (restoredCount > 0)
+    urnw::LogInfo("live: restored {} existing group(s) from disk - no handshake needed",
+                  restoredCount);
   if (restored != 0) urnet_release(restored);
   // A GROUP FOUNDED BEFORE INVITATIONS WERE SEALED does not restore (ErrGroupPredatesJoinSeal), and
   // R9 has the app say so in a sentence, never in the library's words (Task 58). Nor does a group
@@ -2248,568 +3064,37 @@ void RunSession() {
     g_lastRestoreClass = urmsg::live::RestoreReadClass(restoreError);
   }
 
-  // ONE PASS PER GROUP THIS DEVICE HOLDS (ledger 273). A pass ends only when the device LEAVES its
-  // group, and then the next one waits for an invitation exactly as a device that never had a
-  // group does: the session, the connection and the identity all stay, and only the group goes.
+  // ── THE JOIN ROAD, while this device holds no group ───────────────────────────────────────────
+  // Each group this device holds is served by its own loop (StartGroupLoop). The join road below
+  // runs while it holds none, as it did when a device held one group; the conversation-list design
+  // 2.3 opens it for good, in its own commit.
+  s.adoptExtra = [weak = std::weak_ptr<SessionContext>(session)](uint64_t extra) {
+    if (auto held = weak.lock()) {
+      StartGroupLoop(held, extra);
+    } else {
+      urnet_release(extra);
+    }
+  };
   for (;;) {
-    if (s.group == 0 && !JoinFromPeer(s)) {
-      s.Close();
+    {
+      std::unique_lock<std::mutex> lock(g_tableMutex);
+      g_slotsChanged.wait(lock, [] { return g_slots.empty(); });
+    }
+    bool joined = false;
+    {
+      struct JoinRoadMark {
+        JoinRoadMark() { g_joinRoadRunning.store(true, std::memory_order_release); }
+        ~JoinRoadMark() { g_joinRoadRunning.store(false, std::memory_order_release); }
+      } mark;
+      joined = JoinFromPeer(s);
+    }
+    if (!joined) {
+      // THE SESSION ENDS, as it did. It is closed by whoever lets go of it last (~SessionContext):
+      // here, unless a loop still runs over its handles.
       return;
     }
-    uint8_t gid[32] = {};
-    int32_t gidLen = static_cast<int32_t>(sizeof(gid));
-    std::string gidHex;
-    if (urnet_message_group_id(s.group, gid, &gidLen)) gidHex = ToHex(gid, gidLen);
-    // THIS GROUP'S GATE, and the incarnation every action it runs was queued for (review M1; the
-    // conversation-list design 2.2)
-    const uint64_t incarnation = AdoptGate(gidHex);
-    urnw::LogInfo("live: group {} at epoch {}, open on the server: {}", gidHex,
-                  urnet_message_group_epoch(s.group),
-                  urnet_message_group_is_open(s.group) ? "yes" : "no");
-
-    // ── fetch, forever ──────────────────────────────────────────────────────────
-    // A LOOP THAT A PUSH WAKES. The server announces each new record to a subscribed
-    // connection (spec B 4.3.5, ledger 269) and the loop answers with the same fetch
-    // it polls with, so a push changes WHEN a record is read and never HOW. It runs
-    // until this device leaves its group (ledger 273), and otherwise for the life of the
-    // process; the worker is detached and the OS reclaims it at
-    // exit, which is why Session::Close below is only reached on the paths that give up.
-    urnw::LogInfo("live: entering the fetch loop, every {} ms until the push subscription holds", kFetchPollMs);
-    int64_t lastPublishedCount = -1;
-    // THE PUSH (ledger 269): a waiter that wakes this loop the moment the server announces a record,
-    // and the subscription state the loop keeps current below
-    PushWaiter pushWaiter(s.device);
-    // the development switch above, read once per pass; it fires at most once per pass
-    const int64_t devLeaveAfterMs = DevLeaveAfterMs();
-    const int64_t passStartedMs = NowMs();
-    bool devLeaveQueued = false;
-    bool subscribed = false;
-    std::string lastSubscribeError;
-
-    // WHAT THIS DEVICE HAS TRIED TO SEND AND THE SERVER HAS NOT TAKEN. Owned by this thread and by
-    // nothing else — the UI hands over octets through the queue and reads the result back as a
-    // published world, so this vector needs no lock. See LiveWorld.h for why a row that is not a
-    // record is still not a fabrication.
-    std::vector<urmsg::live::LiveOutboxEntry> outbox;
-    // And the reactions and un-reactions it has tried. Same ownership, same reason.
-    std::vector<urmsg::live::LiveReactionOutboxEntry> reactionOutbox;
-    // And the deletions it has asked for. Same ownership, same reason.
-    std::vector<urmsg::live::LiveDeleteOutboxEntry> deleteOutbox;
-    // And the role changes it has asked for (item 242 R3). Same ownership, same reason.
-    std::vector<urmsg::live::LiveRoleOutboxEntry> roleOutbox;
-    // The roster line last logged, so the log carries a roster only when it moved.
-    std::string lastRosterLine;
-    std::string lastRouteLine;
-
-    // Build the world off the group AS IT STANDS and hand it to the UI. Every publish below goes
-    // through here, so the log and the outbox can never be drawn from two different moments — a send
-    // that succeeded between them would otherwise render as both a record and a pending row.
-    // A REFUSED LEAVE'S SENTENCE, drawn at the foot of the conversation until the next attempt, and
-    // the flag a granted one sets (ledger 273): drainSends sets it and the loop below reads it.
-    std::string leaveError;
-    bool left = false;
-
-    auto publishWorld = [&](bool logIfChanged) {
-      // THE WHOLE LOG, not just what a fetch answered — a reaction and a tombstone change a message
-      // that ALREADY arrived and are never in the fetch's own list, so a reader of the fetch alone
-      // never sees either.
-      urmsg::live::LiveGroup live;
-      live.groupIdHex = gidHex;
-      live.epoch = urnet_message_group_epoch(s.group);
-      live.open = urnet_message_group_is_open(s.group);
-      live.clientId = clientId;
-      live.serverClientId = kServerClientId;
-      live.platformUrl = platformUrl;
-      live.host = RouteLabel(s, route);
-      live.keyPinned = s.routeClient;
-      if (s.routeClient) {
-        if (const std::string line = TakeString(urnet_message_route_client_status(s.client));
-            line != lastRouteLine) {
-          lastRouteLine = line;
-          urnw::LogInfo("live: ROUTE {}", line);
-        }
-      }
-      live.statsJson = TakeString(urnet_message_group_stats(s.group));
-      live.outbox = outbox;
-      live.reactionOutbox = reactionOutbox;
-      live.deleteOutbox = deleteOutbox;
-      live.roleOutbox = roleOutbox;
-      live.leaveError = leaveError;
-      CollectMessages(s.group, live.messages);
-      // THE ROSTER AND THIS DEVICE'S ROLE, on every publish and not once at the open: a role change
-      // is a commit another member makes, and it lands here on some later fetch as a moved row.
-      CollectMembers(s.group, live.members);
-      live.myRole = ReadMyRole(s.group);
-      if (const std::string roster = RosterLine(live); roster != lastRosterLine) {
-        lastRosterLine = roster;
-        urnw::LogInfo("live: ROSTER {}", roster);
-      }
-
-      // THE SEND BUTTON'S ONE GATE, re-read off the library every time rather than latched when the
-      // group opened: a group the server has closed under us stops accepting sends, and a button
-      // that learns that only from a failed click is the enabled-but-dead control design §9.1 bans.
-      SetGateOpen(gidHex, live.open);
-      g_hasGroup.store(true, std::memory_order_relaxed);
-
-      // Log a changed log, and only a changed one: this loop runs every three
-      // seconds for the life of the process and an unconditional dump would bury
-      // the session it is evidence about.
-      if (logIfChanged && static_cast<int64_t>(live.messages.size()) != lastPublishedCount) {
-        lastPublishedCount = static_cast<int64_t>(live.messages.size());
-        LogMessages(live);
-        urnw::LogInfo("live: group stats {}", live.statsJson);
-      }
-
-      // PUBLISH EVERY TIME, changed or not. The count is a poor change detector —
-      // a reaction landing on an existing message, or a tombstone, moves nothing —
-      // and the UI's own generation counter already drops a beat it has drawn.
-      urmsg::live::Publish(urmsg::live::BuildWorld(live));
-    };
-
-    // ── the send verb, on the thread that owns the handles ──────────────────────
-    //
-    // THREE PUBLISHES PER BATCH AND EACH ONE IS A DIFFERENT SENTENCE:
-    //   before the call  — "Sending", so the composer empties into a row the reader can see rather
-    //                      than into nothing for however long the server takes;
-    //   after each call  — the record itself (it is in this device's own log the instant the submit
-    //                      is acknowledged, so the pending row is dropped in the same beat it
-    //                      appears), or "Not sent" carrying the library's own reason;
-    //   the loop's own   — everything the far side has said since.
-    auto drainSends = [&] {
-      std::deque<Outbound> queued = TakeSendQueue();
-      // NOTHING QUEUED FOR ANOTHER GROUP, OR FOR AN EARLIER INCARNATION OF THIS ONE, IS DONE HERE
-      // (review M1; the conversation-list design 2.2): it was asked of a group this device has since
-      // left, or of another conversation, and done here it would be done to the wrong one.
-      const size_t asked = queued.size();
-      const std::vector<urmsg::live::GroupGate> gates = GatesSnapshot();
-      queued.erase(std::remove_if(queued.begin(), queued.end(),
-                                  [&](Outbound const& o) {
-                                    return o.groupIdHex != gidHex || o.incarnation != incarnation ||
-                                           !urmsg::live::ActionStillHeld(gates, o.groupIdHex,
-                                                                         o.incarnation);
-                                  }),
-                   queued.end());
-      if (queued.size() != asked)
-        urnw::LogWarn("live: {} queued action(s) were for a group this device has left; dropped",
-                      asked - queued.size());
-      if (queued.empty()) return;
-
-      for (auto& out : queued) {
-        // A LEAVE ADDS NO ROW: it is granted, and the conversation goes, or it is refused, and the
-        // refusal is drawn at the foot (leaveError).
-        if (out.kind == OutboundKind::Leave) continue;
-        // THE THREE COMMIT VERBS, and the name stays `isRole` because what it selects is "this
-        // entry's outcome is drawn as a note under a MEMBER", which is true of a removal too.
-        const bool isRole = out.kind == OutboundKind::SetRole ||
-                            out.kind == OutboundKind::TransferOwnership ||
-                            out.kind == OutboundKind::RemoveMember;
-        if (isRole) {
-          // ONE ATTEMPT PER MEMBER ON SCREEN, for the same reason a reaction retry supersedes its
-          // failure: a second press after a refusal is that change asked for again, not a second
-          // note under the first.
-          roleOutbox.erase(std::remove_if(roleOutbox.begin(), roleOutbox.end(),
-                                          [&](urmsg::live::LiveRoleOutboxEntry const& e) {
-                                            return e.done && e.identityPub == out.identityPub;
-                                          }),
-                           roleOutbox.end());
-          urmsg::live::LiveRoleOutboxEntry entry;
-          entry.localId = out.localId;
-          entry.identityPub = out.identityPub;
-          entry.role = out.role;
-          entry.attemptedAtMs = WallClockMs();
-          roleOutbox.push_back(std::move(entry));
-          continue;
-        }
-        if (out.kind == OutboundKind::Delete) {
-          // ONE ATTEMPT PER LINE ON SCREEN: a second press on a line whose last deletion failed is
-          // that deletion again, not a second note beside the first failure.
-          deleteOutbox.erase(std::remove_if(deleteOutbox.begin(), deleteOutbox.end(),
-                                            [&](urmsg::live::LiveDeleteOutboxEntry const& e) {
-                                              return e.targetId == out.targetHex;
-                                            }),
-                             deleteOutbox.end());
-          urmsg::live::LiveDeleteOutboxEntry entry;
-          entry.localId = out.localId;
-          entry.targetId = out.targetHex;
-          entry.attemptedAtMs = WallClockMs();
-          deleteOutbox.push_back(std::move(entry));
-          continue;
-        }
-        const bool isReaction =
-            out.kind == OutboundKind::ReactAdd || out.kind == OutboundKind::ReactRemove;
-        if (isReaction) {
-          // ONE ATTEMPT PER (target, emoji) ON SCREEN. A second tap on an emoji whose last attempt
-          // failed is that attempt again, not a second reaction beside the first failure - so the
-          // failed entry it supersedes goes in the same beat, exactly as a text retry replaces its
-          // failed row.
-          reactionOutbox.erase(
-              std::remove_if(reactionOutbox.begin(), reactionOutbox.end(),
-                             [&](urmsg::live::LiveReactionOutboxEntry const& e) {
-                               return e.failed && e.targetId == out.targetHex && e.emoji == out.emoji;
-                             }),
-              reactionOutbox.end());
-          urmsg::live::LiveReactionOutboxEntry entry;
-          entry.localId = out.localId;
-          entry.targetId = out.targetHex;
-          entry.emoji = out.emoji;
-          entry.remove = out.kind == OutboundKind::ReactRemove;
-          entry.attemptedAtMs = WallClockMs();
-          reactionOutbox.push_back(std::move(entry));
-          continue;
-        }
-        // A RETRY SUPERSEDES THE ENTRY IT CAME FROM rather than joining it. Without this the failed
-        // row stays on screen beside the second attempt and one message reads as two.
-        //
-        // AND IT INHERITS THE PARENT. The two [ Try again ] buttons name the row and nothing else -
-        // MessageRow has no reply-to slot - so a retry of a failed REPLY arrives here as a plain
-        // text naming the failed entry, and the entry is the one place that still knows which line
-        // it answered. Taken from there, before the entry goes, so the retry seals as the same
-        // reply rather than as a text that happens to have the same words.
-        if (!out.replaces.empty()) {
-          auto old = std::find_if(outbox.begin(), outbox.end(),
-                                  [&](urmsg::live::LiveOutboxEntry const& e) {
-                                    return e.localId == out.replaces;
-                                  });
-          if (old != outbox.end() && out.targetHex.empty() && !old->replyToId.empty() &&
-              FromHexId(old->replyToId, out.target)) {
-            out.kind = OutboundKind::Reply;
-            out.targetHex = old->replyToId;
-          }
-          outbox.erase(std::remove_if(outbox.begin(), outbox.end(),
-                                      [&](urmsg::live::LiveOutboxEntry const& e) {
-                                        return e.localId == out.replaces;
-                                      }),
-                       outbox.end());
-        }
-        urmsg::live::LiveOutboxEntry entry;
-        entry.localId = out.localId;
-        entry.body = out.body;
-        entry.replyToId = out.targetHex;
-        entry.attemptedAtMs = WallClockMs();
-        outbox.push_back(std::move(entry));
-      }
-      publishWorld(false);
-
-      for (auto const& out : queued) {
-        // FIRST IN THE LOOP, because nothing queued behind a granted leave is for a group this
-        // device still holds: it ends the batch and the pass.
-        if (out.kind == OutboundKind::Leave) {
-          if (LeaveGroup(s, out.identityPub, leaveError)) {
-            left = true;
-            return;
-          }
-          // REFUSED: nothing changed, and another leave of this group may be asked for
-          SetGateLeaving(gidHex, false);
-          publishWorld(false);
-          continue;
-        }
-        char* sendErr = nullptr;
-        const int64_t startedMs = NowMs();
-        std::string info;
-        const char* verb = "send";
-        // THE TWO ROLE VERBS ANSWER A KIND, NOT A HANDLE (urnetwork_message.h: "BRANCH ON THE KIND
-        // AND SHOW THE TEXT"), so they are handled here before the switch that reads `info`. OK
-        // drops the entry - the roster read on the publish below already shows the change; every
-        // other kind is kept on the entry with the library's own sentence, for the rail to draw as
-        // the outcome it is. The commit is one round trip inside the call, like a send.
-        if (out.kind == OutboundKind::SetRole || out.kind == OutboundKind::TransferOwnership ||
-            out.kind == OutboundKind::RemoveMember) {
-          const bool transfer = out.kind == OutboundKind::TransferOwnership;
-          const bool removal = out.kind == OutboundKind::RemoveMember;
-          verb = removal ? "remove_member" : transfer ? "transfer_ownership" : "set_role";
-          // THE REMOVAL TAKES NO ROLE, which is why it is a third arm here rather than a set_role
-          // with a different string: urnet_message_group_remove_member's only member argument is the
-          // identity, and every leaf that identity holds goes in the one commit it builds.
-          const int32_t kind =
-              removal  ? urnet_message_group_remove_member(s.group, s.ctx,
-                                                           out.identityPub.c_str(), &sendErr)
-              : transfer ? urnet_message_group_transfer_ownership(s.group, s.ctx,
-                                                                  out.identityPub.c_str(), &sendErr)
-                         : urnet_message_group_set_role(s.group, s.ctx, out.identityPub.c_str(),
-                                                        out.role.c_str(), &sendErr);
-          const std::string failure = TakeError(&sendErr);
-          const int64_t tookMs = NowMs() - startedMs;
-          auto at = std::find_if(roleOutbox.begin(), roleOutbox.end(),
-                                 [&](urmsg::live::LiveRoleOutboxEntry const& e) {
-                                   return e.localId == out.localId;
-                                 });
-          const char* kindName = kind == URNET_MESSAGE_COMMIT_OK        ? "OK"
-                                 : kind == URNET_MESSAGE_COMMIT_REFUSED ? "REFUSED"
-                                 : kind == URNET_MESSAGE_COMMIT_LOST    ? "LOST"
-                                 : kind == URNET_MESSAGE_COMMIT_INVALID ? "INVALID"
-                                                                        : "FAILED";
-          if (kind == URNET_MESSAGE_COMMIT_OK) {
-            // The removal's line names no role, because it asked for none. Printing `-> member`
-            // beside a member that is no longer in the group would be the log claiming the opposite
-            // of what the call did.
-            urnw::LogInfo("live: *** {} *** {}{} answered OK in {} ms; the group is at epoch {}",
-                          removal    ? "MEMBER REMOVED"
-                          : transfer ? "OWNERSHIP TRANSFERRED"
-                                     : "ROLE SET",
-                          out.identityPub, removal ? std::string() : " -> " + out.role, tookMs,
-                          urnet_message_group_epoch(s.group));
-            if (at != roleOutbox.end()) roleOutbox.erase(at);
-          } else {
-            urnw::LogError("live: {} {}{} answered {} after {} ms: {}", verb, out.identityPub,
-                           removal ? std::string() : " -> " + out.role, kindName, tookMs,
-                           failure.empty() ? "no reason given" : failure);
-            if (at != roleOutbox.end()) {
-              at->done = true;
-              at->kind = kind;
-              at->error = failure;
-            }
-          }
-          publishWorld(false);
-          continue;
-        }
-        switch (out.kind) {
-          case OutboundKind::Text:
-            // COUNTED OCTETS, NOT A char*. The body is whatever was typed and a UTF-8 encoding of it
-            // can hold a 0x00 nowhere except by a caller putting one there — but the ABI's rule for
-            // every binary value going in is a pointer and a length (cgo/ctest/message_abi_test.c's
-            // 21-octet body is two NULs and two multi-byte sequences precisely to hold this), and a
-            // length is what is passed here so that the rule is kept rather than relied on.
-            info = TakeString(urnet_message_group_send(
-                s.group, s.ctx, reinterpret_cast<const uint8_t*>(out.body.data()),
-                static_cast<int32_t>(out.body.size()), &sendErr));
-            break;
-          case OutboundKind::Reply:
-            // The parent as 32 counted octets, decoded at the queue. The library does not require
-            // the parent to be present - it may have been deleted or pruned - so a reply to a line
-            // that has since vanished is sealed all the same, and the far side names what it cannot
-            // show exactly as this side does.
-            verb = "send_reply";
-            info = TakeString(urnet_message_group_send_reply(
-                s.group, s.ctx, out.target.data(), static_cast<int32_t>(out.target.size()),
-                reinterpret_cast<const uint8_t*>(out.body.data()),
-                static_cast<int32_t>(out.body.size()), &sendErr));
-            break;
-          case OutboundKind::ReactAdd:
-            // The emoji IS a NUL-terminated char* here, and that is the ABI's own rule for this one
-            // argument (urnetwork_message.h: "the emoji is a NUL-terminated utf-8 string"), unlike
-            // every binary value above. It is checked as 1..64 octets of valid UTF-8 before anything
-            // is sealed, and refused by name otherwise.
-            verb = "react";
-            info = TakeString(urnet_message_group_react(s.group, s.ctx, out.target.data(),
-                                                        static_cast<int32_t>(out.target.size()),
-                                                        out.emoji.c_str(), &sendErr));
-            break;
-          case OutboundKind::ReactRemove:
-            verb = "unreact";
-            info = TakeString(urnet_message_group_unreact(s.group, s.ctx, out.target.data(),
-                                                          static_cast<int32_t>(out.target.size()),
-                                                          out.emoji.c_str(), &sendErr));
-            break;
-          case OutboundKind::Delete:
-            // The target as 32 counted octets, decoded at the queue. The library answers the
-            // tombstone's own message info, or refuses a target this device did not write.
-            verb = "delete";
-            info = TakeString(urnet_message_group_delete(s.group, s.ctx, out.target.data(),
-                                                         static_cast<int32_t>(out.target.size()),
-                                                         &sendErr));
-            break;
-          case OutboundKind::SetRole:
-          case OutboundKind::TransferOwnership:
-          case OutboundKind::RemoveMember:
-          case OutboundKind::Leave:
-            break;  // handled above; unreachable
-        }
-        const std::string failure = TakeError(&sendErr);
-        const int64_t tookMs = NowMs() - startedMs;
-
-        if (out.kind == OutboundKind::Delete) {
-          auto at = std::find_if(deleteOutbox.begin(), deleteOutbox.end(),
-                                 [&](urmsg::live::LiveDeleteOutboxEntry const& e) {
-                                   return e.localId == out.localId;
-                                 });
-          if (!info.empty()) {
-            // the tombstone's own record id and message_id, and no body: the TARGET changes and the
-            // next publish draws it as the placeholder
-            urnw::LogInfo("live: *** DELETED *** message {} for everyone in {} ms: {}", out.targetHex,
-                          tookMs, info);
-            if (at != deleteOutbox.end()) deleteOutbox.erase(at);
-          } else {
-            urnw::LogError("live: delete of message {} was REFUSED after {} ms: {}", out.targetHex,
-                           tookMs, failure.empty() ? "no reason given" : failure);
-            if (at != deleteOutbox.end()) {
-              at->failed = true;
-              at->error = failure.empty() ? std::string("the library refused the deletion and gave no reason")
-                                          : failure;
-            }
-          }
-          publishWorld(false);
-          continue;
-        }
-        if (out.kind == OutboundKind::ReactAdd || out.kind == OutboundKind::ReactRemove) {
-          auto at = std::find_if(reactionOutbox.begin(), reactionOutbox.end(),
-                                 [&](urmsg::live::LiveReactionOutboxEntry const& e) {
-                                   return e.localId == out.localId;
-                                 });
-          if (!info.empty()) {
-            // WHAT COMES BACK IS NOT A LINE: the record id and message_id of the reaction record
-            // itself, which changes the TARGET and adds nothing to the conversation. The entry is
-            // dropped, and the change is read off the target on the publish that follows.
-            urnw::LogInfo("live: *** {} *** {} on message {} in {} ms: {}",
-                          out.kind == OutboundKind::ReactAdd ? "REACTED" : "UNREACTED",
-                          LogBodies() ? out.emoji : std::string("a reaction"), out.targetHex,
-                          tookMs, info);
-            if (at != reactionOutbox.end()) reactionOutbox.erase(at);
-          } else {
-            urnw::LogError("live: {} {} on message {} was REFUSED after {} ms: {}", verb,
-                           LogBodies() ? out.emoji : std::string("a reaction"), out.targetHex,
-                           tookMs, failure.empty() ? "no reason given" : failure);
-            if (at != reactionOutbox.end()) {
-              at->failed = true;
-              at->error = failure.empty()
-                              ? std::string("the library refused the ") + verb + " and gave no reason"
-                              : failure;
-            }
-          }
-          publishWorld(false);
-          continue;
-        }
-
-        auto at = std::find_if(
-            outbox.begin(), outbox.end(),
-            [&](urmsg::live::LiveOutboxEntry const& e) { return e.localId == out.localId; });
-        if (!info.empty()) {
-          // The info json carries the record id, the message_id and body_len — and no body. On a
-          // reply it also carries reply_to_id, which is the parent this side named; the far side
-          // prints the same id, and the two agreeing is the whole proof.
-          urnw::LogInfo("live: *** SENT *** {} octets via {} in {} ms: {}", out.body.size(), verb,
-                        tookMs, info);
-          if (at != outbox.end()) outbox.erase(at);
-        } else {
-          urnw::LogError("live: {} of {} octets was REFUSED after {} ms: {}", verb, out.body.size(),
-                         tookMs, failure.empty() ? "no reason given" : failure);
-          if (at != outbox.end()) {
-            at->failed = true;
-            // A refusal with no out_error is a library bug, not an empty reason — but the row still
-            // has to say something, and "it failed and would not say why" is the true sentence.
-            at->error = failure.empty() ? "the library refused the send and gave no reason" : failure;
-          }
-        }
-        publishWorld(false);
-      }
-    };
-
-    for (;;) {
-      // SENDS FIRST, BEFORE THE FETCH. A fetch takes as long as the server takes and the person who
-      // just pressed Send is watching the composer; putting the send behind it would add a whole
-      // round trip to every message this app writes.
-      drainSends();
-      if (left) break;
-
-      // SUBSCRIBE WHEN NOT CURRENT: no subscription yet, an epoch that moved past the one it was
-      // authorized at, or a reconnect whose Hello the transport sent by itself. Cheap when current,
-      // and the receive below reads whatever arrived before a new subscription took hold.
-      {
-        const int32_t subscribedNow = urnet_message_group_ensure_subscribed(s.group, s.ctx, &err);
-        if (0 < subscribedNow) {
-          urnw::LogInfo("live: subscribed to push at epoch {}", urnet_message_group_epoch(s.group));
-          subscribed = true;
-          lastSubscribeError.clear();
-        } else if (subscribedNow < 0) {
-          const std::string why = TakeError(&err);
-          if (why != lastSubscribeError) {
-            urnw::LogWarn("live: push subscription refused, polling every {} ms: {}", kFetchPollMs, why);
-            lastSubscribeError = why;
-          }
-          subscribed = false;
-        }
-      }
-
-      const int64_t fetchStartedMs = NowMs();
-      const uint64_t fetched = urnet_message_group_receive(s.group, s.ctx, &err);
-      const std::string fetchError = TakeError(&err);
-      const int32_t fetchedCount = urnet_message_list_count(fetched);
-      if (!fetchError.empty()) {
-        // Code that reads this as "nothing arrived" drops real messages: a page
-        // bound reached with more to come, a server that named a high water above
-        // what it handed over, and a record given up on after every retry are all
-        // answers that carry messages AND a reason.
-        urnw::LogWarn("live: group_receive reported: {} (and still answered {} record(s))",
-                      fetchError, fetchedCount);
-      }
-      if (0 < fetchedCount) {
-        urnw::LogInfo("live: group_receive answered {} NEW record(s) in {} ms", fetchedCount,
-                      NowMs() - fetchStartedMs);
-      }
-      if (fetched != 0) urnet_release(fetched);
-
-      publishWorld(true);
-
-      if (0 < devLeaveAfterMs && !devLeaveQueued && devLeaveAfterMs <= NowMs() - passStartedMs) {
-        devLeaveQueued = true;
-        urnw::LogWarn("live: DEV: URMESSAGE_DEV_LEAVE_AFTER_MS ({} ms) reached; a plain leave was {}",
-                      devLeaveAfterMs, QueueLeave(gidHex) ? "queued" : "REFUSED");
-      }
-
-      // AND THE ADDS, which is how the third person and the fifth get in. Served HERE as well as in
-      // the wait loop because a founder leaves that loop the moment their group opens, and every
-      // add after the first one happens with a live session and a fetch loop running. Same call,
-      // same branch inside it: AddMemberFromCode asks the group whether it is open rather than
-      // counting how many have been added.
-      {
-        std::string theirCode;
-        {
-          std::lock_guard<std::mutex> lock(g_onboardMutex);
-          theirCode.swap(g_pastedJoinCode);
-        }
-        if (!theirCode.empty()) {
-          AddMemberFromCode(s, theirCode, std::string());
-          // The roster moved, so the world the UI is holding is a beat out of date.
-          publishWorld(true);
-        }
-      }
-
-      // NOT ::Sleep. A send queued during the wait wakes this at once, and so does a push; with
-      // neither it ticks on its own timer, which is long when the push subscription holds.
-      WaitForSendOrPoll(subscribed ? kPushedPollMs : kFetchPollMs);
-    }
-
-    // ── THIS DEVICE LEFT ITS GROUP (ledger 273) ───────────────────────────────
-    // The library has closed the group and erased this device's copy of it. What is left here is
-    // the handle, the two gates the UI reads, and the world on screen: an EMPTY world is
-    // published, which is how the window learns there is no conversation any more, and the pass
-    // goes round. The push waiter stops within a second as this scope closes.
-    urnet_release(s.group);
+    StartGroupLoop(session, s.group);
     s.group = 0;
-    // THE GATE GOES FIRST, and with it every entry stamped for this group: nothing queued from here
-    // on can name it (review M1; the conversation-list design 2.2)
-    DropGate(gidHex);
-    g_hasGroup.store(false, std::memory_order_relaxed);
-    if (const auto stale = TakeSendQueue(); !stale.empty())
-      urnw::LogWarn("live: {} action(s) queued behind the leave were dropped", stale.size());
-    {
-      // AND THE PASTED CODES, which carry no pass (re-check R5): a join code pasted just before the
-      // leave would add that person to the NEXT group, and an invitation would join one.
-      std::lock_guard<std::mutex> lock(g_onboardMutex);
-      g_pastedJoinCode.clear();
-      g_pastedInvite.clear();
-    }
-    // A NEUTRAL ONBOARDING STATE FIRST (re-check R4): the window re-arms its join dialog when the
-    // empty world arrives and draws the last state it holds, which for a founder is the old
-    // invitation -- a secret -- until JoinFromPeer's Waiting replaces it a moment later.
-    PublishOnboard(urmsg::live::OnboardStep::Idle, std::string(), "This computer left the conversation.");
-    {
-      // THE SESSION'S FACTS STAY, and only the conversation goes: this device is still connected,
-      // over the same route and the same pinned key, so the status strip and the network page
-      // keep saying so. BuildWorld maps them from a group with no messages, and the one
-      // conversation it always builds is then dropped.
-      urmsg::live::LiveGroup none;
-      none.clientId = clientId;
-      none.serverClientId = kServerClientId;
-      none.platformUrl = platformUrl;
-      none.host = RouteLabel(s, route);
-      none.keyPinned = s.routeClient;
-      urmsg::demo::World world = urmsg::live::BuildWorld(none);
-      world.conversations.clear();
-      urmsg::live::Publish(std::move(world));
-    }
-    urnw::LogInfo("live: left group {}; this device holds no group now and waits for an "
-                  "invitation",
-                  gidHex);
   }
 }
 
@@ -2871,8 +3156,12 @@ bool StartIfEnabled() {
     // left that could make a send work — so the button must go dark. Written here rather than on
     // each of RunSession's nine early returns because a tenth one added later would silently miss
     // it, and the failure mode of missing it is an enabled Send whose clicks vanish.
-    DropAllGates();
-    g_hasGroup.store(false, std::memory_order_relaxed);
+    // ...BUT A GROUP STILL SERVED BY ITS OWN LOOP KEEPS ITS GATE: the loop holds the session's
+    // handles and goes on serving its conversation (the conversation-list design 2.1).
+    if (SlotCount() == 0) {
+      DropAllGates();
+      g_hasGroup.store(false, std::memory_order_relaxed);
+    }
   });
 
   // DETACHED, AND NOT AS A SHORTCUT. This is called from the UI thread of a
@@ -2892,15 +3181,24 @@ bool CanSend(std::string const& groupIdHex) {
 
 namespace {
 
-// The one enqueue. Everything the two public verbs check has been checked by the time this runs.
-void Enqueue(Outbound out) {
-  {
-    std::lock_guard<std::mutex> lock(g_sendMutex);
-    g_sendQueue.push_back(std::move(out));
+// The one enqueue, into the queue of the group the action names. Everything the public verbs check
+// has been checked by the time this runs. False when no loop serves that group any more (it ended
+// between the gate's look and this one).
+bool Enqueue(Outbound out) {
+  std::shared_ptr<GroupSlot> slot = FindSlot(out.groupIdHex);
+  if (!slot) {
+    urnw::LogWarn("live: an action for group {} found no loop to take it; refused",
+                  out.groupIdHex.substr(0, (std::min)(out.groupIdHex.size(), size_t{16})));
+    return false;
   }
-  // OUTSIDE THE LOCK: the worker wakes, takes the same mutex, and would be woken only to block on
+  {
+    std::lock_guard<std::mutex> lock(slot->mutex);
+    slot->queue.push_back(std::move(out));
+  }
+  // OUTSIDE THE LOCK: the loop wakes, takes the same mutex, and would be woken only to block on
   // the thread that woke it.
-  g_sendWake.notify_one();
+  slot->wake.notify_one();
+  return true;
 }
 
 }  // namespace
@@ -2934,8 +3232,7 @@ bool QueueSend(std::string groupIdHex, std::string utf8Body, std::string replace
   }
   out.groupIdHex = std::move(groupIdHex);
   out.incarnation = incarnation;
-  Enqueue(std::move(out));
-  return true;
+  return Enqueue(std::move(out));
 }
 
 namespace {
@@ -2979,8 +3276,7 @@ bool QueueRoleChange(std::string groupIdHex, std::string identityPubHex, std::st
   out.role = std::move(role);
   out.groupIdHex = std::move(groupIdHex);
   out.incarnation = incarnation;
-  Enqueue(std::move(out));
-  return true;
+  return Enqueue(std::move(out));
 }
 
 bool QueueTransferOwnership(std::string groupIdHex, std::string identityPubHex) {
@@ -2999,8 +3295,7 @@ bool QueueTransferOwnership(std::string groupIdHex, std::string identityPubHex) 
   out.role = "owner";
   out.groupIdHex = std::move(groupIdHex);
   out.incarnation = incarnation;
-  Enqueue(std::move(out));
-  return true;
+  return Enqueue(std::move(out));
 }
 
 OnboardPtr OnboardSnapshot() {
@@ -3121,8 +3416,7 @@ bool QueueRemoveMember(std::string groupIdHex, std::string identityPubHex) {
   // cannot name a role the commit never asked for.
   out.groupIdHex = std::move(groupIdHex);
   out.incarnation = incarnation;
-  Enqueue(std::move(out));
-  return true;
+  return Enqueue(std::move(out));
 }
 
 bool QueueLeave(std::string groupIdHex, std::string transferToIdentityHex) {
@@ -3148,7 +3442,12 @@ bool QueueLeave(std::string groupIdHex, std::string transferToIdentityHex) {
   out.identityPub = std::move(transferToIdentityHex);
   out.groupIdHex = std::move(groupIdHex);
   out.incarnation = incarnation;
-  Enqueue(std::move(out));
+  const std::string gid = out.groupIdHex;
+  if (!Enqueue(std::move(out))) {
+    // the gate's leaving mark goes with the refusal, so the leave can be asked for again
+    SetGateLeaving(gid, false);
+    return false;
+  }
   return true;
 }
 
@@ -3173,8 +3472,7 @@ bool QueueDelete(std::string groupIdHex, std::string targetMessageIdHex) {
   out.targetHex = std::move(targetMessageIdHex);
   out.groupIdHex = std::move(groupIdHex);
   out.incarnation = incarnation;
-  Enqueue(std::move(out));
-  return true;
+  return Enqueue(std::move(out));
 }
 
 bool QueueReaction(std::string groupIdHex, std::string targetMessageIdHex, std::string utf8Emoji,
@@ -3196,8 +3494,7 @@ bool QueueReaction(std::string groupIdHex, std::string targetMessageIdHex, std::
   out.emoji = std::move(utf8Emoji);
   out.groupIdHex = std::move(groupIdHex);
   out.incarnation = incarnation;
-  Enqueue(std::move(out));
-  return true;
+  return Enqueue(std::move(out));
 }
 
 }  // namespace urmsg::live

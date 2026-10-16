@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <format>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -236,7 +237,84 @@ std::wstring ConversationGateLine() {
                           stampsOk ? L"yes" : L"NO", leaveOk ? L"yes" : L"NO"));
 }
 
+// conv push: A PUSH WAKES THE LOOP OF THE GROUP IT NAMES, AND NO OTHER. Three groups held; a push for
+// each of two, one in upper case, the empty id, an id not held, and the id of a group just left. A
+// router that wakes every loop for every push (one loop's rule, kept for many) fails it, and so does
+// one that wakes a loop for a group this device does not hold.
+std::wstring ConversationPushLine() {
+  const std::string g1(64, 'a');
+  const std::string g2(64, 'b');
+  const std::string g3 = std::string(62, 'c') + "0d";
+  std::vector<std::string> held = {g1, g2, g3};
+  struct Push {
+    std::string pushed;
+    PushRoute want;
+    std::string wantKey;
+    wchar_t const* what;
+  };
+  std::string upper3 = g3;
+  for (char& ch : upper3)
+    if (ch >= 'a' && ch <= 'f') ch = static_cast<char>(ch - 'a' + 'A');
+  const std::vector<Push> pushes = {
+      {g2, PushRoute::One, g2, L"a push for a held group wakes that group's loop"},
+      {upper3, PushRoute::One, g3, L"an id in upper case is the same group"},
+      {std::string(), PushRoute::All, std::string(), L"the empty id wakes every loop"},
+      {std::string(64, 'f'), PushRoute::None, std::string(), L"an id not held wakes none"},
+  };
+  std::size_t asked = 0;
+  std::size_t right = 0;
+  std::wstring firstBad;
+  for (auto const& p : pushes) {
+    ++asked;
+    const PushRoute got = RoutePush(held, p.pushed);
+    const bool keyOk = got != PushRoute::One || PushGroupKey(p.pushed) == p.wantKey;
+    if (got == p.want && keyOk) {
+      ++right;
+    } else if (firstBad.empty()) {
+      firstBad = std::format(L"{} (got {})", p.what, PushRouteName(got));
+    }
+  }
+  // A LEFT GROUP'S PUSH WAKES NOTHING: g2 goes, and a push for it is a push for a group not held,
+  // while g1's still wakes g1's loop
+  held.erase(held.begin() + 1);
+  const bool leftOk = RoutePush(held, g2) == PushRoute::None && RoutePush(held, g1) == PushRoute::One;
+  // AND WITH NO GROUP HELD, a named push wakes nothing
+  const bool noneOk = RoutePush({}, g1) == PushRoute::None;
+  const bool ok = firstBad.empty() && leftOk && noneOk;
+  return Line(L"conv push", ok,
+              std::format(L"{} of {} pushes routed to their own group's loop{}{}; a push for a group "
+                          L"just left wakes nothing {}; with no group held a named push wakes "
+                          L"nothing {}   [query: RoutePush over three held ids, the "
+                          L"conversation-list design 2.1]",
+                          right, asked, firstBad.empty() ? L"" : L", first wrong: ", firstBad,
+                          leftOk ? L"yes" : L"NO", noneOk ? L"yes" : L"NO"));
+}
+
 }  // namespace
+
+std::string PushGroupKey(std::string_view pushed) {
+  std::string key(pushed);
+  for (char& ch : key)
+    if (ch >= 'A' && ch <= 'F') ch = static_cast<char>(ch - 'A' + 'a');
+  return key;
+}
+
+PushRoute RoutePush(std::vector<std::string> const& heldIds, std::string_view pushed) {
+  if (pushed.empty()) return PushRoute::All;
+  const std::string key = PushGroupKey(pushed);
+  for (auto const& id : heldIds)
+    if (id == key) return PushRoute::One;
+  return PushRoute::None;
+}
+
+std::wstring_view PushRouteName(PushRoute route) {
+  switch (route) {
+    case PushRoute::One: return L"One";
+    case PushRoute::All: return L"All";
+    case PushRoute::None: return L"None";
+  }
+  return L"?";
+}
 
 GroupGate const* FindGate(std::vector<GroupGate> const& gates, std::string const& groupIdHex) {
   for (auto const& gate : gates)
@@ -274,6 +352,7 @@ std::vector<std::wstring> CollectConversationRulesDiagnostics() {
   lines.push_back(ConversationWorldLine());
   lines.push_back(ConversationOrderLine());
   lines.push_back(ConversationGateLine());
+  lines.push_back(ConversationPushLine());
   return lines;
 }
 
