@@ -359,6 +359,29 @@ struct PaneListRow {
 };
 PaneListRow MakePaneListRow(double height = 36);
 
+// HOW ONE INSTANCE'S TWO TEXT COLUMNS SHARE ITS ROW (S3). MakePaneListRow builds the species with
+// the title taking the rest of the row, cut with an ellipsis, and the meta at its natural width.
+// That is right for a long name beside a short figure, which is what every caller but one
+// shows. The inspector rail's device rows are the measured case: a device name and its owner
+// beside "online". It is wrong for a list whose titles are short labels and whose values are
+// long: the relay drawer's hops ("Message server", then a 36-character client_id). There the
+// value took its whole width and squeezed the label to "M…".
+//
+// So the roles are set on ONE INSTANCE, the way the drawer already drops an instance's
+// hairline. The species is unchanged: the same three elements on the same grid at the same
+// height. Only this row's column sizing and trimming follow the fit.
+//
+// The defaults are the species as MakePaneListRow builds it.
+struct PaneListRowFit {
+  bool titleSizesToContent = false;  // true: the title's column is Auto and the meta's Star
+  bool titleCut = true;              // the title is cut with an ellipsis
+  bool metaCut = true;               // the meta is cut with an ellipsis, given a Star column
+};
+// `wholeMeta`, when not empty, becomes the meta's tooltip and its help text, so a cut value is
+// still there whole. The meta's own text, and so its automation name, is whole already.
+void SetPaneListRowFit(PaneListRow const& row, PaneListRowFit const& fit,
+                       winrt::hstring const& wholeMeta = {});
+
 // The SAME row, SELECTABLE (D5 / Advanced Mode). Identical grid, identical
 // height, identical three elements — the only difference is that the root is a
 // Button on UrPaneRowButtonStyle instead of a Border, so the row can be clicked,
