@@ -1,0 +1,78 @@
+# THROWAWAY, NEVER MERGE, NEVER IN AN UPSTREAM PULL REQUEST. fix/s3-relay-drawer-trim's mutants.
+#
+# One job per mutant (.github/s3/s3-mutants.ps1): the branch's tree with ONE exact edit to the fix's
+# pure rules, built as build-and-test builds it (Release x64, no dll), and its --diagnose read. A
+# job is green only when its mutant is KILLED: the S3 line it must turn red reads FAIL. S0 is the
+# control: no edit, both S3 lines PASS, and no FAIL anywhere.
+name: S3 mutants (throwaway)
+
+on:
+  push:
+    branches:
+      - 'ci/s3-mutants**'
+
+permissions:
+  contents: read
+
+jobs:
+  mutant:
+    name: S3 mutant ${{ matrix.id }}
+    runs-on: windows-2022
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        id: [S0, S1, S2, S3, S4, S5, S6, S7, S8, S9]
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Apply the mutant
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github\s3\s3-mutants.ps1 -Id ${{ matrix.id }} -Apply
+          exit $LASTEXITCODE
+
+      - name: Build the solution (Release x64)
+        shell: pwsh
+        working-directory: app
+        run: |
+          $pin = '10.0.22621.0'
+          $roots = @("${env:ProgramFiles(x86)}\Windows Kits\10", "$env:ProgramFiles\Windows Kits\10") | Where-Object { Test-Path -LiteralPath $_ }
+          $usable = @(foreach ($r in $roots) {
+            Get-ChildItem (Join-Path $r 'Include') -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' -and
+                (Test-Path -LiteralPath (Join-Path $r "Include\$($_.Name)\um\windows.h")) -and
+                (Test-Path -LiteralPath (Join-Path $r "Lib\$($_.Name)\um\x64\kernel32.lib")) } |
+              Select-Object -ExpandProperty Name
+          }) | Select-Object -Unique | Sort-Object { [version]$_ }
+          $usable = @($usable)
+          $sdk = if ($usable -contains $pin) { $pin } else { $usable[-1] }
+          msbuild URmessage.sln /restore /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=$sdk /m /v:minimal /clp:Summary
+          exit $LASTEXITCODE
+
+      - name: Run --diagnose and judge the mutant
+        shell: pwsh
+        env:
+          URMESSAGE_APP_ROOT: ${{ github.workspace }}\.ci-appstate
+        run: |
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'app\build\x64\Release\URmessage.exe'
+          $psi = [System.Diagnostics.ProcessStartInfo]::new($exe)
+          $psi.Arguments = '--diagnose'
+          $psi.UseShellExecute = $false
+          $psi.CreateNoWindow = $true
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+          $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+          $p = [System.Diagnostics.Process]::Start($psi)
+          $out = $p.StandardOutput.ReadToEnd()
+          $null = $p.StandardError.ReadToEnd()
+          if (-not $p.WaitForExit(120000)) { try { $p.Kill() } catch { }; Write-Host '::error::--diagnose did not exit'; exit 1 }
+          $file = Join-Path $env:RUNNER_TEMP 'diagnose.out'
+          Set-Content -LiteralPath $file -Value $out -Encoding utf8 -NoNewline
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github\s3\s3-mutants.ps1 -Id ${{ matrix.id }} -Judge $file
+          exit $LASTEXITCODE
