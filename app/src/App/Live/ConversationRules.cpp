@@ -7,6 +7,7 @@
 
 #include "Live/ConversationRules.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <format>
 #include <string>
@@ -456,6 +457,100 @@ std::wstring ConversationReceiveLine() {
                           notOverRemoval ? L"yes" : L"NO", redraws ? L"yes" : L"NO"));
 }
 
+namespace {
+
+char AsciiLower(char c) { return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c; }
+
+// A CHARACTER THAT CONTINUES A FOLDER'S NAME: after a root, one of these means the text names another
+// folder that only begins the same way ("C:\Users\bob" in "C:\Users\bobby"), which is not the root.
+bool ContinuesName(char c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' ||
+         c == '_' || c == '-' || static_cast<unsigned char>(c) >= 0x80;
+}
+
+// every whole-folder occurrence of `root` in `text`, ASCII case ignored, replaced by `to`
+std::string ReplaceRoot(std::string const& text, std::string const& root, std::string_view to) {
+  std::string out;
+  out.reserve(text.size());
+  std::size_t i = 0;
+  while (i < text.size()) {
+    bool match = i + root.size() <= text.size();
+    for (std::size_t k = 0; match && k < root.size(); ++k)
+      if (AsciiLower(text[i + k]) != AsciiLower(root[k])) match = false;
+    if (match && i + root.size() < text.size() && ContinuesName(text[i + root.size()])) match = false;
+    if (match) {
+      out.append(to);
+      i += root.size();
+    } else {
+      out.push_back(text[i]);
+      ++i;
+    }
+  }
+  return out;
+}
+
+// a folder as it is matched: no trailing separator, so "C:\x\" and "C:\x" name one folder; a root of
+// fewer than three characters ("C:" alone) names no folder of the app's and is not matched
+std::string TrimmedRoot(std::string_view root) {
+  std::string out(root);
+  while (!out.empty() && (out.back() == '\\' || out.back() == '/')) out.pop_back();
+  return out.size() < 3 ? std::string() : out;
+}
+
+}  // namespace
+
+// receive path: THE DRAWN REPORT NAMES NO PATH UNDER THE USER'S PROFILE (lead ruling R71). The
+// library's heads report, which names the store's files twice, under an app folder in a profile: the
+// store's root is drawn as "the app's data folder" both times and the rest of the sentence is kept;
+// ASCII case is ignored; a path elsewhere under the profile is drawn from "the user's folder"; a
+// folder that only begins like the profile is left alone; a sentence with no path is unchanged.
+// Drawing the sentence as the library wrote it fails the first clauses.
+std::wstring ReceivePathLine() {
+  const std::string profile = "C:\\Users\\diag";
+  const std::string app = profile + "\\AppData\\Local\\URmessage";
+  const std::string store = app + "\\live\\state";
+  const std::vector<std::string> roots = {store, app + "\\live\\stream", app + "\\live", app};
+  const std::string heads = "\\state\\group\\eaec17b4\\heads";
+  const std::string lead =
+      "urmessage: the receiver-ladder heads could not be persisted: group 5035: urmessage: the durable "
+      "state store could not be read or written: ";
+  const std::string report = lead + store + "\\state\\group\\eaec17b4\\.writing-21 could not be renamed onto " +
+                             store + heads + ": Access is denied.";
+  const std::string drawn = DrawnReceiveReport(report, roots, profile);
+  const std::string want = lead + std::string(kAppDataFolder) + "\\state\\group\\eaec17b4\\.writing-21 could not " +
+                           "be renamed onto " + std::string(kAppDataFolder) + heads + ": Access is denied.";
+  const bool storeTwice = drawn == want;
+  auto lower = [](std::string s) {
+    for (auto& c : s) c = AsciiLower(c);
+    return s;
+  };
+  const bool noProfile = lower(drawn).find(lower(profile)) == std::string::npos;
+  // the same report in another case
+  std::string shouted = report;
+  for (std::size_t at = shouted.find(store); at != std::string::npos; at = shouted.find(store, at + 1))
+    for (std::size_t k = 0; k < store.size(); ++k)
+      shouted[at + k] = (shouted[at + k] >= 'a' && shouted[at + k] <= 'z')
+                            ? static_cast<char>(shouted[at + k] - 'a' + 'A')
+                            : shouted[at + k];
+  const bool caseIgnored = DrawnReceiveReport(shouted, roots, profile) == want;
+  const std::string elsewhere = DrawnReceiveReport("open " + profile + "\\Documents\\x: denied", roots, profile);
+  const bool userFolder = elsewhere == "open " + std::string(kUserFolder) + "\\Documents\\x: denied";
+  const std::string sibling = "open C:\\Users\\diagnostic\\x: denied";
+  const bool siblingKept = DrawnReceiveReport(sibling, roots, profile) == sibling;
+  const std::string plain = "urmessage: this device is not connected";
+  const bool plainKept = DrawnReceiveReport(plain, roots, profile) == plain;
+  const bool ok = storeTwice && noProfile && caseIgnored && userFolder && siblingKept && plainKept;
+  return Line(L"receive path", ok,
+              std::format(L"the store's root drawn as the app's data folder, twice, the rest kept {}; no "
+                          L"path under the profile left {}; ASCII case ignored {}; elsewhere under the "
+                          L"profile from the user's folder {}; a folder that only begins like it left "
+                          L"alone {}; no path, no change {}   [query: DrawnReceiveReport over the "
+                          L"library's heads report under an app folder in a profile, lead ruling R71]",
+                          storeTwice ? L"yes" : L"NO", noProfile ? L"yes" : L"NO",
+                          caseIgnored ? L"yes" : L"NO", userFolder ? L"yes" : L"NO",
+                          siblingKept ? L"yes" : L"NO", plainKept ? L"yes" : L"NO"));
+}
+
 // conv start: WHICH ROW OPENS. At the start, after the open one is left, while another conversation
 // moves above the open one, when a group is just joined (before its row is there and after), and
 // with nothing but a notice. Index 0 of the worker's list (the one-group rule) fails the kept and
@@ -500,6 +595,25 @@ std::wstring ConversationStartLine() {
 }
 
 }  // namespace
+
+// THE RECEIVE REPORT AS A CONVERSATION DRAWS IT (lead ruling R71); ConversationRules.h says what it
+// keeps and what it names. Outside the anonymous namespace: LiveMesh.cpp draws through it.
+std::string DrawnReceiveReport(std::string_view report, std::vector<std::string> const& appRoots,
+                               std::string_view profileRoot) {
+  std::vector<std::string> roots;
+  for (auto const& r : appRoots) {
+    std::string t = TrimmedRoot(r);
+    if (!t.empty()) roots.push_back(std::move(t));
+  }
+  // THE LONGEST FIRST: the store's root is inside the app's own, and must be named before it is
+  std::stable_sort(roots.begin(), roots.end(),
+                   [](std::string const& a, std::string const& b) { return a.size() > b.size(); });
+  std::string text(report);
+  for (auto const& r : roots) text = ReplaceRoot(text, r, kAppDataFolder);
+  const std::string profile = TrimmedRoot(profileRoot);
+  if (!profile.empty()) text = ReplaceRoot(text, profile, kUserFolder);
+  return text;
+}
 
 std::wstring ConversationToOpen(std::vector<std::wstring> const& rowIds, std::wstring const& openId,
                                 std::wstring const& takenUpId) {
@@ -610,6 +724,7 @@ std::vector<std::wstring> CollectConversationRulesDiagnostics() {
   lines.push_back(ConversationNoticeLine());
   lines.push_back(ConversationStartLine());
   lines.push_back(ConversationReceiveLine());
+  lines.push_back(ReceivePathLine());
   return lines;
 }
 
