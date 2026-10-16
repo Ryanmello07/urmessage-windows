@@ -42,4 +42,84 @@ std::wstring StatusRecordsValue(int recordsPerSecond) {
   return std::to_wstring(recordsPerSecond);
 }
 
+RelayRowFit RelayDrawerRowFit() {
+  // The drawer's labels are three short fixed words ("This device", "URnetwork", "Message
+  // server") and its values are what the session observed: the platform url and a 36-character
+  // client_id. The label is the one that must always read.
+  RelayRowFit fit;
+  fit.label = TextCut::None;
+  fit.value = TextCut::Ellipsis;
+  fit.labelSizesToContent = true;
+  return fit;
+}
+
+std::wstring RelayRowValue(std::wstring_view subLabel, bool healthy) {
+  // The state is in WORDS as well as in the dot's colour (the drawer's own note says why).
+  std::wstring value{subLabel};
+  if (!healthy) value += L"  offline";
+  return value;
+}
+
+std::wstring RelayRowName(std::wstring_view label, std::wstring_view subLabel, bool healthy) {
+  std::wstring name{label};
+  name += L", ";
+  name += subLabel;
+  name += healthy ? L", online" : L", offline";
+  return name;
+}
+
+StripFit FitStatusStrip(std::vector<StripItem> const& items, double room) {
+  StripFit out;
+  out.fit.assign(items.size(), StripItemFit::Whole);
+  out.width.reserve(items.size());
+  for (auto const& item : items) {
+    out.width.push_back(item.width);
+    out.total += item.width;
+  }
+  // A hair of tolerance, so a strip that fits to the last fraction of a DIP is not cut by the
+  // arithmetic's rounding.
+  const auto over = [&out, room] { return out.total > room + 0.01; };
+
+  // 1. The Advanced Mode fields go first, rightmost first: they are the extras a person asked
+  //    for, and the Normal facts outrank them where there is no room for both.
+  for (size_t i = items.size(); i-- > 0 && over();) {
+    if (items[i].part != StripPart::Optional) continue;
+    out.fit[i] = StripItemFit::Dropped;
+    out.total -= out.width[i];
+    out.width[i] = 0;
+  }
+  // 2. Then the caption, which names the value and says nothing the value's own automation name
+  //    does not.
+  for (size_t i = items.size(); i-- > 0 && over();) {
+    if (items[i].part != StripPart::Caption) continue;
+    out.fit[i] = StripItemFit::Dropped;
+    out.total -= out.width[i];
+    out.width[i] = 0;
+  }
+  // 3. Then the value is cut with an ellipsis, to no narrower than its floor.
+  for (size_t i = items.size(); i-- > 0 && over();) {
+    if (items[i].part != StripPart::Value) continue;
+    const double floor = items[i].floor < items[i].width ? items[i].floor : items[i].width;
+    const double wanted = out.width[i] - (out.total - room);
+    const double cut = wanted < floor ? floor : wanted;
+    if (cut < out.width[i]) {
+      out.fit[i] = StripItemFit::Cut;
+      out.total -= out.width[i] - cut;
+      out.width[i] = cut;
+    }
+  }
+  out.fits = !over();
+  return out;
+}
+
+std::wstring StatusStripFacts(std::vector<std::wstring> const& facts) {
+  std::wstring out;
+  for (auto const& fact : facts) {
+    if (fact.empty()) continue;
+    if (!out.empty()) out += L"\n";
+    out += fact;
+  }
+  return out;
+}
+
 }  // namespace urmsg::views

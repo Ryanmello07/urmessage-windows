@@ -54,10 +54,16 @@ struct StatusStripView {
   winrt::Microsoft::UI::Xaml::FrameworkElement drawer{nullptr};
 };
 
+// The strip FITS ITS OWN WIDTH (S3): on every resize, and on every mode change,
+// it measures its items and asks FitStatusStrip (StatusStripRules.h) which show
+// whole, which is cut with an ellipsis and which is dropped, so it never draws
+// past its own edge at any width from the window's 400 DIP minimum up. Every
+// fact it carries stays in its tooltip and its help text, whatever is dropped.
 StatusStripView MakeStatusStrip(urmsg::demo::World const& world);
 
 // DENSITY ONLY. It shows and hides the three Advanced fields MakeStatusStrip
-// already built; it never rebuilds the strip and never runs a mode
+// already built, through the fit, which then drops what the width cannot hold;
+// it never rebuilds the strip and never runs a mode
 // crossfade — re-running a builder to change density is what blanks a visible
 // scroller to opacity 0 and fades it back over itself.
 void SetStatusStripAdvanced(StatusStripView& v, bool advanced);

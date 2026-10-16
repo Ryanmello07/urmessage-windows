@@ -1847,6 +1847,155 @@ std::wstring StatusStripFieldsAssertion() {
       offline, connecting, connected, code(lockOn), code(lockOff), epoch, records);
 }
 
+// ---- S3: the relay drawer's rows and the strip fit their own width -----------------------------
+//
+// PURE, on the same terms as the line above: StatusStripRules.h's decisions, asked with the long
+// values of a real live session TYPED HERE (the message server's client_id, Live/LiveMesh.cpp's
+// kServerClientId, and the platform url the screenshot rig dials) and with widths that stand in
+// for the strip's measured ones. The view turns each answer into XAML; these lines hold the
+// answers. Each prints PASS or FAIL, what it asked, and the QUERY.
+std::wstring RelayRowFitAssertion() {
+  using namespace urmsg::views;
+  const RelayRowFit fit = RelayDrawerRowFit();
+  const std::wstring id = L"01a0a199-5b06-5117-e86a-4bf5c01db15c";  // 36 characters
+  const std::wstring url = L"wss://127.0.0.1:64809/urmessage/v1";     // 34 characters
+  const bool labelOk = fit.label == TextCut::None;
+  const bool valueOk = fit.value == TextCut::Ellipsis;
+  const bool columnsOk = fit.labelSizesToContent;
+  // The tooltip and the help text are RelayRowValue itself: whole, with the state in words.
+  const std::wstring idValue = RelayRowValue(id, true);
+  const std::wstring urlOffline = RelayRowValue(url, false);
+  const bool wholeOk = idValue == id && idValue.size() == 36 && urlOffline == url + L"  offline";
+  const std::wstring name = RelayRowName(L"Message server", id, true);
+  const std::wstring nameOffline = RelayRowName(L"URnetwork", url, false);
+  const bool nameOk = name == L"Message server, " + id + L", online" &&
+                      nameOffline == L"URnetwork, " + url + L", offline";
+  const bool ok = labelOk && valueOk && columnsOk && wholeOk && nameOk;
+  return std::format(
+      L"  relay row fit    : {}  label cut {} | value cut {} | label sizes to content {} | "
+      L"tooltip and help text whole ({} of 36 chars) {} | automation name holds label, value and "
+      L"state {}   [query: S3, a relay drawer row's label is never cut and its value is cut with "
+      L"an ellipsis, the whole value in its tooltip, help text and automation name]",
+      ok ? L"PASS" : L"FAIL", labelOk ? L"none" : L"NOT NONE", valueOk ? L"ellipsis" : L"NOT ELLIPSIS",
+      columnsOk ? L"true" : L"FALSE", idValue.size(), wholeOk ? L"true" : L"FALSE",
+      nameOk ? L"true" : L"FALSE");
+}
+
+std::wstring StatusStripFitAssertion() {
+  using namespace urmsg::views;
+  // Stand-in widths, in DIPs, of the strip's items: the dot's host, "Connected", a separator,
+  // the "server" caption with its 6 of spacing, the value, a separator and the padlock; then the
+  // three Advanced fields, each with its separator. The value's floor is the view's 48.
+  const auto normal = [](double value) {
+    return std::vector<StripItem>{{StripPart::Fixed, 20},     {StripPart::Fixed, 62},
+                                  {StripPart::Fixed, 29},     {StripPart::Caption, 39},
+                                  {StripPart::Value, value, 48}, {StripPart::Fixed, 29},
+                                  {StripPart::Fixed, 14}};
+  };
+  const auto advanced = [&normal](double value) {
+    auto items = normal(value);
+    items.push_back({StripPart::Optional, 29 + 52});   // epoch
+    items.push_back({StripPart::Optional, 29 + 108});  // session
+    items.push_back({StripPart::Optional, 29 + 40});   // rec/s
+    return items;
+  };
+  // The strip's room at the window's 400 DIP minimum less its 16 + 16 inset, up to the widest
+  // window the app opens at.
+  const double minRoom = 400.0 - 32.0;
+  const double maxRoom = 1560.0 - 32.0;
+
+  // THE PROPERTY, for one fit: it fits; a Fixed item is whole; the value is never dropped and
+  // never cut below its floor; an Optional is whole or dropped, never cut; the dropped Optionals
+  // are the rightmost ones; the caption goes only once every Optional has gone; and the value is
+  // cut only once the caption has gone.
+  const auto holds = [](std::vector<StripItem> const& items, double room) {
+    const StripFit fit = FitStatusStrip(items, room);
+    if (!fit.fits || fit.total > room + 0.01 || fit.fit.size() != items.size()) return false;
+    bool optionalDropped = false, optionalShown = false, captionDropped = false, valueCut = false;
+    for (size_t i = 0; i < items.size(); ++i) {
+      const auto f = fit.fit[i];
+      switch (items[i].part) {
+        case StripPart::Fixed:
+          if (f != StripItemFit::Whole || fit.width[i] != items[i].width) return false;
+          break;
+        case StripPart::Caption:
+          if (f == StripItemFit::Cut) return false;
+          if (f == StripItemFit::Dropped) captionDropped = true;
+          break;
+        case StripPart::Value:
+          if (f == StripItemFit::Dropped) return false;
+          if (fit.width[i] + 0.01 < std::min(items[i].floor, items[i].width)) return false;
+          if (f == StripItemFit::Cut) valueCut = true;
+          break;
+        case StripPart::Optional:
+          if (f == StripItemFit::Cut) return false;
+          if (f == StripItemFit::Dropped) optionalDropped = true;
+          else if (optionalDropped) return false;  // a shown Optional right of a dropped one
+          else optionalShown = true;
+          break;
+      }
+    }
+    if (captionDropped && optionalShown) return false;
+    if (valueCut && !captionDropped) {
+      for (size_t i = 0; i < items.size(); ++i)
+        if (items[i].part == StripPart::Caption) return false;
+    }
+    return true;
+  };
+
+  int asked = 0, held = 0;
+  std::wstring firstBad;
+  for (double value : {40.0, 170.0, 260.0, 600.0}) {
+    for (double room = minRoom; room <= maxRoom; room += 8.0) {
+      for (int mode = 0; mode < 2; ++mode) {
+        ++asked;
+        if (holds(mode == 0 ? normal(value) : advanced(value), room)) {
+          ++held;
+        } else if (firstBad.empty()) {
+          firstBad = std::format(L"{} value {:.0f} in {:.0f}", mode == 0 ? L"normal" : L"advanced",
+                                 value, room);
+        }
+      }
+    }
+  }
+
+  // Four answers by name. "URnetwork exit · United States" (170) at the minimum fits whole in
+  // Normal mode, and in Advanced Mode the three extras go. Two exit countries (260) cost the
+  // caption, and the value is cut to the room that is left. At the widest window nothing goes.
+  const StripFit a = FitStatusStrip(normal(170), minRoom);
+  const bool aOk = a.fits && a.fit[3] == StripItemFit::Whole && a.fit[4] == StripItemFit::Whole;
+  const StripFit b = FitStatusStrip(advanced(170), minRoom);
+  const bool bOk = b.fits && b.fit[7] == StripItemFit::Dropped && b.fit[8] == StripItemFit::Dropped &&
+                   b.fit[9] == StripItemFit::Dropped && b.fit[4] == StripItemFit::Whole;
+  const StripFit c = FitStatusStrip(normal(260), minRoom);
+  const bool cOk = c.fits && c.fit[3] == StripItemFit::Dropped && c.fit[4] == StripItemFit::Cut &&
+                   c.width[4] > 213.9 && c.width[4] < 214.1;
+  const StripFit d = FitStatusStrip(advanced(260), maxRoom);
+  bool dOk = d.fits;
+  for (auto f : d.fit) dOk = dOk && f == StripItemFit::Whole;
+
+  // EVERY FACT STAYS REACHABLE: the tooltip and help text hold each item's spoken fact whole, one
+  // per line, the empty ones (the dot and the rules) skipped.
+  const std::wstring facts = StatusStripFacts(
+      {L"Connection, Connected", L"", L"server, URnetwork exit · United States", L"",
+       L"Live session: server key pinned", L"epoch, 3", L"session, unavailable", L"rec/s, 0"});
+  const bool factsOk = facts ==
+      L"Connection, Connected\nserver, URnetwork exit · United States\nLive session: server "
+      L"key pinned\nepoch, 3\nsession, unavailable\nrec/s, 0";
+
+  const bool ok = held == asked && aOk && bOk && cOk && dOk && factsOk;
+  return std::format(
+      L"  strip fit        : {}  {}/{} fits hold from {:.0f} to {:.0f} dip{}{} | exit at the "
+      L"minimum whole {} | Advanced extras dropped there {} | two countries: caption dropped, "
+      L"value cut to 214 {} | widest window whole {} | facts reachable whole {}   [query: S3, the "
+      L"strip never draws past its own edge: the Advanced fields drop rightmost first, then the "
+      L"caption, then the value is cut with an ellipsis, and every fact stays in its tooltip and "
+      L"help text]",
+      ok ? L"PASS" : L"FAIL", held, asked, minRoom, maxRoom, firstBad.empty() ? L"" : L", first not: ",
+      firstBad, aOk ? L"true" : L"FALSE", bOk ? L"true" : L"FALSE", cOk ? L"true" : L"FALSE",
+      dOk ? L"true" : L"FALSE", factsOk ? L"true" : L"FALSE");
+}
+
 // ---- an invitation refused over a held group, and the leave that answers it (Task 39) --------
 //
 // PURE on the same terms as the lines above: every function asked is Live/HeldGroupRules.h's, no
@@ -3547,6 +3696,10 @@ std::vector<std::wstring> CollectDiagnostics() {
   // lines above are: it builds no world and names no hostname, so a plain
   // launch's log gains nothing fabricated by carrying it.
   lines.push_back(StatusStripFieldsAssertion());
+  // S3: the relay drawer's rows and the strip fit their own width. The same terms: a typed
+  // client_id and platform url, and stand-in widths, so nothing fabricated reaches the log.
+  lines.push_back(RelayRowFitAssertion());
+  lines.push_back(StatusStripFitAssertion());
   // The demo surfaces' own invariants. One collector per surface, and every one
   // of them must be pure C++: this function runs before winrt::init_apartment
   // (main.cpp:168 vs :180), so a WinRT object built from here would die on the
