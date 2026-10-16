@@ -151,9 +151,9 @@ urnw::kit::PaneGroupHeader AppendCaption(StackPanel const& column,
   return header;
 }
 
-// Named, for the reason UrComponents.cpp:25-29 states: FontIcon defaults to the
-// older Segoe MDL2 Assets, whose metrics differ.
-Media::FontFamily IconFont() { return Media::FontFamily(L"Segoe Fluent Icons"); }
+// The one icon font (kIconFontFamily, UrComponents.h): Segoe Fluent Icons,
+// falling back to Segoe MDL2 Assets where Windows 10 lacks it.
+Media::FontFamily IconFont() { return Media::FontFamily(urnw::kit::kIconFontFamily); }
 
 // One node of the relay path: a 28epx glyph over a title and one muted
 // sub-line, every string from the RelayNode — nothing on this diagram is a

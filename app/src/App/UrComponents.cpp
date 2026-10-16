@@ -4,7 +4,14 @@
 #include "UrComponents.h"
 
 #include <chrono>
+#include <mutex>
 #include <string>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
+
+#include <dwrite.h>  // IconFontMaps: which glyphs this machine's icon fonts map
+#pragma comment(lib, "dwrite.lib")
 
 #include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
@@ -22,11 +29,47 @@ using namespace winrt::Microsoft::UI::Xaml::Controls;
 namespace urnw::kit {
 namespace {
 
-// Segoe Fluent Icons ships with Windows 11. Naming it matters: FontIcon
-// defaults to the older Segoe MDL2 Assets, whose metrics differ, so a screen
-// that mixes the default with an explicit family comes out with two icon
-// weights. App.xaml carries the same family under UrIconFontFamily.
-Media::FontFamily IconFont() { return Media::FontFamily(L"Segoe Fluent Icons"); }
+// The one icon font (kIconFontFamily, UrComponents.h): Segoe Fluent Icons,
+// falling back to Segoe MDL2 Assets where Windows 10 lacks it. App.xaml
+// carries the same list under UrIconFontFamily.
+Media::FontFamily IconFont() { return Media::FontFamily(kIconFontFamily); }
+
+// The installed font of each family of kIconFontFamily, in the list's order (null where the family is
+// not installed), asked of DirectWrite once.
+std::vector<winrt::com_ptr<IDWriteFont>> const& IconFonts() {
+  static std::vector<winrt::com_ptr<IDWriteFont>> const fonts = [] {
+    std::vector<winrt::com_ptr<IDWriteFont>> out;
+    winrt::com_ptr<IDWriteFactory> factory;
+    if (FAILED(::DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+                                     reinterpret_cast<::IUnknown**>(factory.put()))))
+      return out;
+    winrt::com_ptr<IDWriteFontCollection> system;
+    if (FAILED(factory->GetSystemFontCollection(system.put(), FALSE)) || !system) return out;
+    const std::wstring_view list = kIconFontFamily;
+    size_t at = 0;
+    for (;;) {
+      const size_t comma = list.find(L',', at);
+      std::wstring_view one =
+          list.substr(at, comma == std::wstring_view::npos ? std::wstring_view::npos : comma - at);
+      while (!one.empty() && one.front() == L' ') one.remove_prefix(1);
+      while (!one.empty() && one.back() == L' ') one.remove_suffix(1);
+      winrt::com_ptr<IDWriteFont> font;
+      UINT32 index = 0;
+      BOOL exists = FALSE;
+      const std::wstring name(one);
+      winrt::com_ptr<IDWriteFontFamily> family;
+      if (!name.empty() && SUCCEEDED(system->FindFamilyName(name.c_str(), &index, &exists)) && exists &&
+          SUCCEEDED(system->GetFontFamily(index, family.put())) && family)
+        (void)family->GetFirstMatchingFont(DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                           DWRITE_FONT_STYLE_NORMAL, font.put());
+      out.push_back(font);
+      if (comma == std::wstring_view::npos) break;
+      at = comma + 1;
+    }
+    return out;
+  }();
+  return fonts;
+}
 
 // A double out of the app dictionary (the pane metrics live there so every pane
 // is one construction), with a fallback for a renamed key.
@@ -1077,6 +1120,37 @@ void Snackbar::Hide() {
     if (bar_) bar_.IsOpen(false);
   } catch (winrt::hresult_error const&) {
   }
+}
+
+bool IconFontMaps(char32_t codePoint) {
+  static std::mutex mutex;
+  static std::unordered_map<char32_t, bool> known;
+  std::lock_guard<std::mutex> lock(mutex);
+  if (auto it = known.find(codePoint); it != known.end()) return it->second;
+  bool maps = false;
+  for (auto const& font : IconFonts()) {
+    BOOL exists = FALSE;
+    if (font && SUCCEEDED(font->HasCharacter(static_cast<UINT32>(codePoint), &exists)) && exists) {
+      maps = true;
+      break;
+    }
+  }
+  known.emplace(codePoint, maps);
+  return maps;
+}
+
+winrt::hstring IconGlyphText(wchar_t const* glyph) {
+  const std::wstring_view text = glyph ? std::wstring_view(glyph) : std::wstring_view();
+  if (text.size() != 1) return winrt::hstring(text);
+  const char32_t codePoint = static_cast<char32_t>(text[0]);
+  if (IconFontMaps(codePoint)) return winrt::hstring(text);
+  for (auto const& g : kIconGlyphs) {
+    if (g.codePoint != codePoint || g.fallback == 0) continue;
+    if (!IconFontMaps(g.fallback)) break;
+    const wchar_t drawn[2] = {static_cast<wchar_t>(g.fallback), L'\0'};
+    return winrt::hstring(drawn);
+  }
+  return winrt::hstring(text);
 }
 
 }  // namespace urnw::kit
