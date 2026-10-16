@@ -169,6 +169,15 @@ MainWindow::MainWindow() {
   BuildDeveloper();
   BuildStatusStrip();
 
+  // THE IDENTITY SCREENS (identity phase 1, Task 6): --demo-identity=<screen>, or the identity
+  // preview build's plain launch, opens one over the fabricated world. A fabricated launch only:
+  // BuildScreen builds nothing in live mode, and ApplyLiveWorld closes whatever is open when it
+  // latches. Account is Settings, which EnterDemoMode's deep link opens instead.
+  if (options_.enabled && options_.identityScreen != urmsg::demo::identity::Screen::None &&
+      options_.identityScreen != urmsg::demo::identity::Screen::Account) {
+    ShowIdentity(options_.identityScreen);
+  }
+
   // LAST, and after every builder above: the first live publication may already be standing by the
   // time this runs, and ApplyLiveWorld redraws the views those builders created. Arming it before
   // them would let a beat land on a half-built window.
@@ -209,6 +218,172 @@ MainWindow::MainWindow() {
   }
   ApplyBreakpoint();
   urnw::LogInfo("window: main window constructed");
+}
+
+void MainWindow::SetNativeHandle(HWND hwnd) {
+  hwnd_ = hwnd;
+  // a screen the constructor opened asked before there was a window to ask
+  if (captureExcluded_) ApplyCaptureExclusion(true, L"the screen open at launch");
+}
+
+// ---- the identity screens (identity phase 1, Task 6) -------------------------------------------
+
+void MainWindow::ShowIdentity(urmsg::demo::identity::Screen screen) {
+  ShowIdentity(screen, urmsg::demo::identity::PresetSelection(screen));
+}
+
+void MainWindow::ShowIdentity(urmsg::demo::identity::Screen screen,
+                              urmsg::demo::identity::Selection const& sel) {
+  namespace id = urmsg::demo::identity;
+  if (screen == id::Screen::Account) {
+    CloseIdentity();
+    SelectNavTag(L"settings");
+    return;
+  }
+  const id::ScreenModel model = id::BuildScreen(screen, urmsg::ActiveRunMode(), sel);
+  if (!model.built) {
+    // live mode, or a screen this build has none of: nothing is drawn, and nothing claims to be
+    urnw::LogInfo("identity: no {} screen in this mode; nothing is drawn",
+                  urnw::Narrow(std::wstring{id::ScreenName(screen)}));
+    CloseIdentity();
+    return;
+  }
+  if (!identityHost_) {
+    identityHost_ = Grid();
+    // rows 1 and 2 of RevealRoot: the destinations and the status strip, and NOT the title bar,
+    // whose DEMO chip stays in view over every identity screen
+    Grid::SetRow(identityHost_, 1);
+    Grid::SetRowSpan(identityHost_, 2);
+    Canvas::SetZIndex(identityHost_, 100);
+    RevealRoot().Children().Append(identityHost_);
+  }
+  identitySel_ = sel;
+  identityView_ = urmsg::views::MakeIdentityScreen(
+      model, [weak = get_weak()](id::Button const& button) {
+        if (auto self = weak.get()) self->QueueIdentityAction(button);
+      });
+  identityView_.screen = screen;
+  identityHost_.Children().Clear();
+  identityHost_.Children().Append(identityView_.root);
+  identityHost_.Visibility(Visibility::Visible);
+  // PROPERTY 2: the policy is the model's, and this is the one place the window carries it out.
+  ApplyCaptureExclusion(model.excludedFromCapture, std::wstring{id::ScreenName(screen)});
+  urnw::LogInfo("identity: screen -> {} (capture {})",
+                urnw::Narrow(std::wstring{id::ScreenName(screen)}),
+                model.excludedFromCapture ? "excluded" : "allowed");
+}
+
+void MainWindow::CloseIdentity() {
+  if (identityHost_) {
+    identityHost_.Children().Clear();
+    identityHost_.Visibility(Visibility::Collapsed);
+  }
+  identityView_ = {};
+  if (captureExcluded_) ApplyCaptureExclusion(false, L"closed");
+}
+
+void MainWindow::QueueIdentityAction(urmsg::demo::identity::Button const& button) {
+  // A BEAT LATER, never inline: a tick in the Remove dialog rebuilds the dialog, and replacing a
+  // control inside its own Checked handler is the one way this could go wrong. The static
+  // GetForCurrentThread(), as EnterDemoMode's autoplay takes it: a click runs on the UI thread,
+  // which owns the queue.
+  auto queue = winrt::Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread();
+  if (!queue) {
+    OnIdentityAction(button);
+    return;
+  }
+  queue.TryEnqueue([weak = get_weak(), button]() {
+    if (auto self = weak.get()) self->OnIdentityAction(button);
+  });
+}
+
+void MainWindow::OnIdentityAction(urmsg::demo::identity::Button const& button) {
+  namespace id = urmsg::demo::identity;
+  switch (button.action) {
+    case id::Action::Go: {
+      const auto to = static_cast<id::Screen>(button.arg);
+      id::Selection sel = id::PresetSelection(to);
+      if (button.device >= 0 && button.device < 32) {
+        if (to == id::Screen::Rename) {
+          sel.device = button.device;
+        } else if (to == id::Screen::Remove) {
+          sel.devices = 1u << button.device;
+          sel.preset = false;
+        }
+      }
+      ShowIdentity(to, sel);
+      break;
+    }
+    case id::Action::Close:
+      CloseIdentity();
+      break;
+    case id::Action::OpenAccount:
+      CloseIdentity();
+      SelectNavTag(L"settings");
+      break;
+    case id::Action::FillWords:
+      urmsg::views::FillIdentityWords(identityView_);
+      break;
+    case id::Action::CheckWords:
+      if (urmsg::views::CheckIdentityWords(identityView_, urmsg::ActiveRunMode())) {
+        ShowIdentity(static_cast<id::Screen>(button.arg));
+      }
+      break;
+    case id::Action::ToggleDevice: {
+      if (button.arg < 0 || button.arg >= 32) break;
+      id::Selection sel = identitySel_;
+      sel.devices ^= 1u << button.arg;
+      sel.preset = false;
+      ShowIdentity(identityView_.screen, sel);
+      break;
+    }
+    case id::Action::RemoveChosen: {
+      // NOTHING IS REMOVED: a demo. A removal that names this device shows what a removed device
+      // shows; on an only device, what the next setup shows.
+      id::Fixture const& f = id::GetFixture();
+      bool self = false;
+      for (size_t i = 0; i < f.devices.size() && i < 32; ++i)
+        if (f.devices[i].thisDevice && ((identitySel_.devices >> i) & 1u)) self = true;
+      if (self && identitySel_.onlyDevice) {
+        ShowIdentity(id::Screen::SetUp);
+      } else if (self) {
+        ShowIdentity(id::Screen::Removed);
+      } else {
+        CloseIdentity();
+      }
+      break;
+    }
+    case id::Action::SaveName: {
+      if (identityView_.nameField && button.arg >= 0) {
+        id::SetDemoDeviceName(static_cast<size_t>(button.arg),
+                              std::wstring{identityView_.nameField.Text()});
+        urnw::LogInfo("identity: demo device {} renamed for this session", button.arg);
+      }
+      CloseIdentity();
+      // the Account group draws the name it now has
+      BuildSettings();
+      break;
+    }
+  }
+}
+
+void MainWindow::ApplyCaptureExclusion(bool excluded, std::wstring const& why) {
+  captureExcluded_ = excluded;
+  if (!hwnd_) {
+    urnw::LogInfo("identity: capture exclusion {} waits for the window handle ({})",
+                  excluded ? "ON" : "off", urnw::Narrow(why));
+    return;
+  }
+  // WDA_EXCLUDEFROMCAPTURE (0x11): the window is shown on the monitor and nowhere else, and
+  // PrintWindow answers it black (ci/i1-affinity-probe, run 38894632625, on both runner images).
+  constexpr DWORD kExcludeFromCapture = 0x00000011;  // WDA_EXCLUDEFROMCAPTURE
+  constexpr DWORD kNone = 0x00000000;                // WDA_NONE
+  const BOOL ok = ::SetWindowDisplayAffinity(hwnd_, excluded ? kExcludeFromCapture : kNone);
+  DWORD now = 0xFFFFFFFFu;
+  ::GetWindowDisplayAffinity(hwnd_, &now);
+  urnw::LogInfo("identity: capture exclusion {} for {} (SetWindowDisplayAffinity {}, affinity "
+                "now 0x{:x})",
+                excluded ? "ON" : "off", urnw::Narrow(why), ok ? "ok" : "FAILED", now);
 }
 
 void MainWindow::StartReveal() {
@@ -927,6 +1102,8 @@ void MainWindow::ApplyLiveWorld() {
   // the arrival of a real world cannot do that: there IS one, and the rebuilds below draw
   // it in the same beat.
   urmsg::SetActiveRunMode(urmsg::RunMode::Live);
+  // The identity screens draw the FABRICATED account (Task 6); none may stand over a live world.
+  if (identityHost_ && identityHost_.Visibility() == Visibility::Visible) CloseIdentity();
   // The chip and the composer caption are the two mode-dependent surfaces that are NOT
   // rebuilt below — the chip is written once in EnterDemoMode and the composer bar once
   // by MakeThread — so they are re-pointed by hand. Both are cheap and both are idempotent.
@@ -1744,7 +1921,10 @@ void MainWindow::BuildSettings() {
       ActiveWorld(), [](bool on) { urmsg::SetAdvancedModeEnabled(on); },
       urmsg::AdvancedModeEnabled(),
       [](bool on) { urmsg::live::SetRouteThroughUrnetwork(on); },
-      urmsg::live::RouteThroughUrnetwork());
+      urmsg::live::RouteThroughUrnetwork(),
+      [weak = get_weak()](urmsg::demo::identity::Button const& button) {
+        if (auto self = weak.get()) self->QueueIdentityAction(button);
+      });
   // SettingsHost, NOT a Grid of this task's own: MainWindow.xaml:284 already
   // declares it and ShowDestination's settings arm routes to it (the d7
   // audit's A3 override — do not add a SettingsPage Grid; that is "mounted
@@ -1926,7 +2106,12 @@ void MainWindow::SetSearchEmptyVisible(bool show) {
 }
 
 void MainWindow::EnterDemoMode() {
-  const auto link = urmsg::demo::DeepLinkFor(options_.screen);
+  // --demo-identity=account is Settings, whose ACCOUNT group the fabricated world fills (Task 6).
+  const auto link = urmsg::demo::DeepLinkFor(
+      options_.identityScreen == urmsg::demo::identity::Screen::Account &&
+              options_.screen == urmsg::demo::DemoScreen::None
+          ? urmsg::demo::DemoScreen::Settings
+          : options_.screen);
 
   // Advanced Mode resolves FIRST: the Developer nav item and every view built
   // below depends on it. --demo-advanced and a --demo=developer deep link are
