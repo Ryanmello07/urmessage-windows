@@ -354,7 +354,12 @@ jobs:
             if ($n -ne 1) { Write-Host "::error::'$needle' occurs $n times in Ids.h, not once"; exit 1 }
           }
           $enc = New-Object Text.UTF8Encoding($false)
-          git show 0f0a97dc4cc18ce6ac7b363f66a1df15c25f92af:app/src/Common/Ids.h | Set-Content -LiteralPath (Join-Path $dir 'preview-first.h') -Encoding utf8
+          # the checkout is one commit deep, so 0f0a97dc is fetched by its id before it is read
+          git fetch --no-tags --depth=1 origin 0f0a97dc4cc18ce6ac7b363f66a1df15c25f92af
+          if ($LASTEXITCODE -ne 0) { Write-Host '::error::could not fetch 0f0a97dc'; exit 1 }
+          $firstLines = @(git show 0f0a97dc4cc18ce6ac7b363f66a1df15c25f92af:app/src/Common/Ids.h)
+          if ($LASTEXITCODE -ne 0 -or $firstLines.Count -lt 10) { Write-Host "::error::could not read 0f0a97dc's Ids.h ($($firstLines.Count) lines)"; exit 1 }
+          [IO.File]::WriteAllText((Join-Path $dir 'preview-first.h'), (($firstLines -join "`n") + "`n"), $enc)
           [IO.File]::WriteAllText((Join-Path $dir 'preview-changed.h'), $here.Replace($pre, 'inline constexpr wchar_t kAppUserModelId[] = L"URmessage.Wrong";'), $enc)
           [IO.File]::WriteAllText((Join-Path $dir 'standard-changed.h'), $here.Replace($std, 'inline constexpr wchar_t kAppUserModelId[] = L"URmessage.Wrong";'), $enc)
           $first = [IO.File]::ReadAllText((Join-Path $dir 'preview-first.h'))
