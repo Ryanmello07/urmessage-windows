@@ -1,0 +1,168 @@
+# THROWAWAY, NEVER MERGE, NEVER IN AN UPSTREAM PULL REQUEST. feat/conversation-list: the --diagnose
+# lines of the conversation list's pure rules (Live/ConversationRules.h) and of S5's rail row fit,
+# each against a mutant that puts the one-group design (or the S5 defect) back with ONE exact edit:
+#   cm-world   BuildWorld keeps only groups[0]               -> conv world
+#   cm-order   the rows kept in arrival order                -> conv order
+#   cm-start   index 0 of the list opens, always             -> conv start
+#   cm-gate    one global pass: every action the first gate  -> conv gate
+#   cm-push    an unknown id wakes every loop                -> conv push
+#   cm-notice  RestoreNote's suppression put back            -> conv notice
+#   cm-create  the create refused while any group is held    -> conv create
+#   cm-railfit the rail row's value sizes to its content     -> rail row fit
+# A mutant is KILLED only when its own line FAILS and no other line does. The control (the tested
+# head) prints no FAIL. Nothing is published.
+name: List diagnose mutants (throwaway)
+
+on:
+  push:
+    branches:
+      - 'ci/list-mutants**'
+
+permissions:
+  contents: read
+
+env:
+  LIST_HEAD: a911cc8373b0d45e19a643667e76880a94d71a34
+
+jobs:
+  diagnose:
+    name: Diagnose (${{ matrix.variant }})
+    runs-on: windows-2022
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [control, cm-world, cm-order, cm-start, cm-gate, cm-push, cm-notice, cm-create, cm-railfit]
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Prove the checkout is the tested head plus CI files only
+        shell: pwsh
+        run: |
+          $parent = git rev-parse HEAD^
+          Write-Host "checkout $(git rev-parse HEAD)"
+          Write-Host "tested   $parent"
+          if ($parent -ne $env:LIST_HEAD) { Write-Host "::error::the parent is not $env:LIST_HEAD"; exit 1 }
+          $changed = @(git diff --name-only HEAD^ HEAD)
+          $outside = @($changed | Where-Object { $_ -notlike '.github/*' })
+          if ($outside.Count -gt 0) { Write-Host "::error::the CI commit changes files outside .github: $($outside -join ', ')"; exit 1 }
+
+      - name: Apply the mutant
+        if: matrix.variant != 'control'
+        shell: pwsh
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          function Swap([string]$path, [string]$old, [string]$new) {
+            $text = [IO.File]::ReadAllText($path)
+            $n = ([regex]::Matches($text, [regex]::Escape($old))).Count
+            if ($n -ne 1) { Write-Host "::error::the edit's text occurs $n times in $path, not once"; exit 1 }
+            [IO.File]::WriteAllText($path, $text.Replace($old, $new), (New-Object Text.UTF8Encoding($false)))
+          }
+          $nl = "`n"
+          if ($env:VARIANT -eq 'cm-world') {
+            Swap 'app\src\App\Live\LiveWorld.cpp' ('  for (auto& c : conversations) world.conversations.push_back(std::move(c.conversation));') ('  if (!conversations.empty()) world.conversations.push_back(std::move(conversations.front().conversation));  // CM: only groups[0]')
+          }
+          if ($env:VARIANT -eq 'cm-order') {
+            Swap 'app\src\App\Live\LiveWorld.cpp' ('  std::stable_sort(conversations.begin(), conversations.end(),') ('  if (conversations.empty()) std::stable_sort(conversations.begin(), conversations.end(),  // CM: arrival order')
+          }
+          if ($env:VARIANT -eq 'cm-start') {
+            Swap 'app\src\App\Live\ConversationRules.cpp' ('    if (id.empty()) return false;' + $nl + '    for (auto const& row : rowIds)') ('    if (id.empty() || !id.empty()) return false;  // CM: index 0 of the list, always' + $nl + '    for (auto const& row : rowIds)')
+          }
+          if ($env:VARIANT -eq 'cm-gate') {
+            Swap 'app\src\App\Live\ConversationRules.cpp' ('  GroupGate const* gate = FindGate(gates, groupIdHex);' + $nl + '  if (gate == nullptr) return GateVerdict::NotHeld;') ('  GroupGate const* gate = gates.empty() ? nullptr : &gates.front();  // CM: one global pass' + $nl + '  if (gate == nullptr) return GateVerdict::NotHeld;')
+          }
+          if ($env:VARIANT -eq 'cm-push') {
+            Swap 'app\src\App\Live\ConversationRules.cpp' ('    if (id == key) return PushRoute::One;' + $nl + '  return PushRoute::None;') ('    if (id == key) return PushRoute::One;' + $nl + '  return PushRoute::All;  // CM: an unknown id wakes everyone')
+          }
+          if ($env:VARIANT -eq 'cm-notice') {
+            Swap 'app\src\App\Live\ConversationRules.cpp' ('std::string_view ListNoticeAfterRestore(std::string_view restoreError, int /*restoredCount*/) {') ('std::string_view ListNoticeAfterRestore(std::string_view restoreError, int restoredCount) {')
+            Swap 'app\src\App\Live\ConversationRules.cpp' ('  return RestoreNote(restoreError, 0);' + $nl + '}') ('  return RestoreNote(restoreError, restoredCount);  // CM: the suppression put back' + $nl + '}')
+          }
+          if ($env:VARIANT -eq 'cm-create') {
+            Swap 'app\src\App\Live\ConversationRules.cpp' ('  waiting.clear();' + $nl + '  for (auto const& group : held) {') ('  waiting.clear();' + $nl + '  if (!held.empty()) {  // CM: any group held refuses the create' + $nl + '    waiting = held.front().groupIdHex;' + $nl + '    return CreateVerdict::GroupOfOneWaits;' + $nl + '  }' + $nl + '  for (auto const& group : held) {')
+          }
+          if ($env:VARIANT -eq 'cm-railfit') {
+            Swap 'app\src\App\Views\InspectRailFields.cpp' ('RailRowFit RailKeyValueRowFit() {' + $nl + '  return RailRowFit{};' + $nl + '}') ('RailRowFit RailKeyValueRowFit() {' + $nl + '  RailRowFit fit;' + $nl + '  fit.keySizesToContent = false;  // CM: the value sizes to its content' + $nl + '  return fit;' + $nl + '}')
+          }
+          git --no-pager diff --stat
+          git --no-pager diff
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build the app (Release x64)
+        shell: pwsh
+        working-directory: app
+        run: |
+          $pin = '10.0.22621.0'
+          $roots = @("${env:ProgramFiles(x86)}\Windows Kits\10", "$env:ProgramFiles\Windows Kits\10") | Where-Object { Test-Path -LiteralPath $_ }
+          $usable = @(foreach ($r in $roots) {
+            Get-ChildItem (Join-Path $r 'Include') -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' -and
+                (Test-Path -LiteralPath (Join-Path $r "Include\$($_.Name)\um\windows.h")) -and
+                (Test-Path -LiteralPath (Join-Path $r "Lib\$($_.Name)\um\x64\kernel32.lib")) } |
+              Select-Object -ExpandProperty Name
+          }) | Select-Object -Unique | Sort-Object { [version]$_ }
+          $usable = @($usable)
+          $sdk = if ($usable -contains $pin) { $pin } else { $usable[-1] }
+          msbuild URmessage.sln /restore /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=$sdk /m /v:minimal /clp:Summary
+          exit $LASTEXITCODE
+
+      - name: Run --diagnose and judge (${{ matrix.variant }})
+        shell: pwsh
+        env:
+          VARIANT: ${{ matrix.variant }}
+          URMESSAGE_APP_ROOT: ${{ github.workspace }}\.ci-appstate
+        run: |
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'app\build\x64\Release\URmessage.exe'
+          $psi = [System.Diagnostics.ProcessStartInfo]::new($exe)
+          $psi.Arguments = '--diagnose'
+          $psi.UseShellExecute = $false
+          $psi.CreateNoWindow = $true
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+          $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+          $p = [System.Diagnostics.Process]::Start($psi)
+          $out = $p.StandardOutput.ReadToEnd()
+          $null = $p.StandardError.ReadToEnd()
+          if (-not $p.WaitForExit(120000)) { Write-Host '::error::--diagnose did not exit'; exit 1 }
+          New-Item -ItemType Directory -Force "$env:GITHUB_WORKSPACE\cmdiag" | Out-Null
+          [IO.File]::WriteAllText("$env:GITHUB_WORKSPACE\cmdiag\diagnose-$env:VARIANT.out", $out, (New-Object Text.UTF8Encoding($false)))
+          $lines = @($out -split "`r?`n")
+          $pass = @($lines | Where-Object { $_ -match '\bPASS\b' }).Count
+          $fails = @($lines | Where-Object { $_ -match '\bFAIL\b' })
+          Write-Host "--diagnose: $($lines.Count) lines, $pass PASS, $($fails.Count) FAIL"
+          $fails | ForEach-Object { Write-Host "  FAIL line: $($_.Substring(0, [Math]::Min(300, $_.Length)))" }
+          $labels = @($fails | ForEach-Object { ($_.TrimStart() -split ':')[0].Trim() })
+          Write-Host "failing lines: $($labels -join ', ')"
+          if ($env:VARIANT -eq 'control') {
+            if ($fails.Count -eq 0 -and $pass -gt 100) { Write-Host 'control: no FAIL'; exit 0 }
+            Write-Host '::error::control: --diagnose printed FAIL'; exit 1
+          }
+          $want = @()
+          if ($env:VARIANT -eq 'cm-world') { $want = @('conv world') }
+          if ($env:VARIANT -eq 'cm-order') { $want = @('conv order') }
+          if ($env:VARIANT -eq 'cm-start') { $want = @('conv start') }
+          if ($env:VARIANT -eq 'cm-gate') { $want = @('conv gate') }
+          if ($env:VARIANT -eq 'cm-push') { $want = @('conv push') }
+          if ($env:VARIANT -eq 'cm-notice') { $want = @('conv notice') }
+          if ($env:VARIANT -eq 'cm-create') { $want = @('conv create') }
+          if ($env:VARIANT -eq 'cm-railfit') { $want = @('rail row fit') }
+          $missing = @($want | Where-Object { $labels -notcontains $_ })
+          $extra = @($labels | Where-Object { $want -notcontains $_ })
+          if ($missing.Count -eq 0 -and $extra.Count -eq 0) { Write-Host "$($env:VARIANT) KILLED by its own line, and only by it: $($want -join ', ')"; exit 0 }
+          Write-Host "::error::$($env:VARIANT) is not killed for its own reason: missing $($missing -join ', '); other FAIL lines $($extra -join ', ')"
+          exit 1
+
+      - name: Upload the diagnose output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: list-diagnose-${{ matrix.variant }}
+          path: cmdiag/
+          if-no-files-found: warn
