@@ -1334,12 +1334,16 @@ std::vector<Border> BuildRoleControlRows(demo::MemberRef const& member,
       // during the round trip would be the same change asked for twice. The NAME tells the two
       // darknesses apart -- a pending change is the one moment the session is provably live, so
       // announcing "there is no live session" there would say the opposite of what is happening.
-      b.IsEnabled(canAct && !pending);
+      // A REMOVED CONVERSATION FIRST (the conversation-list design 2.1): dark, and named for the
+      // removal, whatever the capability says.
+      const bool removed = MutableRosterVerb().removed;
+      b.IsEnabled(canAct && !pending && !removed);
       automation::AutomationProperties::SetName(
-          b, H(RoleControlName(verb, !canAct  ? RoleControlState::NoSession
+          b, H(RoleControlName(verb, removed   ? RoleControlState::Removed
+                                     : !canAct  ? RoleControlState::NoSession
                                      : pending ? RoleControlState::Pending
                                                : RoleControlState::Live)));
-      if (canAct && !pending) {
+      if (canAct && !pending && !removed) {
         b.Click([verb, identity = member.identityPubHex](
                     winrt::Windows::Foundation::IInspectable const& sender, auto const&) {
           auto button = sender.try_as<Button>();
@@ -2000,7 +2004,10 @@ void SetInspectRailAdvanced(InspectRailView& v, bool advanced, demo::World const
 
 void SetInspectRailRosterVerb(RosterVerb verb) { MutableRosterVerb() = std::move(verb); }
 
-void SetInspectRailRosterEnabled(bool enabled) { MutableRosterVerb().enabled = enabled; }
+void SetInspectRailRosterEnabled(bool enabled, bool removed) {
+  MutableRosterVerb().enabled = enabled;
+  MutableRosterVerb().removed = removed;
+}
 
 bool CanChangeRoles() {
   auto const& verb = MutableRosterVerb();

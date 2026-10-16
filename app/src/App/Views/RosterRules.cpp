@@ -157,6 +157,10 @@ std::wstring RoleControlName(RoleVerb verb, RoleControlState state) {
     case RoleControlState::Live: return live;
     case RoleControlState::Pending: return waiting;
     case RoleControlState::NoSession: return dark;
+    case RoleControlState::Removed:
+      // THE CONTROL NAMED, THEN THE REMOVAL (the observer arms' shape): this device's session is live
+      // and the group took it out, so the dark arm's "no live session" would be false here.
+      return RoleControlLabel(verb) + L", disabled. " + demo::kRemovedLine;
   }
   return dark;
 }

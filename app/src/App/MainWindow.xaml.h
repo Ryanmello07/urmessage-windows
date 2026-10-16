@@ -234,6 +234,8 @@ struct MainWindow : MainWindowT<MainWindow> {
   // the one place that rule is spelled and the one --diagnose's `run mode send` clause drives.
   // TRUE when nothing is open, which is the library's own reading of an identity the group's
   // policy does not name (item 242 ruling 20) and the half of this function no pure gate reaches.
+  // the open conversation removed this device (the conversation-list design 2.1)
+  bool OpenConversationRemoved() const;
   bool OpenConversationMaySend() const;
   // The other bubble verb: put `emoji` on the row, or take it off. Same shape and the same
   // no-blocking rule; the outcome is a redrawn thread. In a live world the row id IS the record's

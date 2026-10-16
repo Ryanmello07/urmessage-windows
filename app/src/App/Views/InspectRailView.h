@@ -161,9 +161,14 @@ struct RosterVerb {
   // whether the host opened it.
   std::function<bool(std::wstring groupIdHex)> addSomeone;
   bool enabled = false;
+  // THE OPEN CONVERSATION REMOVED THIS DEVICE (the conversation-list design 2.1): its role controls
+  // are dark for that reason, and name it (RoleControlState::Removed), never "no live session".
+  bool removed = false;
 };
 void SetInspectRailRosterVerb(RosterVerb verb);
-void SetInspectRailRosterEnabled(bool enabled);
+// The capability and, beside it, why it is off when the reason is the open conversation's removal.
+// BOTH ARE ASKED FOR, so no caller re-points the one and leaves the other at another conversation's.
+void SetInspectRailRosterEnabled(bool enabled, bool removed);
 // True when a control drawn right now would actually do something: both hosts
 // are set and the capability is on. The one predicate every roster control asks.
 bool CanChangeRoles();

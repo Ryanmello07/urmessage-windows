@@ -109,6 +109,10 @@ enum class RoleControlState {
   Live,       // the control acts
   Pending,    // this member's previous change has not come back yet
   NoSession,  // no live session with an open group
+  // THE OPEN CONVERSATION REMOVED THIS DEVICE (the conversation-list design 2.1): the session is
+  // live, and this group will take no change from this device again. Named so, never "no live
+  // session".
+  Removed,
 };
 
 // The button's automation name in each state, keyed off the CAPABILITY (the
