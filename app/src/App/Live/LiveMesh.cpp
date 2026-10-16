@@ -3038,11 +3038,12 @@ void RunSession() {
   // holds each of them open, and one not served here would be served by nobody.
   for (int32_t i = 0; i < restoredCount; ++i) {
     const uint64_t group = urnet_message_group_list_at(restored, i);
-    if (group != 0) StartGroupLoop(session, group);
+    if (group == 0) continue;
+    // THE LINE A RESTORE HAS ALWAYS LOGGED, now once for each group it brings back: the screenshot
+    // legs wait for it, and a launch that restores one group logs exactly what it did.
+    urnw::LogInfo("live: restored an existing group from disk — no handshake needed");
+    StartGroupLoop(session, group);
   }
-  if (restoredCount > 0)
-    urnw::LogInfo("live: restored {} existing group(s) from disk - no handshake needed",
-                  restoredCount);
   if (restored != 0) urnet_release(restored);
   // A GROUP FOUNDED BEFORE INVITATIONS WERE SEALED does not restore (ErrGroupPredatesJoinSeal), and
   // R9 has the app say so in a sentence, never in the library's words (Task 58). Nor does a group
