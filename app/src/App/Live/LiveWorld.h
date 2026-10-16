@@ -273,6 +273,15 @@ void OrderConversations(std::vector<LiveConversation>& conversations);
 // reads the open conversation's own (Conversation::epoch).
 urmsg::demo::World BuildWorld(LiveSession const& session, std::vector<LiveConversation> conversations);
 
+// ONE CONVERSATION'S DIGEST: everything a reader of its thread and its rail can see (its rows, their
+// states and reactions, its roster and roles, its epoch). The window redraws the open thread only
+// when this moves (the conversation-list design 2.6, A22).
+uint64_t ConversationDigest(urmsg::demo::Conversation const& c);
+
+// THE LIST'S DIGEST: what its rows draw, in their order (each one's id, name, preview, time, kind,
+// member count, flags and group id). The window rebuilds the list only when this moves (A21).
+uint64_t ListDigest(urmsg::demo::World const& world);
+
 // A LIVE CONVERSATION'S ID: "live-" and its group's 64 hex. The one spelling, for the world and for
 // the window that opens a conversation by its group.
 std::wstring ConversationIdOf(std::string const& groupIdHex);

@@ -44,6 +44,9 @@ struct ConversationListView {
   // THE NOTICE above the rows (the conversation-list design 2.5, A12), or nullptr: a group on this
   // device's disk that did not restore. Not a row: nothing selects it, filters it or counts it.
   winrt::Microsoft::UI::Xaml::FrameworkElement notice{nullptr};
+  // THE REQUESTS SLOT (the conversation-list design 3): an empty host above RECENT, collapsed. It
+  // draws nothing and carries no copy and no name; the requests screens fill it in their own task.
+  winrt::Microsoft::UI::Xaml::Controls::Grid requests{nullptr};
 };
 
 // The whole list: the notice when there is one, the RECENT group header, then one row per
@@ -51,9 +54,11 @@ struct ConversationListView {
 // `onSelect` is called with the row's INDEX -- the same index
 // SetConversationSelected takes, and an int captured by value cannot dangle the
 // way a reference into world.conversations could.
+// `entrance` false draws the rows at rest, with no entrance start pose: a list rebuilt after its
+// entrance has played (the conversation-list design 2.6, A21).
 ConversationListView MakeConversationList(urmsg::demo::World const& world,
                                           std::function<void(int)> onSelect,
-                                          std::wstring const& notice = {});
+                                          std::wstring const& notice = {}, bool entrance = true);
 
 // Paint row `index` as the selected one and every other row as not. Pass -1 for
 // "nothing is selected". Three channels, because one is not enough: a fill step,

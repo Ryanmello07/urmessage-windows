@@ -6,6 +6,7 @@
 #include "MainWindow.g.cpp"
 #endif
 
+#include <algorithm>
 #include <array>
 #include <utility>
 
@@ -1164,14 +1165,26 @@ void MainWindow::ApplyLiveWorld() {
     return;
   }
 
-  RebuildConversationList();
+  // THE LIST IS DRAWN AGAIN ONLY WHEN WHAT IT SHOWS MOVED (the conversation-list design 2.6, A21):
+  // its rows in their order, and the notice above them. A publish that moved only a thread leaves
+  // it standing, its selection and its filter as they were.
+  const std::wstring notice = urnw::Widen(urmsg::live::RestoreNotice());
+  const uint64_t listDigest =
+      urmsg::live::ListDigest(*liveWorld_) ^ (std::hash<std::wstring>{}(notice) * 1099511628211ull);
+  const bool listMoved = first || listDigest != listDrawnDigest_;
+  listDrawnDigest_ = listDigest;
+  if (listMoved) RebuildConversationList();
   // THE ROWS ARE BUILT INVISIBLE. MakeConversationList writes the entrance START POSE — opacity 0
   // and 8 dip low (ConversationListView.cpp:133) — and something else has to play the entrance.
   // On a normal launch that is StartReveal (:202), which runs ONCE after Activate. A rebuild after
   // it has run therefore leaves every row at opacity 0, which is not "a bug in the animation": the
   // conversation list renders EMPTY while its header counts the rows that are there. Measured, on
   // the first live run of this window.
-  urmsg::views::AnimateConversationListEntrance(list_);
+  // ...ON THE FIRST LIVE LIST ONLY (A21): a later rebuild is drawn at rest and plays nothing.
+  if (listMoved && !liveEntrancePlayed_) {
+    urmsg::views::AnimateConversationListEntrance(list_);
+    liveEntrancePlayed_ = true;
+  }
 
   // THE THREE WORLD-LEVEL SURFACES ARE BUILT ONCE, IN THE CONSTRUCTOR, AND THE LIVE WORLD DOES NOT
   // EXIST YET WHEN THEY ARE. Converting their GetWorld() call sites to ActiveWorld() is necessary
@@ -1213,6 +1226,7 @@ void MainWindow::ApplyLiveWorld() {
     // with no group draws, and the onboarding dialog (ApplyOnboard) is the next thing on screen.
     openConversationId_.clear();
     selectedMessageId_.clear();
+    drafts_.clear();
     urmsg::views::ClearThreadConversation(thread_);
     urmsg::views::ClearInspectRail(rail_);
     // AND THE JOIN DIALOG COMES BACK (review M2), whoever this device was: a founder never sees
@@ -1227,15 +1241,31 @@ void MainWindow::ApplyLiveWorld() {
   } else if (first || toOpen != openConversationId_) {
     // SelectConversation is a no-op on the conversation that is already open, and a live
     // conversation's id is its group's and never changes, so this opens the one the rule names and
-    // every later beat that keeps it open falls through to the refresh below.
+    // every later beat that keeps it open falls through to the refresh below. The draft of the one
+    // being left is kept first (F3).
+    KeepOpenDraft();
     openConversationId_.clear();
     SelectConversation(toOpenIndex);
   } else {
-    RefreshOpenThread();
-    // AND THE RAIL, in place (item 242 R3): the roster's roles move on another member's commit,
-    // and the note under a member this device is changing lands on a publish - neither is a
-    // message row, so RefreshOpenThread alone would leave the rail drawing the previous beat.
-    urmsg::views::RefreshInspectRail(rail_, ActiveWorld().conversations[static_cast<size_t>(open)]);
+    // THE OPEN THREAD IS DRAWN AGAIN ONLY WHEN ITS OWN CONVERSATION MOVED (A22): a publish that
+    // moved another conversation leaves it, and its entrance, alone.
+    auto const& openConv = ActiveWorld().conversations[static_cast<size_t>(open)];
+    const uint64_t threadDigest = urmsg::live::ConversationDigest(openConv);
+    if (threadDigest != threadDrawnDigest_) {
+      threadDrawnDigest_ = threadDigest;
+      RefreshOpenThread();
+      // AND THE RAIL, in place (item 242 R3): the roster's roles move on another member's commit,
+      // and the note under a member this device is changing lands on a publish - neither is a
+      // message row, so RefreshOpenThread alone would leave the rail drawing the previous beat.
+      urmsg::views::RefreshInspectRail(rail_, openConv);
+    }
+  }
+  // DRAFTS GO WITH THEIR CONVERSATIONS: one that is no longer held keeps none.
+  for (auto it = drafts_.begin(); it != drafts_.end();) {
+    if (std::find(rowIds.begin(), rowIds.end(), it->first) == rowIds.end())
+      it = drafts_.erase(it);
+    else
+      ++it;
   }
   if (options_.names != urmsg::demo::DemoNames::None && !namesShown_) ShowNamesSurfaceOnce();
   {
@@ -1437,6 +1467,12 @@ int MainWindow::OpenConversationIndex() const {
   return -1;
 }
 
+void MainWindow::KeepOpenDraft() {
+  // A LIVE WORLD'S DRAFTS ONLY: the fabricated world's composer is the demo switches' to fill.
+  if (!liveWorld_ || openConversationId_.empty() || !thread_.root) return;
+  drafts_[openConversationId_] = urmsg::views::ThreadComposerDraft(thread_);
+}
+
 void MainWindow::RebuildConversationList() {
   // The view wires its own rows and calls back with an INDEX into
   // World::conversations (contract v2 section 4), so there is one place that
@@ -1445,12 +1481,13 @@ void MainWindow::RebuildConversationList() {
   // THE NOTICE, in a live world only (the conversation-list design 2.5, A12): the worker's, about a
   // group on this device's disk that did not restore. The fabricated world has none.
   const std::wstring notice = liveWorld_ ? urnw::Widen(urmsg::live::RestoreNotice()) : std::wstring();
+  // A LIVE LIST AFTER ITS ENTRANCE HAS PLAYED IS DRAWN AT REST (A21): its rows come in once.
   list_ = urmsg::views::MakeConversationList(
       world,
       [weak = get_weak()](int index) {
         if (auto self = weak.get()) self->SelectConversation(index);
       },
-      notice);
+      notice, !(liveWorld_ && liveEntrancePlayed_));
   // ConversationList, NOT ListHost (the d7 audit's W5-class-1 override):
   // ListHost is Visibility="Collapsed" by XAML attribute at MainWindow.xaml:213,
   // its own XAML comment says "never made Visible, nothing ever appended to it
@@ -1780,6 +1817,8 @@ void MainWindow::SelectConversation(int index) {
   // the message selection for something the viewer did not ask to change.
   if (conversation.id == openConversationId_) return;
 
+  // F3: the draft of the conversation being left, kept by its id, before another opens
+  KeepOpenDraft();
   openConversationId_ = conversation.id;
   selectedMessageId_.clear();
   urmsg::views::SetConversationSelected(list_, index);
@@ -1794,6 +1833,14 @@ void MainWindow::SelectConversation(int index) {
   // corrected. SetInspectRailConversation follows for the same reason (its [ Try again ]).
   ArmComposer();
   urmsg::views::SetThreadConversation(thread_, conversation);
+  // F3: THIS CONVERSATION'S OWN DRAFT, or an empty composer: never the one typed in another. In a
+  // live world: the fabricated one's composer is what the demo switches put there (ArmComposer).
+  if (liveWorld_) {
+    const auto kept = drafts_.find(conversation.id);
+    urmsg::views::SetThreadComposerDraft(
+        thread_, kept == drafts_.end() ? urmsg::views::ThreadDraft{} : kept->second, conversation);
+  }
+  threadDrawnDigest_ = urmsg::live::ConversationDigest(conversation);
   urmsg::views::SetInspectRailConversation(rail_, conversation);
   // THE EPOCH FOLLOWS THE OPEN CONVERSATION (the conversation-list design 2.6, A20): the strip and
   // the developer page are drawn again for it, in a live world.
