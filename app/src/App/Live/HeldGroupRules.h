@@ -15,7 +15,11 @@
 //
 // THE BRIDGE CARRIES SENTENCES AND NOT TYPES, so the refusals are told apart by the library's own
 // words. Each one this file matches is quoted below from urnetwork/message, sdk/urmessage, where
-// the sentinel is declared (errors.go) and where the clause is formatted (heldgroup.go).
+// the sentinel is declared (errors.go) and where the clause is formatted (heldgroup.go). EACH IS
+// MATCHED BY ITS STABLE PART (R27, as Live/RefusalCopy.h says): the clause that names the condition,
+// and never the cost or the remedy after it. Re-read at the T1 branch's head e0d16eac75e4, and
+// again at its R33 head fdc1b0aa3c31, where ErrGroupNotRestored's remedy is scoped to damage and its
+// stable part is unchanged.
 #pragma once
 
 #include <array>
@@ -26,25 +30,34 @@
 
 namespace urmsg::live {
 
-// ErrGroupAlreadyHeld's sentence, up to its remedy. Every refusal of an invitation over a held
-// group begins with it, whatever follows the colon.
-inline constexpr std::string_view kHeldRefusalSentence =
-    "urmessage: this device already holds this group, so an invite into it is refused";
+// ErrGroupAlreadyHeld's stable part. Every refusal of an invitation over a held group begins with
+// its sentence, whatever follows the colon.
+//   whole: "urmessage: this device already holds this group, so an invite into it is refused; leave
+//          it first with ForgetGroup to join it again"
+inline constexpr std::string_view kHeldRefusalSentence = "urmessage: this device already holds this group";
 
 // The clause the gate adds when the group is held ON THE DISK and not in memory: it did not
 // restore ("group <hex> has a record on this device's disk"), or its record does not read (the
 // same words, then "that does not read: " and ErrGroupRecordDamaged's sentence).
 inline constexpr std::string_view kHeldOnDiskClause = "has a record on this device's disk";
 
-// ErrGroupNotRestored's sentence: what the leave of a group on the disk answers when no restore
-// has tried that group yet. The remedy it names is the restore, and then the leave again; the app
-// restores before every leave, so this answer erases nothing and offers the leave again.
+// ErrGroupNotRestored's stable part: what the leave of a group on the disk answers when no restore
+// has noted that group as one that will not come back. The remedy it names is the restore, and
+// then the leave again; the app restores before every leave, so this answer erases nothing and
+// offers the leave again.
+//   whole: "urmessage: this group is on this device's disk and has not been restored; call Restore,
+//          and if it does not come back because it is damaged, ForgetGroup leaves it" (fdc1b0aa3c31;
+//          until R33's X3 it read "if it does not come back, ForgetGroup leaves it")
 inline constexpr std::string_view kNotRestoredSentence =
     "urmessage: this group is on this device's disk and has not been restored";
 
 // ErrForgetUnfinished's sentence, up to its remedy: a leave whose erase did not finish. The join
 // of the same group after it is refused with it ("group <hex> cannot be joined or made until the
 // erase of the leave before it has finished", forget.go finishLeaveBefore) until that erase ends.
+// Its stable part is both of its first clauses, because together they are the condition (left, and
+// not erased in full); the remedy after the semicolon is not matched.
+//   whole: "urmessage: this device has left the group, but its copy on the disk could not be erased
+//          in full; ForgetGroup again, or the next Restore, finishes the erase"
 inline constexpr std::string_view kForgetUnfinishedSentence =
     "urmessage: this device has left the group, but its copy on the disk could not be erased in full";
 
