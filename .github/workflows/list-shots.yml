@@ -1,0 +1,218 @@
+# THROWAWAY, NEVER MERGE, NEVER IN AN UPSTREAM PULL REQUEST. feat/conversation-list (commit 7b: the control for the draft check (F3 standing)): the
+# Task 58 screenshot legs and the names leg, as built, on the list's head 9634011ffd89. Each leg drives
+# the app with UI Automation's Invoke and Value only and captures it with PrintWindow, against
+# urnetwork/message's loopback rig (.github/task58/zz_task58_rig_test.go), and for the joiner and
+# adder legs the older build's rig as well (message 215a0696). A leg is green only when the driver
+# passed every check: exit 0, at least one PASS, and no FAIL. Nothing is published.
+name: List regression legs (throwaway)
+
+on:
+  push:
+    branches:
+      - 'ci/list-shots**'
+
+permissions:
+  contents: read
+
+env:
+  LIST_HEAD: 9634011ffd891db1539d600ceb06596d12fadb23
+
+jobs:
+  shots:
+    name: List leg (${{ matrix.leg }})
+    runs-on: windows-2022
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [listui]
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Prove the checkout is the list's head plus CI files only
+        shell: pwsh
+        run: |
+          $head = git rev-parse HEAD
+          $parent = git rev-parse HEAD^
+          Write-Host "checkout $head"
+          Write-Host "parent   $parent"
+          if ($parent -ne $env:LIST_HEAD) { Write-Host "::error::the parent is not $env:LIST_HEAD"; exit 1 }
+          $changed = @(git diff --name-only HEAD^ HEAD)
+          $changed | ForEach-Object { Write-Host "  changed by the CI commit: $_" }
+          $outside = @($changed | Where-Object { $_ -notlike '.github/*' -and $_ -ne 'app/src/App/Live/LiveMesh.cpp' })
+          if ($outside.Count -gt 0) { Write-Host "::error::the CI commit changes $($outside -join ', ')"; exit 1 }
+          git diff HEAD^ HEAD -- app/src/App/Live/LiveMesh.cpp | Select-String -Pattern '^[+-][^+-]' | ForEach-Object { Write-Host "  LiveMesh.cpp (the CI endpoint): $($_.Line)" }
+
+      - name: Make the screen wide enough for the inspector rail (1920 x 1080)
+        if: matrix.leg == 'names' || matrix.leg == 'listui'
+        shell: powershell
+        run: |
+          $code = @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class NamesDisplay {
+            [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+            public struct DEVMODE {
+              [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+              public short dmSpecVersion; public short dmDriverVersion; public short dmSize; public short dmDriverExtra;
+              public int dmFields; public int dmPositionX; public int dmPositionY; public int dmDisplayOrientation;
+              public int dmDisplayFixedOutput; public short dmColor; public short dmDuplex; public short dmYResolution;
+              public short dmTTOption; public short dmCollate;
+              [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+              public short dmLogPixels; public int dmBitsPerPel; public int dmPelsWidth; public int dmPelsHeight;
+              public int dmDisplayFlags; public int dmDisplayFrequency; public int dmICMMethod; public int dmICMIntent;
+              public int dmMediaType; public int dmDitherType; public int dmReserved1; public int dmReserved2;
+              public int dmPanningWidth; public int dmPanningHeight;
+            }
+            [DllImport("user32.dll", CharSet = CharSet.Ansi)] public static extern int EnumDisplaySettings(string deviceName, int modeNum, ref DEVMODE devMode);
+            [DllImport("user32.dll", CharSet = CharSet.Ansi)] public static extern int ChangeDisplaySettings(ref DEVMODE devMode, int flags);
+            [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
+            public static string Size() { return GetSystemMetrics(0) + " x " + GetSystemMetrics(1); }
+            public static int Set(int w, int h) {
+              DEVMODE dm = new DEVMODE();
+              dm.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
+              if (EnumDisplaySettings(null, -1, ref dm) == 0) return -100;
+              dm.dmPelsWidth = w; dm.dmPelsHeight = h; dm.dmFields = 0x80000 | 0x100000;
+              return ChangeDisplaySettings(ref dm, 0);
+            }
+          }
+          '@
+          Add-Type -TypeDefinition $code
+          # GetSystemMetrics reads the screen as it is NOW; System.Windows.Forms.Screen caches it per
+          # process, which is why the first run printed 1024 x 768 after a change that had worked
+          Write-Host "the primary screen was $([NamesDisplay]::Size()) (GetSystemMetrics)"
+          try { Set-DisplayResolution -Width 1920 -Height 1080 -Force -ErrorAction Stop; Write-Host 'Set-DisplayResolution answered' } catch { Write-Host "Set-DisplayResolution: $_" }
+          Write-Host "after Set-DisplayResolution: $([NamesDisplay]::Size())"
+          if ([NamesDisplay]::GetSystemMetrics(0) -lt 1920) {
+            Write-Host "ChangeDisplaySettings answered $([NamesDisplay]::Set(1920, 1080)) (0 is DISP_CHANGE_SUCCESSFUL)"
+            Write-Host "after ChangeDisplaySettings: $([NamesDisplay]::Size())"
+          }
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Check out the pinned commits
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\build-sdk-dll.ps1 -Workspace "$env:RUNNER_TEMP\sdk" -CheckoutOnly
+          exit $LASTEXITCODE
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ runner.temp }}/sdk/message/go.mod
+          cache: false
+
+      - name: Build the dll from the composition and stage it
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\build-sdk-dll.ps1 -Workspace "$env:RUNNER_TEMP\sdk" -Stage
+          exit $LASTEXITCODE
+
+      - name: Build the app (Release x64, the dll required)
+        shell: pwsh
+        working-directory: app
+        run: |
+          $pin = '10.0.22621.0'
+          $roots = @("${env:ProgramFiles(x86)}\Windows Kits\10", "$env:ProgramFiles\Windows Kits\10") | Where-Object { Test-Path -LiteralPath $_ }
+          $usable = @(foreach ($r in $roots) {
+            Get-ChildItem (Join-Path $r 'Include') -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' -and
+                (Test-Path -LiteralPath (Join-Path $r "Include\$($_.Name)\um\windows.h")) -and
+                (Test-Path -LiteralPath (Join-Path $r "Lib\$($_.Name)\um\x64\kernel32.lib")) } |
+              Select-Object -ExpandProperty Name
+          }) | Select-Object -Unique | Sort-Object { [version]$_ }
+          $usable = @($usable)
+          $sdk = if ($usable -contains $pin) { $pin } else { $usable[-1] }
+          msbuild URmessage.sln /restore /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=$sdk /p:UrmRequireSdkDll=true /m /v:minimal /clp:Summary
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path -LiteralPath build\x64\Release\URnetworkSdk.dll)) { Write-Host '::error::no URnetworkSdk.dll beside the exe'; exit 1 }
+          Get-Item build\x64\Release\URmessage.exe, build\x64\Release\URnetworkSdk.dll | Format-Table Name, Length | Out-String | Write-Host
+
+      - name: Check out message-server beside message, and build the rig
+        shell: pwsh
+        run: |
+          $ws = Join-Path $env:RUNNER_TEMP 'sdk'
+          $line = Get-Content (Join-Path $ws 'message\scripts\siblings.txt') | Where-Object { $_ -match '^message-server\s' } | Select-Object -First 1
+          $parts = $line -split '\s+'
+          Write-Host "message-server: $($parts[1]) $($parts[2])"
+          git init -q (Join-Path $ws 'message-server')
+          git -C (Join-Path $ws 'message-server') -c core.autocrlf=false fetch -q --depth 1 $parts[1] $parts[2]
+          git -C (Join-Path $ws 'message-server') -c core.autocrlf=false checkout -q FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "message: $(git -C (Join-Path $ws 'message') rev-parse HEAD)"
+          Copy-Item .github\task58\zz_task58_rig_test.go (Join-Path $ws 'message\sdk\cp3b\zz_task58_rig_test.go')
+          $toolchain = (Select-String -Path (Join-Path $ws 'message\go.mod') -Pattern '^toolchain\s+(\S+)').Matches[0].Groups[1].Value
+          $env:GOTOOLCHAIN = $toolchain
+          $env:GOWORK = 'off'
+          Write-Host "toolchain $toolchain"
+          Push-Location (Join-Path $ws 'message\sdk\cp3b')
+          go version
+          go test -c -o (Join-Path $env:RUNNER_TEMP 'rig.exe') .
+          $code = $LASTEXITCODE
+          Pop-Location
+          exit $code
+
+      - name: Build the older build's rig (message 215a0696, the siblings shared)
+        if: matrix.leg == 'joiner' || matrix.leg == 'adder'
+        shell: pwsh
+        run: |
+          $ws = Join-Path $env:RUNNER_TEMP 'sdk'
+          $old = Join-Path $env:RUNNER_TEMP 'old'
+          New-Item -ItemType Directory -Force $old | Out-Null
+          git init -q (Join-Path $old 'message')
+          git -C (Join-Path $old 'message') -c core.autocrlf=false fetch -q --depth 1 https://github.com/urnetwork/message.git 215a0696616084f05ef63e5c2942d5c9f663b56f
+          git -C (Join-Path $old 'message') -c core.autocrlf=false checkout -q FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "older message: $(git -C (Join-Path $old 'message') rev-parse HEAD)"
+          # THE SIBLINGS ARE THE SAME COMMITS: message's scripts/siblings.txt is the same file at
+          # 215a0696 and at the T1 head, so the older build links the checkouts the newer one does.
+          $a = (Get-FileHash (Join-Path $old 'message\scripts\siblings.txt')).Hash
+          $b = (Get-FileHash (Join-Path $ws 'message\scripts\siblings.txt')).Hash
+          Write-Host "siblings.txt: older $a, newer $b"
+          if ($a -ne $b) { Write-Host '::error::the two builds pin different siblings'; exit 1 }
+          foreach ($n in 'connect', 'sdk', 'glog', 'gvisor', 'goidenticons', 'message-server') {
+            cmd /c mklink /J (Join-Path $old $n) (Join-Path $ws $n) | Out-Null
+          }
+          Copy-Item .github\task58\zz_task58_old_rig_test.go (Join-Path $old 'message\sdk\cp3b\zz_task58_old_rig_test.go')
+          $toolchain = (Select-String -Path (Join-Path $old 'message\go.mod') -Pattern '^toolchain\s+(\S+)').Matches[0].Groups[1].Value
+          $env:GOTOOLCHAIN = $toolchain
+          $env:GOWORK = 'off'
+          Write-Host "toolchain $toolchain"
+          Push-Location (Join-Path $old 'message\sdk\cp3b')
+          go test -c -o (Join-Path $env:RUNNER_TEMP 'oldrig.exe') .
+          $code = $LASTEXITCODE
+          Pop-Location
+          exit $code
+
+      - name: Drive the app (${{ matrix.leg }})
+        shell: powershell
+        run: |
+          $old = @()
+          if ('${{ matrix.leg }}' -eq 'joiner' -or '${{ matrix.leg }}' -eq 'adder') {
+            $old = @('-OldRig', "$env:RUNNER_TEMP\oldrig.exe", '-OldRigWorkDir', "$env:RUNNER_TEMP\old\message\sdk\cp3b")
+          }
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github\task58\drive.ps1 -Leg ${{ matrix.leg }} `
+            -Exe "$env:GITHUB_WORKSPACE\app\build\x64\Release\URmessage.exe" `
+            -Rig "$env:RUNNER_TEMP\rig.exe" `
+            -RigWorkDir "$env:RUNNER_TEMP\sdk\message\sdk\cp3b" `
+            -Work "$env:RUNNER_TEMP\t58" `
+            -Out "$env:GITHUB_WORKSPACE\t58out" @old | Tee-Object -FilePath "$env:RUNNER_TEMP\drive.out"
+          $code = $LASTEXITCODE
+          $fails = @(Get-Content -LiteralPath "$env:RUNNER_TEMP\drive.out" | Where-Object { $_ -match '\] FAIL  ' })
+          $passes = @(Get-Content -LiteralPath "$env:RUNNER_TEMP\drive.out" | Where-Object { $_ -match '\] PASS  ' })
+          Write-Host "the driver exited ${code}: $($passes.Count) PASS, $($fails.Count) FAIL"
+          $fails | ForEach-Object { Write-Host "  $_" }
+          if ($code -ne 0 -or $fails.Count -ne 0 -or $passes.Count -eq 0) { exit 1 }
+          exit 0
+
+      - name: Upload the screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: list-${{ matrix.leg }}
+          path: t58out/
+          if-no-files-found: warn
