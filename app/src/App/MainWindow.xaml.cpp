@@ -1269,9 +1269,15 @@ void MainWindow::RebuildConversationList() {
   // World::conversations (contract v2 section 4), so there is one place that
   // knows how a row maps to a conversation and it is not here.
   auto const& world = ActiveWorld();
-  list_ = urmsg::views::MakeConversationList(world, [weak = get_weak()](int index) {
-    if (auto self = weak.get()) self->SelectConversation(index);
-  });
+  // THE NOTICE, in a live world only (the conversation-list design 2.5, A12): the worker's, about a
+  // group on this device's disk that did not restore. The fabricated world has none.
+  const std::wstring notice = liveWorld_ ? urnw::Widen(urmsg::live::RestoreNotice()) : std::wstring();
+  list_ = urmsg::views::MakeConversationList(
+      world,
+      [weak = get_weak()](int index) {
+        if (auto self = weak.get()) self->SelectConversation(index);
+      },
+      notice);
   // ConversationList, NOT ListHost (the d7 audit's W5-class-1 override):
   // ListHost is Visibility="Collapsed" by XAML attribute at MainWindow.xaml:213,
   // its own XAML comment says "never made Visible, nothing ever appended to it

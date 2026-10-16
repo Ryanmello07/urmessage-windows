@@ -105,6 +105,21 @@ CreateVerdict CreateAction(std::vector<HeldForCreate> const& held, std::string& 
 
 std::wstring_view CreateVerdictName(CreateVerdict verdict);
 
+// ── the list's notice after a restore (the conversation-list design 2.5, A12) ───────────────────
+//
+// A GROUP THAT DOES NOT RESTORE STANDS BESIDE THE ONES THAT DO. The list's notice is the restore's
+// sentence for its class, in Task 58's words (RefusalCopy.h RestoreNote), whatever else came back. A
+// device that held one group dropped the sentence whenever any group came back, because the join
+// dialog was then not opened at all; with many conversations that hid the one that did not. The
+// library reports only its first failure, so one notice stands at a time.
+std::string_view ListNoticeAfterRestore(std::string_view restoreError, int restoredCount);
+
+// The notice after one more restore: a restore that could not be tried (this device is not
+// connected) read nothing and leaves `previous` as it was; any other replaces it, with nothing
+// when it read every group.
+std::string NextListNotice(std::string_view previous, std::string_view restoreError,
+                           int restoredCount);
+
 // This file's --diagnose lines, in the "  key              : PASS  detail" shape.
 std::vector<std::wstring> CollectConversationRulesDiagnostics();
 

@@ -975,6 +975,24 @@ void PublishAdd(std::string const& gid, urmsg::live::AddStep step, std::string m
   urmsg::live::NotifyPublished();
 }
 
+// ── the list's notice (the conversation-list design 2.5, A12) ──────────────────────────────────
+std::mutex g_noticeMutex;
+std::string g_restoreNotice;  // guarded by g_noticeMutex
+
+// Set after every restore (ConversationRules.h NextListNotice). The window reads it when it builds
+// the list, which every published world does, so a restore before the first world is drawn with it.
+void SetRestoreNotice(std::string next) {
+  bool changed = false;
+  const bool empty = next.empty();
+  {
+    std::lock_guard<std::mutex> lock(g_noticeMutex);
+    changed = next != g_restoreNotice;
+    g_restoreNotice = std::move(next);
+  }
+  if (changed)
+    urnw::LogInfo("live: the list's notice {}", empty ? "is cleared" : "names a group that did not restore");
+}
+
 // A GROUP LEFT TAKES ITS ADD STATE WITH IT, the invitation it may still hold included.
 void DropAdd(std::string const& gid) {
   bool dropped = false;
@@ -1217,6 +1235,8 @@ HeldRestore RestoreHeldGroup(Session& s, HeldInvite const& held, AdoptFn const& 
     std::lock_guard<std::mutex> lock(g_onboardMutex);
     g_lastRestoreClass = urmsg::live::NextRestoreClass(g_lastRestoreClass, restoreError);
   }
+  // THE LIST'S NOTICE FOLLOWS EVERY RESTORE (A12), this one's too
+  SetRestoreNotice(urmsg::live::NextListNotice(RestoreNotice(), restoreError, count));
   if (back == 0) return out;
   out.group = back;
   out.back = true;
@@ -3110,6 +3130,9 @@ void RunSession() {
                   restoreError, restoredCount);
   }
   urnw::LogInfo("live: device_restore rebuilt {} group(s) from durable state", restoredCount);
+  // THE LIST'S NOTICE, before any group's loop publishes a world (A12): a group that did not restore
+  // is said beside the ones that did, in Task 58's sentence for its class.
+  SetRestoreNotice(urmsg::live::NextListNotice(RestoreNotice(), restoreError, restoredCount));
 
   // EVERY GROUP RESTORE ANSWERS GETS A LOOP OF ITS OWN (A2), and not only the first: the library
   // holds each of them open, and one not served here would be served by nobody.
@@ -3357,6 +3380,11 @@ bool QueueTransferOwnership(std::string groupIdHex, std::string identityPubHex) 
   out.groupIdHex = std::move(groupIdHex);
   out.incarnation = incarnation;
   return Enqueue(std::move(out));
+}
+
+std::string RestoreNotice() {
+  std::lock_guard<std::mutex> lock(g_noticeMutex);
+  return g_restoreNotice;
 }
 
 AddPtr AddSnapshot(std::string const& groupIdHex) {

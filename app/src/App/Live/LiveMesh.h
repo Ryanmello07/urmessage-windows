@@ -290,6 +290,11 @@ AddPtr AddSnapshot(std::string const& groupIdHex);
 // Bumped on every add publication of any group, so the UI can tell a new state from one it drew.
 uint64_t AddGeneration();
 
+// THE LIST'S NOTICE (the conversation-list design 2.5, A12): the last restore's sentence for a group
+// on this device's disk that did not come back, in Task 58's words, or "". The list draws it above
+// the conversations that did, and never as a conversation. Safe from any thread.
+std::string RestoreNotice();
+
 // The most recent onboarding state, or nullptr before the worker has published one. Safe from any
 // thread; the pointer is swapped under a lock and the pointee is immutable, exactly as the world
 // snapshot is.
