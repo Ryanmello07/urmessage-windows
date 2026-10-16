@@ -1911,7 +1911,7 @@ void SetInspectRailMessage(InspectRailView& v, demo::Conversation const& c,
                 winrt::to_string(DeliveryLabel(m.state)), winrt::to_string(m.failureReason));
 }
 
-void SetInspectRailAdvanced(InspectRailView& v, bool advanced) {
+void SetInspectRailAdvanced(InspectRailView& v, bool advanced, demo::World const& world) {
   if (!v.root) return;
   SetRailAdvanced(v, advanced);
   // The header meta flips INSTANTLY (design d4 §13) - and nothing here starts
@@ -1926,17 +1926,25 @@ void SetInspectRailAdvanced(InspectRailView& v, bool advanced) {
   // startup neither body is visible yet - BuildInspectRail's seeding line
   // runs before the first present - so there is nothing to re-render and the
   // first populate simply reads the density tag.
-  auto const& world = demo::GetWorld();
+  //
+  // THE WORLD ON SCREEN, which the caller hands in (F2). Looked up in demo::GetWorld() this found
+  // no live conversation, so on a live world the toggle redrew nothing until the next publish.
   if (v.conversationScroll && v.conversationScroll.Visibility() == Visibility::Visible) {
-    if (auto const* conv = FindConversation(world, RailConversationId(v)))
-      PopulateConversation(v, *conv, advanced);
+    auto const* conv = FindConversation(world, RailConversationId(v));
+    if (conv) PopulateConversation(v, *conv, advanced);
+    // SAID, because "the density changed and nothing redrew" is the defect this lookup had (F2)
+    urnw::LogInfo("rail: density -> {}; {}", advanced ? "advanced" : "normal",
+                  conv ? "the conversation it shows was redrawn"
+                       : "its conversation is not in the world on screen, so nothing was redrawn");
     return;
   }
   if (v.messageScroll && v.messageScroll.Visibility() == Visibility::Visible) {
     auto const* conv = FindConversation(world, RailConversationId(v));
-    if (!conv) return;
-    if (auto const* row = FindMessageRow(*conv, RailMessageId(v)))
-      PopulateMessage(v, *conv, *row, advanced);
+    auto const* row = conv ? FindMessageRow(*conv, RailMessageId(v)) : nullptr;
+    if (row) PopulateMessage(v, *conv, *row, advanced);
+    urnw::LogInfo("rail: density -> {}; {}", advanced ? "advanced" : "normal",
+                  row ? "the message it shows was redrawn"
+                      : "its message is not in the world on screen, so nothing was redrawn");
   }
 }
 

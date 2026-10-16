@@ -1422,7 +1422,7 @@ void MainWindow::BuildDemoViews() {
   // not two). NOT options_.advanced: the switch is session-only and
   // InitAdvancedMode has already folded it in. The LIVE toggle subscription
   // is the ONE OnAdvancedModeChanged registration in EnterDemoMode (W7).
-  urmsg::views::SetInspectRailAdvanced(rail_, urmsg::AdvancedModeEnabled());
+  urmsg::views::SetInspectRailAdvanced(rail_, urmsg::AdvancedModeEnabled(), ActiveWorld());
 
   // The roster's verbs (item 242 R3), handed to the rail the way the composer's are handed to
   // the thread: get_weak(), not `this`, because the rail keeps them for the window's life. The
@@ -1632,7 +1632,10 @@ void MainWindow::ApplyAdvanced(bool on) {
   // pane the viewer is looking at out over itself for a change that is not a
   // mode change. The one SetInspectRailMessage call site in this file sits
   // inside SelectMessage; this function must never grow one.
-  urmsg::views::SetInspectRailAdvanced(rail_, on);
+  //
+  // THE WORLD ON SCREEN (F2): the rail finds its conversation in the world this window draws, the
+  // live one included, and redraws it at the new density now rather than at the next publish.
+  urmsg::views::SetInspectRailAdvanced(rail_, on, ActiveWorld());
 
   urnw::LogInfo("window: advanced mode {}", on);
 }

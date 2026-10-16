@@ -176,6 +176,7 @@ Controls::Grid RowGrid(urnw::kit::PaneTwoLineRowButton const& row) {
 
 urnw::kit::PaneTwoLineRowButton MakeConversationRow(urmsg::demo::Conversation const& c,
                                                     int index,
+                                                    std::wstring const& automationName,
                                                     std::function<void(int)> const& onSelect) {
   const ConversationRowModel model = MakeConversationRowModel(c);
 
@@ -431,9 +432,9 @@ urnw::kit::PaneTwoLineRowButton MakeConversationRow(urmsg::demo::Conversation co
   // carries both, plus the unread count, the muted state and the time, so the
   // description is cleared rather than left to repeat the preview after it.
   // title/note/value are already AccessibilityView=Raw, so nothing inside the
-  // row is announced twice.
-  Automation::AutomationProperties::SetName(
-      row.root, winrt::hstring{ConversationRowAutomationName(c, false)});
+  // row is announced twice. `automationName` is ConversationRowNamesFor's unselected name for
+  // this very conversation (MakeConversationList), the one SetConversationSelected restores.
+  Automation::AutomationProperties::SetName(row.root, winrt::hstring{automationName});
   Automation::AutomationProperties::SetFullDescription(row.root, L"");
 
   // The index by value, full stop: nothing captured here refers into `world`.
@@ -465,9 +466,13 @@ ConversationListView MakeConversationList(urmsg::demo::World const& world,
   stack.Children().Append(group.root);
   view.header = group.root;
 
+  // THE NAMES FIRST, off the same world the rows are drawn from (F1): each row is announced as the
+  // conversation it shows, and selection reads these back rather than looking any world up.
+  view.names = ConversationRowNamesFor(world);
   view.rows.reserve(world.conversations.size());
   for (std::size_t i = 0; i < world.conversations.size(); ++i) {
-    auto row = MakeConversationRow(world.conversations[i], static_cast<int>(i), onSelect);
+    auto row = MakeConversationRow(world.conversations[i], static_cast<int>(i),
+                                   view.names[i].unselected, onSelect);
     stack.Children().Append(row.root);
     view.rows.push_back(row);
   }
@@ -496,7 +501,8 @@ ConversationListView MakeConversationList(urmsg::demo::World const& world,
 }
 
 void SetConversationSelected(ConversationListView& v, int index) {
-  auto const& world = urmsg::demo::GetWorld();
+  // NO WORLD IS READ HERE (F1). The names are the ones the list took from the world it was built
+  // from; reading demo::GetWorld() here announced the fabricated world's rows over a live list.
   for (std::size_t i = 0; i < v.rows.size(); ++i) {
     auto const& row = v.rows[i];
     if (!row.root) continue;
@@ -522,10 +528,9 @@ void SetConversationSelected(ConversationListView& v, int index) {
 
     // Channel 3: the announcement. A fill step and a bar say nothing to a screen
     // reader, so the row's own Name carries the state.
-    if (i < world.conversations.size())
+    if (i < v.names.size())
       Automation::AutomationProperties::SetName(
-          row.root,
-          winrt::hstring{ConversationRowAutomationName(world.conversations[i], selected)});
+          row.root, winrt::hstring{selected ? v.names[i].selected : v.names[i].unselected});
   }
   urnw::LogInfo("list: selection -> row {} of {}", index, v.rows.size());
 }
