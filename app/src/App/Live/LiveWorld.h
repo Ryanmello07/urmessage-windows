@@ -212,6 +212,11 @@ struct LiveGroup {
   // A LEAVE THIS DEVICE ASKED FOR AND WAS REFUSED (ledger 273), as the library said it, or "".
   // A granted one is never here: the worker publishes the world without that conversation instead.
   std::string leaveError;
+  // REMOVED (urnet_message_group_removal; the conversation-list design 2.1): a valid commit took this
+  // device out of the group, after epoch `removedEpoch`. It never clears; the conversation is
+  // read-only and its transcript stays.
+  bool removed = false;
+  uint64_t removedEpoch = 0;
   // A GROUP OF ONE (the conversation-list design 3): founded here, and nobody else in it yet. Its row
   // and its thread say so, because it cannot send yet and is not kept until somebody joins.
   bool groupOfOne = false;

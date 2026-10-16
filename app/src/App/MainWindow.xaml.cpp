@@ -1425,6 +1425,12 @@ void MainWindow::ArmComposer() {
       break;
   }
   urmsg::views::SetThreadSendEnabled(thread_, session, mayRoleSend);
+  // A CONVERSATION THAT REMOVED THIS DEVICE says so in its composer (the conversation-list design 2.1)
+  {
+    const int open = OpenConversationIndex();
+    urmsg::views::SetThreadRemoved(
+        thread_, 0 <= open && ActiveWorld().conversations[static_cast<size_t>(open)].removed);
+  }
   if (options_.composer == urmsg::demo::DemoComposer::OverLimit) {
     // 70,000 octets of ASCII against the 65,333 limit: over by 4,667
     urmsg::views::SetThreadComposerText(thread_, std::wstring(70000, L'a'));

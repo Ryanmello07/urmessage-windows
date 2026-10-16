@@ -977,6 +977,35 @@ std::vector<std::wstring> ObserverDiagnostics() {
         EscapeNonAscii(liveEmpty), EscapeNonAscii(liveBox), boxState ? L"yes" : L"NO"));
   }
 
+  // 1b. THE REMOVED ARM (the conversation-list design 2.1): first, whatever the session and the role
+  {
+    constexpr std::wstring_view kSessionDenial = L"no live session";
+    const bool machine = ComposerStateFor(false, true, true) == ComposerState::Removed &&
+                         ComposerStateFor(true, true, true) == ComposerState::Removed &&
+                         ComposerStateFor(true, false, true) == ComposerState::Removed &&
+                         ComposerStateFor(true, true) == ComposerState::MaySend;
+    const std::wstring send = ComposerSendName(ComposerState::Removed, true, false);
+    const std::wstring box = ComposerBoxName(ComposerState::Removed, false);
+    const std::wstring hint = ComposerBoxPlaceholder(ComposerState::Removed);
+    const std::wstring note = ComposerRemovedNote();
+    const std::wstring line = demo::kRemovedLine;
+    const bool says = send.find(line) != std::wstring::npos && box.find(line) != std::wstring::npos &&
+                      hint == line && note == line;
+    const bool noDenial = send.find(kSessionDenial) == std::wstring::npos &&
+                          box.find(kSessionDenial) == std::wstring::npos &&
+                          hint.find(kSessionDenial) == std::wstring::npos;
+    const bool dead = !ComposerBoxEnabled(ComposerState::Removed);
+    const bool ok = machine && says && noDenial && dead;
+    out.push_back(std::format(
+        L"  composer removed : {}  removed first over the session and the role {} | send \"{}\" / box "
+        L"\"{}\" / placeholder \"{}\" / caption say the removed line {} and never \"no live session\" {} "
+        L"| box dead {}   [query: ComposerStateFor answers Removed whatever the session and the role, "
+        L"and its four channels carry the removed line and not a session denial, which is false of a "
+        L"device whose session is live and whose group removed it]",
+        Verdict(ok), machine ? L"yes" : L"NO", EscapeNonAscii(send), EscapeNonAscii(box),
+        EscapeNonAscii(hint), says ? L"yes" : L"NO", noDenial ? L"yes" : L"NO", dead ? L"yes" : L"NO"));
+  }
+
   // 2. the hidden row, over the fabricated world, with BOTH sets printed
   {
     demo::World const& w = demo::GetWorld();
