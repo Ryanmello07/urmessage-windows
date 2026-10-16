@@ -554,6 +554,10 @@ std::condition_variable g_slotsChanged;
 // A push for an id this device does not hold is logged once per id (the conversation-list design
 // 2.1, the self group: a push never adopts anything).
 std::set<std::string> g_unknownPushLogged;        // guarded by g_tableMutex
+// THE GROUPS THIS DEVICE LEFT IN THIS SESSION. A reconciliation (ReconcileTable) that listed the
+// device's groups just before a leave's forget must not take the group up again behind it; only a
+// join or a create of that id, which a person asked for, takes it up (StartGroupLoop clears it).
+std::set<std::string> g_leftGroups;               // guarded by g_tableMutex
 // ONE SLOT LEAVES AT A TIME (RetireSlot): whether it is the last conversation, the neutral state that
 // then goes first, and its removal are one step, so two loops leaving at once cannot both find
 // another conversation still there and leave the window an empty world with no neutral state first.
@@ -1201,6 +1205,8 @@ struct HeldRestore {
 };
 
 using AdoptFn = std::function<void(uint64_t, bool)>;
+// The reconciliation (ReconcileTable), handed to the join road the same way.
+using ReconcileFn = std::function<void()>;
 
 HeldRestore RestoreHeldGroup(Session& s, HeldInvite const& held, AdoptFn const& adopt) {
   char* err = nullptr;
@@ -1469,7 +1475,7 @@ Mint MintJoinCode(Session& s, std::string& joinCode, size_t& octets, std::string
 // this device can open it (R40 A12). It still names the group and its members, so
 // it is never logged, and the invite is deleted the moment it has been used. The
 // key package is deleted by the peer that consumes it.
-void JoinRoad(Session& s, AdoptFn const& adopt) {
+void JoinRoad(Session& s, AdoptFn const& adopt, ReconcileFn const& reconcile) {
   char* err = nullptr;
   const std::filesystem::path dir = HandshakeDir();
   const std::filesystem::path keyPackagePath = dir / kKeyPackageName;
@@ -1681,9 +1687,11 @@ void JoinRoad(Session& s, AdoptFn const& adopt) {
             }
             held.Drop();
             previous.clear();
+            reconcile();
             continue;
           }
           case HeldLeave::Offered:
+            reconcile();
             break;
         }
       } else if (asked) {
@@ -1746,6 +1754,7 @@ void JoinRoad(Session& s, AdoptFn const& adopt) {
             adopt(made, /*groupOfOne=*/true);
             PublishOnboard(urmsg::live::OnboardStep::Founded, joinCode, kFoundedSentence, false, false,
                            madeHex);
+            reconcile();
           }
         }
       }
@@ -1969,6 +1978,7 @@ void JoinRoad(Session& s, AdoptFn const& adopt) {
     }
     PublishOnboard(urmsg::live::OnboardStep::Joined, joinCode, "You are in the group.", false, false,
                    joinedHex);
+    reconcile();
 
     // CONSUMED, SO DELETED. It has done its job. Only this device can open it, but left on disk it
     // still names the group and its members (R40 A12). Only the FILE road leaves anything behind - a
@@ -2923,7 +2933,12 @@ void GroupLoop(std::shared_ptr<SessionContext> session, std::shared_ptr<GroupSlo
 
   // ── THIS DEVICE LEFT THIS GROUP (ledger 273) ─────────────────────────────────────────────────
   // The library has closed the group and erased this device's copy of it. What is left here is the
-  // handle, the gate and the conversation, and RetireSlot takes all three.
+  // handle, the gate and the conversation, and RetireSlot takes all three. Noted as left first, so no
+  // reconciliation takes it up again behind the leave.
+  {
+    std::lock_guard<std::mutex> lock(g_tableMutex);
+    g_leftGroups.insert(gidHex);
+  }
   const bool empty = RetireSlot(*slot, "This computer left the conversation.");
   urnw::LogInfo("live: left group {}; {}", gidHex,
                 empty ? "this device holds no group now and waits for an invitation"
@@ -2958,6 +2973,8 @@ void StartGroupLoop(std::shared_ptr<SessionContext> const& session, uint64_t gro
       }
     }
     g_slots.push_back(slot);
+    // TAKEN UP AGAIN, by a join or a create a person asked for: no longer a group this session left
+    g_leftGroups.erase(gidHex);
   }
   // THE SLOT FIRST, THEN THE GATE: a verb is admitted only by a gate, so every admitted verb finds a
   // slot to queue into.
@@ -2982,6 +2999,38 @@ void StartGroupLoop(std::shared_ptr<SessionContext> const& session, uint64_t gro
   });
   // DETACHED, as the session's worker is: nothing waits on a loop, and it ends with its group.
   loop.detach();
+}
+
+// THE TABLE AGAINST THE LIBRARY (the conversation-list design 2.1): every group the device holds open
+// has a loop. Asked after the device-level calls that can open a group (the startup restore, a join,
+// a create, a held leave): a group the library holds that no loop serves is taken up, and a handle on
+// one already served, or on one this session left, is released quietly. The library leaves system
+// groups out of this list, so a self group is never taken up.
+void ReconcileTable(std::shared_ptr<SessionContext> const& session) {
+  const uint64_t list = urnet_message_device_groups(session->s.device);
+  const int32_t count = urnet_message_group_list_count(list);
+  int taken = 0;
+  for (int32_t i = 0; i < count; ++i) {
+    const uint64_t group = urnet_message_group_list_at(list, i);
+    if (group == 0) continue;
+    const std::string gid = GroupIdHexOf(group);
+    bool served = gid.empty();
+    if (!served) {
+      std::lock_guard<std::mutex> lock(g_tableMutex);
+      for (auto const& slot : g_slots)
+        if (slot->gidHex == gid) served = true;
+      if (g_leftGroups.count(gid) != 0) served = true;
+    }
+    if (served) {
+      urnet_release(group);
+      continue;
+    }
+    ++taken;
+    StartGroupLoop(session, group);
+  }
+  if (list != 0) urnet_release(list);
+  if (0 < taken)
+    urnw::LogWarn("live: {} group(s) the library holds had no loop; each is taken up now", taken);
 }
 
 void RunSession() {
@@ -3240,7 +3289,10 @@ void RunSession() {
   const AdoptFn adopt = [&session](uint64_t group, bool groupOfOne) {
     StartGroupLoop(session, group, groupOfOne);
   };
-  JoinRoad(s, adopt);
+  const ReconcileFn reconcile = [&session] { ReconcileTable(session); };
+  // THE RESTORE ABOVE TOOK UP WHAT IT ANSWERED; the library may hold more
+  reconcile();
+  JoinRoad(s, adopt, reconcile);
 }
 
 }  // namespace
