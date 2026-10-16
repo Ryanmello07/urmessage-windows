@@ -40,6 +40,7 @@
 #include "Demo/ThreadLayout.h"
 #include "Views/ThreadLayout.h"
 #include "Views/ThreadView.h"  // ShouldPinToBottom, for the scroll-pin line below
+#include "Live/ConversationRules.h"  // the conversation list's pure rules (pure)
 #include "Live/LiveWorld.h"    // BuildWorld, for the reply/reaction mapping gate below (pure)
 #include "Live/LocalNames.h"   // the labels gate below (pure)
 #include "Live/HeldGroupRules.h"  // the held-group lines below (pure; Task 39)
@@ -3707,6 +3708,9 @@ std::vector<std::wstring> CollectDiagnostics() {
   // Unconditional on purpose -- these assert a pure function of seeded data, not
   // app state, so they are as true on a plain launch as under --demo.
   for (auto const& line : urmsg::views::CollectConversationListDiagnostics())
+    lines.push_back(line);
+  // THE CONVERSATION LIST'S OWN RULES (the conversation-list design): pure, on worlds built in place.
+  for (auto const& line : urmsg::live::CollectConversationRulesDiagnostics())
     lines.push_back(line);
 
   // ---- thread layout rules (Demo/ThreadLayout.h) ---------------------------

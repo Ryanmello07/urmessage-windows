@@ -31,6 +31,7 @@
 #include "Live/LiveWorld.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <ctime>
 #include <format>
@@ -101,6 +102,10 @@ uint64_t Digest(urmsg::demo::World const& world) {
   // moves on another member's commit changes no row id and no body, so it has to be mixed on its
   // own or the world that carries it is "unchanged" and the rail never redraws it.
   for (auto const& conv : world.conversations) {
+    // Each conversation's own epoch: the strip shows the open conversation's, and it moves on a
+    // commit with no row id and no body moving.
+    h ^= conv.epoch;
+    h *= 1099511628211ull;
     Mix(h, conv.myRole);
     for (auto const& m : conv.members) {
       Mix(h, m.id);
@@ -228,9 +233,11 @@ urmsg::demo::MessageRow MakeSystemRow(std::wstring id, std::wstring text) {
 
 }  // namespace
 
-urmsg::demo::World BuildWorld(LiveGroup const& group) {
-  urmsg::demo::World world;
+namespace {
 
+// ONE GROUP'S CONVERSATION, and the sent_at_ms of the newest line it draws in `newestOut` (0 with
+// none): the list's order reads that, and the preview below is that line's body.
+urmsg::demo::Conversation BuildConversationImpl(LiveGroup const& group, int64_t& newestOut) {
   // ── the conversation ────────────────────────────────────────────────────────
   urmsg::demo::Conversation conv;
   conv.id = L"live-" + urnw::Widen(group.groupIdHex);
@@ -539,7 +546,66 @@ urmsg::demo::World BuildWorld(LiveGroup const& group) {
   // message the server refused was never said to anybody.
   conv.preview = newestBody.empty() ? std::wstring(kUnavailable) : newestBody;
   conv.timeLabel = newestMs > 0 ? FormatClock(newestMs) : std::wstring(kUnavailable);
-  world.conversations.push_back(std::move(conv));
+  // THIS GROUP'S OWN EPOCH (A14, A20): the strip and the developer page read the open
+  // conversation's, because a world of many conversations has no one epoch.
+  conv.epoch = group.epoch;
+  newestOut = newestMs;
+  return conv;
+}
+
+int64_t WallClockNowMs() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
+
+}  // namespace
+
+urmsg::demo::Conversation BuildConversation(LiveGroup const& group) {
+  int64_t newestMs = 0;
+  return BuildConversationImpl(group, newestMs);
+}
+
+LiveConversation BuildLiveConversation(LiveGroup const& group, int64_t nowMs) {
+  LiveConversation out;
+  int64_t newestMs = 0;
+  out.conversation = BuildConversationImpl(group, newestMs);
+  out.groupIdHex = group.groupIdHex;
+  // A LINE DATED IN THE FUTURE IS CLAMPED TO NOW: sent_at_ms is the sender's own claim, and a
+  // member whose clock runs ahead (or who lies) must not pin a conversation to the top of the list.
+  out.activityMs = 0 < newestMs ? (std::min)(newestMs, nowMs) : group.adoptedAtMs;
+  return out;
+}
+
+void OrderConversations(std::vector<LiveConversation>& conversations) {
+  std::stable_sort(conversations.begin(), conversations.end(),
+                   [](LiveConversation const& a, LiveConversation const& b) {
+                     if (a.activityMs != b.activityMs) return a.activityMs > b.activityMs;
+                     return a.groupIdHex < b.groupIdHex;
+                   });
+}
+
+LiveSession SessionOf(LiveGroup const& group) {
+  LiveSession session;
+  session.clientId = group.clientId;
+  session.serverClientId = group.serverClientId;
+  session.platformUrl = group.platformUrl;
+  session.host = group.host;
+  session.keyPinned = group.keyPinned;
+  return session;
+}
+
+urmsg::demo::World BuildWorld(LiveGroup const& group) {
+  std::vector<LiveConversation> one;
+  one.push_back(BuildLiveConversation(group, WallClockNowMs()));
+  return BuildWorld(SessionOf(group), std::move(one));
+}
+
+urmsg::demo::World BuildWorld(LiveSession const& session, std::vector<LiveConversation> conversations) {
+  urmsg::demo::World world;
+  OrderConversations(conversations);
+  world.conversations.reserve(conversations.size());
+  for (auto& c : conversations) world.conversations.push_back(std::move(c.conversation));
 
   // ── the world around it ─────────────────────────────────────────────────────
 
@@ -555,24 +621,27 @@ urmsg::demo::World BuildWorld(LiveGroup const& group) {
   world.relayPath = {
       {L"This device", L"This computer", L"", 0, true},
       {L"URnetwork",
-       group.platformUrl.empty() ? std::wstring(kUnavailable) : urnw::Widen(group.platformUrl),
+       session.platformUrl.empty() ? std::wstring(kUnavailable) : urnw::Widen(session.platformUrl),
        L"", 0, true},
       {L"Message server",
-       group.serverClientId.empty() ? std::wstring(kUnavailable)
-                                    : urnw::Widen(group.serverClientId),
+       session.serverClientId.empty() ? std::wstring(kUnavailable)
+                                      : urnw::Widen(session.serverClientId),
        L"", 0, true},
   };
 
-  world.server.host = urnw::Widen(group.host);
+  world.server.host = urnw::Widen(session.host);
   world.server.jurisdiction = kUnavailable;
   world.server.latencyMs = 0;  // not measured; the page draws the placeholder for a non-positive one
   // THE PIN, and only the pin: true on the routes that refuse any endpoint key but the compiled-in
   // one (ledger 268), false on the platform route, which pins nothing. In a live world this bit
   // means "pinned" and every surface says so in those words (FormatKeyState, ServerKeyStateName);
   // it is never rendered as "verified", which in the fixture names a check this bit is not.
-  world.server.keyVerified = group.keyPinned;
+  world.server.keyVerified = session.keyPinned;
 
-  world.currentEpoch = group.epoch;   // real
+  // REAL, and the first conversation's: a world of many conversations has no one epoch, so a view
+  // that shows one reads the open conversation's own (Conversation::epoch). With one group this is
+  // that group's epoch, as it always was.
+  world.currentEpoch = world.conversations.empty() ? 0 : world.conversations.front().epoch;
   world.connectState = urmsg::demo::ConnectState::Connected;  // real: the device is connected
   world.sessionMode = kUnavailable;
   world.recordsPerSecond = 0;

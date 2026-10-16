@@ -212,6 +212,33 @@ struct LiveGroup {
   // A LEAVE THIS DEVICE ASKED FOR AND WAS REFUSED (ledger 273), as the library said it, or "".
   // A granted one is never here: the worker publishes an empty world instead.
   std::string leaveError;
+  // WHEN THIS DEVICE TOOK THE GROUP UP, wall-clock milliseconds: restored, joined or founded in this
+  // run. The list's order falls back to it for a conversation with no line yet (the conversation-list
+  // design 2.4), so a group just joined is the first row rather than the last. 0 is "not known".
+  int64_t adoptedAtMs = 0;
+};
+
+// THE SESSION'S OWN FACTS, the same for every conversation it holds (the conversation-list design):
+// who this device is to the operator, the server it is bound to, what the library dialled, the
+// route's label and whether the server's key is pinned. A LiveGroup carries them too, for the
+// one-group callers; a world of many conversations takes them once, from here.
+struct LiveSession {
+  std::string clientId;
+  std::string serverClientId;
+  std::string platformUrl;
+  std::string host;
+  bool keyPinned = false;
+};
+
+// ONE CONVERSATION OF A WORLD OF MANY, as BuildLiveConversation makes it: the conversation the
+// views draw, its group, and when it last moved, which is what the list is ordered by.
+struct LiveConversation {
+  urmsg::demo::Conversation conversation;
+  std::string groupIdHex;
+  // The newest line's sent_at_ms, clamped to the time the conversation was built (a member's clock
+  // is a claim, and a line dated in the future must not hold the top of the list), or, for a group
+  // with no line yet, the time this device took the group up (LiveGroup::adoptedAtMs).
+  int64_t activityMs = 0;
 };
 
 // ── the one placeholder ───────────────────────────────────────────────────────
@@ -221,7 +248,27 @@ struct LiveGroup {
 using urmsg::demo::kUnavailable;
 
 // ── the mapping ───────────────────────────────────────────────────────────────
-// Build the World the existing views read. Total: one conversation, one row per message.
+// ONE GROUP'S CONVERSATION, one row per message: the whole of what the views draw for it.
+urmsg::demo::Conversation BuildConversation(LiveGroup const& group);
+
+// The same, with its group and its activity for the list's order, at wall-clock `nowMs`.
+LiveConversation BuildLiveConversation(LiveGroup const& group, int64_t nowMs);
+
+// THE LIST'S ORDER (the conversation-list design 2.4): newest activity first, and on a tie the
+// group id in ascending order, so two conversations that moved at the same moment keep one order
+// from one publish to the next. Stable, and total on distinct group ids.
+void OrderConversations(std::vector<LiveConversation>& conversations);
+
+// THE WORLD OF MANY CONVERSATIONS: the session's facts once, and every conversation in the list's
+// order. Its currentEpoch is the first conversation's, and 0 with none; a view that shows an epoch
+// reads the open conversation's own (Conversation::epoch).
+urmsg::demo::World BuildWorld(LiveSession const& session, std::vector<LiveConversation> conversations);
+
+// The session facts a LiveGroup carries, for the one-group callers.
+LiveSession SessionOf(LiveGroup const& group);
+
+// ONE GROUP'S WORLD, as before: BuildWorld(SessionOf(group), {BuildLiveConversation(group, now)}).
+// Total: one conversation, one row per message.
 urmsg::demo::World BuildWorld(LiveGroup const& group);
 
 // ── the handover ──────────────────────────────────────────────────────────────
