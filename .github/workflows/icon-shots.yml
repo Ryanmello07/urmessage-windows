@@ -1,0 +1,179 @@
+# THROWAWAY, NEVER MERGE, NEVER IN AN UPSTREAM PULL REQUEST. fix/icon-fallback (ci/icons-shots-1): the app's demo
+# screens on windows-2022, which has no Segoe Fluent Icons, and on windows-2025, for the fix, for main, and
+# for the control (the fix with the Fluent-only family put back in code and in markup). Each job also prints
+# --diagnose's `icon glyphs` line. Nothing is published.
+name: Icon fallback shots (throwaway)
+
+on:
+  push:
+    branches:
+      - 'ci/icons-shots**'
+
+permissions:
+  contents: read
+
+env:
+  FIX_HEAD: e27fe3decae0314b4ec4fb9890de5c53a5b65c8c
+  MAIN_HEAD: 864354e124c3077cf646a16ce30e231583566eb9
+
+jobs:
+  shots:
+    name: Icons (${{ matrix.os }}, ${{ matrix.build }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+        build: [fix, main, control]
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 3
+
+      - name: Prove the checkout is the fix plus CI files only
+        shell: pwsh
+        run: |
+          $parent = git rev-parse HEAD^
+          Write-Host "checkout $(git rev-parse HEAD)"
+          Write-Host "parent   $parent"
+          if ($parent -ne $env:FIX_HEAD) { Write-Host "::error::the parent is not $env:FIX_HEAD"; exit 1 }
+          $changed = @(git diff --name-only HEAD^ HEAD)
+          $changed | ForEach-Object { Write-Host "  changed by the CI commit: $_" }
+          $outside = @($changed | Where-Object { $_ -notlike '.github/*' })
+          if ($outside.Count -gt 0) { Write-Host "::error::the CI commit changes $($outside -join ', ')"; exit 1 }
+          exit 0
+
+      - name: Choose the source (${{ matrix.build }})
+        shell: pwsh
+        env:
+          BUILD: ${{ matrix.build }}
+        run: |
+          function Swap([string]$path, [string]$old, [string]$new) {
+            $text = [IO.File]::ReadAllText($path)
+            $n = ([regex]::Matches($text, [regex]::Escape($old))).Count
+            if ($n -ne 1) { Write-Host "::error::the edit's text occurs $n times in $path, not once"; exit 1 }
+            [IO.File]::WriteAllText($path, $text.Replace($old, $new), (New-Object Text.UTF8Encoding($false)))
+          }
+          if ($env:BUILD -eq 'main') {
+            git checkout $env:MAIN_HEAD -- app/src
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+            Write-Host "app/src is main's ($env:MAIN_HEAD)"
+          }
+          if ($env:BUILD -eq 'control') {
+            # THE CONTROL: the Fluent-only family put back, in code and in markup
+            Swap 'app\src\App\UrComponents.h' 'kIconFontFamily[] = L"Segoe Fluent Icons,Segoe MDL2 Assets";' 'kIconFontFamily[] = L"Segoe Fluent Icons";'
+            Swap 'app\src\App\App.xaml' '<FontFamily x:Key="UrIconFontFamily">Segoe Fluent Icons,Segoe MDL2 Assets</FontFamily>' '<FontFamily x:Key="UrIconFontFamily">Segoe Fluent Icons</FontFamily>'
+          }
+          git --no-pager diff --stat
+          git --no-pager diff -- app/src/App/UrComponents.h app/src/App/App.xaml | Select-Object -First 40
+          exit 0
+
+      - name: Make the screen wide enough for the inspector rail (1920 x 1080)
+        shell: powershell
+        run: |
+          $code = @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class NamesDisplay {
+            [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+            public struct DEVMODE {
+              [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+              public short dmSpecVersion; public short dmDriverVersion; public short dmSize; public short dmDriverExtra;
+              public int dmFields; public int dmPositionX; public int dmPositionY; public int dmDisplayOrientation;
+              public int dmDisplayFixedOutput; public short dmColor; public short dmDuplex; public short dmYResolution;
+              public short dmTTOption; public short dmCollate;
+              [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+              public short dmLogPixels; public int dmBitsPerPel; public int dmPelsWidth; public int dmPelsHeight;
+              public int dmDisplayFlags; public int dmDisplayFrequency; public int dmICMMethod; public int dmICMIntent;
+              public int dmMediaType; public int dmDitherType; public int dmReserved1; public int dmReserved2;
+              public int dmPanningWidth; public int dmPanningHeight;
+            }
+            [DllImport("user32.dll", CharSet = CharSet.Ansi)] public static extern int EnumDisplaySettings(string deviceName, int modeNum, ref DEVMODE devMode);
+            [DllImport("user32.dll", CharSet = CharSet.Ansi)] public static extern int ChangeDisplaySettings(ref DEVMODE devMode, int flags);
+            [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
+            public static string Size() { return GetSystemMetrics(0) + " x " + GetSystemMetrics(1); }
+            public static int Set(int w, int h) {
+              DEVMODE dm = new DEVMODE();
+              dm.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
+              if (EnumDisplaySettings(null, -1, ref dm) == 0) return -100;
+              dm.dmPelsWidth = w; dm.dmPelsHeight = h; dm.dmFields = 0x80000 | 0x100000;
+              return ChangeDisplaySettings(ref dm, 0);
+            }
+          }
+          '@
+          Add-Type -TypeDefinition $code
+          # GetSystemMetrics reads the screen as it is NOW; System.Windows.Forms.Screen caches it per
+          # process, which is why the first run printed 1024 x 768 after a change that had worked
+          Write-Host "the primary screen was $([NamesDisplay]::Size()) (GetSystemMetrics)"
+          try { Set-DisplayResolution -Width 1920 -Height 1080 -Force -ErrorAction Stop; Write-Host 'Set-DisplayResolution answered' } catch { Write-Host "Set-DisplayResolution: $_" }
+          Write-Host "after Set-DisplayResolution: $([NamesDisplay]::Size())"
+          if ([NamesDisplay]::GetSystemMetrics(0) -lt 1920) {
+            Write-Host "ChangeDisplaySettings answered $([NamesDisplay]::Set(1920, 1080)) (0 is DISP_CHANGE_SUCCESSFUL)"
+            Write-Host "after ChangeDisplaySettings: $([NamesDisplay]::Size())"
+          }
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build the app (Release x64)
+        shell: pwsh
+        working-directory: app
+        run: |
+          $pin = '10.0.22621.0'
+          $roots = @("${env:ProgramFiles(x86)}\Windows Kits\10", "$env:ProgramFiles\Windows Kits\10") | Where-Object { Test-Path -LiteralPath $_ }
+          $usable = @(foreach ($r in $roots) {
+            Get-ChildItem (Join-Path $r 'Include') -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' -and
+                (Test-Path -LiteralPath (Join-Path $r "Include\$($_.Name)\um\windows.h")) -and
+                (Test-Path -LiteralPath (Join-Path $r "Lib\$($_.Name)\um\x64\kernel32.lib")) } |
+              Select-Object -ExpandProperty Name
+          }) | Select-Object -Unique | Sort-Object { [version]$_ }
+          $usable = @($usable)
+          $sdk = if ($usable -contains $pin) { $pin } else { $usable[-1] }
+          msbuild URmessage.sln /restore /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=$sdk /m /v:minimal /clp:Summary
+          exit $LASTEXITCODE
+
+      - name: The fonts this runner has, and --diagnose's icon glyphs line
+        shell: pwsh
+        env:
+          BUILD: ${{ matrix.build }}
+        run: |
+          $fonts = Get-ChildItem "$env:WINDIR\Fonts" -File | Where-Object { $_.Name -match '(?i)segoeicons|segmdl2' }
+          Write-Host "Segoe icon font files on this runner: $(@($fonts | ForEach-Object { $_.Name }) -join ', ')"
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'app\build\x64\Release\URmessage.exe'
+          $env:URMESSAGE_APP_ROOT = Join-Path $env:RUNNER_TEMP 'icons-diagnose'
+          $psi = [System.Diagnostics.ProcessStartInfo]::new($exe)
+          $psi.Arguments = '--diagnose'
+          $psi.UseShellExecute = $false
+          $psi.CreateNoWindow = $true
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+          $p = [System.Diagnostics.Process]::Start($psi)
+          $out = $p.StandardOutput.ReadToEnd()
+          $null = $p.StandardError.ReadToEnd()
+          if (-not $p.WaitForExit(120000)) { Write-Host '::error::--diagnose did not exit'; exit 1 }
+          New-Item -ItemType Directory -Force "$env:GITHUB_WORKSPACE\iconsout" | Out-Null
+          [IO.File]::WriteAllText("$env:GITHUB_WORKSPACE\iconsout\diagnose-${{ matrix.os }}-$env:BUILD.out", $out, (New-Object Text.UTF8Encoding($false)))
+          $line = @($out -split "`r?`n" | Where-Object { $_ -match '^\s*icon glyphs\s*:' })
+          if ($line.Count -eq 0) { Write-Host "no icon glyphs line in this build ($env:BUILD)"; exit 0 }
+          Write-Host $line[0]
+          exit 0
+
+      - name: The demo screens
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github\icons\shots.ps1 `
+            -Exe "$env:GITHUB_WORKSPACE\app\build\x64\Release\URmessage.exe" `
+            -Out "$env:GITHUB_WORKSPACE\iconsout" -Label "${{ matrix.os }}-${{ matrix.build }}"
+          exit $LASTEXITCODE
+
+      - name: Upload the screenshots and the diagnose output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: icons-${{ matrix.os }}-${{ matrix.build }}
+          path: iconsout/
+          if-no-files-found: warn
