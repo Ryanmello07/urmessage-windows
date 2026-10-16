@@ -292,15 +292,21 @@ PaneListRow MakePaneListRow(double height) {
 
 void SetPaneListRowFit(PaneListRow const& row, PaneListRowFit const& fit,
                        winrt::hstring const& wholeMeta) {
-  if (!row.title || !row.meta) return;
-  // The grid BuildPaneListRowParts made: the title's parent, and the row root's only child.
-  auto grid = row.title.Parent().try_as<Controls::Grid>();
-  if (!grid || grid.ColumnDefinitions().Size() <= kPaneListMetaColumn) return;
-  auto titleColumn = grid.ColumnDefinitions().GetAt(kPaneListTitleColumn);
-  auto metaColumn = grid.ColumnDefinitions().GetAt(kPaneListMetaColumn);
-  const auto star = GridLengthHelper::FromValueAndType(1, GridUnitType::Star);
-  titleColumn.Width(fit.titleSizesToContent ? GridLengthHelper::Auto() : star);
-  metaColumn.Width(fit.titleSizesToContent ? star : GridLengthHelper::Auto());
+  if (!row.root || !row.title || !row.meta) return;
+  // The grid BuildPaneListRowParts made, read from the ROOT, whose only child it is
+  // (MakePaneListRow). Not through the title's Parent(): measured on the runner (ci/s3-shots),
+  // that did not yield the grid when this is called, at build time and before the row is in the
+  // live tree, so the first cut of this function returned early and changed nothing.
+  auto grid = row.root.Child().try_as<Controls::Grid>();
+  if (grid && kPaneListMetaColumn < grid.ColumnDefinitions().Size()) {
+    auto titleColumn = grid.ColumnDefinitions().GetAt(kPaneListTitleColumn);
+    auto metaColumn = grid.ColumnDefinitions().GetAt(kPaneListMetaColumn);
+    const auto star = GridLengthHelper::FromValueAndType(1, GridUnitType::Star);
+    titleColumn.Width(fit.titleSizesToContent ? GridLengthHelper::Auto() : star);
+    metaColumn.Width(fit.titleSizesToContent ? star : GridLengthHelper::Auto());
+  } else {
+    urnw::LogWarn("kit: a pane list row has no grid of its own; its columns keep the species' sizing");
+  }
   // LOCAL values, over the styles' CharacterEllipsis setters, so this instance's trimming is
   // the fit's and nothing else's.
   row.title.TextTrimming(fit.titleCut ? TextTrimming::CharacterEllipsis : TextTrimming::None);
