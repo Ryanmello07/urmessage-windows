@@ -2423,6 +2423,9 @@ void GroupLoop(std::shared_ptr<SessionContext> session, std::shared_ptr<GroupSlo
   // the flag a granted one sets (ledger 273): drainSends sets it and the loop below reads it.
   std::string leaveError;
   bool left = false;
+  // WHAT THIS GROUP'S LAST RECEIVE REPORTED, or "" (the conversation-list design 2.1): drawn at the
+  // foot of this conversation and no other, and cleared by the next receive that reports nothing.
+  std::string receiveError;
   // FALSE UNTIL THIS GROUP'S FIRST RECEIVE: a restored group, or one joined above epoch 1, will not
   // seal before it (urnetwork_message.h), so its gate stays closed and nothing is queued for it.
   bool gateMayOpen = false;
@@ -2460,6 +2463,7 @@ void GroupLoop(std::shared_ptr<SessionContext> session, std::shared_ptr<GroupSlo
     live.groupOfOne = IsGroupOfOne(*slot);
     live.removed = removed;
     live.removedEpoch = removedEpoch;
+    live.receiveError = receiveError;
     live.epoch = urnet_message_group_epoch(group);
     live.open = urnet_message_group_is_open(group);
     live.clientId = clientId;
@@ -2906,6 +2910,12 @@ void GroupLoop(std::shared_ptr<SessionContext> session, std::shared_ptr<GroupSlo
       // answers that carry messages AND a reason.
       urnw::LogWarn("live: group_receive reported: {} (and still answered {} record(s))",
                     fetchError, fetchedCount);
+    }
+    // THIS CONVERSATION DRAWS IT, and only this one: a receive that reported nothing takes it away
+    if (fetchError != receiveError) {
+      urnw::LogInfo("live: group {}'s receive report is {}; its conversation draws it", gidHex,
+                    fetchError.empty() ? "cleared" : "standing");
+      receiveError = fetchError;
     }
     if (0 < fetchedCount) {
       urnw::LogInfo("live: group_receive answered {} NEW record(s) in {} ms", fetchedCount,
