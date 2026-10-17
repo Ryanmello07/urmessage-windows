@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "Demo/DemoWorld.h"
 
@@ -52,5 +53,64 @@ std::wstring StatusLockGlyph(bool keyVerified);
 // to change and the `strip fields` assertion already covers it.
 std::wstring StatusEpochValue(uint64_t epoch);
 std::wstring StatusRecordsValue(int recordsPerSecond);
+
+// ---- S3: the relay drawer's rows and the strip fit their own width -----------------------------
+//
+// THE DEFECT, from the owner's screenshot of build 03. A drawer row is a kit::PaneListRow, whose
+// species gives the title the rest of the row and the meta its natural width: right for a long
+// name beside a short figure, and wrong here, where the title is a short label and the meta is
+// the message server's 36-character client_id. The value took its whole width and the label was
+// squeezed to "M…". Separately, the strip is one horizontal panel, so at narrow widths its text
+// ran off its own right edge ("URnetwork exit · United States" was cut by the window).
+//
+// The decisions are here, as data and arithmetic, so --diagnose asserts them before the apartment
+// exists; the view only turns them into XAML. Each mutant that undoes one of them turns its
+// --diagnose line FAIL.
+
+// How a text is cut when it is wider than its room. The view maps these one to one onto
+// TextTrimming::None and TextTrimming::CharacterEllipsis.
+enum class TextCut { None, Ellipsis };
+
+// A relay drawer row: the hop's LABEL is never cut and sizes to its content; its VALUE takes the
+// rest of the row and is cut with an ellipsis.
+struct RelayRowFit {
+  TextCut label = TextCut::None;
+  TextCut value = TextCut::Ellipsis;
+  bool labelSizesToContent = true;  // the label's column is Auto, the value's Star
+};
+RelayRowFit RelayDrawerRowFit();
+
+// What a drawer row draws as its value. Its tooltip and its help text are this same string, so a
+// value the row has to cut is still there WHOLE (the drawn TextBlock's own text is whole too: the
+// cut is only how it is painted).
+std::wstring RelayRowValue(std::wstring_view subLabel, bool healthy);
+// The row's automation name: its label, its whole value and its state, as one fact.
+std::wstring RelayRowName(std::wstring_view label, std::wstring_view subLabel, bool healthy);
+
+// THE STRIP NEVER DRAWS PAST ITS OWN EDGE, at any width from the window's 400 DIP minimum up.
+// Each item of the strip, left to right, with its natural width in DIPs:
+enum class StripPart {
+  Fixed,     // the dot, the state word, the separators and the padlock: never cut, never dropped
+  Caption,   // the "server" caption: dropped, once every Optional is gone
+  Value,     // the server's value: then cut with an ellipsis, to no narrower than its floor
+  Optional,  // an Advanced Mode field with its separator: dropped first, rightmost first
+};
+struct StripItem {
+  StripPart part = StripPart::Fixed;
+  double width = 0;  // natural width, separator included for an Optional
+  double floor = 0;  // a Value's narrowest cut
+};
+enum class StripItemFit { Whole, Cut, Dropped };
+struct StripFit {
+  std::vector<StripItemFit> fit;  // one per item, in order
+  std::vector<double> width;      // the width each item is given; 0 when dropped
+  double total = 0;
+  bool fits = true;               // total <= room
+};
+StripFit FitStatusStrip(std::vector<StripItem> const& items, double room);
+
+// What the strip's tooltip and help text say: every fact it carries, whole, one per line, so a
+// fact the fit dropped or cut is still reachable.
+std::wstring StatusStripFacts(std::vector<std::wstring> const& facts);
 
 }  // namespace urmsg::views

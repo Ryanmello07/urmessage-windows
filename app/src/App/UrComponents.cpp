@@ -227,6 +227,11 @@ struct PaneListRowParts {
   Controls::Border marker{nullptr};
 };
 
+// The grid's columns: marker, dot, title, meta. Named because SetPaneListRowFit addresses the
+// two text columns by index, and the index is this function's to own.
+constexpr uint32_t kPaneListTitleColumn = 2;
+constexpr uint32_t kPaneListMetaColumn = 3;
+
 PaneListRowParts BuildPaneListRowParts() {
   PaneListRowParts out;
   out.grid = Controls::Grid();
@@ -262,13 +267,13 @@ PaneListRowParts BuildPaneListRowParts() {
 
   out.title = TextBlock();
   if (auto style = StyleByKey(L"UrRowTitleStyle")) out.title.Style(style);
-  Controls::Grid::SetColumn(out.title, 2);
+  Controls::Grid::SetColumn(out.title, static_cast<int32_t>(kPaneListTitleColumn));
   out.grid.Children().Append(out.title);
 
   out.meta = TextBlock();
   if (auto style = StyleByKey(L"UrValueTextStyle")) out.meta.Style(style);
   out.meta.Foreground(urnw::colors::MutedBrush());
-  Controls::Grid::SetColumn(out.meta, 3);
+  Controls::Grid::SetColumn(out.meta, static_cast<int32_t>(kPaneListMetaColumn));
   out.grid.Children().Append(out.meta);
   return out;
 }
@@ -283,6 +288,35 @@ PaneListRow MakePaneListRow(double height) {
   out.meta = parts.meta;
   out.root.Child(parts.grid);
   return out;
+}
+
+void SetPaneListRowFit(PaneListRow const& row, PaneListRowFit const& fit,
+                       winrt::hstring const& wholeMeta) {
+  if (!row.root || !row.title || !row.meta) return;
+  // The grid BuildPaneListRowParts made, read from the ROOT, whose only child it is
+  // (MakePaneListRow). Not through the title's Parent(): measured on the runner (ci/s3-shots),
+  // that did not yield the grid when this is called, at build time and before the row is in the
+  // live tree, so the first cut of this function returned early and changed nothing.
+  auto grid = row.root.Child().try_as<Controls::Grid>();
+  if (grid && kPaneListMetaColumn < grid.ColumnDefinitions().Size()) {
+    auto titleColumn = grid.ColumnDefinitions().GetAt(kPaneListTitleColumn);
+    auto metaColumn = grid.ColumnDefinitions().GetAt(kPaneListMetaColumn);
+    const auto star = GridLengthHelper::FromValueAndType(1, GridUnitType::Star);
+    titleColumn.Width(fit.titleSizesToContent ? GridLengthHelper::Auto() : star);
+    metaColumn.Width(fit.titleSizesToContent ? star : GridLengthHelper::Auto());
+  } else {
+    urnw::LogWarn("kit: a pane list row has no grid of its own; its columns keep the species' sizing");
+  }
+  // LOCAL values, over the styles' CharacterEllipsis setters, so this instance's trimming is
+  // the fit's and nothing else's.
+  row.title.TextTrimming(fit.titleCut ? TextTrimming::CharacterEllipsis : TextTrimming::None);
+  row.meta.TextTrimming(fit.metaCut ? TextTrimming::CharacterEllipsis : TextTrimming::None);
+  if (!wholeMeta.empty()) {
+    // A cut meta is still there whole: its tooltip for the pointer, its help text for a
+    // screen reader. The TextBlock's own text, and so its automation name, is whole already.
+    Controls::ToolTipService::SetToolTip(row.meta, winrt::box_value(wholeMeta));
+    Automation::AutomationProperties::SetHelpText(row.meta, wholeMeta);
+  }
 }
 
 PaneListRowButton MakePaneListRowButton(double height) {
