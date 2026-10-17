@@ -80,9 +80,9 @@ Media::Brush BrushByKey(wchar_t const* key, winrt::Windows::UI::Color fallback) 
   return urnw::colors::MakeBrush(fallback);
 }
 
-// Named, for the reason UrComponents.cpp:25-29 states: FontIcon defaults to
-// the older Segoe MDL2 Assets, whose metrics differ.
-Media::FontFamily IconFont() { return Media::FontFamily(L"Segoe Fluent Icons"); }
+// The one icon font (kIconFontFamily, UrComponents.h): Segoe Fluent Icons,
+// falling back to Segoe MDL2 Assets where Windows 10 lacks it.
+Media::FontFamily IconFont() { return Media::FontFamily(urnw::kit::kIconFontFamily); }
 
 // The dot's fill. Spends the connect-status ramp UrColors.h already carries
 // for exactly this dot. NOT kProGold (the Pro entitlement's, reachable from

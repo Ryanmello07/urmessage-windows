@@ -528,8 +528,8 @@ FrameworkElement MakeLockHeader(urmsg::RunMode mode) {
   chip.CornerRadius(CornerRadiusHelper::FromUniformRadius(8));
 
   FontIcon lock;
-  // UrRowIconStyle still carries the family (Segoe Fluent Icons, named
-  // explicitly so FontIcon does not fall back to the older Segoe MDL2) and
+  // UrRowIconStyle still carries the family (UrIconFontFamily: Segoe Fluent
+  // Icons, falling back to Segoe MDL2 Assets where Windows 10 lacks it) and
   // AccessibilityView Raw. The SIZE is overridden 16 -> 18 here, deliberately
   // and only here: the glyph has to centre optically inside a 36px chip, and
   // the style's 16 was tuned for a bare list row (design d4 §6). Same glyph,
