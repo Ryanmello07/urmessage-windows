@@ -1,0 +1,183 @@
+# THROWAWAY, NEVER MERGE, NEVER IN AN UPSTREAM PULL REQUEST. fix/advanced-figure-held-group: a
+# plain launch of the standard build (no argument, a fresh root, no credential, no SDK dll, so the empty
+# world for the whole run), every page it can reach, read with UI Automation and captured with
+# PrintWindow, then a fabricated launch for the Developer page's Advanced Mode figure
+# (.github/f4/f4-pages.ps1). One job per variant:
+#   pass     every check passes
+#   control  the run must FAIL (the defect, reproduced), and prints it
+#   a list   a mutant, or the control on main: exactly those checks fail, and nothing else
+# The checkout is the tested head plus CI files only (the first step proves it).
+name: Advanced figure and empty-world caption (throwaway)
+
+on:
+  push:
+    branches:
+      - 'ci/f4pages-**'
+
+permissions:
+  contents: read
+
+env:
+  TESTED_HEAD: 8e7dddf24d634df04358dc16964e512973742e1d
+
+jobs:
+  pages:
+    name: F4 pages (${{ matrix.variant }})
+    runs-on: windows-2022
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [as-built, ma-rebuild, ma-composer]
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Prove the checkout is the tested head plus CI files only
+        shell: pwsh
+        run: |
+          Write-Host "checkout $(git rev-parse HEAD)"
+          Write-Host "tested   $(git rev-parse HEAD^)"
+          if ((git rev-parse HEAD^) -ne $env:TESTED_HEAD) { Write-Host "::error::the tested head is not $env:TESTED_HEAD"; exit 1 }
+          $changed = @(git diff --name-only HEAD^ HEAD)
+          $changed | ForEach-Object { Write-Host "  added by the CI commit: $_" }
+          $outside = @($changed | Where-Object { $_ -notlike '.github/*' })
+          if ($outside.Count -gt 0) { Write-Host "::error::the CI commit changes files outside .github: $($outside -join ', ')"; exit 1 }
+
+      - name: Put the defect back (${{ matrix.variant }})
+        shell: pwsh
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          $edits = @(
+            @{ v = 'ma-rebuild'; path = 'app/src/App/MainWindow.xaml.cpp'; old = '  if (turnedOn) BuildDeveloper();'; new = '  if (turnedOn && false) BuildDeveloper();' },
+            @{ v = 'ma-composer'; path = 'app/src/App/RunMode.cpp'; old = '  if (noSession) return L"No group is on these screens yet, so there is nothing to send to.";'; new = '  if (noSession) return L"No group yet \u2014 there is nothing to send to. Join a group to start a conversation.";' }
+          )
+          $mine = @($edits | Where-Object { $_.v -eq $env:VARIANT })
+          Write-Host "edits for $env:VARIANT`: $($mine.Count)"
+          foreach ($e in $mine) {
+            $path = $e.path
+            $text = [IO.File]::ReadAllText($path)
+            $n = ([regex]::Matches($text, [regex]::Escape($e.old))).Count
+            if ($n -ne 1) { Write-Host "::error::'$($e.old)' occurs $n times in $path, not once"; exit 1 }
+            [IO.File]::WriteAllText($path, $text.Replace($e.old, $e.new), (New-Object Text.UTF8Encoding($false)))
+          }
+          git --no-pager diff
+
+      - name: Make the screen 1920 x 1080
+        shell: powershell
+        run: |
+          $code = @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class I1Display {
+            [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+            public struct DEVMODE {
+              [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+              public short dmSpecVersion; public short dmDriverVersion; public short dmSize; public short dmDriverExtra;
+              public int dmFields; public int dmPositionX; public int dmPositionY; public int dmDisplayOrientation;
+              public int dmDisplayFixedOutput; public short dmColor; public short dmDuplex; public short dmYResolution;
+              public short dmTTOption; public short dmCollate;
+              [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+              public short dmLogPixels; public int dmBitsPerPel; public int dmPelsWidth; public int dmPelsHeight;
+              public int dmDisplayFlags; public int dmDisplayFrequency; public int dmICMMethod; public int dmICMIntent;
+              public int dmMediaType; public int dmDitherType; public int dmReserved1; public int dmReserved2;
+              public int dmPanningWidth; public int dmPanningHeight;
+            }
+            [DllImport("user32.dll", CharSet = CharSet.Ansi)] public static extern int EnumDisplaySettings(string deviceName, int modeNum, ref DEVMODE devMode);
+            [DllImport("user32.dll", CharSet = CharSet.Ansi)] public static extern int ChangeDisplaySettings(ref DEVMODE devMode, int flags);
+            [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
+            public static string Size() { return GetSystemMetrics(0) + " x " + GetSystemMetrics(1); }
+            public static int Set(int w, int h) {
+              DEVMODE dm = new DEVMODE();
+              dm.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
+              if (EnumDisplaySettings(null, -1, ref dm) == 0) return -100;
+              dm.dmPelsWidth = w; dm.dmPelsHeight = h; dm.dmFields = 0x80000 | 0x100000;
+              return ChangeDisplaySettings(ref dm, 0);
+            }
+          }
+          '@
+          Add-Type -TypeDefinition $code
+          Write-Host "the primary screen was $([I1Display]::Size())"
+          try { Set-DisplayResolution -Width 1920 -Height 1080 -Force -ErrorAction Stop; Write-Host 'Set-DisplayResolution answered' } catch { Write-Host "Set-DisplayResolution: $_" }
+          if ([I1Display]::GetSystemMetrics(0) -lt 1920) {
+            Write-Host "ChangeDisplaySettings answered $([I1Display]::Set(1920, 1080)) (0 is DISP_CHANGE_SUCCESSFUL)"
+          }
+          Write-Host "the primary screen is $([I1Display]::Size())"
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build the app (Release x64)
+        shell: pwsh
+        working-directory: app
+        run: |
+          $pin = '10.0.22621.0'
+          $roots = @("${env:ProgramFiles(x86)}\Windows Kits\10", "$env:ProgramFiles\Windows Kits\10") | Where-Object { Test-Path -LiteralPath $_ }
+          $usable = @(foreach ($r in $roots) {
+            Get-ChildItem (Join-Path $r 'Include') -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' -and
+                (Test-Path -LiteralPath (Join-Path $r "Include\$($_.Name)\um\windows.h")) -and
+                (Test-Path -LiteralPath (Join-Path $r "Lib\$($_.Name)\um\x64\kernel32.lib")) } |
+              Select-Object -ExpandProperty Name
+          }) | Select-Object -Unique | Sort-Object { [version]$_ }
+          $usable = @($usable)
+          $sdk = if ($usable -contains $pin) { $pin } else { $usable[-1] }
+          msbuild URmessage.sln /restore /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=$sdk /m /v:minimal /clp:Summary
+          exit $LASTEXITCODE
+
+      - name: Drive a plain launch (${{ matrix.variant }})
+        shell: powershell
+        run: |
+          $exe = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'app/build/x64/Release/URmessage.exe'))
+          $out = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'f4out'))
+          $script = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE '.github/f4/f4-pages.ps1'))
+          powershell -NoProfile -ExecutionPolicy Bypass -File $script -Exe $exe -Out $out -Variant '${{ matrix.variant }}' | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'plain.out')
+          $code = $LASTEXITCODE
+          Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'plain.code') -Value $code
+          Write-Host "the driver exited $code"
+          exit 0
+
+      - name: Judge (${{ matrix.variant }})
+        shell: powershell
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          $expect = @{
+            'as-built' = 'pass'
+            'ma-rebuild' = @('plain developer: the Advanced Mode figure', 'demo developer: the Advanced Mode figure', 'demo developer, again: the Advanced Mode figure')
+            'ma-composer' = @('plain chats: the composer''s caption')
+          }
+          $code = [int](Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'plain.code'))
+          $failedFile = Join-Path (Join-Path $env:GITHUB_WORKSPACE 'f4out') "$env:VARIANT-failed.txt"
+          $failed = @(Get-Content -LiteralPath $failedFile -Encoding UTF8 | Where-Object { $_ -ne '' })
+          Write-Host "the driver exited $code, with $($failed.Count) failed check(s):"
+          $failed | ForEach-Object { Write-Host "  $_" }
+          $e = $expect[$env:VARIANT]
+          if ($e -is [string] -and $e -eq 'pass') {
+            if ($code -eq 0 -and $failed.Count -eq 0) { Write-Host "$env:VARIANT`: every check passed"; exit 0 }
+            Write-Host "::error::$env:VARIANT`: the driver failed"; exit 1
+          }
+          if ($e -is [string] -and $e -eq 'control') {
+            if ($code -ne 0 -and $failed.Count -gt 0) { Write-Host "$env:VARIANT`: the defect is there on the tested head ($($failed.Count) checks fail)"; exit 0 }
+            Write-Host "::error::$env:VARIANT`: the control found no defect"; exit 1
+          }
+          $own = @($e)
+          $other = @($failed | Where-Object { $f = $_; @($own | Where-Object { $f.StartsWith($_) }).Count -eq 0 })
+          $hit = @($own | Where-Object { $o = $_; @($failed | Where-Object { $_.StartsWith($o) }).Count -gt 0 })
+          if ($code -ne 0 -and $hit.Count -eq $own.Count -and $other.Count -eq 0) {
+            Write-Host "$env:VARIANT KILLED by its own checks, and by nothing else: $($hit -join ' | ')"
+            exit 0
+          }
+          Write-Host "::error::$env:VARIANT not killed for its own reason: own checks failed $($hit.Count)/$($own.Count); other failures $($other.Count): $($other -join ' | ')"
+          exit 1
+
+      - name: Upload the captures, the names and the log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: f4pages-${{ matrix.variant }}
+          path: f4out/
+          if-no-files-found: warn
