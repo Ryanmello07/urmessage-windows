@@ -1,0 +1,137 @@
+# THROWAWAY, NEVER MERGE, NEVER IN AN UPSTREAM PULL REQUEST. identity/i1-slice1 (PLAN Task 16, Step
+# 4): the slice-1 zip, from the live build with the composition dll (.github/s1/s1-package.ps1), and
+# the zip smoked as shipped on windows-2022 and windows-2025 (.github/s1/s1-smoke.ps1). The checkout
+# is the tested head plus CI files only (the first step proves it). Nothing is published.
+name: Slice 1 zip and smoke (throwaway)
+
+on:
+  push:
+    branches:
+      - 'ci/s1-zip**'
+
+permissions:
+  contents: read
+
+env:
+  TESTED_HEAD: 418e3e6a8fb6fba78e28729efd5b048b93f55ccc
+
+jobs:
+  package:
+    name: Build the slice-1 zip (x64)
+    runs-on: windows-2022
+    timeout-minutes: 90
+    outputs:
+      zip_sha256: ${{ steps.pack.outputs.zip_sha256 }}
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Prove the checkout is the tested head plus CI files only
+        shell: pwsh
+        run: |
+          Write-Host "checkout $(git rev-parse HEAD)"
+          Write-Host "tested   $(git rev-parse HEAD^)"
+          if ((git rev-parse HEAD^) -ne $env:TESTED_HEAD) { Write-Host "::error::the tested head is not $env:TESTED_HEAD"; exit 1 }
+          $outside = @(git diff --name-only HEAD^ HEAD | Where-Object { $_ -notlike '.github/*' })
+          if ($outside.Count -gt 0) { Write-Host "::error::the CI commit changes files outside .github: $($outside -join ', ')"; exit 1 }
+          exit 0
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Check out the pinned commits
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\build-sdk-dll.ps1 -Workspace "$env:RUNNER_TEMP\sdk" -CheckoutOnly
+          exit $LASTEXITCODE
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ runner.temp }}/sdk/message/go.mod
+          cache: false
+
+      - name: Build the dll from the composition and stage it
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\build-sdk-dll.ps1 -Workspace "$env:RUNNER_TEMP\sdk" -Stage
+          exit $LASTEXITCODE
+
+      - name: Build the app (Release x64, the dll required)
+        shell: pwsh
+        working-directory: app
+        run: |
+          $pin = '10.0.22621.0'
+          $roots = @("${env:ProgramFiles(x86)}\Windows Kits\10", "$env:ProgramFiles\Windows Kits\10") | Where-Object { Test-Path -LiteralPath $_ }
+          $usable = @(foreach ($r in $roots) {
+            Get-ChildItem (Join-Path $r 'Include') -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' -and
+                (Test-Path -LiteralPath (Join-Path $r "Include\$($_.Name)\um\windows.h")) -and
+                (Test-Path -LiteralPath (Join-Path $r "Lib\$($_.Name)\um\x64\kernel32.lib")) } |
+              Select-Object -ExpandProperty Name
+          }) | Select-Object -Unique | Sort-Object { [version]$_ }
+          $usable = @($usable)
+          $sdk = if ($usable -contains $pin) { $pin } else { $usable[-1] }
+          msbuild URmessage.sln /restore /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=$sdk /p:UrmRequireSdkDll=true /m /v:minimal /clp:Summary
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path -LiteralPath build\x64\Release\URnetworkSdk.dll)) { Write-Host '::error::no URnetworkSdk.dll beside the exe'; exit 1 }
+          Get-Item build\x64\Release\URmessage.exe, build\x64\Release\URnetworkSdk.dll | Format-Table Name, Length | Out-String | Write-Host
+
+      - name: Make the zip
+        id: pack
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File .github\s1\s1-package.ps1 -Out "$env:RUNNER_TEMP\s1pkg" -Evidence "$env:GITHUB_WORKSPACE\s1evidence"
+          exit $LASTEXITCODE
+
+      - name: Upload the zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: URmessage-identity-slice1
+          path: ${{ runner.temp }}/s1pkg/URmessage-identity-slice1.zip
+          if-no-files-found: error
+
+      - name: Upload the evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s1-zip-evidence
+          path: s1evidence/
+          if-no-files-found: warn
+
+  smoke:
+    name: Smoke the zip as shipped (${{ matrix.os }})
+    needs: package
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+    steps:
+      - name: Check out the repo (the smoke script only)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Download the zip
+        uses: actions/download-artifact@v4
+        with:
+          name: URmessage-identity-slice1
+          path: ${{ runner.temp }}/s1zip
+
+      - name: Smoke it as shipped
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github\s1\s1-smoke.ps1 -Zip "$env:RUNNER_TEMP\s1zip\URmessage-identity-slice1.zip" -Out "$env:GITHUB_WORKSPACE\smoke" -Leg '${{ matrix.os }}'
+          exit $LASTEXITCODE
+
+      - name: Upload the smoke's captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s1-smoke-${{ matrix.os }}
+          path: smoke/
+          if-no-files-found: warn

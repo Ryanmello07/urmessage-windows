@@ -1,0 +1,26 @@
+URmessage, identity phase 1, slice 1
+This is a test build of identity phase 1, slice 1.
+
+WHAT IS NEW
+One ID for your account. The first time it starts, URmessage sets up this computer:
+  - "This is my first device" shows your recovery phrase, 25 words, once. Write them on paper.
+  - Then type them back. A wrong word is named, and nothing is corrected for you.
+  - Settings, then Account, shows "Your ID" (36 characters, with Copy) and this device, with its
+    device ID and the mark that it holds your phrase's key.
+These words cannot bring your account back yet. URmessage never stores them, and the screens that
+show or take them are kept out of screenshots and screen sharing.
+
+NOT IN THIS BUILD
+Adding a second computer to your account, removing a device and changing the phrase come in later
+builds. A conversation still starts with today's join code.
+
+HOW TO RUN IT
+1. Unzip this folder anywhere.
+2. Put the credential file you were sent at %LOCALAPPDATA%\URmessage\dev\user1.jwt
+3. Run URmessage.exe.
+
+AN OLDER BUILD'S DATA
+This build keeps its conversations in a new folder, %LOCALAPPDATA%\URmessage\live\identity-slice1,
+and never reads what an older build kept. The older build's data stays where it was: the folders
+"stream" and "state" in %LOCALAPPDATA%\URmessage\live. To delete it, close URmessage, then delete
+those two folders. Do not delete identity-slice1.
