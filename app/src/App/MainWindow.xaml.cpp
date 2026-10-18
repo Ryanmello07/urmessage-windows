@@ -917,8 +917,9 @@ void MainWindow::ApplyLiveWorld() {
       urmsg::live::WithLocalNames(*snapshot, urmsg::live::CurrentLocalNames()));
 
   // ── THE LATCH, AND IT IS DELIBERATELY IN THIS STATEMENT AND NOT AT STARTUP ──
-  // Every honesty string in the app that differs between the two worlds is chosen by
-  // urmsg::ActiveRunMode(), and this is its only writer. It sits HERE, on the UI thread,
+  // Every honesty string in the app that differs between the worlds is chosen by
+  // urmsg::DrawnRunMode() - urmsg::ActiveRunMode() and the launch together (RunMode.h) - and
+  // this is the latch's only writer. It sits HERE, on the UI thread,
   // in the same breath as the assignment above, because the property that has to hold is
   // "the mode names the world that is on screen" — not "the mode names the switch the
   // process was started with".
@@ -2009,8 +2010,9 @@ void MainWindow::EnterDemoMode() {
   // to announce. An absent chip claims nothing, which is the only one of the three that
   // is honest. ApplyLiveWorld shows it, with the Live wording, in the same statement that puts
   // the live world on screen.
-  DemoChip().Visibility(options_.watermark && !LiveOnlyLaunch() ? Visibility::Visible
-                                                               : Visibility::Collapsed);
+  DemoChip().Visibility(urmsg::ModeChipShownBeforeLiveWorld(options_.enabled, options_.watermark)
+                            ? Visibility::Visible
+                            : Visibility::Collapsed);
 
   // The demo's three content views, built ONCE here (W5: BuildDemoViews is
   // their sole builder - the placeholder-era BuildThread/BuildInspectRail/

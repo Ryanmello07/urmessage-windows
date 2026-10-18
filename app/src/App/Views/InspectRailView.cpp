@@ -1681,9 +1681,9 @@ void PopulateConversation(InspectRailView& v, demo::Conversation const& conv,
     kit::FinalizePaneCard(card);
     body.Append(card.root);
   }
-  // THE FRAMING UNDER THE CARD, chosen by the LATCH and not the switch (item 240): the same
-  // ActiveRunMode() read PopulateMessage takes for the lock header, at populate time, so it
-  // follows the beat that put a live world on screen and never precedes it. Both arms are gated
+  // THE FRAMING UNDER THE CARD, chosen by the LATCH and the launch, not the switch (item 240):
+  // the same DrawnRunMode() read PopulateMessage takes for the lock header, at populate time, so
+  // it follows the beat that put a live world on screen and never precedes it. Both arms are gated
   // as a pair in RunModeCopyDiagnostics.
   body.Append(MakeRailNote(urmsg::RosterNote(urmsg::DrawnRunMode()), /*danger=*/false));
 
@@ -1698,7 +1698,7 @@ void PopulateMessage(InspectRailView const& v, demo::Conversation const& conv,
   if (!panel) return;
   auto body = panel.Children();
   body.Clear();
-  // THE ONE urmsg::ActiveRunMode() READ ON THIS SURFACE, and it is taken HERE rather
+  // THE ONE READ OF THE MODE ON THIS SURFACE (DrawnRunMode(), below), and it is taken HERE rather
   // than inside MakeLockHeader or AttestationLabel on purpose: those stay pure
   // functions of their arguments so the --diagnose probe can evaluate both modes from
   // one launch (InspectRailFields.h says why). Read at POPULATE time, not at build

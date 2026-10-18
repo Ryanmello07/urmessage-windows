@@ -28,9 +28,11 @@ namespace {
 // worker (a log line, a future probe) is defined behaviour rather than a data race.
 std::atomic<int> g_mode{static_cast<int>(RunMode::Fabricated)};
 
-// Whether this is a fabricated launch (RunMode.h, "which arm a string takes"). False until
-// MainWindow's constructor records it, so a reader that ever ran before that would draw no demo
-// word. The same relaxed order as the latch, for the same reason.
+// Whether this is a fabricated launch (RunMode.h, "which arm a string takes"). MainWindow's
+// constructor records it in the statement after it parses the options, before any view is built,
+// so no reader runs before it (neither default would be right for one that did: false would put
+// the third arms over the fixture, true the demo's words over the empty world). The same relaxed
+// order as the latch, for the same reason.
 std::atomic<bool> g_fabricatedLaunch{false};
 
 // Every non-ASCII character printed as <U+XXXX>. --diagnose writes UTF-8 bytes through a
@@ -255,9 +257,10 @@ std::wstring ComposerNote(RunMode mode, bool maySend, bool noSession) {
 }
 
 std::wstring RelayPathGroupTitle(RunMode mode, bool noSession) {
-  // THE THIRD ARM FIRST, as ComposerNote's: no session has produced a path yet, so the caption
-  // says that instead of naming either mode.
-  if (noSession) return L"NO SESSION YET: RELAY PATH";
+  // THE THIRD ARM FIRST, as ComposerNote's. It says what the WINDOW has, which is no path to
+  // show, and nothing about the session: a first run with a credential is connected and waiting
+  // to be let into a group (LiveMesh's Waiting step), so "no session" would be false there.
+  if (noSession) return L"RELAY PATH: NOTHING TO SHOW YET";
   return mode == RunMode::Live ? L"LIVE SESSION: RELAY PATH" : L"DEMO MODEL: RELAY PATH";
 }
 
@@ -265,14 +268,14 @@ std::wstring RelayDrawerName(RunMode mode, bool noSession) {
   // "preview" drops in live mode and nothing replaces it: the three nodes there are the platform
   // url the library actually dialled and the message server's own client_id (Live/LiveWorld.cpp),
   // so the drawer is showing a path rather than previewing what one would look like.
-  if (noSession) return L"No session yet: relay path";
+  if (noSession) return L"Relay path: nothing to show yet";
   return mode == RunMode::Live ? L"Live session: relay path" : L"Demo model: relay path preview";
 }
 
 std::wstring ServerKeyStateName(bool keyVerified, RunMode mode, bool noSession) {
-  // NO SESSION: there is no session whose key could be named, so the padlock says that and
-  // reports no result - the house placeholder, behind the third arm's own prefix.
-  if (noSession) return L"No session yet: server key unavailable";
+  // THE EMPTY WORLD: the window has no result to name, so the padlock says the house placeholder
+  // and nothing about a session (a waiting first run is connected).
+  if (noSession) return L"Server key: unavailable";
   // LIVE: the true bit is the PIN (ledger 268) - the URnetwork and direct routes refuse any
   // endpoint key but the compiled-in one - and the false bit is the platform route, which pins
   // nothing, so "not verified" would report the RESULT of a check that never ran. "pinning
@@ -306,32 +309,33 @@ std::wstring RosterNote(RunMode mode) {
 }
 
 std::wstring DisclosureCaption(RunMode mode, bool noSession) {
-  if (noSession) return L"NO GROUP YET";
+  if (noSession) return L"THIS APP";
   return mode == RunMode::Live ? L"LIVE SESSION" : L"THIS DEMO";
 }
 
 std::wstring DisclosureTitle(RunMode mode, bool noSession) {
-  // The absence list below is about the APP, so with no session the title names the app.
+  // The absence list below is about the APP, so over the empty world the title names the app.
   if (noSession) return L"What this app does not do";
   return mode == RunMode::Live ? L"What this live session does not do"
                                : L"What this demo does not do";
 }
 
 std::wstring DisclosureBody(RunMode mode, bool noSession) {
-  // THE THIRD ARM: a launch that is not fabricated, before its live world lands. The live
-  // paragraph's opening is false there - no message is on these screens and none was fetched for
-  // them - so this one says so, then says what the live one says about a group IN THE CONDITIONAL,
-  // then carries the live absence list WORD FOR WORD (the no-session clause of
-  // RunModeCopyDiagnostics holds the two lists equal), so a reader learns the same limits before
-  // the first group as after it. It names neither mode: there is no demo, and no session yet.
+  // THE THIRD ARM: the EMPTY WORLD - a launch that is not fabricated before its live world lands,
+  // or a live world with no group in it (SettingsView passes both). The live paragraph's opening
+  // is false there - no message is on these screens - so this one says so, then says what the live
+  // one says about a group IN THE CONDITIONAL, then carries the live absence list WORD FOR WORD
+  // (RunModeCopyDiagnostics holds the two lists equal). It says "on these screens", and never "no
+  // group": a device whose group is on its disk but did not open still holds one (R25 Q4). And it
+  // does not repeat the live paragraph's "every field ... reads unavailable", which the same page
+  // contradicts over the empty world (Linked devices 0, a blank server). It names neither mode.
   if (noSession) {
-    return L"No group yet \u2014 no group is on these screens yet, so no message is either. In a "
-           L"group, the messages here are records this device fetches from the message server "
-           L"and opens under MLS, a message you write is sealed on this device and submitted to "
-           L"the group, and the members list and each member's role are the group's own. What "
-           L"is NOT here: delivery and read receipts, contact discovery and the names behind "
-           L"members, group names, attachments, and any per-message attestation check. Every "
-           L"field this build has no source for reads \"unavailable\" rather than a guess.";
+    return L"No group is on these screens yet, so no message is either. In a group, the messages "
+           L"here are records this device fetches from the message server and opens under MLS, a "
+           L"message you write is sealed on this device and submitted to the group, and the "
+           L"members list and each member's role are the group's own. What is NOT here: delivery "
+           L"and read receipts, contact discovery and the names behind members, group names, "
+           L"attachments, and any per-message attestation check.";
   }
   // The fabricated paragraph is the one that shipped, with the mode prefix added so it is framed
   // the way every other string here is framed. Not one word of its content changed.
@@ -382,17 +386,20 @@ std::vector<std::wstring> RunModeCopyDiagnostics() {
       // fabricated string and they must still name their own modes.
       {L"composer (observer)", ComposerNote(RunMode::Fabricated, false),
        ComposerNote(RunMode::Live, false)},
-      {L"relay title", RelayPathGroupTitle(RunMode::Fabricated),
-       RelayPathGroupTitle(RunMode::Live)},
-      {L"drawer name", RelayDrawerName(RunMode::Fabricated), RelayDrawerName(RunMode::Live)},
-      {L"key name +", ServerKeyStateName(true, RunMode::Fabricated),
-       ServerKeyStateName(true, RunMode::Live)},
-      {L"key name -", ServerKeyStateName(false, RunMode::Fabricated),
-       ServerKeyStateName(false, RunMode::Live)},
-      {L"disclosure caption", DisclosureCaption(RunMode::Fabricated),
-       DisclosureCaption(RunMode::Live)},
-      {L"disclosure title", DisclosureTitle(RunMode::Fabricated), DisclosureTitle(RunMode::Live)},
-      {L"disclosure body", DisclosureBody(RunMode::Fabricated), DisclosureBody(RunMode::Live)},
+      {L"relay title", RelayPathGroupTitle(RunMode::Fabricated, false),
+       RelayPathGroupTitle(RunMode::Live, false)},
+      {L"drawer name", RelayDrawerName(RunMode::Fabricated, false),
+       RelayDrawerName(RunMode::Live, false)},
+      {L"key name +", ServerKeyStateName(true, RunMode::Fabricated, false),
+       ServerKeyStateName(true, RunMode::Live, false)},
+      {L"key name -", ServerKeyStateName(false, RunMode::Fabricated, false),
+       ServerKeyStateName(false, RunMode::Live, false)},
+      {L"disclosure caption", DisclosureCaption(RunMode::Fabricated, false),
+       DisclosureCaption(RunMode::Live, false)},
+      {L"disclosure title", DisclosureTitle(RunMode::Fabricated, false),
+       DisclosureTitle(RunMode::Live, false)},
+      {L"disclosure body", DisclosureBody(RunMode::Fabricated, false),
+       DisclosureBody(RunMode::Live, false)},
       {L"roster note", RosterNote(RunMode::Fabricated), RosterNote(RunMode::Live)},
   };
 
@@ -548,7 +555,7 @@ std::vector<std::wstring> RunModeCopyDiagnostics() {
   // AND, SINCE ITEM 242 R3, THE ROSTER: the list must not say the app lacks the member list or
   // the roles it now reads off the group. "names behind members" is allowed - it is the thing
   // that IS still absent - so the words gated are "member list" and "role", not "member".
-  const std::wstring absences = AbsenceList(DisclosureBody(RunMode::Live));
+  const std::wstring absences = AbsenceList(DisclosureBody(RunMode::Live, false));
   const bool absenceOk = !absences.empty() && !ContainsWord(absences, L"send") &&
                          !ContainsWord(absences, L"member list") &&
                          !ContainsWord(absences, L"role");
@@ -617,24 +624,28 @@ std::vector<std::wstring> RunModeCopyDiagnostics() {
       std::wstring fabricated, live, thirdLive, thirdFab;
     };
     const Third thirds[] = {
-        {L"relay title", RelayPathGroupTitle(RunMode::Fabricated),
-         RelayPathGroupTitle(RunMode::Live), RelayPathGroupTitle(RunMode::Live, true),
+        {L"relay title", RelayPathGroupTitle(RunMode::Fabricated, false),
+         RelayPathGroupTitle(RunMode::Live, false), RelayPathGroupTitle(RunMode::Live, true),
          RelayPathGroupTitle(RunMode::Fabricated, true)},
-        {L"drawer name", RelayDrawerName(RunMode::Fabricated), RelayDrawerName(RunMode::Live),
-         RelayDrawerName(RunMode::Live, true), RelayDrawerName(RunMode::Fabricated, true)},
-        {L"key name +", ServerKeyStateName(true, RunMode::Fabricated),
-         ServerKeyStateName(true, RunMode::Live), ServerKeyStateName(true, RunMode::Live, true),
+        {L"drawer name", RelayDrawerName(RunMode::Fabricated, false),
+         RelayDrawerName(RunMode::Live, false), RelayDrawerName(RunMode::Live, true),
+         RelayDrawerName(RunMode::Fabricated, true)},
+        {L"key name +", ServerKeyStateName(true, RunMode::Fabricated, false),
+         ServerKeyStateName(true, RunMode::Live, false), ServerKeyStateName(true, RunMode::Live, true),
          ServerKeyStateName(true, RunMode::Fabricated, true)},
-        {L"key name -", ServerKeyStateName(false, RunMode::Fabricated),
-         ServerKeyStateName(false, RunMode::Live), ServerKeyStateName(false, RunMode::Live, true),
+        {L"key name -", ServerKeyStateName(false, RunMode::Fabricated, false),
+         ServerKeyStateName(false, RunMode::Live, false),
+         ServerKeyStateName(false, RunMode::Live, true),
          ServerKeyStateName(false, RunMode::Fabricated, true)},
-        {L"disclosure caption", DisclosureCaption(RunMode::Fabricated),
-         DisclosureCaption(RunMode::Live), DisclosureCaption(RunMode::Live, true),
+        {L"disclosure caption", DisclosureCaption(RunMode::Fabricated, false),
+         DisclosureCaption(RunMode::Live, false), DisclosureCaption(RunMode::Live, true),
          DisclosureCaption(RunMode::Fabricated, true)},
-        {L"disclosure title", DisclosureTitle(RunMode::Fabricated), DisclosureTitle(RunMode::Live),
-         DisclosureTitle(RunMode::Live, true), DisclosureTitle(RunMode::Fabricated, true)},
-        {L"disclosure body", DisclosureBody(RunMode::Fabricated), DisclosureBody(RunMode::Live),
-         DisclosureBody(RunMode::Live, true), DisclosureBody(RunMode::Fabricated, true)},
+        {L"disclosure title", DisclosureTitle(RunMode::Fabricated, false),
+         DisclosureTitle(RunMode::Live, false), DisclosureTitle(RunMode::Live, true),
+         DisclosureTitle(RunMode::Fabricated, true)},
+        {L"disclosure body", DisclosureBody(RunMode::Fabricated, false),
+         DisclosureBody(RunMode::Live, false), DisclosureBody(RunMode::Live, true),
+         DisclosureBody(RunMode::Fabricated, true)},
     };
     size_t good = 0;
     std::wstring firstBad = L"(none)", printed;
@@ -643,7 +654,8 @@ std::vector<std::wstring> RunModeCopyDiagnostics() {
                       t.thirdLive != t.fabricated && t.thirdLive != t.live &&
                       !ContainsWord(t.thirdLive, L"demo") &&
                       !ContainsWord(t.thirdLive, L"live session") &&
-                      ContainsWord(t.fabricated, L"demo") && ContainsWord(t.live, L"live");
+                      ContainsWord(t.fabricated, L"demo") &&
+                      ContainsWord(t.live, L"live session");
       if (ok)
         ++good;
       else if (firstBad == L"(none)")
@@ -651,7 +663,7 @@ std::vector<std::wstring> RunModeCopyDiagnostics() {
       if (!printed.empty()) printed += L" | ";
       printed += std::wstring(t.what) + L" \"" + AsciiOnly(t.thirdLive) + L"\"";
     }
-    const std::wstring liveAbsences = AbsenceList(DisclosureBody(RunMode::Live));
+    const std::wstring liveAbsences = AbsenceList(DisclosureBody(RunMode::Live, false));
     const std::wstring thirdAbsences = AbsenceList(DisclosureBody(RunMode::Live, true));
     const bool absencesKept = !liveAbsences.empty() && thirdAbsences == liveAbsences;
     const bool ok = good == std::size(thirds) && absencesKept;
@@ -661,7 +673,7 @@ std::vector<std::wstring> RunModeCopyDiagnostics() {
         L"keeps the live absence list word for word: {}; the empty world draws: {}   [query: for "
         L"each function with a noSession arm, f(Live, true) == f(Fabricated, true), it differs "
         L"from f(Fabricated) and f(Live), contains neither \"demo\" nor \"live session\" "
-        L"(case-insensitive), f(Fabricated) contains \"demo\" and f(Live) \"live\"; "
+        L"(case-insensitive), f(Fabricated) contains \"demo\" and f(Live) \"live session\"; "
         L"AbsenceList(body(Live, true)) == AbsenceList(body(Live))]",
         ok ? L"PASS" : L"FAIL", good, std::size(thirds), firstBad, absencesKept ? L"yes" : L"NO",
         printed));

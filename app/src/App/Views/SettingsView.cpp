@@ -110,6 +110,11 @@ SettingsView MakeSettings(urmsg::demo::World const& world,
   // too (RunMode.h, "which arm a string takes").
   const urmsg::RunMode mode = urmsg::DrawnRunMode();
   const bool noSession = urmsg::DrawnNoSession();
+  // THE DISCLOSURE'S THIRD ARM IS FOR EVERY EMPTY WORLD: before a live world lands, and also a
+  // live world with no conversation in it - a device that left its group (ledger 273), where the
+  // latch stays Live and the live paragraph's "the messages on these screens are real" would
+  // stand over an empty list. The composer keys the same fact on the same emptiness.
+  const bool emptyWorld = noSession || world.conversations.empty();
 
   // SettingsHost (MainWindow.xaml:284) is a bare UrPaneStyle Grid — no pane
   // header strip and no scroller, the same shape NetworkHost is — so the page
@@ -323,12 +328,12 @@ SettingsView MakeSettings(urmsg::demo::World const& world,
   // Design §2's hard constraint, IN the product — cheaper than hoping a
   // presenter says it. A click that opens a panel THIS FILE owns, so it cannot
   // become a dead affordance if another surface slips.
-  AppendCaption(column, winrt::hstring{urmsg::DisclosureCaption(mode, noSession)}, {},
+  AppendCaption(column, winrt::hstring{urmsg::DisclosureCaption(mode, emptyWorld)}, {},
                 /*first=*/false);
   {
     auto card = kit::MakePaneCard();
     auto row = kit::MakePaneTwoLineRowButton(
-        winrt::hstring{urmsg::DisclosureTitle(mode, noSession)},
+        winrt::hstring{urmsg::DisclosureTitle(mode, emptyWorld)},
         L"Read this before drawing a conclusion from any screen.", kRowHeight);
     // The ON-CARD button variant: UrPaneRowButtonStyle's hover fill IS the
     // card token, so on a card it would paint nothing (the same reason
@@ -351,7 +356,7 @@ SettingsView MakeSettings(urmsg::demo::World const& world,
     // shape — what is real, then the complete list of what is absent, then how the
     // absences are drawn — because that shape is what makes a disclosure checkable
     // against the app rather than merely reassuring.
-    body.Text(winrt::hstring{urmsg::DisclosureBody(mode, noSession)});
+    body.Text(winrt::hstring{urmsg::DisclosureBody(mode, emptyWorld)});
     panel.Child(body);
 
     // The row's bottom hairline follows the panel's visibility: open, it

@@ -3767,8 +3767,6 @@ std::vector<std::wstring> CollectDiagnostics() {
       d.push_back({L"developer", urmsg::views::DeveloperStateCaption(fabricatedLaunch)});
       if (urmsg::views::DeveloperShowsDemoSections(fabricatedLaunch))
         d.push_back({L"developer", urmsg::WorldDumpFramingLine(mode)});
-      // the title-bar chip (collapsed on a plain launch until a live world lands)
-      d.push_back({L"chip", urmsg::ModeChipText(mode)});
       return d;
     };
     auto lowerHas = [](std::wstring const& text, std::wstring_view needle) {
@@ -3804,19 +3802,27 @@ std::vector<std::wstring> CollectDiagnostics() {
     for (auto const& s : fabricated) controlNamed += lowerHas(s.text, L"demo") ? 1 : 0;
     const bool developerOff = !urmsg::views::DeveloperShowsDemoSections(false) &&
                               urmsg::views::DeveloperShowsDemoSections(true);
+    // THE CHIP IS NOT A STRING THE WALK MAY READ: over the empty world neither of its words is
+    // true, so the rule is that it is not shown there at all (RunMode.h's
+    // ModeChipShownBeforeLiveWorld), and the control is a fabricated launch, where it is.
+    const bool chipHidden = !urmsg::ModeChipShownBeforeLiveWorld(false, true) &&
+                            urmsg::ModeChipShownBeforeLiveWorld(true, true) &&
+                            !urmsg::ModeChipShownBeforeLiveWorld(true, false);
     const bool ok = !plain.empty() && plainBad == 0 && controlNamed == fabricated.size() &&
-                    developerOff;
+                    developerOff && chipHidden;
     lines.push_back(std::format(
         L"  plain launch     : {}  a plain launch, no live world yet: {} strings on its pages "
         L"name no demo and claim no live session (first bad: {}); the Developer page builds the "
-        L"demo's sections in a fabricated launch only: {}; control, a fabricated launch: {}/{} "
-        L"name the demo; drawn: {}   [query: every page a plain launch can show (the strip, the "
-        L"relay drawer, chats, settings, network, developer, the chip; the rail needs a "
-        L"conversation) and each string on it whose wording depends on the mode, through "
-        L"DrawnRunModeFor and NoSessionFor over (launch, no live world); none may contain "
-        L"\"demo\" or \"live session\", case-insensitive]",
+        L"demo's sections in a fabricated launch only: {}; the title-bar chip is not shown before "
+        L"a live world lands, but in a fabricated launch it is: {}; control, a fabricated launch: "
+        L"{}/{} name the demo; drawn: {}   [query: every page a plain launch can show (the strip, "
+        L"the relay drawer, chats, settings, network, developer; the rail needs a conversation) "
+        L"and each string on it whose wording depends on the mode, through DrawnRunModeFor and "
+        L"NoSessionFor over (launch, no live world); none may contain \"demo\" or \"live "
+        L"session\", case-insensitive; the chip by ModeChipShownBeforeLiveWorld]",
         ok ? L"PASS" : L"FAIL", plain.size() - plainBad, firstBad,
-        developerOff ? L"yes" : L"NO", controlNamed, fabricated.size(), printed));
+        developerOff ? L"yes" : L"NO", chipHidden ? L"yes" : L"NO", controlNamed,
+        fabricated.size(), printed));
   }
   // The reply and reaction affordances: their names in both arms, the picker against the ABI's
   // rule, the chip words, and the live mapping over an adversarial group. Beside the copy gate

@@ -665,8 +665,12 @@ StatusStripView MakeStatusStrip(urmsg::demo::World const& world) {
   // positive claim in the app, and the strip is the worst place to add a
   // second one (d5 §4.1). The framed automation NAME carries the meaning;
   // the colour is the redundant channel.
-  lock.Foreground(world.server.keyVerified ? urnw::colors::MutedBrush()
-                                           : urnw::colors::DangerBrush());
+  //
+  // AND MUTED OVER THE EMPTY WORLD, where the name below says the house placeholder: red there
+  // would report a failed check that never ran (the Network page's key row made the same change).
+  lock.Foreground(world.server.keyVerified || urmsg::DrawnNoSession()
+                      ? urnw::colors::MutedBrush()
+                      : urnw::colors::DangerBrush());
   // UrRowIconStyle marks its glyph Raw, because a leading mark normally sits
   // beside a label that already says the same word. This one does not: it is
   // the ONLY statement of key verification anywhere on the strip, so it is

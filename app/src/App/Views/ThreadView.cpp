@@ -2137,10 +2137,15 @@ FrameworkElement MakeComposer(std::shared_ptr<ThreadParts> const& parts) {
     g.Glyph(L"\uE916");  // Segoe Fluent "Timer"
     g.FontSize(14);
     chip.Children().Append(g);
-    TextBlock t;
-    t.Text(L"24h");
-    t.FontSize(12);
-    chip.Children().Append(t);
+    // THE VALUE ONLY IN A FABRICATED LAUNCH (fix/plain-launch-run-mode): "24h" is the fixture's
+    // setting, and no conversation of a plain launch has a timer this build can read. The glyph
+    // alone stays, disabled, as the control that is not there yet.
+    if (urmsg::FabricatedLaunch()) {
+      TextBlock t;
+      t.Text(L"24h");
+      t.FontSize(12);
+      chip.Children().Append(t);
+    }
     timer.Content(chip);
   }
   // design d2 §3 (its optional seating): cardHover fill, so the chip reads as
@@ -2155,7 +2160,9 @@ FrameworkElement MakeComposer(std::shared_ptr<ThreadParts> const& parts) {
   timer.MinWidth(0);
   timer.IsEnabled(false);
   Automation::AutomationProperties::SetName(
-      timer, L"Disappearing messages: 24 hours (not available in this build)");
+      timer, urmsg::FabricatedLaunch()
+                 ? L"Disappearing messages: 24 hours (not available in this build)"
+                 : L"Disappearing messages: not available in this build");
   Grid::SetColumn(timer, 2);
   row.Children().Append(timer);
 
@@ -2337,11 +2344,13 @@ FrameworkElement MakeComposer(std::shared_ptr<ThreadParts> const& parts) {
   // InspectRailView.cpp). It costs nothing: the composer bar is Auto-height.
   TextBlock note;
   // The START POSE only. UpdateComposerSend is the one writer from here on, and it runs at the
-  // bottom of this function; parts->noteMode carries the mode it writes for. DrawnRunMode(), not
-  // ActiveRunMode(): the launch decides the arm as well as the latch (RunMode.h). Over a plain
-  // launch's empty world the no-session arm wins anyway (SetThreadNoSession), and this keeps the
-  // demo's arm out of reach there even if that bit were ever missed.
+  // bottom of this function; parts->noteMode carries the mode it writes for. DrawnRunMode() and
+  // DrawnNoSession(), not ActiveRunMode(): the launch decides the arm as well as the latch
+  // (RunMode.h). The window sets the no-session bit again (SetThreadNoSession) on the beats it
+  // knows more; seeding it here means the first paint over a plain launch's empty world is
+  // already the no-session sentence, and never the live arm's "these messages are real".
   parts->noteMode = urmsg::DrawnRunMode();
+  parts->noteNoSession = urmsg::DrawnNoSession();
   note.Text(winrt::hstring{
       urmsg::ComposerNote(parts->noteMode, parts->mayRoleSend, parts->noteNoSession)});
   note.TextWrapping(TextWrapping::Wrap);

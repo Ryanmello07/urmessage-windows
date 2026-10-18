@@ -675,10 +675,10 @@ std::vector<std::wstring> CollectNetworkDiagnostics() {
   // is the false denial, and the drawer's "preview" was wrong on top of it. The
   // fourth clause is the disjointness: the fabricated strings must not be the
   // live ones.
-  const std::wstring relayTitle{urmsg::RelayPathGroupTitle(urmsg::RunMode::Fabricated)};
-  const std::wstring drawerName{urmsg::RelayDrawerName(urmsg::RunMode::Fabricated)};
-  const std::wstring relayTitleLive{urmsg::RelayPathGroupTitle(urmsg::RunMode::Live)};
-  const std::wstring drawerNameLive{urmsg::RelayDrawerName(urmsg::RunMode::Live)};
+  const std::wstring relayTitle{urmsg::RelayPathGroupTitle(urmsg::RunMode::Fabricated, false)};
+  const std::wstring drawerName{urmsg::RelayDrawerName(urmsg::RunMode::Fabricated, false)};
+  const std::wstring relayTitleLive{urmsg::RelayPathGroupTitle(urmsg::RunMode::Live, false)};
+  const std::wstring drawerNameLive{urmsg::RelayDrawerName(urmsg::RunMode::Live, false)};
   const bool framingOk = StartsWithDemoModel(relayTitle) && StartsWithDemoModel(drawerName) &&
                          StartsWithLiveSession(relayTitleLive) &&
                          StartsWithLiveSession(drawerNameLive) && relayTitle != relayTitleLive &&
