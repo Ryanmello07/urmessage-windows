@@ -1,0 +1,38 @@
+URmessage identity preview (slice 0)
+
+These are the screens, with made-up data; nothing is encrypted in this build.
+
+WHAT THIS IS
+A first look at the screens of identity phase 1, before any of them works:
+  - Set up this device, with a code or "This is my first device"
+  - the 25 words, then typing them back
+  - Settings > Account: Your ID, and Devices
+  - Add a device, with the seven emoji on both computers' screens
+  - the five endings of adding a device
+  - the Remove dialog, and the screen a removed device shows
+  - a notice, and the alarm
+  - Change my recovery phrase
+
+Every account, device, ID, code, emoji, date and word in it is made up, and each screen says
+so. The 25 words are a fixed demo list, labelled "Demo words: not a recovery phrase": they are
+not a recovery phrase of any account.
+
+This build has no live mode. It never connects to anything and never reads a credential, and
+the library that encrypts (URnetworkSdk.dll) is not in this zip.
+
+HOW TO RUN IT
+1. Unzip this folder anywhere.
+2. Run URmessage.exe. It opens on "Set up this device".
+3. Click through. "This is my first device" shows the 25 words, then asks for them back
+   ("Demo only: fill in the demo words" types them for you). Settings > Account has Your ID,
+   Devices, Add a device and Change my recovery phrase; under "DEMO ONLY: MORE SCREENS" it
+   opens every other screen.
+
+The screens that show or take the words are excluded from screen capture, so a screenshot of
+them comes out black. That is on purpose. If Windows will not keep the window out of screen
+captures, those screens show a line that says so instead of the words.
+
+It keeps its own settings and log in %LOCALAPPDATA%\URmessage-identity-preview, apart from
+the URmessage you test with, and it runs beside it. To remove it, delete this folder and that
+one, and, if you like, the registry key HKCU\Software\URmessage-identity-preview, which
+holds its window position.
