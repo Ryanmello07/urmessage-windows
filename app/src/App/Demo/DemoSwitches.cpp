@@ -19,7 +19,7 @@ namespace {
 
 constexpr DemoOptions kDefaults{false, DemoScreen::None, false, false, true, 0,
                                 DemoComposer::AsIs, DemoNames::None, false,
-                                identity::Screen::None};
+                                identity::Screen::None, false};
 
 // The ceiling for --demo-stress=N. The switch exists to find the thread's
 // knee, and 20000 rows (~200x the fixture's longest conversation) is far
@@ -119,6 +119,13 @@ constexpr void ApplyArg(DemoOptions& o, std::wstring_view arg) {
   if (body == L"demo-names=dialog") {
     o.enabled = true;
     o.names = DemoNames::Dialog;
+    return;
+  }
+  // --demo-capture=refused (Task 6): the window's ask for capture exclusion fails, so its refusal
+  // can be captured. Exactly this spelling; anything else is not a demo switch.
+  if (body == L"demo-capture=refused") {
+    o.enabled = true;
+    o.captureRefused = true;
     return;
   }
   // --demo-identity=<screen> (Task 6). An unknown screen is NOT a demo switch: the --demo=nope
@@ -316,6 +323,21 @@ static_assert(!ParseArgs({L"--demo-identity=words"}).autoplay);
 static_assert(!ParseArgs({L"--demo-identity=words"}).advanced);
 static_assert(ParseArgs({L"--demo-identity=words"}).composer == DemoComposer::AsIs);
 static_assert(ParseArgs({L"--demo=settings"}).identityScreen == identity::Screen::None);
+// --demo-capture=refused: it sets its own field and enables the demo, nothing else does either,
+// and a near spelling is not a switch.
+static_assert(!ParseArgs({}).captureRefused);
+static_assert(!ParseArgs({L"--demo"}).captureRefused);
+static_assert(!ParseArgs({L"--demo-identity=words"}).captureRefused);
+static_assert(ParseArgs({L"--demo-capture=refused"}).captureRefused);
+static_assert(ParseArgs({L"--demo-capture=refused"}).enabled);
+static_assert(ParseArgs({L"--demo-capture=refused"}).identityScreen == identity::Screen::None);
+static_assert(ParseArgs({L"--demo-capture=refused"}).watermark);
+static_assert(ParseArgs({L"--demo-identity=words", L"--demo-capture=refused"}).identityScreen ==
+              identity::Screen::Words);
+static_assert(ParseArgs({L"--demo-identity=words", L"--demo-capture=refused"}).captureRefused);
+static_assert(!ParseArgs({L"--demo-capture=held"}).captureRefused);
+static_assert(!ParseArgs({L"--demo-capture=held"}).enabled);
+static_assert(!ParseArgs({L"--demo-capture="}).enabled);
 // every name in the table opens its own screen, and only it
 static_assert([] {
   for (auto const& n : identity::kScreenNames)

@@ -471,6 +471,12 @@ IdentityScreenView MakeIdentityScreen(id::ScreenModel const& model,
 }
 
 bool CheckIdentityWords(IdentityScreenView const& view, urmsg::RunMode mode) {
+  // NOTHING TO CHECK IS NOT A MATCH (id::WordsAccepted): a Check a click queued can land after a
+  // Cancel or a Close has emptied this view, and FirstWrongWord over no fields answers -1.
+  if (view.wordFields.empty()) {
+    urnw::LogInfo("identity: the typed-back check found no word fields on screen; nothing opens");
+    return id::WordsAccepted(0, -1);
+  }
   std::vector<std::wstring> typed;
   for (auto const& field : view.wordFields) typed.emplace_back(field.Text());
   const int wrong = id::FirstWrongWord(typed, view.expectedWords);
@@ -501,7 +507,7 @@ bool CheckIdentityWords(IdentityScreenView const& view, urmsg::RunMode mode) {
   // and has a different audience from a screen.
   urnw::LogInfo("identity: the typed-back check answered {}",
                 wrong < 0 ? std::string("all match") : "word " + std::to_string(wrong + 1));
-  return wrong < 0;
+  return id::WordsAccepted(view.wordFields.size(), wrong);
 }
 
 void FillIdentityWords(IdentityScreenView const& view) {

@@ -33,9 +33,12 @@ namespace urnw::ids {
 // THE IDENTITY PREVIEW BUILD (identity phase 1, Task 6: /p:UrmIdentityPreview=true, which
 // Directory.Build.props turns into URM_IDENTITY_PREVIEW=1 for every project) KEEPS OUT OF THE REAL
 // APP'S WAY. It gets its own single-instance key, so a running URmessage does not swallow its launch
-// (or it the other's); its own folder, so its prefs - Advanced Mode, the route switch - and its log
-// never touch the real app's; and its own window-placement key and user model id. Its values are
-// none of the VPN app's either.
+// (or it the other's); its own folder and its own override variable, so its prefs - Advanced Mode,
+// the route switch - and its log never touch the real app's, with or without URMESSAGE_APP_ROOT;
+// and its own window-placement key and user model id. Its values are none of the VPN app's either.
+// Common/Paths.cpp's CommonBuiltAsIdentityPreview answers which arm Common itself was compiled with,
+// so --diagnose can hold Common to App (these constants are inline, so a mismatch would be an ODR
+// violation that a check reading this header from both sides could not see).
 //
 // app\tools\verify-msi-payload.ps1 reads kAppUserModelId out of this file and holds the MSI's
 // shortcut to it. It evaluates these conditions with URM_IDENTITY_PREVIEW undefined, as the standard
@@ -87,12 +90,18 @@ inline constexpr wchar_t kUriScheme[] = L"urmessage";
 // overrides it per worktree. Named here rather than buried in Paths.cpp so the
 // "does this collide with the VPN app" question has exactly one file to read.
 // VPN app: L"URnetwork" / L"URNETWORK_APP_ROOT".
+//
+// The identity preview has a variable of its own as well as a folder: every
+// agent worktree and every CI job sets URMESSAGE_APP_ROOT, and with one name
+// for both builds such a run put the preview's prefs and log in the real app's
+// root. The preview never reads URMESSAGE_APP_ROOT.
 #if !(defined(URM_IDENTITY_PREVIEW) && URM_IDENTITY_PREVIEW)
 inline constexpr wchar_t kStorageFolderName[] = L"URmessage";
+inline constexpr wchar_t kAppRootEnvVar[] = L"URMESSAGE_APP_ROOT";
 #else
 inline constexpr wchar_t kStorageFolderName[] = L"URmessage-identity-preview";
+inline constexpr wchar_t kAppRootEnvVar[] = L"URMESSAGE_IDENTITY_PREVIEW_APP_ROOT";
 #endif
-inline constexpr wchar_t kAppRootEnvVar[] = L"URMESSAGE_APP_ROOT";
 
 // HKCU subkey the window-placement blob lives under (WindowShell.cpp).
 // VPN app: L"Software\\URnetwork\\Window". Left shared, the two apps would

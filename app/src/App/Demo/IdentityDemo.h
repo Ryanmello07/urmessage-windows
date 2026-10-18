@@ -8,6 +8,8 @@
 //
 // WHAT IT IS NOT. A live screen. In this build no identity screen is built in live mode at all:
 // BuildScreen answers an empty model there, and Settings keeps its inert ACCOUNT group in live mode.
+// A launch that is not a fabricated one asks for live mode here even before a live world lands
+// (IdentityMode below), so a plain launch never draws these screens over its empty world.
 // The live screens are Tasks 16, 28, 38 and 45, over the library's identity; the copy SCOPE gives
 // them is in RunMode.h as the live arms of the identity pairs, so the two arms are held apart from
 // the first commit that has either.
@@ -35,7 +37,9 @@
 // window (measured on windows-2022 and windows-2025, ci/i1-affinity-probe run 38894632625: 100% of
 // pixels exactly black, one colour, against 2.8% without it). `excludedFromCapture` below is the
 // screen's declared policy; --diagnose holds it to the blocks (every screen with a words or a word
-// fields block, and no other), and the shots hold the WINDOW to it.
+// fields block, and no other), and the shots hold the WINDOW to it. The window asks BEFORE it draws
+// such a screen and draws CaptureRefusal's model instead when the answer is no; it gives the
+// exclusion back only after frames without the words have been drawn.
 //
 // PURE C++, NO winrt, NO XAML, and App.vcxproj compiles IdentityDemo.cpp with
 // PrecompiledHeader=NotUsing: CollectDiagnostics runs IdentityDemoDiagnostics before
@@ -150,14 +154,29 @@ constexpr Screen ScreenFromName(std::wstring_view name) {
   return Screen::None;
 }
 
-// THE IDENTITY PREVIEW BUILD (Task 6's zip): App.vcxproj defines URM_IDENTITY_PREVIEW=1 when it
-// is built with /p:UrmIdentityPreview=true. In that build a plain launch opens the fabricated world
-// on "Set up this device" (DemoSwitches.cpp), and nothing is ever live (LiveMesh.cpp's IsEnabled).
+// THE IDENTITY PREVIEW BUILD (Task 6's zip): Directory.Build.props defines URM_IDENTITY_PREVIEW=1
+// for every project when the build is given /p:UrmIdentityPreview=true. In that build a plain
+// launch opens the fabricated world on "Set up this device" (DemoSwitches.cpp), and nothing is ever
+// live (LiveMesh.cpp's IsEnabled).
 #if defined(URM_IDENTITY_PREVIEW) && URM_IDENTITY_PREVIEW
 inline constexpr bool kIdentityPreviewBuild = true;
 #else
 inline constexpr bool kIdentityPreviewBuild = false;
 #endif
+
+// WHICH MODE THE IDENTITY SCREENS ARE BUILT IN, AND IT IS NOT ActiveRunMode() ALONE. That latch
+// says Fabricated until a live world lands (RunMode.h), and a plain launch of the standard build is
+// live: it draws the EMPTY world while the mesh dials, and for the whole session when it never
+// answers (no credential, no join code, offline). Read alone, the latch would put the made-up
+// account and every made-up screen over that empty world. So the fabricated screens need both a
+// FABRICATED LAUNCH (--demo, any --demo-* switch, or the preview build's plain launch: the window's
+// DemoOptions::enabled) and a latch that has not flipped. Anything else asks for the live screens,
+// which this build does not have (Tasks 16, 28, 38 and 45): BuildScreen and BuildAccount build
+// nothing. MainWindow::IdentityRunMode is the window's one caller; --diagnose's identity live line
+// reads every pair.
+constexpr RunMode IdentityMode(bool fabricatedLaunch, RunMode drawn) {
+  return fabricatedLaunch && drawn == RunMode::Fabricated ? RunMode::Fabricated : RunMode::Live;
+}
 
 enum class TextKind { Fact, Chrome, DemoOnly };
 enum class TextStyle { Body, Strong, Muted, Error };
@@ -329,11 +348,27 @@ inline ScreenModel BuildScreen(Screen s, RunMode mode) {
   return BuildScreen(s, mode, PresetSelection(s));
 }
 
+// THE REFUSAL: PROPERTY 2 FAILS CLOSED. What the window draws in place of a screen that shows or
+// takes the words when it cannot be kept out of captures (SetWindowDisplayAffinity said no, or the
+// affinity it reads back is not one that blacks a capture out): the screen's banner and its first
+// title, one sentence that says why, and Close. No words, no fields and nothing to check, so
+// nothing on it needs the exclusion. --diagnose's identity capture line builds it for every such
+// screen and every such Remove selection.
+inline constexpr wchar_t kCaptureRefusedLine[] =
+    L"This window could not be kept out of screen captures, so the words are not shown.";
+ScreenModel CaptureRefusal(ScreenModel const& screen);
+
 // THE CHECK OF THE TYPED-BACK WORDS (SCOPE A1: a wrong word is named, and nothing is guessed). The
 // 0-based index of the first field that is not its word, or -1 when every one matches. Spaces
 // around a word and letter case are not errors; nothing else is forgiven, and no word is ever
 // suggested.
 int FirstWrongWord(std::vector<std::wstring> const& typed, std::vector<std::wstring> const& expected);
+
+// The check's verdict: every word right, AND there were words to check. Zero fields is not 25 right
+// ones: a Check that a click queued lands a beat later (MainWindow::QueueIdentityAction), after a
+// Cancel or a Close has emptied the view, and FirstWrongWord over no fields answers -1, which
+// would open the next screen.
+constexpr bool WordsAccepted(size_t fields, int firstWrong) { return fields > 0 && firstWrong < 0; }
 
 // The sentence the word fields show for the answer above.
 std::wstring WordCheckLine(RunMode mode, int firstWrong, bool empty);

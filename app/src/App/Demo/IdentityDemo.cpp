@@ -963,6 +963,29 @@ ScreenModel BuildScreen(Screen s, RunMode mode, Selection const& sel) {
   return m;
 }
 
+// ---- the refusal ------------------------------------------------------------------------------
+
+ScreenModel CaptureRefusal(ScreenModel const& screen) {
+  ScreenModel m;
+  m.screen = screen.screen;
+  m.built = screen.built;
+  m.dialog = screen.dialog;
+  // The banner and the first title only: every other block is left behind, the words, the word
+  // fields and the buttons that fill or check them with the rest.
+  bool titled = false;
+  for (Block const& b : screen.blocks) {
+    if (b.type == BlockType::Banner) m.blocks.push_back(b);
+    if (b.type == BlockType::Title && !titled) {
+      m.blocks.push_back(b);
+      titled = true;
+    }
+  }
+  m.blocks.push_back(TextBlock(kCaptureRefusedLine, TextKind::Chrome, TextStyle::Error));
+  m.blocks.push_back(ButtonsBlock({Act(Action::Close, L"Close", true)}));
+  m.excludedFromCapture = false;
+  return m;
+}
+
 // ---- the check --------------------------------------------------------------------------------
 
 int FirstWrongWord(std::vector<std::wstring> const& typed,
@@ -1128,9 +1151,43 @@ std::vector<std::wstring> IdentityDemoDiagnostics() {
   // 3. PROPERTY 2's POLICY. A screen is excluded from capture exactly when its model shows the
   // words or takes them, over every screen and every selection the Remove dialog can be given.
   // The WINDOW is held to this policy by the shots, which assert a black capture.
+  //
+  // AND IT FAILS CLOSED: for every model that asks for the exclusion, the refusal a window that
+  // cannot be kept out of captures draws in its place (CaptureRefusal) shows no words and takes
+  // none, asks for nothing, opens with the screen's banner, keeps its first title, says why, and
+  // offers Close and nothing else. The window's use of it is held by the shots'
+  // --demo-capture=refused leg.
   {
-    std::wstring excluded, notExcluded, firstWrong = L"(none)";
-    size_t nExcluded = 0, nNot = 0;
+    std::wstring excluded, notExcluded, firstWrong = L"(none)", refusalWrong = L"(none)";
+    size_t nExcluded = 0, nNot = 0, refusals = 0, refusalsRight = 0;
+    auto judgeRefusal = [&](ScreenModel const& m, std::wstring const& what) {
+      if (!m.excludedFromCapture) return;
+      ++refusals;
+      const ScreenModel r = CaptureRefusal(m);
+      std::wstring title;
+      for (Block const& b : m.blocks)
+        if (b.type == BlockType::Title && title.empty()) title = b.text;
+      bool titleKept = false, sentence = false, demoNamed = true;
+      size_t buttons = 0, closes = 0;
+      for (Block const& b : r.blocks) {
+        if (b.type == BlockType::Title && b.text == title) titleKept = true;
+        if (b.type == BlockType::Text && b.text == kCaptureRefusedLine) sentence = true;
+        for (Button const& x : b.buttons) {
+          ++buttons;
+          closes += x.action == Action::Close ? 1 : 0;
+        }
+      }
+      for (KindedString const& k : StringsOf(r))
+        if (k.kind != TextKind::Chrome && !NamesDemo(k.text)) demoNamed = false;
+      const bool bannerFirst = !r.blocks.empty() && r.blocks.front().type == BlockType::Banner;
+      const bool ok = r.built && !r.excludedFromCapture && !ShowsOrTakesWords(r) && bannerFirst &&
+                      titleKept && sentence && buttons == 1 && closes == 1 && demoNamed;
+      if (ok) {
+        ++refusalsRight;
+      } else if (refusalWrong == L"(none)") {
+        refusalWrong = what;
+      }
+    };
     for (int i = 1; i < static_cast<int>(Screen::kCount); ++i) {
       const Screen s = static_cast<Screen>(i);
       if (s == Screen::Account) continue;
@@ -1141,6 +1198,7 @@ std::vector<std::wstring> IdentityDemoDiagnostics() {
       if (!into.empty()) into += L", ";
       into += ScreenName(s);
       (m.excludedFromCapture ? nExcluded : nNot) += 1;
+      judgeRefusal(m, ScreenName(s));
     }
     size_t selections = 0;
     const unsigned all = f.devices.size() >= 32 ? 0u : (1u << f.devices.size());
@@ -1152,19 +1210,27 @@ std::vector<std::wstring> IdentityDemoDiagnostics() {
         sel.preset = false;
         const ScreenModel m = BuildScreen(Screen::Remove, RunMode::Fabricated, sel);
         ++selections;
+        const std::wstring what =
+            std::format(L"remove with selection {}{}", bits, only ? L" (only)" : L"");
         if (m.excludedFromCapture != ShowsOrTakesWords(m) && firstWrong == L"(none)")
-          firstWrong = std::format(L"remove with selection {}{}", bits, only ? L" (only)" : L"");
+          firstWrong = what;
+        judgeRefusal(m, what);
       }
     }
+    const bool ok = firstWrong == L"(none)" && nExcluded > 0 && refusalsRight == refusals;
     lines.push_back(std::format(
         L"  identity capture : {}  {} screens excluded from capture, exactly those whose model "
         L"shows or takes the words: {}; the other {} are not: {}; and the Remove dialog over all "
-        L"{} selections of the fixture's devices (first wrong: {})   [query: excludedFromCapture "
-        L"== (the model has a Words or a WordFields block), for every screen and selection. The "
-        L"window asks for WDA_EXCLUDEFROMCAPTURE exactly while such a screen is up, and the shots "
-        L"assert that its capture is black]",
-        firstWrong == L"(none)" && nExcluded > 0 ? L"PASS" : L"FAIL", nExcluded, excluded, nNot,
-        notExcluded, selections, firstWrong));
+        L"{} selections of the fixture's devices (first wrong: {}); the refusal drawn in place of "
+        L"each that asks, when the window cannot be kept out of captures: {}/{} show no words, "
+        L"take none, ask for nothing, keep the banner and the first title, say \"{}\" and offer "
+        L"Close alone (first wrong: {})   [query: excludedFromCapture == (the model has a Words or "
+        L"a WordFields block), for every screen and selection; CaptureRefusal of every model that "
+        L"asks. The window asks for WDA_EXCLUDEFROMCAPTURE before it draws such a screen and draws "
+        L"the refusal when it is not held; the shots assert that the capture is black, and the "
+        L"--demo-capture=refused leg that the refusal is drawn]",
+        ok ? L"PASS" : L"FAIL", nExcluded, excluded, nNot, notExcluded, selections, firstWrong,
+        refusalsRight, refusals, kCaptureRefusedLine, refusalWrong));
   }
 
   // 4. THE CHECK: a wrong word is named, and nothing is corrected (SCOPE A1).
@@ -1186,19 +1252,30 @@ std::vector<std::wstring> IdentityDemoDiagnostics() {
     typed[0] = L"lighthous";
     const int oneLetter = FirstWrongWord(typed, f.wordsSetUp);
     const std::wstring sentence = WordCheckLine(RunMode::Fabricated, typo, false);
+    // THE VERDICT, and no fields at all is not a match: FirstWrongWord over none answers -1, and a
+    // Check queued before a Cancel lands on a view with no fields (WordsAccepted says why).
+    const int none = FirstWrongWord({}, {});
+    const bool acceptsAll = WordsAccepted(f.wordsSetUp.size(), allRight);
+    const bool acceptsTypo = WordsAccepted(f.wordsSetUp.size(), typo);
+    const bool acceptsNone = WordsAccepted(0, none);
     const bool ok = allRight == -1 && typo == kWrongIndex && empty == 2 && short24 == 24 &&
                     spaced == -1 && oneLetter == 0 && NamesDemo(sentence) &&
                     sentence.find(L"word 7") != std::wstring::npos &&
-                    sentence.find(f.wordsSetUp[kWrongIndex]) == std::wstring::npos;
+                    sentence.find(f.wordsSetUp[kWrongIndex]) == std::wstring::npos && acceptsAll &&
+                    !acceptsTypo && !acceptsNone;
     lines.push_back(std::format(
         L"  identity check   : {}  a wrong word is named and nothing is corrected: 25 right -> {}; "
         L"\"{}\" at word 7 -> {}; word 3 empty -> {}; 24 of 25 -> {}; \"  Lighthouse \" at word 1 "
         L"-> {} (letter case and spaces are not errors); one letter short -> {}; the sentence: "
-        L"\"{}\", which names the word's place and never the word   [query: FirstWrongWord, the "
-        L"0-based index of the first field that is not its word, -1 when all match; the "
-        L"sentence must not contain the right word]",
+        L"\"{}\", which names the word's place and never the word; the verdict: 25 right -> {}, "
+        L"one wrong -> {}, no fields at all (FirstWrongWord answers {}) -> {}   [query: "
+        L"FirstWrongWord, the 0-based index of the first field that is not its word, -1 when all "
+        L"match; the sentence must not contain the right word; WordsAccepted opens the next "
+        L"screen only over fields that were there]",
         ok ? L"PASS" : L"FAIL", allRight, kWrongWord, typo, empty, short24, spaced, oneLetter,
-        AsciiOnly(sentence)));
+        AsciiOnly(sentence), acceptsAll ? L"accepted" : L"NOT accepted",
+        acceptsTypo ? L"ACCEPTED" : L"not accepted", none,
+        acceptsNone ? L"ACCEPTED" : L"not accepted"));
   }
 
   // 5. THE PHRASE FIELD'S RULE, over every selection of the fixture's devices.
@@ -1268,27 +1345,49 @@ std::vector<std::wstring> IdentityDemoDiagnostics() {
         phrase, f.code.size(), f.emoji.size()));
   }
 
-  // 7. LIVE MODE BUILDS NOTHING. Until the live screens exist, a live launch draws none of these.
+  // 7. LIVE MODE BUILDS NOTHING, AND NEITHER DOES A LAUNCH THAT IS NOT A FABRICATED ONE. Until the
+  // live screens exist, a live launch draws none of these, and that includes a plain launch whose
+  // mesh has not answered yet, or never will: ActiveRunMode() is still Fabricated there, and
+  // IdentityMode is what keeps the made-up account off its empty world.
   {
-    size_t liveBuilt = 0, asked = 0;
-    for (int i = 1; i < static_cast<int>(Screen::kCount); ++i) {
-      ++asked;
-      liveBuilt += BuildScreen(static_cast<Screen>(i), RunMode::Live).built ? 1 : 0;
-    }
+    const int count = static_cast<int>(Screen::kCount);
+    auto screensBuilt = [count](RunMode mode) {
+      size_t n = 0;
+      for (int i = 1; i < count; ++i) n += BuildScreen(static_cast<Screen>(i), mode).built ? 1 : 0;
+      return n;
+    };
+    const size_t asked = static_cast<size_t>(count - 1);
+    const size_t liveBuilt = screensBuilt(RunMode::Live);
     const bool accountLive = BuildAccount(RunMode::Live).built;
-    // the control: the same calls in fabricated mode build every screen, so a zero above is the
-    // mode's doing and not an empty table's
-    size_t fabricatedBuilt = 0;
-    for (int i = 1; i < static_cast<int>(Screen::kCount); ++i)
-      fabricatedBuilt += BuildScreen(static_cast<Screen>(i), RunMode::Fabricated).built ? 1 : 0;
-    const bool ok = liveBuilt == 0 && !accountLive && fabricatedBuilt + 1 == asked;
+    // the launches, as the window reads them (MainWindow::IdentityRunMode): a plain launch before
+    // any live world, the same after one, and --live --demo after one
+    const RunMode plain = IdentityMode(false, RunMode::Fabricated);
+    const RunMode plainLatched = IdentityMode(false, RunMode::Live);
+    const RunMode demoLatched = IdentityMode(true, RunMode::Live);
+    const size_t plainBuilt = screensBuilt(plain);
+    const bool accountPlain = BuildAccount(plain).built;
+    const size_t latchedBuilt = screensBuilt(plainLatched) + screensBuilt(demoLatched);
+    const bool accountLatched = BuildAccount(plainLatched).built || BuildAccount(demoLatched).built;
+    // the control: a fabricated launch before any live world (--demo) builds every overlay and the
+    // Account group, so the zeros above are the mode's doing and not an empty table's
+    const RunMode demo = IdentityMode(true, RunMode::Fabricated);
+    const size_t demoBuilt = screensBuilt(demo);
+    const bool accountDemo = BuildAccount(demo).built;
+    const bool ok = liveBuilt == 0 && !accountLive && plainBuilt == 0 && !accountPlain &&
+                    latchedBuilt == 0 && !accountLatched && demoBuilt + 1 == asked && accountDemo;
     lines.push_back(std::format(
         L"  identity live    : {}  identity screens built in live mode: {}/{}, and the Account "
-        L"group: {} (control: in fabricated mode {}/{} overlays are built, Account being Settings'); "
-        L"the live screens are Tasks 16, 28, 38 and 45, and a live launch keeps the inert ACCOUNT "
-        L"group",
+        L"group: {}; a plain launch (no --demo) whose mesh has not answered, ActiveRunMode() still "
+        L"Fabricated: {}/{}, and the Account group: {}; after a live world lands, plain or --live "
+        L"--demo: {} screens, and the Account group: {} (control: --demo, nothing latched, builds "
+        L"{}/{} overlays, Account being Settings', and the Account group: {}); the live screens "
+        L"are Tasks 16, 28, 38 and 45, and every launch but a fabricated one keeps the inert "
+        L"ACCOUNT group   [query: BuildScreen and BuildAccount in IdentityMode(fabricated launch, "
+        L"ActiveRunMode()) for each pair]",
         ok ? L"PASS" : L"FAIL", liveBuilt, asked, accountLive ? L"BUILT (wrong)" : L"not built",
-        fabricatedBuilt, asked - 1));
+        plainBuilt, asked, accountPlain ? L"BUILT (wrong)" : L"not built", latchedBuilt,
+        accountLatched ? L"BUILT (wrong)" : L"not built", demoBuilt, asked - 1,
+        accountDemo ? L"built" : L"NOT BUILT"));
   }
   return lines;
 }

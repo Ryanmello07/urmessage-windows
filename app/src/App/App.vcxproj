@@ -409,15 +409,33 @@
        $(OutDir), and the diagnose switch never loads the dll, so without this
        an install whose live path cannot load the SDK builds green.
        tools\verify-msi-payload.ps1 -Release catches it afterwards, on the
-       finished MSI. -->
+       finished MSI.
+
+       NOT IN THE IDENTITY PREVIEW (/p:UrmIdentityPreview=true, identity phase 1,
+       Task 6), which has no live mode: neither the copy nor the check runs there,
+       and UrmIdentityPreviewOutput below keeps the dll out of its output. -->
   <ItemGroup>
-    <CopyFileToFolders Include="$(UrmSdkBinDir)URnetworkSdk.dll" Condition="Exists('$(UrmSdkBinDir)URnetworkSdk.dll')">
+    <CopyFileToFolders Include="$(UrmSdkBinDir)URnetworkSdk.dll" Condition="Exists('$(UrmSdkBinDir)URnetworkSdk.dll') And '$(UrmIdentityPreview)'!='true'">
       <DestinationFolders>$(OutDir)</DestinationFolders>
     </CopyFileToFolders>
   </ItemGroup>
-  <Target Name="UrmCheckSdkDll" AfterTargets="Build" Condition="!Exists('$(UrmSdkBinDir)URnetworkSdk.dll')">
+  <Target Name="UrmCheckSdkDll" AfterTargets="Build" Condition="!Exists('$(UrmSdkBinDir)URnetworkSdk.dll') And '$(UrmIdentityPreview)'!='true'">
     <Warning Condition="'$(UrmRequireSdkDll)'!='true'" Text="URnetworkSdk.dll is not staged at $(UrmSdkBinDir): the app builds and runs, but its live path, which an ordinary launch takes, will report that it could not load the SDK. Build and stage it with app\tools\build-sdk-dll.ps1 -Stage, which builds it from the composition app\third_party\urnetwork-sdk\composition.txt pins, the one the three files in third_party\vendor-include came from." />
     <Error Condition="'$(UrmRequireSdkDll)'=='true'" Text="URnetworkSdk.dll is not staged at $(UrmSdkBinDir), and UrmRequireSdkDll=true says this build ships. Without it the app's live path, which an ordinary launch takes, cannot load the SDK. Build and stage it with app\tools\build-sdk-dll.ps1 -Stage (the x64 dll), from the composition app\third_party\urnetwork-sdk\composition.txt pins, the one the three files in third_party\vendor-include came from." />
+  </Target>
+
+  <!-- THE IDENTITY PREVIEW'S OUTPUT HOLDS NO SDK, AND SAYS WHAT IT IS (identity phase 1, Task 6).
+       The preview builds into the same $(OutDir) as the standard build, so a dll an earlier
+       standard build copied there would otherwise ride along into the preview's zip. A preview
+       build removes it and stops if it is still there, and leaves IDENTITY-PREVIEW-BUILD.txt,
+       which installer\Installer.wixproj refuses to package: the MSI installs whatever is in this
+       folder, and Package.wxs would put the standard build's user model id on a preview exe. A
+       standard build removes the marker, because it has just replaced the preview exe. -->
+  <Target Name="UrmIdentityPreviewOutput" AfterTargets="Build">
+    <Delete Condition="'$(UrmIdentityPreview)'=='true'" Files="$(OutDir)URnetworkSdk.dll" />
+    <Error Condition="'$(UrmIdentityPreview)'=='true' And Exists('$(OutDir)URnetworkSdk.dll')" Text="The identity preview build must not hold URnetworkSdk.dll, and $(OutDir)URnetworkSdk.dll is still there after it was removed. The preview has no live mode, and its README says the library that encrypts is not in the zip. Remove the file and build again." />
+    <WriteLinesToFile Condition="'$(UrmIdentityPreview)'=='true'" File="$(OutDir)IDENTITY-PREVIEW-BUILD.txt" Lines="This folder holds the URmessage identity preview build (identity phase 1, Task 6): made-up data and no live mode. installer\Installer.wixproj refuses to package it." Overwrite="true" />
+    <Delete Condition="'$(UrmIdentityPreview)'!='true'" Files="$(OutDir)IDENTITY-PREVIEW-BUILD.txt" />
   </Target>
 
   <!-- THE VC++ RUNTIME, APP-LOCAL, NEXT TO THE EXE. Both projects link the DLL

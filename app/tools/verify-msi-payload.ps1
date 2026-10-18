@@ -136,6 +136,12 @@ function Test-StandardBuildCondition([string]$expression) {
   if ($e -notmatch '^[01!&|()\s]+$') {
     throw "Ids.h has a preprocessor condition this check does not understand: '$expression'"
   }
+  # The preprocessor binds && tighter than ||, and PowerShell's -and and -or are
+  # equal, so a condition with both would be read as some other condition. Never
+  # a guess: such a condition stops the check.
+  if ($e.Contains('&&') -and $e.Contains('||')) {
+    throw "Ids.h has a preprocessor condition that mixes && and ||, which this check does not evaluate: '$expression'"
+  }
   $ps = $e -replace '&&', ' -and ' -replace '\|\|', ' -or ' -replace '!', ' -not '
   $ps = $ps -replace '\b1\b', '$true' -replace '\b0\b', '$false'
   return [bool](Invoke-Expression $ps)
