@@ -9,7 +9,8 @@
 // WHAT IT IS NOT. A live screen. In this build no identity screen is built in live mode at all:
 // BuildScreen answers an empty model there, and Settings keeps its inert ACCOUNT group in live mode.
 // A launch that is not a fabricated one asks for live mode here even before a live world lands
-// (IdentityMode below), so a plain launch never draws these screens over its empty world.
+// (RunMode.h's DrawnRunMode, which MainWindow::IdentityRunMode answers with), so a plain launch
+// never draws these screens over its empty world.
 // The live screens are Tasks 16, 28, 38 and 45, over the library's identity; the copy SCOPE gives
 // them is in RunMode.h as the live arms of the identity pairs, so the two arms are held apart from
 // the first commit that has either.
@@ -170,13 +171,11 @@ inline constexpr bool kIdentityPreviewBuild = false;
 // answers (no credential, no join code, offline). Read alone, the latch would put the made-up
 // account and every made-up screen over that empty world. So the fabricated screens need both a
 // FABRICATED LAUNCH (--demo, any --demo-* switch, or the preview build's plain launch: the window's
-// DemoOptions::enabled) and a latch that has not flipped. Anything else asks for the live screens,
-// which this build does not have (Tasks 16, 28, 38 and 45): BuildScreen and BuildAccount build
-// nothing. MainWindow::IdentityRunMode is the window's one caller; --diagnose's identity live line
-// reads every pair.
-constexpr RunMode IdentityMode(bool fabricatedLaunch, RunMode drawn) {
-  return fabricatedLaunch && drawn == RunMode::Fabricated ? RunMode::Fabricated : RunMode::Live;
-}
+// DemoOptions::enabled) and a latch that has not flipped - which is RunMode.h's DrawnRunMode, the
+// rule every other string in the app now takes too. MainWindow::IdentityRunMode answers with it.
+// Anything else asks for the live screens, which this build does not have (Tasks 16, 28, 38 and
+// 45): BuildScreen and BuildAccount build nothing. --diagnose's identity live line reads every
+// pair through DrawnRunModeFor.
 
 enum class TextKind { Fact, Chrome, DemoOnly };
 enum class TextStyle { Body, Strong, Muted, Error };

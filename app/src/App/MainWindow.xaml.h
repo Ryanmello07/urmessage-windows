@@ -284,8 +284,8 @@ struct MainWindow : MainWindowT<MainWindow> {
   void CloseIdentity();
   void OnIdentityAction(urmsg::demo::identity::Button const& button);
   void QueueIdentityAction(urmsg::demo::identity::Button const& button);
-  // The mode the identity screens and Settings' Account group are built in: IdentityDemo.h's
-  // IdentityMode over this launch (options_.enabled) and ActiveRunMode(). The one reader of both.
+  // The mode the identity screens and Settings' Account group are built in: RunMode.h's
+  // DrawnRunMode(), over this launch and the latch.
   urmsg::RunMode IdentityRunMode() const;
   // True when the window holds what was asked: an exclusion that blacks a capture out, or (for a
   // release) always. A release is deferred to CompositionTarget::Rendering.

@@ -1348,7 +1348,7 @@ std::vector<std::wstring> IdentityDemoDiagnostics() {
   // 7. LIVE MODE BUILDS NOTHING, AND NEITHER DOES A LAUNCH THAT IS NOT A FABRICATED ONE. Until the
   // live screens exist, a live launch draws none of these, and that includes a plain launch whose
   // mesh has not answered yet, or never will: ActiveRunMode() is still Fabricated there, and
-  // IdentityMode is what keeps the made-up account off its empty world.
+  // DrawnRunModeFor (RunMode.h) is what keeps the made-up account off its empty world.
   {
     const int count = static_cast<int>(Screen::kCount);
     auto screensBuilt = [count](RunMode mode) {
@@ -1361,16 +1361,16 @@ std::vector<std::wstring> IdentityDemoDiagnostics() {
     const bool accountLive = BuildAccount(RunMode::Live).built;
     // the launches, as the window reads them (MainWindow::IdentityRunMode): a plain launch before
     // any live world, the same after one, and --live --demo after one
-    const RunMode plain = IdentityMode(false, RunMode::Fabricated);
-    const RunMode plainLatched = IdentityMode(false, RunMode::Live);
-    const RunMode demoLatched = IdentityMode(true, RunMode::Live);
+    const RunMode plain = DrawnRunModeFor(false, RunMode::Fabricated);
+    const RunMode plainLatched = DrawnRunModeFor(false, RunMode::Live);
+    const RunMode demoLatched = DrawnRunModeFor(true, RunMode::Live);
     const size_t plainBuilt = screensBuilt(plain);
     const bool accountPlain = BuildAccount(plain).built;
     const size_t latchedBuilt = screensBuilt(plainLatched) + screensBuilt(demoLatched);
     const bool accountLatched = BuildAccount(plainLatched).built || BuildAccount(demoLatched).built;
     // the control: a fabricated launch before any live world (--demo) builds every overlay and the
     // Account group, so the zeros above are the mode's doing and not an empty table's
-    const RunMode demo = IdentityMode(true, RunMode::Fabricated);
+    const RunMode demo = DrawnRunModeFor(true, RunMode::Fabricated);
     const size_t demoBuilt = screensBuilt(demo);
     const bool accountDemo = BuildAccount(demo).built;
     const bool ok = liveBuilt == 0 && !accountLive && plainBuilt == 0 && !accountPlain &&
@@ -1382,8 +1382,8 @@ std::vector<std::wstring> IdentityDemoDiagnostics() {
         L"--demo: {} screens, and the Account group: {} (control: --demo, nothing latched, builds "
         L"{}/{} overlays, Account being Settings', and the Account group: {}); the live screens "
         L"are Tasks 16, 28, 38 and 45, and every launch but a fabricated one keeps the inert "
-        L"ACCOUNT group   [query: BuildScreen and BuildAccount in IdentityMode(fabricated launch, "
-        L"ActiveRunMode()) for each pair]",
+        L"ACCOUNT group   [query: BuildScreen and BuildAccount in DrawnRunModeFor(fabricated "
+        L"launch, ActiveRunMode()) for each pair]",
         ok ? L"PASS" : L"FAIL", liveBuilt, asked, accountLive ? L"BUILT (wrong)" : L"not built",
         plainBuilt, asked, accountPlain ? L"BUILT (wrong)" : L"not built", latchedBuilt,
         accountLatched ? L"BUILT (wrong)" : L"not built", demoBuilt, asked - 1,

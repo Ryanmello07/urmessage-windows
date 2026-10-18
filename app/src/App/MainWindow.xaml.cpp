@@ -388,11 +388,11 @@ void MainWindow::OnIdentityAction(urmsg::demo::identity::Button const& button) {
   }
 }
 
-// THE IDENTITY SCREENS' MODE: fabricated only in a fabricated launch whose latch has not flipped
-// (IdentityDemo.h's IdentityMode says why ActiveRunMode() alone is not enough).
-urmsg::RunMode MainWindow::IdentityRunMode() const {
-  return urmsg::demo::identity::IdentityMode(options_.enabled, urmsg::ActiveRunMode());
-}
+// THE IDENTITY SCREENS' MODE: fabricated only in a fabricated launch whose latch has not flipped,
+// which is RunMode.h's DrawnRunMode - the rule every string in the app takes (IdentityDemo.h says
+// why ActiveRunMode() alone is not enough). The launch is the one this constructor recorded with
+// SetFabricatedLaunch.
+urmsg::RunMode MainWindow::IdentityRunMode() const { return urmsg::DrawnRunMode(); }
 
 // PROPERTY 2's ONE PLACE IN THE WINDOW.
 //
@@ -2014,7 +2014,7 @@ void MainWindow::BuildSettings() {
   // EnterDemoMode ran InitAdvancedMode before any Build* call.
   // IdentityRunMode(), NOT ActiveRunMode(), for the Account group: a plain launch is live and draws
   // the empty world while ActiveRunMode() still says Fabricated, and the made-up account must not
-  // stand on it (IdentityDemo.h's IdentityMode).
+  // stand on it (RunMode.h's DrawnRunMode, which IdentityRunMode answers with).
   settings_ = urmsg::views::MakeSettings(
       ActiveWorld(), [](bool on) { urmsg::SetAdvancedModeEnabled(on); },
       urmsg::AdvancedModeEnabled(),

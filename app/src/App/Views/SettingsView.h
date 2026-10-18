@@ -52,8 +52,8 @@ struct SettingsView {
 // urmsg::live::SetRouteThroughUrnetwork, its one writer.
 //
 // `identityMode` and `onIdentity` are the ACCOUNT group's (identity phase 1, Task 6). The group is
-// built in `identityMode`, which MainWindow passes as its IdentityRunMode() - Demo/IdentityDemo.h's
-// IdentityMode over the launch and the latch, and NOT ActiveRunMode() alone, which still says
+// built in `identityMode`, which MainWindow passes as its IdentityRunMode() - RunMode.h's
+// DrawnRunMode() over the launch and the latch, and NOT ActiveRunMode() alone, which still says
 // Fabricated on a plain launch's empty world. In fabricated mode the group is BuildAccount's -
 // "Your ID", Devices, and the demo's way into every identity screen - at the TOP of the page, and
 // `onIdentity` opens the screen a button names. In live mode BuildAccount builds nothing and the
