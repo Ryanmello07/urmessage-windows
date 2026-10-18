@@ -1,0 +1,211 @@
+# THROWAWAY, NEVER MERGE, NEVER IN AN UPSTREAM PULL REQUEST. Identity phase 1, Task 6 Step 4: the
+# preview zip of the identity screens, built as shipped and smoked the README's way.
+#
+#   package  builds the identity preview (/p:UrmIdentityPreview=true, no URnetworkSdk.dll), runs
+#            --diagnose twice (with a scratch root, and as shipped with none, so the build kind line
+#            asks Common's StorageRoot which folder it resolved), then .github/i1/preview-package.ps1
+#            makes URmessage-identity-preview/ (the build output less the by-products the MSI
+#            leaves out, plus READ-ME-FIRST.txt), zips it as URmessage-identity-preview-slice0.zip and
+#            holds the zip to the folder both ways.
+#   smoke    on windows-2022 and windows-2025: the zip extracted to a fresh folder, no
+#            %LOCALAPPDATA%\URmessage-identity-preview and no %LOCALAPPDATA%\URmessage, no
+#            URMESSAGE_* variable, no credential, URmessage.exe started with no arguments; it must
+#            open in the fabricated mode on "Set up this device" (.github/i1/preview-smoke.ps1).
+# The checkout is the tested head plus CI files only (the first step proves it). Nothing is
+# published: no release, no tag. The zip is an artifact.
+name: I1 identity preview zip (throwaway)
+
+on:
+  push:
+    branches:
+      - 'ci/i1-preview**'
+
+permissions:
+  contents: read
+
+env:
+  I1_HEAD: ec5b942f6c789e1952adb59ece48f22f63e02cf9
+
+jobs:
+  package:
+    name: Build the identity preview zip (x64)
+    runs-on: windows-2022
+    timeout-minutes: 60
+    outputs:
+      zip_sha256: ${{ steps.assemble.outputs.zip_sha256 }}
+      exe_sha256: ${{ steps.assemble.outputs.exe_sha256 }}
+      readme_sha256: ${{ steps.assemble.outputs.readme_sha256 }}
+      entries: ${{ steps.assemble.outputs.entries }}
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Prove the checkout is the tested head plus CI files only
+        shell: pwsh
+        run: |
+          Write-Host "checkout $(git rev-parse HEAD)"
+          Write-Host "tested   $(git rev-parse HEAD^)"
+          if ((git rev-parse HEAD^) -ne $env:I1_HEAD) { Write-Host "::error::the tested head is not $env:I1_HEAD"; exit 1 }
+          $changed = @(git diff --name-only HEAD^ HEAD)
+          $changed | ForEach-Object { Write-Host "  added by the CI commit: $_" }
+          $outside = @($changed | Where-Object { $_ -notlike '.github/*' })
+          if ($outside.Count -gt 0) { Write-Host "::error::the CI commit changes files outside .github: $($outside -join ', ')"; exit 1 }
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build the identity preview (Release x64, no SDK)
+        shell: pwsh
+        working-directory: app
+        run: |
+          $pin = '10.0.22621.0'
+          $roots = @("${env:ProgramFiles(x86)}\Windows Kits\10", "$env:ProgramFiles\Windows Kits\10") | Where-Object { Test-Path -LiteralPath $_ }
+          $usable = @(foreach ($r in $roots) {
+            Get-ChildItem (Join-Path $r 'Include') -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' -and
+                (Test-Path -LiteralPath (Join-Path $r "Include\$($_.Name)\um\windows.h")) -and
+                (Test-Path -LiteralPath (Join-Path $r "Lib\$($_.Name)\um\x64\kernel32.lib")) } |
+              Select-Object -ExpandProperty Name
+          }) | Select-Object -Unique | Sort-Object { [version]$_ }
+          $usable = @($usable)
+          $sdk = if ($usable -contains $pin) { $pin } else { $usable[-1] }
+          if (Test-Path -LiteralPath third_party\urnetwork-sdk\bin\x64\URnetworkSdk.dll) { Write-Host '::error::an SDK dll is staged; the preview builds without one'; exit 1 }
+          msbuild URmessage.sln /restore /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=$sdk /p:UrmIdentityPreview=true /m /v:minimal /clp:Summary
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-Item build\x64\Release\URmessage.exe | Format-Table Name, Length | Out-String | Write-Host
+
+      - name: Run --diagnose on the built exe, twice
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:GITHUB_WORKSPACE 'app\build\x64\Release'
+          New-Item -ItemType Directory -Force evidence | Out-Null
+          function Diagnose([string]$label, [bool]$scratchRoot) {
+            $psi = [System.Diagnostics.ProcessStartInfo]::new((Join-Path $dir 'URmessage.exe'))
+            $psi.Arguments = '--diagnose'
+            $psi.UseShellExecute = $false
+            $psi.CreateNoWindow = $true
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+            $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+            if ($scratchRoot) { $psi.EnvironmentVariables['URMESSAGE_APP_ROOT'] = Join-Path $env:RUNNER_TEMP 'diagnose-root' }
+            elseif ($psi.EnvironmentVariables.ContainsKey('URMESSAGE_APP_ROOT')) { $psi.EnvironmentVariables.Remove('URMESSAGE_APP_ROOT') }
+            $p = [System.Diagnostics.Process]::Start($psi)
+            $outTask = $p.StandardOutput.ReadToEndAsync()
+            $errTask = $p.StandardError.ReadToEndAsync()
+            if (-not $p.WaitForExit(120000)) { try { $p.Kill() } catch { }; Write-Host '::error::--diagnose did not exit'; exit 1 }
+            $out = $outTask.GetAwaiter().GetResult()
+            $null = $errTask.GetAwaiter().GetResult()
+            Set-Content -LiteralPath "evidence\diagnose-$label.out" -Value $out -Encoding utf8 -NoNewline
+            return @($out -split "`r?`n")
+          }
+          $lines = Diagnose 'scratch-root' $true
+          $fails = @($lines | Where-Object { $_ -match '\bFAIL\b' })
+          $passes = @($lines | Where-Object { $_ -match '\bPASS\b' })
+          Write-Host "diagnose (scratch root): $($lines.Count) lines, $($passes.Count) PASS, $($fails.Count) FAIL"
+          $fails | ForEach-Object { Write-Host "::error::$_" }
+          $kind = @($lines | Where-Object { $_ -match '^\s+build kind\s+:' })
+          $kind | ForEach-Object { Write-Host $_ }
+          if ($kind.Count -ne 1 -or -not $kind[0].Contains('PASS  identity preview (slice 0)')) { Write-Host '::error::this is not the identity preview build'; exit 1 }
+          $shipped = Diagnose 'as-shipped' $false
+          $kind2 = @($shipped | Where-Object { $_ -match '^\s+build kind\s+:' })
+          $kind2 | ForEach-Object { Write-Host "as shipped: $_" }
+          $root = @($shipped | Where-Object { $_ -match '^\s+(storage root|single-inst key)\s+:' })
+          $root | ForEach-Object { Write-Host "as shipped: $_" }
+          if ($kind2.Count -ne 1 -or -not $kind2[0].Contains("Common's StorageRoot resolved it")) { Write-Host "::error::as shipped, Common's StorageRoot did not resolve the preview's own folder"; exit 1 }
+          if ($fails.Count -gt 0) { exit 1 }
+
+      - name: Assemble, zip and check the preview
+        id: assemble
+        shell: pwsh
+        run: |
+          & .github\i1\preview-package.ps1 -Out "$env:RUNNER_TEMP\pkg" -Evidence evidence
+          exit $LASTEXITCODE
+
+      - name: Upload the zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: URmessage-identity-preview-slice0
+          path: ${{ runner.temp }}/pkg/URmessage-identity-preview-slice0.zip
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload the evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: i1-preview-evidence
+          path: evidence/
+          if-no-files-found: warn
+
+  smoke:
+    name: Smoke the preview as shipped (${{ matrix.os }})
+    needs: package
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Prove the checkout is the tested head plus CI files only
+        shell: pwsh
+        run: |
+          Write-Host "checkout $(git rev-parse HEAD)"
+          Write-Host "tested   $(git rev-parse HEAD^)"
+          if ((git rev-parse HEAD^) -ne $env:I1_HEAD) { Write-Host "::error::the tested head is not $env:I1_HEAD"; exit 1 }
+          $outside = @(git diff --name-only HEAD^ HEAD | Where-Object { $_ -notlike '.github/*' })
+          if ($outside.Count -gt 0) { Write-Host "::error::the CI commit changes files outside .github"; exit 1 }
+
+      - name: Download the zip
+        uses: actions/download-artifact@v4
+        with:
+          name: URmessage-identity-preview-slice0
+          path: ${{ runner.temp }}/dl
+
+      - name: Extract it to a fresh folder
+        shell: pwsh
+        env:
+          ZIP_SHA256: ${{ needs.package.outputs.zip_sha256 }}
+          EXE_SHA256: ${{ needs.package.outputs.exe_sha256 }}
+          README_SHA256: ${{ needs.package.outputs.readme_sha256 }}
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'dl\URmessage-identity-preview-slice0.zip'
+          $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
+          Write-Host "zip $sha"
+          if ($sha -ne $env:ZIP_SHA256) { Write-Host "::error::the downloaded zip is not the one the package job made ($env:ZIP_SHA256)"; exit 1 }
+          $fresh = Join-Path $env:RUNNER_TEMP ('fresh-' + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $fresh | Out-Null
+          Expand-Archive -LiteralPath $zip -DestinationPath $fresh
+          $top = @(Get-ChildItem -LiteralPath $fresh -Force)
+          Write-Host "the zip extracts to: $($top.Name -join ', ')"
+          if ($top.Count -ne 1 -or $top[0].Name -ne 'URmessage-identity-preview') { Write-Host '::error::the zip does not extract to one folder, URmessage-identity-preview'; exit 1 }
+          $dir = Join-Path $fresh 'URmessage-identity-preview'
+          foreach ($pair in @(@('URmessage.exe', $env:EXE_SHA256), @('READ-ME-FIRST.txt', $env:README_SHA256))) {
+            $h = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $dir $pair[0])).Hash.ToLowerInvariant()
+            Write-Host "$($pair[0]) $h"
+            if ($h -ne $pair[1]) { Write-Host "::error::$($pair[0]) is not the packaged one"; exit 1 }
+          }
+          Write-Host "extracted: $(@(Get-ChildItem -LiteralPath $dir -Recurse -File).Count) files under $dir"
+          "PACKAGE_DIR=$dir" >> $env:GITHUB_ENV
+
+      - name: Run it as shipped, and capture the window
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github\i1\preview-smoke.ps1 -Dir "$env:PACKAGE_DIR" -Out "$env:GITHUB_WORKSPACE\smoke" -Os '${{ matrix.os }}'
+          exit $LASTEXITCODE
+
+      - name: Upload the capture and the log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: i1-preview-smoke-${{ matrix.os }}
+          path: smoke/
+          if-no-files-found: warn
