@@ -15,6 +15,7 @@
 #include "Localization.h"
 #include "Log.h"
 #include "UrColors.h"
+#include "UrComponents.h"  // urnw::kit::kIconFontFamily
 #include "UrMotion.h"
 #include "Views/ConversationRowModel.h"
 
@@ -42,17 +43,18 @@ bool IsBrush(Media::Brush const& brush, winrt::Windows::UI::Color const& color) 
   return c.A == color.A && c.R == color.R && c.G == color.G && c.B == color.B;
 }
 
-// Segoe Fluent Icons out of the app dictionary, so this file and App.xaml cannot
-// name two different families. FontIcon otherwise defaults to the older Segoe
-// MDL2 Assets, whose metrics differ -- UrComponents.cpp:25-29 records the same
-// trap. This is NOT a copy of StyleByKey: it reads one resource, by one name.
+// The icon font out of the app dictionary, so this file and App.xaml cannot name
+// two different families, and the same list when the key is missing
+// (kIconFontFamily, UrComponents.h): Segoe Fluent Icons, falling back to Segoe
+// MDL2 Assets where Windows 10 lacks it. This is NOT a copy of StyleByKey: it
+// reads one resource, by one name.
 Media::FontFamily IconFont() {
   if (auto app = Application::Current()) {
     auto key = winrt::box_value(winrt::hstring{L"UrIconFontFamily"});
     if (app.Resources().HasKey(key))
       if (auto family = app.Resources().Lookup(key).try_as<Media::FontFamily>()) return family;
   }
-  return Media::FontFamily(L"Segoe Fluent Icons");
+  return Media::FontFamily(urnw::kit::kIconFontFamily);
 }
 
 // A state mark on the row's SECOND line. 12, not UrRowIconStyle's 16

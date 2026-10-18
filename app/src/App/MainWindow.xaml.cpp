@@ -29,6 +29,7 @@
 #include "RunMode.h"  // ActiveRunMode / SetActiveRunMode - this file is the latch's one writer
 #include "Strings.h"
 #include "UrColors.h"
+#include "UrComponents.h"  // urnw::kit::kIconFontFamily
 #include "UrMotion.h"
 #include "Views/InspectRailFields.h"
 #include "Views/InspectRailView.h"
@@ -2284,10 +2285,10 @@ void MainWindow::EnterDemoMode() {
   developerNavItem_.Content(box_value(hstring{kDemoNavDeveloper}));
   developerNavItem_.Tag(box_value(hstring{L"developer"}));
   {
-    // Segoe Fluent Icons out of the app dictionary, with the same fallback
-    // ConversationListView.cpp's IconFont() records: FontIcon otherwise
-    // defaults to the older Segoe MDL2 Assets, whose metrics differ.
-    Media::FontFamily family{L"Segoe Fluent Icons"};
+    // The icon font out of the app dictionary, and the same list when the key
+    // is missing (kIconFontFamily, UrComponents.h): Segoe Fluent Icons, falling
+    // back to Segoe MDL2 Assets where Windows 10 lacks it.
+    Media::FontFamily family{urnw::kit::kIconFontFamily};
     if (auto app = Application::Current()) {
       auto key = box_value(hstring{L"UrIconFontFamily"});
       if (app.Resources().HasKey(key))

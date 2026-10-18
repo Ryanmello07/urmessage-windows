@@ -74,11 +74,11 @@ CornerRadius CornerRadiusFromCorners(double const c[4]) {
   return cr;
 }
 
-// The icon face, named EVERY time. FontIcon defaults to the older
-// "Segoe MDL2 Assets", whose metrics differ and whose coverage is not the same
-// set of codepoints, so a glyph picked from the Fluent set can land on a
-// different drawing - or on nothing - if the family is left to the default.
-Media::FontFamily IconFont() { return Media::FontFamily(L"Segoe Fluent Icons"); }
+// The icon face, named EVERY time, and it is the one icon font (kIconFontFamily,
+// UrComponents.h): Segoe Fluent Icons, falling back to Segoe MDL2 Assets where
+// Windows 10 lacks it. Every glyph this file draws is in kIconGlyphs, and
+// --diagnose's `icon glyphs` line says which family draws each one.
+Media::FontFamily IconFont() { return Media::FontFamily(urnw::kit::kIconFontFamily); }
 
 namespace anim = winrt::Microsoft::UI::Xaml::Media::Animation;
 
@@ -1537,7 +1537,9 @@ FrameworkElement MakeHiddenObserverRecord(winrt::hstring const& body) {
 
   FontIcon eye;
   eye.FontFamily(IconFont());
-  eye.Glyph(L"\uED1A");  // Segoe Fluent "Hide" — an eye with a stroke through it
+  // Segoe Fluent "Hide", an eye with a stroke through it; where no icon font on the machine maps it
+  // (Windows 10's Segoe MDL2 Assets does not), its fallback, an eye (kIconGlyphs)
+  eye.Glyph(urnw::kit::IconGlyphText(L"\uED1A"));
   eye.FontSize(14);
   eye.Foreground(urnw::colors::MutedBrush());
   eye.VerticalAlignment(VerticalAlignment::Center);

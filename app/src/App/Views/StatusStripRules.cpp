@@ -27,9 +27,9 @@ std::wstring_view StatusStateWord(demo::ConnectState state) {
 }
 
 std::wstring StatusLockGlyph(bool keyVerified) {
-  // Segoe Fluent Icons, named explicitly wherever this app draws one
-  // (App.xaml's UrIconFontFamily): FontIcon otherwise falls back to Segoe MDL2
-  // Assets, whose metrics differ.
+  // Code points of the one icon font (App.xaml's UrIconFontFamily,
+  // UrComponents.h's kIconFontFamily): Segoe Fluent Icons, falling back to
+  // Segoe MDL2 Assets where Windows 10 lacks it.
   return keyVerified ? std::wstring{L"\ue72e"}   // Lock
                      : std::wstring{L"\ue785"};  // Unlock
 }
