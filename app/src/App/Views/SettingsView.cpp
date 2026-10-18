@@ -393,16 +393,24 @@ SettingsView MakeSettings(urmsg::demo::World const& world,
     auto card = kit::MakePaneCard();
     // The contract's invariant, asserted in --diagnose: myDevices[0]
     // .isThisComputer is true. front() IS this computer; no ordering guess.
+    //
+    // ONCE THE LIBRARY'S IDENTITY IS MADE (identity phase 1, Task 16; SCOPE H4, G12), both rows read
+    // it: this device by its device ID, which is what the library knows it by (a device has no name
+    // in this build), and "Linked devices" counted from the identity's newest device list, which
+    // names every device that would decrypt a message addressed to this account.
+    const bool identityRows = identityMode == urmsg::RunMode::Live && liveIdentity &&
+                              liveIdentity->read && liveIdentity->hasIdentity;
     card.body.Children().Append(
         MakeValueRow(L"This device", L"The device you are reading this on.",
-                     world.myDevices.empty()
-                         ? winrt::hstring{L"unknown"}
-                         : winrt::hstring{world.myDevices.front().name})
+                     identityRows             ? winrt::to_hstring(liveIdentity->deviceId)
+                     : world.myDevices.empty() ? winrt::hstring{L"unknown"}
+                                               : winrt::hstring{world.myDevices.front().name})
             .root);
     card.body.Children().Append(
         MakeValueRow(L"Linked devices",
                      L"Devices that would decrypt a message addressed to you.",
-                     winrt::to_hstring(static_cast<int>(world.myDevices.size())))
+                     winrt::to_hstring(static_cast<int>(
+                         identityRows ? liveIdentity->devices.size() : world.myDevices.size())))
             .root);
     card.body.Children().Append(
         MakeValueRow(L"Message server", L"Host and jurisdiction.",
