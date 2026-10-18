@@ -64,6 +64,59 @@ RunMode ActiveRunMode();
 // live snapshot the world every view reads. Idempotent.
 void SetActiveRunMode(RunMode mode);
 
+// ---- WHICH ARM A STRING TAKES: THE LAUNCH AS WELL AS THE LATCH ------------------------------
+//
+// ActiveRunMode() answers "which world is on screen" and nothing else, and on its own it chose the
+// WRONG ARM for a whole kind of launch. A PLAIN LAUNCH of the standard build is live: it draws the
+// EMPTY world while its mesh dials, and for the whole session when the mesh never answers (no
+// credential, no join code, offline) - and ActiveRunMode() says Fabricated all that time, because
+// no live world has landed. Every string chosen by the latch alone therefore put the demo's words
+// over a run with no demo in it. Measured on main f4280508 (ci/plain-control-1, run 39098035170):
+// "Demo model: server key not verified" named the status strip's padlock on every page, Settings
+// said "THIS DEMO" and "Demo model: not verified", the relay drawer said "DEMO MODEL: RELAY PATH",
+// and the Developer page drew the whole fabricated fixture.
+//
+// SO THE COPY IS CHOSEN BY THE LAUNCH AS WELL. A FABRICATED LAUNCH (--demo, or any --demo-*
+// switch: MainWindow's DemoOptions::enabled, which ParseDemoOptions answers) takes the fabricated
+// arm until a live world lands, exactly as before. Every other launch takes the LIVE arm, and
+// before its live world lands it says that too: the strings whose live arm speaks of a session or
+// of "these messages" have a NO-SESSION arm, because those live arms are false over a screen with
+// nothing on it (ComposerNote's third arm is the precedent, and its gate the model for theirs).
+//
+// THE CAPABILITY GATES STAY ON THE LATCH. A control that may only act on a live world (the rail's
+// label, delete and leave rows) asks ActiveRunMode() == Live, which is "a live world is on
+// screen": the right question for a capability, and the wrong one for a sentence.
+
+// Recorded once, by MainWindow's constructor, before any view is built.
+void SetFabricatedLaunch(bool fabricated);
+bool FabricatedLaunch();
+
+// Pure, so --diagnose reads every (launch, latch) pair:
+//   a fabricated launch, no live world yet -> Fabricated
+//   any launch, a live world on screen      -> Live
+//   any other launch, no live world yet     -> Live, and no session
+constexpr RunMode DrawnRunModeFor(bool fabricatedLaunch, RunMode latched) {
+  return fabricatedLaunch && latched == RunMode::Fabricated ? RunMode::Fabricated : RunMode::Live;
+}
+constexpr bool NoSessionFor(bool fabricatedLaunch, RunMode latched) {
+  return !fabricatedLaunch && latched == RunMode::Fabricated;
+}
+
+// The mode, and the no-session bit, every view's COPY is chosen by: the two above over
+// FabricatedLaunch() and ActiveRunMode(). Read at build time, as ActiveRunMode() was; the window
+// rebuilds the pages that use them on the beat a live world lands (MainWindow::ApplyLiveWorld).
+RunMode DrawnRunMode();
+bool DrawnNoSession();
+
+// THE CHIP'S RULE, beside the copy because it is the same question: the title-bar chip is shown
+// before a live world lands only in a fabricated launch (and only while --demo-watermark=off has
+// not removed it). Over a plain launch's empty world neither of its words is true - there is no
+// demo and no live session yet - so it is not shown at all; MainWindow::ApplyLiveWorld shows it,
+// saying LIVE, on the beat a live world lands.
+constexpr bool ModeChipShownBeforeLiveWorld(bool fabricatedLaunch, bool watermark) {
+  return fabricatedLaunch && watermark;
+}
+
 // ---- the copy -------------------------------------------------------------------------------
 // Each of these is a pair. The fabricated form names the demo and never the session; the live form
 // names the session and never the demo. RunModeCopyDiagnostics asserts exactly that, in both
@@ -131,14 +184,22 @@ std::wstring ComposerNote(RunMode mode, bool maySend, bool noSession = false);
 // strip drawer's automation name for the same three nodes. In live mode those nodes are
 // observations — the platform url the library dialled and the message server's own client_id — so
 // "preview" is wrong there.
-std::wstring RelayPathGroupTitle(RunMode mode);
-std::wstring RelayDrawerName(RunMode mode);
+//
+// `noSession` (a launch that is not fabricated, before its live world lands; DrawnNoSession) is
+// the THIRD ARM, and it wins over the mode as ComposerNote's does: there is no path to observe yet,
+// so neither "preview" nor "Live session" is true.
+//
+// No default for `noSession`, here or on the four below: every caller says which world it draws,
+// because a default false is the live arm over the empty world for any new call site.
+std::wstring RelayPathGroupTitle(RunMode mode, bool noSession);
+std::wstring RelayDrawerName(RunMode mode, bool noSession);
 
 // The status strip padlock's accessible name. A padlock is a claim and a Button whose Content is a
 // Panel gets no automatic name, so the words are the only thing carrying the meaning.
 // In live mode the two arms are ONE string: this build pins no server key and the live world never
-// sets the bit, so there is no result to report either way.
-std::wstring ServerKeyStateName(bool keyVerified, RunMode mode);
+// sets the bit, so there is no result to report either way. With `noSession` there is no session
+// whose key could be named at all, so the third arm says that and claims no result.
+std::wstring ServerKeyStateName(bool keyVerified, RunMode mode, bool noSession);
 
 // The first line of the Developer page's DemoWorld dump, which rides the Copy button onto the
 // clipboard where no page header can follow it. BOTH forms keep the "Demo model:" framing, because
@@ -157,9 +218,16 @@ std::wstring RosterNote(RunMode mode);
 // Settings' disclosure block: the caption, the row that opens it, and the paragraph inside.
 // The fabricated paragraph's "No protocol, no store, no network and no cryptography are running"
 // is the single most false sentence in the app when a live world is on screen.
-std::wstring DisclosureCaption(RunMode mode);
-std::wstring DisclosureTitle(RunMode mode);
-std::wstring DisclosureBody(RunMode mode);
+//
+// Over the EMPTY WORLD the live paragraph is false too - "the messages on these screens are
+// real: this device fetched the records" over a screen with no message on it - so the third arm
+// says that no group is on these screens yet, says what the live paragraph says about a group IN
+// THE CONDITIONAL, and keeps the live absence list word for word (RunModeCopyDiagnostics holds the
+// two lists equal). Its bit is DrawnNoSession() OR a live world with no conversation in it (a
+// device that left its group): SettingsView passes both, since the latch never goes back.
+std::wstring DisclosureCaption(RunMode mode, bool noSession);
+std::wstring DisclosureTitle(RunMode mode, bool noSession);
+std::wstring DisclosureBody(RunMode mode, bool noSession);
 
 // ---- the gate -------------------------------------------------------------------------------
 // One line per pair, each printing PASS/FAIL, the QUERY it asked, and both wordings, so a reader
@@ -178,7 +246,11 @@ std::wstring DisclosureBody(RunMode mode);
 //     an answer, so the line's word "observer" is the mapping and not a label over it;
 //   * the ABSENCE clause - the live disclosure's "What is NOT here:" list, printed in full, must
 //     not name the send path among the things the app cannot do, nor the member list or the
-//     roles, which the app reads off the group since item 242 R3.
+//     roles, which the app reads off the group since item 242 R3;
+//   * the NO-SESSION clause, over EVERY third arm (the composer's and the six above): each differs
+//     from both of its function's arms, names neither mode, and the disclosure's keeps the live
+//     absence list word for word; and the LAUNCH table, DrawnRunModeFor and NoSessionFor over all
+//     four (launch, latch) pairs.
 std::vector<std::wstring> RunModeCopyDiagnostics();
 
 }  // namespace urmsg

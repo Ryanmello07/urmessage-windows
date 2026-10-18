@@ -194,6 +194,15 @@ DeveloperView MakeDeveloper(urmsg::demo::World const& world) {
   // the window cannot disagree about what was asked for.
   const auto options = demo::ParseDemoOptions();
 
+  // THE DEMO'S OWN SECTIONS, IN A FABRICATED LAUNCH ONLY (fix/plain-launch-run-mode). The demo's
+  // switch figures, the switch that pauses its ambient activity and the DemoWorld dump describe
+  // the fabricated world, and a plain launch drew all of them - the dump is the whole fixture,
+  // with its people, its server and its messages - over a run that has no demo in it
+  // (ci/plain-control-1, run 39098035170; design §8 already kept demo::GetWorld() off a normal
+  // launch, and the dump called it anyway). Every other launch keeps the page's real figures
+  // and its Animations switch, under a caption that names no demo.
+  const bool demoSections = DeveloperShowsDemoSections(urmsg::FabricatedLaunch());
+
   // ---- DEMO STATE: the figures list (key left, value hard right, at 34) ----
   // The 840 cap for the two figure groups is a GRID COLUMN's MaxWidth, never
   // a MaxWidth on the groups themselves: in a StackPanel a stretch child
@@ -211,20 +220,23 @@ DeveloperView MakeDeveloper(urmsg::demo::World const& world) {
   cap840.Children().Append(narrow);
   column.Children().Append(cap840);
 
-  AppendCaption(narrow, S(L"DEMO STATE"), /*first=*/true);
+  AppendCaption(narrow, S(DeveloperStateCaption(urmsg::FabricatedLaunch()).c_str()),
+                /*first=*/true);
   {
     auto card = kit::MakePaneCard();
-    card.body.Children().Append(
-        kit::MakePaneKeyValueRow(S(L"Demo world"),
-                                 options.enabled ? S(L"on") : S(L"off"),
-                                 kFigureHeight).root);
-    card.body.Children().Append(
-        kit::MakePaneKeyValueRow(S(L"Deep link (--demo=)"),
-                                 ScreenName(options.screen), kFigureHeight).root);
-    card.body.Children().Append(
-        kit::MakePaneKeyValueRow(S(L"Watermark"),
-                                 options.watermark ? S(L"on") : S(L"off"),
-                                 kFigureHeight).root);
+    if (demoSections) {
+      card.body.Children().Append(
+          kit::MakePaneKeyValueRow(S(L"Demo world"),
+                                   options.enabled ? S(L"on") : S(L"off"),
+                                   kFigureHeight).root);
+      card.body.Children().Append(
+          kit::MakePaneKeyValueRow(S(L"Deep link (--demo=)"),
+                                   ScreenName(options.screen), kFigureHeight).root);
+      card.body.Children().Append(
+          kit::MakePaneKeyValueRow(S(L"Watermark"),
+                                   options.watermark ? S(L"on") : S(L"off"),
+                                   kFigureHeight).root);
+    }
     card.body.Children().Append(
         kit::MakePaneKeyValueRow(
             S(L"Advanced Mode"),
@@ -238,7 +250,7 @@ DeveloperView MakeDeveloper(urmsg::demo::World const& world) {
     auto ambientRow = kit::MakePaneKeyValueRow(S(L"Ambient activity"), {},
                                                kFigureHeight);
     SetFigure(ambientRow, L"Ambient activity", AmbientLabel(options.autoplay));
-    card.body.Children().Append(ambientRow.root);
+    if (demoSections) card.body.Children().Append(ambientRow.root);
     auto motionRow = kit::MakePaneKeyValueRow(S(L"Motion"), {}, kFigureHeight);
     SetFigure(motionRow, L"Motion", MotionLabel());
     card.body.Children().Append(motionRow.root);
@@ -270,7 +282,7 @@ DeveloperView MakeDeveloper(urmsg::demo::World const& world) {
     // ---- SWITCHES (session only; nothing here writes a preference) ---------
     AppendCaption(narrow, S(L"SWITCHES"), /*first=*/false);
     auto switchCard = kit::MakePaneCard();
-    {
+    if (demoSections) {
       auto row = kit::MakePaneTwoLineRow(
           S(L"Pause ambient activity"),
           S(L"Stops the typing indicator and incoming messages."), kSwitchRowHeight);
@@ -322,7 +334,7 @@ DeveloperView MakeDeveloper(urmsg::demo::World const& world) {
   }
 
   // ---- DEMOWORLD DUMP ------------------------------------------------------
-  {
+  if (demoSections) {
     auto group = AppendCaption(column, S(L"DEMOWORLD DUMP"), /*first=*/false);
     // The group header's `trailing` slot is the documented home for an
     // icon-only command (UrComponents.h:468-471), so the copy button costs no
@@ -341,7 +353,7 @@ DeveloperView MakeDeveloper(urmsg::demo::World const& world) {
     // page (G4; the d7 audit's A6 framing override).
     copy.Click([](auto const&, auto const&) {
       winrt::Windows::ApplicationModel::DataTransfer::DataPackage package;
-      package.SetText(winrt::hstring{DumpDemoWorld(urmsg::ActiveRunMode())});
+      package.SetText(winrt::hstring{DumpDemoWorld(urmsg::DrawnRunMode())});
       winrt::Windows::ApplicationModel::DataTransfer::Clipboard::SetContent(package);
     });
     group.trailing.Children().Append(copy);
@@ -357,7 +369,7 @@ DeveloperView MakeDeveloper(urmsg::demo::World const& world) {
     dump.Foreground(urnw::colors::TextBrush());
     dump.IsTextSelectionEnabled(true);
     dump.TextWrapping(TextWrapping::NoWrap);
-    dump.Text(winrt::hstring{DumpDemoWorld(urmsg::ActiveRunMode())});
+    dump.Text(winrt::hstring{DumpDemoWorld(urmsg::DrawnRunMode())});
 
     // The dump is WIDE and the pane must not be. Its own horizontal scroller
     // keeps the long lines readable without widening the destination.

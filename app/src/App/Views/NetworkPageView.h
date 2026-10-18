@@ -77,6 +77,11 @@ std::wstring FormatDeviceMeta(urmsg::demo::DeviceRef const& device);
 // nothing — the d7 audit's N2 override).
 std::wstring FormatRoundTrip(urmsg::demo::ServerInfo const& server);
 
+// The message server's host and jurisdiction on one line (Settings), and NEVER ONLY ITS SEPARATOR.
+// With neither fact - the empty world - the line says there is nothing to show yet; with one,
+// that one alone; with both, both, joined by a middle dot. `net fmt server` holds all four.
+std::wstring FormatServerLine(std::wstring const& host, std::wstring const& jurisdiction);
+
 // The --diagnose lines for this surface. Pure C++ for the reason above.
 // main.cpp pushes these inside its `if (diagnose)` block — NOT into
 // CollectDiagnostics(), which runs on every launch (main.cpp:176).

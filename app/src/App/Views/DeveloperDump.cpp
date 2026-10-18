@@ -256,4 +256,10 @@ std::vector<std::wstring> WorldDumpDiagnostics() {
   return lines;
 }
 
+bool DeveloperShowsDemoSections(bool fabricatedLaunch) { return fabricatedLaunch; }
+
+std::wstring DeveloperStateCaption(bool fabricatedLaunch) {
+  return fabricatedLaunch ? L"DEMO STATE" : L"APP STATE";
+}
+
 }  // namespace urmsg::views

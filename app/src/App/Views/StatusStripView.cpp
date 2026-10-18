@@ -347,8 +347,14 @@ Border MakeStatusDrawer(std::vector<demo::RelayNode> const& path) {
   // urmsg::RelayDrawerName (the d7 audit's S3 override) — the header's words frame
   // the EYES, this frames the screen reader, and neither leans on the chip
   // --demo-watermark=off removes.
+  //
+  // DrawnRunMode() and DrawnNoSession(), not ActiveRunMode(), for every string on the strip: the
+  // latch alone named a plain launch's empty drawer "Demo model: relay path preview" (RunMode.h,
+  // "which arm a string takes"). Read once here for the drawer's two strings.
+  const urmsg::RunMode drawerMode = urmsg::DrawnRunMode();
+  const bool drawerNoSession = urmsg::DrawnNoSession();
   Automation::AutomationProperties::SetName(
-      drawer, winrt::hstring{urmsg::RelayDrawerName(urmsg::ActiveRunMode())});
+      drawer, winrt::hstring{urmsg::RelayDrawerName(drawerMode, drawerNoSession)});
   // The rise's transform, attached at rest so SetStatusStripDrawerOpen never
   // grows a transform-attachment block of its own (SettleIn's precedent).
   drawer.RenderTransform(Media::CompositeTransform());
@@ -360,7 +366,7 @@ Border MakeStatusDrawer(std::vector<demo::RelayNode> const& path) {
   // sentence (d5 §4.4) and can never drift into two spellings of it. The
   // letterspaced chrome voice carries the framing; no new colour, no new key.
   auto header = kit::MakePaneGroupHeader(
-      winrt::hstring{urmsg::RelayPathGroupTitle(urmsg::ActiveRunMode())},
+      winrt::hstring{urmsg::RelayPathGroupTitle(drawerMode, drawerNoSession)},
       winrt::to_hstring(static_cast<int>(path.size())));
   // Its top hairline would land one DIP under the drawer's own top edge and
   // read as a 2 px rule — the same double-rule fix the LAST row gets at the
@@ -659,8 +665,12 @@ StatusStripView MakeStatusStrip(urmsg::demo::World const& world) {
   // positive claim in the app, and the strip is the worst place to add a
   // second one (d5 §4.1). The framed automation NAME carries the meaning;
   // the colour is the redundant channel.
-  lock.Foreground(world.server.keyVerified ? urnw::colors::MutedBrush()
-                                           : urnw::colors::DangerBrush());
+  //
+  // AND MUTED OVER THE EMPTY WORLD, where the name below says the house placeholder: red there
+  // would report a failed check that never ran (the Network page's key row made the same change).
+  lock.Foreground(world.server.keyVerified || urmsg::DrawnNoSession()
+                      ? urnw::colors::MutedBrush()
+                      : urnw::colors::DangerBrush());
   // UrRowIconStyle marks its glyph Raw, because a leading mark normally sits
   // beside a label that already says the same word. This one does not: it is
   // the ONLY statement of key verification anywhere on the strip, so it is
@@ -669,9 +679,13 @@ StatusStripView MakeStatusStrip(urmsg::demo::World const& world) {
   // e785 open padlock), so the fact never rides on colour.
   Automation::AutomationProperties::SetAccessibilityView(
       lock, Automation::Peers::AccessibilityView::Content);
+  // DrawnRunMode() and DrawnNoSession(), not ActiveRunMode(): the latch alone named this padlock
+  // "Demo model: server key not verified" on every page of a plain launch (RunMode.h).
+  const urmsg::RunMode keyMode = urmsg::DrawnRunMode();
+  const bool keyNoSession = urmsg::DrawnNoSession();
   Automation::AutomationProperties::SetName(
-      lock, winrt::hstring{urmsg::ServerKeyStateName(world.server.keyVerified,
-                                                     urmsg::ActiveRunMode())});
+      lock, winrt::hstring{urmsg::ServerKeyStateName(world.server.keyVerified, keyMode,
+                                                     keyNoSession)});
   fields.Children().Append(lock);
 
   // Advanced Mode's three, in §6.6's order ("+ epoch, session mode,
