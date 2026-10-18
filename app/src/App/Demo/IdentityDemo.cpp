@@ -1149,9 +1149,11 @@ void WipeLiveInputs(LiveInputs& in) {
   urmsg::live::Wipe(in.typed);
 }
 
-// NOT BUILT YET (the addition's test comes first): the session kind is read once, when a screen is
-// built, and never again.
-bool RebuildForSessionKind(Screen, bool, bool, bool) { return false; }
+bool RebuildForSessionKind(Screen shown, bool liveShown, bool builtRemote, bool remoteNow) {
+  if (!liveShown || builtRemote == remoteNow) return false;
+  // exactly the screens whose build turns on the kind: the ones that show or take the words
+  return shown == Screen::Words || shown == Screen::TypeBack || shown == Screen::TypeBackWrong;
+}
 
 AccountModel BuildLiveAccount(urmsg::live::IdentityInfo const& id) {
   AccountModel a;

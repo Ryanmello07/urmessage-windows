@@ -77,6 +77,10 @@ struct MainWindow : MainWindowT<MainWindow> {
   // asks for it before there is one to ask.
   void SetNativeHandle(HWND hwnd);
 
+  // WM_WTSSESSION_CHANGE, from the window's procedure: the session kind is read again on the
+  // dispatcher, never inside the procedure (RecheckSessionKind).
+  void QueueSessionRecheck(unsigned event);
+
  private:
   // Every label in the window, from the localization store. One place, so a
   // missing key is one line to find rather than a hunt through the markup.
@@ -292,6 +296,13 @@ struct MainWindow : MainWindowT<MainWindow> {
   // PresentIdentity is the one place either kind of screen is hosted, with Property 2's ask first.
   void ApplyIdentity();
   void ShowLiveIdentity(urmsg::demo::identity::Screen screen, urmsg::demo::identity::LiveInputs in);
+  // ShowLiveIdentity's drawing, with the session kind already read into `in`.
+  void DrawLiveIdentity(urmsg::demo::identity::Screen screen, urmsg::demo::identity::LiveInputs in);
+  // THE SESSION KIND, READ AGAIN WHEN IT CHANGES (Spec C section 6.2; the lead's addition to LRI
+  // R84): WatchSessionKind asks for WM_WTSSESSION_CHANGE once there is a window, and
+  // RecheckSessionKind builds a words screen again when the kind it was built for has changed.
+  void WatchSessionKind();
+  void RecheckSessionKind(unsigned event);
   void PresentIdentity(urmsg::demo::identity::ScreenModel model, urmsg::demo::identity::Screen screen,
                        urmsg::demo::identity::Selection const& sel);
   // Overwrite every copy of the words and of the typed words this window owns.

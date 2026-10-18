@@ -9,6 +9,8 @@
 #include <array>
 #include <utility>
 
+#include <wtsapi32.h>  // WTSRegisterSessionNotification: the session kind, watched
+
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
 #include <winrt/Windows.Foundation.h>
 
@@ -35,6 +37,8 @@
 #include "Views/NetworkPageView.h"
 #include "Views/StatusStripView.h"
 #include "Views/ThreadView.h"
+
+#pragma comment(lib, "wtsapi32.lib")
 
 using namespace winrt;
 using namespace winrt::Microsoft::UI::Xaml;
@@ -102,6 +106,31 @@ constexpr std::array kSampleConversations{
     SampleConversation{L"Sample conversation 9", L"Placeholder", L"Sun"},
     SampleConversation{L"Sample conversation 10", L"Placeholder", L"Sat"},
 };
+
+// THE RULE EVERY LIVE IDENTITY SCREEN IS BUILT BY (Spec C section 6.2), and the one the re-check
+// reads again: a remote session skips the capture exclusion and shows the warning.
+bool RemoteSessionNow() { return ::GetSystemMetrics(SM_REMOTESESSION) != 0; }
+
+// THE SESSION KIND, WATCHED. The window's procedure is wrapped once, by WatchSessionKind, for one
+// message: WM_WTSSESSION_CHANGE, which WTSRegisterSessionNotification asks for. Every message goes
+// on to the procedure it wraps.
+WNDPROC g_sessionNextProc = nullptr;
+winrt::weak_ref<MainWindow> g_sessionWindow;
+
+LRESULT CALLBACK SessionKindProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+  const WNDPROC next = g_sessionNextProc;
+  if (msg == WM_WTSSESSION_CHANGE) {
+    // A CUE, NEVER AN ANSWER. Anything on this desktop can post this message, with any event, so
+    // the event decides nothing: the window reads the kind again (RecheckSessionKind).
+    if (auto self = g_sessionWindow.get()) self->QueueSessionRecheck(static_cast<unsigned>(wParam));
+  } else if (msg == WM_NCDESTROY) {
+    ::WTSUnRegisterSessionNotification(hwnd);
+    if (next) ::SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(next));
+    g_sessionNextProc = nullptr;
+  }
+  return next ? ::CallWindowProcW(next, hwnd, msg, wParam, lParam)
+              : ::DefWindowProcW(hwnd, msg, wParam, lParam);
+}
 
 }  // namespace
 
@@ -228,6 +257,7 @@ MainWindow::MainWindow() {
 
 void MainWindow::SetNativeHandle(HWND hwnd) {
   hwnd_ = hwnd;
+  WatchSessionKind();
   // A screen the constructor opened asked before there was a window to ask, so it was drawn
   // without the words. Draw it again now, before Activate shows the window: ShowIdentity asks
   // with the handle, and draws the words only if the window holds the exclusion.
@@ -265,11 +295,17 @@ void MainWindow::ShowIdentity(urmsg::demo::identity::Screen screen,
   PresentIdentity(std::move(model), screen, sel);
 }
 
-// THE LIVE SCREENS (Task 16), built from what the worker published and nothing else.
+// THE LIVE SCREENS (Task 16), built from what the worker published and nothing else, for the
+// session's kind as it is read now.
 void MainWindow::ShowLiveIdentity(urmsg::demo::identity::Screen screen,
                                   urmsg::demo::identity::LiveInputs in) {
+  in.remoteSession = RemoteSessionNow();
+  DrawLiveIdentity(screen, std::move(in));
+}
+
+void MainWindow::DrawLiveIdentity(urmsg::demo::identity::Screen screen,
+                                  urmsg::demo::identity::LiveInputs in) {
   namespace id = urmsg::demo::identity;
-  in.remoteSession = ::GetSystemMetrics(SM_REMOTESESSION) != 0;
   id::ScreenModel model = id::BuildLiveScreen(screen, in);
   if (!model.built) {
     urnw::LogInfo("identity: no live {} screen; nothing is drawn",
@@ -359,6 +395,64 @@ void MainWindow::CloseIdentity() {
 }
 
 void MainWindow::ForgetLiveWords() { urmsg::demo::identity::WipeLiveInputs(liveIdentityInputs_); }
+
+// THE SESSION KIND, WATCHED (Spec C section 6.2; the lead's addition to LRI R84). Asked for once,
+// with the window: its procedure is wrapped for WM_WTSSESSION_CHANGE, and the session's changes are
+// sent to it. Without either, the kind is still read whenever a screen is built.
+void MainWindow::WatchSessionKind() {
+  if (!hwnd_ || g_sessionNextProc) return;
+  g_sessionWindow = get_weak();
+  g_sessionNextProc = reinterpret_cast<WNDPROC>(::GetWindowLongPtrW(hwnd_, GWLP_WNDPROC));
+  if (!g_sessionNextProc ||
+      !::SetWindowLongPtrW(hwnd_, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&SessionKindProc))) {
+    g_sessionNextProc = nullptr;
+    urnw::LogWarn("window: session changes are NOT watched (the window procedure could not be "
+                  "wrapped, error {})",
+                  ::GetLastError());
+    return;
+  }
+  const bool watched = ::WTSRegisterSessionNotification(hwnd_, NOTIFY_FOR_THIS_SESSION) != FALSE;
+  if (watched) {
+    urnw::LogInfo("window: session changes are watched (WTSRegisterSessionNotification)");
+  } else {
+    urnw::LogWarn("window: session changes are NOT watched (WTSRegisterSessionNotification "
+                  "failed, error {})",
+                  ::GetLastError());
+  }
+}
+
+void MainWindow::QueueSessionRecheck(unsigned event) {
+  const bool queued =
+      winrt::Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread().TryEnqueue(
+          [weak = get_weak(), event] {
+            if (auto self = weak.get()) self->RecheckSessionKind(event);
+          });
+  if (!queued) urnw::LogWarn("identity: a session change (WTS event {}) could not be queued", event);
+}
+
+// THE KIND, READ AGAIN. A words screen built for one kind is built again for the other, by the very
+// rule it was built by: on the machine itself the exclusion is asked for at once, before it is drawn
+// again (PresentIdentity), and in a remote session it is given back and the warning shown. What is
+// typed stays typed, and the kind read here is the kind it is built for: it is not read twice.
+void MainWindow::RecheckSessionKind(unsigned event) {
+  namespace id = urmsg::demo::identity;
+  const bool remoteNow = RemoteSessionNow();
+  const id::Screen shown =
+      liveIdentityShown_ && identityView_.root ? identityView_.screen : id::Screen::None;
+  const bool rebuild = id::RebuildForSessionKind(shown, liveIdentityShown_,
+                                                 liveIdentityInputs_.remoteSession, remoteNow);
+  urnw::LogInfo("identity: the session changed (WTS event {}); it is {} now, {}", event,
+                remoteNow ? "remote" : "local",
+                rebuild ? "so the words screen is built again for it" : "and nothing is built again");
+  if (!rebuild) return;
+  id::LiveInputs in = liveIdentityInputs_;
+  if (shown == id::Screen::TypeBack || shown == id::Screen::TypeBackWrong) {
+    urmsg::live::Wipe(in.typed);
+    in.typed = urmsg::views::ReadIdentityFields(identityView_);
+  }
+  in.remoteSession = remoteNow;
+  DrawLiveIdentity(shown, std::move(in));
+}
 
 // THE WORKER'S IDENTITY STATE, DRAWN (identity phase 1, slice 1: PLAN Task 16). The worker reads the
 // identity before the join road; a device without one gets "Set up this device", and each later
