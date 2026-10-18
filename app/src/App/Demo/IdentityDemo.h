@@ -398,6 +398,16 @@ void WipeLiveInputs(LiveInputs& in);
 // SetUp, Words, TypeBack, TypeBackWrong and SetUpDone; every other screen is unbuilt.
 ScreenModel BuildLiveScreen(Screen s, LiveInputs const& in);
 
+// THE SESSION KIND, READ AGAIN WHEN IT CHANGES (Spec C section 6.2; the lead's addition to LRI R84).
+// The window reads SM_REMOTESESSION again on WM_WTSSESSION_CHANGE, and this answers whether the
+// live screen up must be built again for what it read: exactly when it shows or takes the words
+// and the session is no longer the kind it was built for. Built again by BuildLiveScreen's own
+// rule, the screen asks for the exclusion at once on the machine itself, and in a remote session
+// gives it back and shows the warning. `liveShown`: the screen up is a live one; `builtRemote`:
+// the kind it was built for; `remoteNow`: the kind read again. The message's own event decides
+// nothing: anything on the desktop can post one.
+bool RebuildForSessionKind(Screen shown, bool liveShown, bool builtRemote, bool remoteNow);
+
 // Settings -> Account over the library's identity: "Your ID" with Copy, and the newest list's
 // devices with this device marked. Unbuilt when the json was not read or holds no identity.
 AccountModel BuildLiveAccount(urmsg::live::IdentityInfo const& id);

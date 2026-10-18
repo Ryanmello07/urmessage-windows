@@ -440,6 +440,84 @@ std::vector<std::wstring> LiveIdentityDiagnostics() {
         Verdict(ok), onRemote, excludedRemote, onLocal, excludedLocal, onOthers, excludedOthers));
   }
 
+  // 6b. THE SESSION KIND, READ AGAIN WHEN IT CHANGES (Spec C section 6.2; the lead's addition to
+  // LRI R84). WM_WTSSESSION_CHANGE is simulated here: the session turns local -> remote -> local
+  // while the words screen is up, and again while the type-back screen is, and at each change the
+  // re-check decides and the screen is built again from what it read: excluded and unwarned, then
+  // warned and not excluded, then excluded again. CONTROLS: a message that leaves the kind as it was
+  // (anything on the desktop can post one, with any event) builds nothing again, nor does a
+  // fabricated screen; and every screen is asked both ways, so a screen is built again exactly when
+  // its model differs by session kind.
+  {
+    const std::wstring warning(kRemoteSessionWarning);
+    id::LiveInputs in;
+    in.words = MadeUpWords();
+    in.typed = MadeUpWords();
+    size_t switches = 0, rebuilt = 0, followed = 0;
+    for (id::Screen s : {id::Screen::Words, id::Screen::TypeBack}) {
+      bool builtRemote = false;
+      in.remoteSession = builtRemote;
+      id::ScreenModel m = id::BuildLiveScreen(s, in);
+      bool follows = m.excludedFromCapture && !HasText(m, warning);
+      for (bool remoteNow : {true, false}) {  // local -> remote -> local
+        ++switches;
+        if (!id::RebuildForSessionKind(s, true, builtRemote, remoteNow)) {
+          follows = false;  // the kind changed, and the screen stayed as it was built
+          continue;
+        }
+        ++rebuilt;
+        builtRemote = remoteNow;
+        in.remoteSession = builtRemote;
+        id::WipeScreenWords(m);
+        m = id::BuildLiveScreen(s, in);
+        follows = follows && m.excludedFromCapture == !remoteNow && HasText(m, warning) == remoteNow;
+      }
+      id::WipeScreenWords(m);
+      followed += (follows && builtRemote == false) ? 1 : 0;
+    }
+    const bool sameKind = !id::RebuildForSessionKind(id::Screen::Words, true, false, false) &&
+                          !id::RebuildForSessionKind(id::Screen::Words, true, true, true) &&
+                          !id::RebuildForSessionKind(id::Screen::TypeBack, true, false, false);
+    const bool fabricated = !id::RebuildForSessionKind(id::Screen::Words, false, false, true) &&
+                            !id::RebuildForSessionKind(id::Screen::Words, false, true, false);
+    size_t asked = 0, differ = 0, mismatched = 0;
+    std::wstring firstBad = L"(none)";
+    for (int i = 1; i < static_cast<int>(id::Screen::kCount); ++i) {
+      const auto s = static_cast<id::Screen>(i);
+      in.remoteSession = false;
+      id::ScreenModel local = id::BuildLiveScreen(s, in);
+      in.remoteSession = true;
+      id::ScreenModel remote = id::BuildLiveScreen(s, in);
+      ++asked;
+      const bool differs = local.built && (local.excludedFromCapture != remote.excludedFromCapture ||
+                                           HasText(local, warning) != HasText(remote, warning));
+      const bool both = id::RebuildForSessionKind(s, true, false, true) &&
+                        id::RebuildForSessionKind(s, true, true, false);
+      const bool either = id::RebuildForSessionKind(s, true, false, true) ||
+                          id::RebuildForSessionKind(s, true, true, false);
+      differ += differs ? 1 : 0;
+      if (differs ? !both : either) {
+        ++mismatched;
+        if (firstBad == L"(none)") firstBad = id::ScreenName(s);
+      }
+      id::WipeScreenWords(local);
+      id::WipeScreenWords(remote);
+    }
+    id::WipeLiveInputs(in);
+    const bool ok = switches == 4 && rebuilt == 4 && followed == 2 && sameKind && fabricated &&
+                    differ == 3 && mismatched == 0;
+    lines.push_back(std::format(
+        L"  id live session  : {}  local -> remote -> local, simulated on the words and type-back "
+        L"screens: {}/{} changes built the screen again, and {}/2 screens followed the kind each "
+        L"time (excluded and unwarned, warned and not excluded, excluded again); a message that "
+        L"leaves the kind as it was builds nothing again: {}; nor does a fabricated screen: {}; of "
+        L"{} screens asked both ways, {} differ by session kind and exactly those are built again "
+        L"({} mismatched, first: {})   [query: RebuildForSessionKind and BuildLiveScreen over the "
+        L"session kinds, every Screen]",
+        Verdict(ok), rebuilt, switches, followed, YesNo(sameKind), YesNo(fabricated), asked, differ,
+        mismatched, firstBad));
+  }
+
   // 7. THE TYPED-BACK STATES (Property 2): a wrong word is named in its own field, every one the
   // library named, and nothing is corrected - each field holds exactly what was typed. The plain
   // type-back offers the check and the way back to the words; while a request is with the library
