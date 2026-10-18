@@ -10,6 +10,8 @@
 
 #include "Views/InspectRailFields.h"  // OnlineDeviceCount
 
+#include <algorithm>
+
 namespace urmsg::views {
 
 std::wstring RoleWord(std::wstring_view role) {
@@ -269,6 +271,13 @@ std::wstring LocalNameUnset() { return L"not set"; }
 
 std::wstring LocalNameMarked(std::wstring const& label) {
   return label + L" (your name for them)";
+}
+
+// THE ROSTER BY IDENTITY: NOT BUILT YET (Task 16's tests come first). Today's rule, by leaves.
+size_t IdentityCount(std::vector<demo::MemberRef> const& members) { return members.size(); }
+
+demo::ConversationKind KindByIdentities(std::vector<demo::MemberRef> const& members) {
+  return 3 <= members.size() ? demo::ConversationKind::Group : demo::ConversationKind::Direct;
 }
 
 }  // namespace urmsg::views

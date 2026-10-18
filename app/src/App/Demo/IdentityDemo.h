@@ -53,6 +53,7 @@
 #include <string_view>
 #include <vector>
 
+#include "Live/LiveIdentity.h"
 #include "RunMode.h"
 
 namespace urmsg::demo::identity {
@@ -190,6 +191,10 @@ enum class Action : int {
   ToggleDevice,  // the Remove dialog: `arg` is the device's index in the fixture
   RemoveChosen,  // the Remove dialog's Remove
   SaveName,      // the Rename dialog's Save
+  // THE LIVE SETUP'S OWN (Task 16). The window hands each to the live worker, which answers with a
+  // published state; nothing here makes or checks anything itself.
+  MakeWords,     // "This is my first device", and "Back to the words": ask the library for them
+  ConfirmWords,  // the type-back's Check: the fields, joined, to urnet_message_device_confirm_words
 };
 
 struct Button {
@@ -229,6 +234,22 @@ struct DeviceLine {
   bool selected = false;
 };
 
+// HOW A WORD FIELD TAKES A WORD (F3 section 2.11.3; PLAN Task 16). The view builds each field from
+// this and from nothing else, so --diagnose's field case reads what the window draws.
+struct FieldPolicy {
+  bool maskWhenFocusLeaves = false;  // the word is hidden once focus leaves its field
+  bool revealToggle = false;         // one switch on the screen shows every word again
+  bool spellCheck = true;
+  bool prediction = true;
+  bool passwordScope = false;        // the touch keyboard's password layout
+  bool copyAllowed = true;           // false: a field's word can be neither copied nor cut, so no
+                                     // word reaches the clipboard or its history
+};
+// The fabricated screens' fields, as slice 0 drew them (made-up words).
+inline constexpr FieldPolicy kDemoWordFieldPolicy{false, false, false, false, true, true};
+// The live screens' fields: every protection F3 lists for a screen that takes the words.
+inline constexpr FieldPolicy kLiveWordFieldPolicy{true, true, false, false, true, false};
+
 struct Block {
   BlockType type = BlockType::Text;
   TextKind kind = TextKind::Chrome;  // of `text` (Banner, Title, Text, Code)
@@ -240,6 +261,8 @@ struct Block {
   std::vector<std::wstring> words;
   std::vector<std::wstring> prefill;
   int wrongIndex = -1;
+  std::vector<int> wrongPositions;   // WordFields, live: every word the library named, from 1
+  FieldPolicy fields = kDemoWordFieldPolicy;  // WordFields
   std::vector<EmojiItem> emoji;
   std::vector<DeviceLine> devices;
   std::vector<Button> buttons;
@@ -346,6 +369,31 @@ ScreenModel BuildScreen(Screen s, RunMode mode, Selection const& sel);
 inline ScreenModel BuildScreen(Screen s, RunMode mode) {
   return BuildScreen(s, mode, PresetSelection(s));
 }
+
+// ---- the live screens (PLAN Task 16: slice 1) -------------------------------------------------
+//
+// SCOPE H1, H2 and H4 over the library's identity: "Set up this device" with its first-device road,
+// the 25 words, typing them back with every wrong word named, the setup done, and Settings ->
+// Account's "Your ID" and this device. Built only through these two functions and from what the
+// library answered: BuildScreen and BuildAccount above still build nothing in live mode, so no
+// made-up value can reach a live screen. The code road of "Set up this device" is slice 2's (Task
+// 28): this build's screen says it cannot add this computer to an account that already exists.
+
+struct LiveInputs {
+  std::vector<std::wstring> words;   // Words: the 25 words offered (Wipe them once off screen)
+  std::vector<std::wstring> typed;   // TypeBackWrong: what the fields held, kept as typed
+  std::vector<int> wrong;            // TypeBackWrong: the positions the library named, from 1
+  std::wstring failure;              // a sentence when the library could not make or check
+  bool remoteSession = false;        // SM_REMOTESESSION: the warning on every words screen
+  bool waiting = false;              // a request is with the library: no second one is offered
+};
+
+// SetUp, Words, TypeBack, TypeBackWrong and SetUpDone; every other screen is unbuilt.
+ScreenModel BuildLiveScreen(Screen s, LiveInputs const& in);
+
+// Settings -> Account over the library's identity: "Your ID" with Copy, and the newest list's
+// devices with this device marked. Unbuilt when the json was not read or holds no identity.
+AccountModel BuildLiveAccount(urmsg::live::IdentityInfo const& id);
 
 // THE REFUSAL: PROPERTY 2 FAILS CLOSED. What the window draws in place of a screen that shows or
 // takes the words when it cannot be kept out of captures (SetWindowDisplayAffinity said no, or the

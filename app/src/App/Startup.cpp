@@ -50,6 +50,7 @@
 #include "Live/RefusalCopy.h"     // the refusal copy lines below (pure; Task 58)
 #include "Demo/DemoSwitches.h"
 #include "Demo/IdentityDemo.h"  // the identity screens' pure gate (Task 6)
+#include "Live/LiveIdentity.h"  // the first identity's pure gate (identity phase 1, Task 16)
 #include "Demo/DemoStress.h"
 
 // The Windows App SDK version this binary was BUILT against, injected from the
@@ -3910,6 +3911,11 @@ std::vector<std::wstring> CollectDiagnostics() {
   // the lines above; the copy pairs these screens use are gated in RunModeCopyDiagnostics.
   for (auto& line : urmsg::demo::identity::IdentityDemoDiagnostics())
     lines.push_back(std::move(line));
+  // ...and over the library's identity (identity phase 1, slice 1: PLAN Task 16): the json, the
+  // words both ways, the gate that lets the setup go on, the live screens and their capture flags,
+  // the word fields' settings, the remote-session warning, the typed-back states, "Your ID", the
+  // roster by identity, and the store folder. Pure, like the lines above.
+  for (auto& line : urmsg::live::LiveIdentityDiagnostics()) lines.push_back(std::move(line));
   {
     using namespace urmsg::demo;
     World const& w = GetWorld();

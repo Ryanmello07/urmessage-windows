@@ -1008,6 +1008,20 @@ std::wstring WordCheckLine(RunMode mode, int firstWrong, bool empty) {
                : std::format(L"Demo check: word {} is not the word you were shown.", firstWrong + 1);
 }
 
+// ---- the live screens (PLAN Task 16): NOT BUILT YET (the tests come first) --------------------
+
+ScreenModel BuildLiveScreen(Screen s, LiveInputs const& in) {
+  (void)in;
+  ScreenModel m;
+  m.screen = s;
+  return m;
+}
+
+AccountModel BuildLiveAccount(urmsg::live::IdentityInfo const& id) {
+  (void)id;
+  return AccountModel{};
+}
+
 // ---- the gate ---------------------------------------------------------------------------------
 
 std::vector<std::wstring> IdentityDemoDiagnostics() {
