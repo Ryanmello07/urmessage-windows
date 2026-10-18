@@ -3708,30 +3708,47 @@ std::vector<std::wstring> CollectDiagnostics() {
     // value. So the line asks COMMON: CommonBuiltAsIdentityPreview() is compiled into Common's own
     // object and must agree with this TU's build; and, with no override, Common's StorageRoot()
     // must have resolved the folder this build's name says, which is typed again here.
-    wchar_t overrideBuf[8] = {};
-    const bool overridden = ::GetEnvironmentVariableW(ids::kAppRootEnvVar, overrideBuf, 8) > 0;
+    //
+    // AND UNDER THE REAL APP'S VARIABLE THE PREVIEW KEEPS TO A FOLDER OF ITS OWN INSIDE IT
+    // (Ids.h's nested pair), so two worktrees' previews stay apart and neither shares a file with
+    // the real app there: the line checks that Common's StorageRoot() resolved that folder.
+    std::wstring overrideVar;
+    const bool overridden = !StorageRootOverride(&overrideVar).empty();
     const bool preview = urmsg::demo::identity::kIdentityPreviewBuild;
     const wchar_t* const wantFolder = preview ? L"URmessage-identity-preview" : L"URmessage";
     const wchar_t* const wantVar =
         preview ? L"URMESSAGE_IDENTITY_PREVIEW_APP_ROOT" : L"URMESSAGE_APP_ROOT";
+    const wchar_t* const wantNestedVar = preview ? L"URMESSAGE_APP_ROOT" : L"";
+    const wchar_t* const wantNestedFolder = preview ? L"identity-preview" : L"";
+    const bool nested = overridden && overrideVar == wantNestedVar && *wantNestedVar != L'\0';
+    const auto root = StorageRoot();
     bool folderAgrees = false;
-    for (auto const& part : StorageRoot())
-      if (part.wstring() == wantFolder) folderAgrees = true;
+    if (!overridden) {
+      for (auto const& part : root)
+        if (part.wstring() == wantFolder) folderAgrees = true;
+    } else {
+      // the build's own variable: the person chose the folder; the nested one: the preview's own
+      folderAgrees = !nested || root.filename().wstring() == wantNestedFolder;
+    }
     const bool idsAgree = ids::kIdentityPreviewIds == preview &&
                           std::wstring_view{ids::kStorageFolderName} == wantFolder &&
-                          std::wstring_view{ids::kAppRootEnvVar} == wantVar;
+                          std::wstring_view{ids::kAppRootEnvVar} == wantVar &&
+                          std::wstring_view{ids::kAppRootNestedEnvVar} == wantNestedVar &&
+                          std::wstring_view{ids::kAppRootNestedFolder} == wantNestedFolder;
     const bool commonAgrees = CommonBuiltAsIdentityPreview() == preview;
     lines.push_back(std::format(
         L"  build kind       : {}  {}; single-instance key {}, storage folder {} ({}), override "
         L"variable {}, ids of the {} build, Common compiled as the {} build",
-        idsAgree && commonAgrees && (overridden || folderAgrees) ? L"PASS" : L"FAIL",
+        idsAgree && commonAgrees && folderAgrees ? L"PASS" : L"FAIL",
         preview ? L"identity preview (slice 0): a plain launch opens the fabricated identity "
                   L"screens, and no launch is ever live"
                 : L"standard: a plain launch is live",
         ids::kSingleInstanceKey, ids::kStorageFolderName,
-        overridden ? std::format(L"the root is overridden by {}", ids::kAppRootEnvVar)
-                   : std::wstring{folderAgrees ? L"Common's StorageRoot resolved it"
-                                               : L"Common's StorageRoot resolved ANOTHER folder"},
+        !overridden ? std::wstring{folderAgrees ? L"Common's StorageRoot resolved it"
+                                                : L"Common's StorageRoot resolved ANOTHER folder"}
+        : nested    ? std::format(L"the root is its {} folder inside {}'s{}", wantNestedFolder,
+                                  overrideVar, folderAgrees ? L"" : L", and Common's is ANOTHER")
+                    : std::format(L"the root is overridden by {}", overrideVar),
         ids::kAppRootEnvVar, ids::kIdentityPreviewIds ? L"preview" : L"standard",
         CommonBuiltAsIdentityPreview() ? L"preview" : L"standard"));
   }
@@ -6215,16 +6232,11 @@ std::wstring EffectiveSingleInstanceKey() {
   // The override is read here and not through StorageRoot(), because what must key the
   // registration is the thing the PERSON set: two different overrides are two installs even if
   // both resolve under one parent, and StorageRoot() has already folded the default in.
-  // ids::kAppRootEnvVar, the variable THIS build's StorageRoot() honours: URMESSAGE_APP_ROOT in the
-  // standard build, byte for byte as before, and the identity preview's own in that build, so two
-  // preview launches over one root never get two keys.
-  wchar_t* raw = nullptr;
-  size_t len = 0;
-  std::wstring root;
-  if (::_wdupenv_s(&raw, &len, ids::kAppRootEnvVar) == 0 && raw != nullptr) {
-    root = raw;
-    ::free(raw);
-  }
+  // StorageRootOverride (Paths.h) is that thing, and the same thing StorageRoot() honours:
+  // URMESSAGE_APP_ROOT's value in the standard build, byte for byte as before; in the identity
+  // preview its own variable's, else its folder inside URMESSAGE_APP_ROOT's - so two preview
+  // launches over one root never get two keys, and two worktrees' previews never get one.
+  const std::wstring root = StorageRootOverride();
   if (root.empty()) return ids::kSingleInstanceKey;
 
   // FNV-1a over the case-folded path. Not a cryptographic hash and it does not need to be: the

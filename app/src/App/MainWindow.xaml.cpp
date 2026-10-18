@@ -255,9 +255,12 @@ void MainWindow::ShowIdentity(urmsg::demo::identity::Screen screen,
   // PROPERTY 2, AND IT FAILS CLOSED. The exclusion is asked for BEFORE the screen is drawn, and the
   // words are drawn only into a window that holds it: one that cannot be kept out of captures
   // draws the refusal in their place (IdentityDemo.h's CaptureRefusal). A screen without the words
-  // gives the exclusion back, once frames without them have been drawn (ApplyCaptureExclusion).
-  const bool held =
-      ApplyCaptureExclusion(model.excludedFromCapture, std::wstring{id::ScreenName(screen)});
+  // gives the exclusion back only AFTER it is in the tree, below, and then once frames without the
+  // words have been drawn (ApplyCaptureExclusion): armed any earlier, a throw while the new view is
+  // built or swapped in would leave the words up with their release already on its way.
+  const std::wstring name{id::ScreenName(screen)};
+  const bool asks = model.excludedFromCapture;
+  const bool held = !asks || ApplyCaptureExclusion(true, name);
   if (!held) model = id::CaptureRefusal(model);
   if (!identityHost_) {
     identityHost_ = Grid();
@@ -277,8 +280,11 @@ void MainWindow::ShowIdentity(urmsg::demo::identity::Screen screen,
   identityHost_.Children().Clear();
   identityHost_.Children().Append(identityView_.root);
   identityHost_.Visibility(Visibility::Visible);
-  urnw::LogInfo("identity: screen -> {} (capture {})",
-                urnw::Narrow(std::wstring{id::ScreenName(screen)}),
+  // The way out, now that the screen without the words is the one in the tree. Not for a screen
+  // that asked and was refused: its words are not drawn, and a release here would also forget the
+  // ask that SetNativeHandle answers when there was no handle yet.
+  if (!asks) ApplyCaptureExclusion(false, name);
+  urnw::LogInfo("identity: screen -> {} (capture {})", urnw::Narrow(name),
                 held ? (model.excludedFromCapture ? "excluded" : "allowed")
                      : (hwnd_ ? "REFUSED: the window is not held, so the words are not drawn"
                               : "not asked yet: there is no window handle, so the words wait"));

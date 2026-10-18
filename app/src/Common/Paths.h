@@ -17,12 +17,23 @@
 #pragma once
 
 #include <filesystem>
+#include <string>
 
 namespace urnw {
 
 // Root storage dir for this user, created if missing. Honours
-// %URMESSAGE_APP_ROOT% so concurrent worktrees can be isolated.
+// %URMESSAGE_APP_ROOT% so concurrent worktrees can be isolated
+// (StorageRootOverride below).
 std::filesystem::path StorageRoot();
+
+// THE ROOT THIS RUN WAS TOLD TO USE, or empty when it was told nothing: this
+// build's own variable (Ids.h's kAppRootEnvVar), else - in the identity preview
+// only - its own folder inside the real app's (kAppRootNestedEnvVar,
+// kAppRootNestedFolder). `variable`, when given, receives the name of the
+// variable that decided it. StorageRoot() and the single-instance key
+// (Startup.cpp's EffectiveSingleInstanceKey) both read this, so the two agree
+// on what a run was told. Any length; an empty value counts as unset.
+std::wstring StorageRootOverride(std::wstring* variable = nullptr);
 
 // Log directory (a subdir of StorageRoot).
 std::filesystem::path LogDir();

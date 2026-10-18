@@ -424,17 +424,28 @@
     <Error Condition="'$(UrmRequireSdkDll)'=='true'" Text="URnetworkSdk.dll is not staged at $(UrmSdkBinDir), and UrmRequireSdkDll=true says this build ships. Without it the app's live path, which an ordinary launch takes, cannot load the SDK. Build and stage it with app\tools\build-sdk-dll.ps1 -Stage (the x64 dll), from the composition app\third_party\urnetwork-sdk\composition.txt pins, the one the three files in third_party\vendor-include came from." />
   </Target>
 
-  <!-- THE IDENTITY PREVIEW'S OUTPUT HOLDS NO SDK, AND SAYS WHAT IT IS (identity phase 1, Task 6).
-       The preview builds into the same $(OutDir) as the standard build, so a dll an earlier
-       standard build copied there would otherwise ride along into the preview's zip. A preview
-       build removes it and stops if it is still there, and leaves IDENTITY-PREVIEW-BUILD.txt,
-       which installer\Installer.wixproj refuses to package: the MSI installs whatever is in this
-       folder, and Package.wxs would put the standard build's user model id on a preview exe. A
-       standard build removes the marker, because it has just replaced the preview exe. -->
+  <!-- THE IDENTITY PREVIEW'S OUTPUT SAYS WHAT IT IS, AND HOLDS NO SDK (identity phase 1, Task 6).
+       The preview builds into the same $(OutDir) as the standard build. It leaves
+       IDENTITY-PREVIEW-BUILD.txt there, which installer\Installer.wixproj refuses to package:
+       the MSI installs whatever is in this folder, and Package.wxs would put the standard build's
+       user model id on a preview exe.
+
+       THE MARKER COMES FIRST, BEFORE ANYTHING IS WRITTEN TO $(OutDir), so the gate fails closed:
+       a preview build that links its exe over the standard one and then fails (a locked dll the
+       Delete below cannot remove, its Error, a cancelled build) still leaves the folder marked.
+       Written last, as it first was, such a build could leave the preview exe beside the SDK dll
+       with no marker, and the MSI would have packaged it. A standard build removes the marker only
+       at the end of a build that succeeded, because only then has it replaced the preview exe.
+
+       A dll an earlier standard build copied there would otherwise ride along into the preview's
+       zip, so a preview build removes it and stops if it is still there. -->
+  <Target Name="UrmIdentityPreviewMarker" BeforeTargets="PrepareForBuild" Condition="'$(UrmIdentityPreview)'=='true'">
+    <MakeDir Directories="$(OutDir)" />
+    <WriteLinesToFile File="$(OutDir)IDENTITY-PREVIEW-BUILD.txt" Lines="This folder holds the URmessage identity preview build (identity phase 1, Task 6): made-up data and no live mode. installer\Installer.wixproj refuses to package it." Overwrite="true" />
+  </Target>
   <Target Name="UrmIdentityPreviewOutput" AfterTargets="Build">
     <Delete Condition="'$(UrmIdentityPreview)'=='true'" Files="$(OutDir)URnetworkSdk.dll" />
     <Error Condition="'$(UrmIdentityPreview)'=='true' And Exists('$(OutDir)URnetworkSdk.dll')" Text="The identity preview build must not hold URnetworkSdk.dll, and $(OutDir)URnetworkSdk.dll is still there after it was removed. The preview has no live mode, and its README says the library that encrypts is not in the zip. Remove the file and build again." />
-    <WriteLinesToFile Condition="'$(UrmIdentityPreview)'=='true'" File="$(OutDir)IDENTITY-PREVIEW-BUILD.txt" Lines="This folder holds the URmessage identity preview build (identity phase 1, Task 6): made-up data and no live mode. installer\Installer.wixproj refuses to package it." Overwrite="true" />
     <Delete Condition="'$(UrmIdentityPreview)'!='true'" Files="$(OutDir)IDENTITY-PREVIEW-BUILD.txt" />
   </Target>
 

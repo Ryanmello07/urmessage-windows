@@ -91,16 +91,24 @@ inline constexpr wchar_t kUriScheme[] = L"urmessage";
 // "does this collide with the VPN app" question has exactly one file to read.
 // VPN app: L"URnetwork" / L"URNETWORK_APP_ROOT".
 //
-// The identity preview has a variable of its own as well as a folder: every
-// agent worktree and every CI job sets URMESSAGE_APP_ROOT, and with one name
-// for both builds such a run put the preview's prefs and log in the real app's
-// root. The preview never reads URMESSAGE_APP_ROOT.
+// The identity preview has a variable of its own as well as a folder: agent
+// worktrees and CI jobs set URMESSAGE_APP_ROOT, and with one name for both
+// builds such a run put the preview's prefs and log in the real app's root.
+// With only that variable set, the preview keeps to a folder of its own INSIDE
+// it (kAppRootNestedEnvVar / kAppRootNestedFolder, Paths.cpp's
+// StorageRootOverride): it shares no file with the real app there, and two
+// worktrees' previews stay apart as their real apps do. The standard build has
+// no nested arm.
 #if !(defined(URM_IDENTITY_PREVIEW) && URM_IDENTITY_PREVIEW)
 inline constexpr wchar_t kStorageFolderName[] = L"URmessage";
 inline constexpr wchar_t kAppRootEnvVar[] = L"URMESSAGE_APP_ROOT";
+inline constexpr wchar_t kAppRootNestedEnvVar[] = L"";
+inline constexpr wchar_t kAppRootNestedFolder[] = L"";
 #else
 inline constexpr wchar_t kStorageFolderName[] = L"URmessage-identity-preview";
 inline constexpr wchar_t kAppRootEnvVar[] = L"URMESSAGE_IDENTITY_PREVIEW_APP_ROOT";
+inline constexpr wchar_t kAppRootNestedEnvVar[] = L"URMESSAGE_APP_ROOT";
+inline constexpr wchar_t kAppRootNestedFolder[] = L"identity-preview";
 #endif
 
 // HKCU subkey the window-placement blob lives under (WindowShell.cpp).
