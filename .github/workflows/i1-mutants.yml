@@ -1,0 +1,181 @@
+# THROWAWAY, NEVER MERGE, NEVER IN AN UPSTREAM PULL REQUEST. Identity phase 1, Task 6 (slice 0): the
+# --diagnose cases, judged on three trees:
+#   control  the tested head: --diagnose prints no FAIL.
+#   red      PLAN Task 6 Step 1, "each case first fails on its missing row": the cases on a tree with
+#            no screens and no copy (BuildScreen and BuildAccount build nothing; the seven identity
+#            copy functions answer an empty string). Green only when the cases about the screens
+#            and the copy FAIL, each on its own line.
+#   ma1      PLAN Task 6's MA1: the "Demo words" label is dropped (PhraseWordsLabel's fabricated
+#            arm says what the live one says). Green only when the new pair in
+#            RunModeCopyDiagnostics fails, naming the words label, and nothing fails but the lines
+#            that read that label.
+#   ma-mode  the review's BLOCKER, in the pure half: IdentityMode ignores the launch, so a plain
+#            launch whose latch still says Fabricated builds the made-up screens. Green only when
+#            identity live fails, and nothing else.
+#   ma-refusal  the review's should-fix 2, in the pure half: the refusal keeps the words and the
+#            word fields. Green only when identity capture fails, and nothing else.
+#   ma-accept  the review's nit 7: WordsAccepted forgets that there must be fields. Green only
+#            when identity check fails, and nothing else.
+# The checkout is the tested head plus CI files only (the first step proves it). Nothing is published.
+name: I1 diagnose mutants (throwaway)
+
+on:
+  push:
+    branches:
+      - 'ci/i1-mutants**'
+
+permissions:
+  contents: read
+
+env:
+  I1_HEAD: bcb81909017f3f6626b3276e401497deb8e48434
+
+jobs:
+  diagnose:
+    name: Diagnose (${{ matrix.variant }})
+    runs-on: windows-2022
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [control, red, ma1, ma-mode, ma-refusal, ma-accept]
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Prove the checkout is the tested head plus CI files only
+        shell: pwsh
+        run: |
+          Write-Host "checkout $(git rev-parse HEAD)"
+          Write-Host "tested   $(git rev-parse HEAD^)"
+          if ((git rev-parse HEAD^) -ne $env:I1_HEAD) { Write-Host "::error::the tested head is not $env:I1_HEAD"; exit 1 }
+          $changed = @(git diff --name-only HEAD^ HEAD)
+          $changed | ForEach-Object { Write-Host "  added by the CI commit: $_" }
+          $outside = @($changed | Where-Object { $_ -notlike '.github/*' })
+          if ($outside.Count -gt 0) { Write-Host "::error::the CI commit changes files outside .github: $($outside -join ', ')"; exit 1 }
+
+      - name: Apply the variant
+        if: matrix.variant != 'control'
+        shell: pwsh
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          function Swap([string]$path, [string]$old, [string]$new) {
+            $text = [IO.File]::ReadAllText($path)
+            $n = ([regex]::Matches($text, [regex]::Escape($old))).Count
+            if ($n -ne 1) { Write-Host "::error::'$old' occurs $n times in $path, not once"; exit 1 }
+            [IO.File]::WriteAllText($path, $text.Replace($old, $new), (New-Object Text.UTF8Encoding($false)))
+          }
+          $nl = "`n"
+          if ($env:VARIANT -eq 'red') {
+            $demo = 'app\src\App\Demo\IdentityDemo.cpp'
+            Swap $demo ('  ScreenModel m;' + $nl + '  m.screen = s;' + $nl) ('  ScreenModel m;' + $nl + '  m.screen = s;' + $nl + '  if (m.screen == s) return m;  // RED: no screen' + $nl)
+            Swap $demo ('  AccountModel a;' + $nl) ('  AccountModel a;' + $nl + '  if (!a.built) return a;  // RED: no account group' + $nl)
+            $copy = 'app\src\App\RunMode.cpp'
+            foreach ($f in @('std::wstring PhraseWordsLabel(RunMode mode) {', 'std::wstring PhraseWordsCaveat(RunMode mode) {',
+                             'std::wstring AccountIdNote(RunMode mode) {', 'std::wstring RemovedTitle(RunMode mode) {',
+                             'std::wstring OnlyDeviceLine(RunMode mode) {',
+                             'std::wstring SelfRemovalNotice(RunMode mode, std::wstring const& device) {',
+                             'std::wstring PhraseChangedLine(RunMode mode, std::wstring const& device) {')) {
+              Swap $copy ($f + $nl) ($f + $nl + '  if (mode == mode) return {};  // RED: no copy' + $nl)
+            }
+          } elseif ($env:VARIANT -eq 'ma-mode') {
+            Swap 'app\src\App\Demo\IdentityDemo.h' 'return fabricatedLaunch && drawn == RunMode::Fabricated ? RunMode::Fabricated : RunMode::Live;' 'return drawn == RunMode::Fabricated ? RunMode::Fabricated : RunMode::Live;'
+          } elseif ($env:VARIANT -eq 'ma-refusal') {
+            Swap 'app\src\App\Demo\IdentityDemo.cpp' '    if (b.type == BlockType::Banner) m.blocks.push_back(b);' '    if (b.type == BlockType::Banner || b.type == BlockType::Words || b.type == BlockType::WordFields) m.blocks.push_back(b);'
+          } elseif ($env:VARIANT -eq 'ma-accept') {
+            Swap 'app\src\App\Demo\IdentityDemo.h' '{ return fields > 0 && firstWrong < 0; }' '{ return firstWrong < 0; }'
+          } else {
+            Swap 'app\src\App\RunMode.cpp' 'return mode == RunMode::Live ? L"Your recovery phrase" : L"Demo words: not a recovery phrase";' 'return mode == RunMode::Live ? L"Your recovery phrase" : L"Your recovery phrase";'
+          }
+          git --no-pager diff --stat
+          git --no-pager diff
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build the app (Release x64)
+        shell: pwsh
+        working-directory: app
+        run: |
+          $pin = '10.0.22621.0'
+          $roots = @("${env:ProgramFiles(x86)}\Windows Kits\10", "$env:ProgramFiles\Windows Kits\10") | Where-Object { Test-Path -LiteralPath $_ }
+          $usable = @(foreach ($r in $roots) {
+            Get-ChildItem (Join-Path $r 'Include') -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' -and
+                (Test-Path -LiteralPath (Join-Path $r "Include\$($_.Name)\um\windows.h")) -and
+                (Test-Path -LiteralPath (Join-Path $r "Lib\$($_.Name)\um\x64\kernel32.lib")) } |
+              Select-Object -ExpandProperty Name
+          }) | Select-Object -Unique | Sort-Object { [version]$_ }
+          $usable = @($usable)
+          $sdk = if ($usable -contains $pin) { $pin } else { $usable[-1] }
+          msbuild URmessage.sln /restore /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=$sdk /m /v:minimal /clp:Summary
+          exit $LASTEXITCODE
+
+      - name: Run --diagnose and judge (${{ matrix.variant }})
+        shell: pwsh
+        env:
+          VARIANT: ${{ matrix.variant }}
+          URMESSAGE_APP_ROOT: ${{ github.workspace }}\.ci-appstate
+        run: |
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'app\build\x64\Release\URmessage.exe'
+          $psi = [System.Diagnostics.ProcessStartInfo]::new($exe)
+          $psi.Arguments = '--diagnose'
+          $psi.UseShellExecute = $false
+          $psi.CreateNoWindow = $true
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+          $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+          $p = [System.Diagnostics.Process]::Start($psi)
+          $out = $p.StandardOutput.ReadToEnd()
+          $null = $p.StandardError.ReadToEnd()
+          if (-not $p.WaitForExit(120000)) { Write-Host '::error::--diagnose did not exit'; exit 1 }
+          New-Item -ItemType Directory -Force "$env:GITHUB_WORKSPACE\i1diag" | Out-Null
+          [IO.File]::WriteAllText("$env:GITHUB_WORKSPACE\i1diag\diagnose-$env:VARIANT.out", $out, (New-Object Text.UTF8Encoding($false)))
+          $lines = @($out -split "`r?`n")
+          $pass = @($lines | Where-Object { $_ -match '\bPASS\b' }).Count
+          $fails = @($lines | Where-Object { $_ -match '\bFAIL\b' })
+          Write-Host "--diagnose: $($lines.Count) lines, $pass PASS, $($fails.Count) FAIL"
+          $fails | ForEach-Object { Write-Host "  FAIL line: $($_.Substring(0, [Math]::Min(260, $_.Length)))" }
+          function LineOf([string]$label) { return @($fails | Where-Object { $_.TrimStart().StartsWith($label) }) }
+          $labels = @($fails | ForEach-Object { ($_.TrimStart() -split ':')[0].Trim() })
+          Write-Host "failing lines: $($labels -join ', ')"
+          if ($env:VARIANT -eq 'control') {
+            if ($fails.Count -eq 0 -and $pass -gt 100) { Write-Host 'control: no FAIL'; exit 0 }
+            Write-Host '::error::control: --diagnose printed FAIL'; exit 1
+          }
+          if ($env:VARIANT -eq 'red') {
+            $want = @('run mode identity', 'run mode words', 'identity screens', 'identity words', 'identity capture', 'identity live')
+            $missing = @($want | Where-Object { $labels -notcontains $_ })
+            $extra = @($labels | Where-Object { $want -notcontains $_ })
+            if ($missing.Count -eq 0 -and $extra.Count -eq 0) { Write-Host "red: each case about the screens and the copy failed on its missing row: $($want -join ', ')"; exit 0 }
+            Write-Host "::error::red: missing FAIL lines $($missing -join ', '); other FAIL lines $($extra -join ', ')"; exit 1
+          }
+          $own = @{ 'ma-mode' = 'identity live'; 'ma-refusal' = 'identity capture'; 'ma-accept' = 'identity check' }
+          if ($own.ContainsKey($env:VARIANT)) {
+            $line = $own[$env:VARIANT]
+            if ($labels.Count -eq 1 -and $labels[0] -eq $line) { Write-Host "$($env:VARIANT.ToUpper()) KILLED by $line, and by nothing else"; exit 0 }
+            Write-Host "::error::$($env:VARIANT) not killed for its own reason: failing lines $($labels -join ', ') (only $line expected)"
+            exit 1
+          }
+          $want = @('run mode identity', 'run mode words', 'identity screens')
+          $missing = @($want | Where-Object { $labels -notcontains $_ })
+          $extra = @($labels | Where-Object { $want -notcontains $_ })
+          $named = @(LineOf 'run mode identity' | Where-Object { $_.Contains('(first bad: words label)') }).Count -eq 1
+          if ($missing.Count -eq 0 -and $extra.Count -eq 0 -and $named) {
+            Write-Host 'MA1 KILLED by the new pair in RunModeCopyDiagnostics (first bad: words label), and by the two lines that read the same label; nothing else failed'
+            exit 0
+          }
+          Write-Host "::error::MA1 not killed for its own reason: missing $($missing -join ', '); other $($extra -join ', '); the pair line names the words label: $named"
+          exit 1
+
+      - name: Upload the diagnose output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: i1-diagnose-${{ matrix.variant }}
+          path: i1diag/
+          if-no-files-found: warn
