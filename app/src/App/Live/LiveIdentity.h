@@ -8,11 +8,12 @@
 // here, so --diagnose holds it without a window and without the library.
 //
 // THE WORDS ARE THE ACCOUNT (urnetwork_message.h, urnet_message_device_create_identity). They are
-// never logged, never put on the clipboard, never stored, and every buffer this app owns them in is
-// overwritten (Wipe) as soon as they are off the screen. The library erases its own copy and
-// cannot erase this app's. What this app cannot erase is the text the window's own controls copy:
-// a stated residual, as Go's memory is the library's (PLAN's promise table, "Your phrase is never
-// stored").
+// never logged, never put on the clipboard and never stored, and every buffer this app owns them or
+// the typed phrase in - the strings the worker and the window hold, the screens' models and their
+// inputs - is overwritten (Wipe) before it is freed. What this app cannot overwrite is the text the
+// window's own controls hold: XAML's copies, and the string a control hands back when it is read.
+// That is a stated residual, as Go's memory is the library's (PLAN's promise table, "Your phrase is
+// never stored").
 //
 // PURE C++, NO winrt, NO XAML: App.vcxproj compiles LiveIdentity.cpp with PrecompiledHeader
 // NotUsing, because CollectDiagnostics runs LiveIdentityDiagnostics before winrt::init_apartment.
@@ -23,6 +24,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -82,12 +84,39 @@ inline constexpr size_t kPhraseWords = 25;
 // guess at a phrase.
 std::vector<std::wstring> SplitOfferedWords(std::string_view utf8);
 
-// THE WORDS TYPED BACK, as urnet_message_device_confirm_words reads them: the fields in order,
-// each trimmed of the spaces around it, joined by single spaces. A field left empty stays a
-// position (two spaces in a row), so the library names that position rather than shifting every
-// word after it onto the wrong number. Nothing is corrected or completed here: case and spacing are
-// the library's own fold (urnetwork_message.h).
+// EACH BOX HOLDS EXACTLY ONE WORD BEFORE ANYTHING IS SENT (slice 1's review, X-APP-1; LRI R84).
+// The library reads white space as the separator and keeps no empty position, so an empty box, or
+// a box of two words, would shift every later word onto the wrong number and name right words as
+// wrong. So the app names such a box itself - "Word 7 is empty", "Word 7 holds two words" - and
+// sends nothing until every box holds one word. It needs no word to know this: only where a box's
+// white space is.
+// THE LIST'S OWN CHECK HAS THE LAST WORD on a box of one word. The library's fold is NFKD first,
+// and some characters hold white space only once decomposed: a spacing diaeresis (U+00A8) is a
+// space and a mark there. A box ending in one is one word to the app and two to the library, and
+// every later word would shift again. urnet_message_device_check_word answers true only for
+// exactly one word of the list in the library's own fold, so a box it refuses is named too ("Word 7
+// is not a word of the list"), and what is sent is 25 words of the list, one to a box. Then the
+// library's positions are the boxes'.
+struct BoxIssue {
+  int position = 0;      // the box, from 1
+  size_t words = 0;      // by white space. 0: the box is empty; 2 or more: the words it holds
+  bool offList = false;  // one word by white space, which the list's own check refuses
+};
+// `isListWord` is the list's own check (urnet_message_device_check_word), asked of every box that
+// holds one word by white space, and of no other.
+std::vector<BoxIssue> CheckBoxes(std::vector<std::wstring> const& fields,
+                                 std::function<bool(std::wstring const&)> const& isListWord);
+// The sentence over the boxes for those issues; empty when there is none.
+std::wstring BoxesLine(std::vector<BoxIssue> const& issues);
+
+// THE WORDS TYPED BACK, as urnet_message_device_confirm_words reads them: the boxes in order, each
+// trimmed of the white space around it, joined by single spaces. Called only once CheckBoxes found
+// no issue, so each box is one word of the list and the library's positions are the boxes'. Nothing is
+// corrected or completed here: case is the library's own fold (urnetwork_message.h).
 std::string JoinTypedWords(std::vector<std::wstring> const& fields);
+// One word, as the list's check reads it (urnet_message_device_check_word): no copy of it but the
+// one returned.
+std::string OneWordUtf8(std::wstring const& word);
 
 // PROPERTY 2's ONE GATE IN THE APP (PLAN Task 16): the identity exists only after all 25 words
 // match, and the library says so with URNET_MESSAGE_WORDS_OK. Every other kind leaves the screen

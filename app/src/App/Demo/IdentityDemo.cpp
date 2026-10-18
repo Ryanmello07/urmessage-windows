@@ -1118,6 +1118,10 @@ ScreenModel BuildLiveScreen(Screen s, LiveInputs const& in) {
   return m;
 }
 
+// NOT BUILT YET (the round's tests come first): nothing is overwritten.
+void WipeScreenWords(ScreenModel&) {}
+void WipeLiveInputs(LiveInputs&) {}
+
 AccountModel BuildLiveAccount(urmsg::live::IdentityInfo const& id) {
   AccountModel a;
   if (!id.read || !id.hasIdentity) return a;

@@ -380,6 +380,10 @@ std::string TakeOfferedWords();
 // takes no device and makes nothing. True - mark nothing - while the library is not loaded.
 bool CheckWord(std::wstring const& word);
 
+// WHETHER THIS RUN'S SESSION HAS CONNECTED and not closed (X-APP-7): the setup and Settings ->
+// Account run under it, so the strip says Connected there although no live world has landed.
+bool SessionConnected();
+
 // ── how this app reaches the message server (ledger 268) ──────────────────────
 
 // The Settings switch "Route through URnetwork", persisted as route_through_urnetwork and ON

@@ -261,7 +261,8 @@ struct Block {
   std::vector<std::wstring> words;
   std::vector<std::wstring> prefill;
   int wrongIndex = -1;
-  std::vector<int> wrongPositions;   // WordFields, live: every word the library named, from 1
+  std::vector<int> wrongPositions;   // WordFields, live: every box marked, from 1
+  std::wstring markNote;             // WordFields, live: what a marked box's help text says
   FieldPolicy fields = kDemoWordFieldPolicy;  // WordFields
   std::vector<EmojiItem> emoji;
   std::vector<DeviceLine> devices;
@@ -384,9 +385,15 @@ struct LiveInputs {
   std::vector<std::wstring> typed;   // TypeBackWrong: what the fields held, kept as typed
   std::vector<int> wrong;            // TypeBackWrong: the positions the library named, from 1
   std::wstring failure;              // a sentence when the library could not make or check
-  bool remoteSession = false;        // SM_REMOTESESSION: the warning on every words screen
+  bool remoteSession = false;        // SM_REMOTESESSION: the warning, and no capture affinity
   bool waiting = false;              // a request is with the library: no second one is offered
+  std::vector<urmsg::live::BoxIssue> boxes;  // TypeBack: the boxes the app named before sending
+  bool stopped = false;              // the identity could not be read: the sentence, nothing to do
 };
+
+// Overwrite every word a model or its inputs hold, before they are freed (X-APP-2).
+void WipeScreenWords(ScreenModel& m);
+void WipeLiveInputs(LiveInputs& in);
 
 // SetUp, Words, TypeBack, TypeBackWrong and SetUpDone; every other screen is unbuilt.
 ScreenModel BuildLiveScreen(Screen s, LiveInputs const& in);

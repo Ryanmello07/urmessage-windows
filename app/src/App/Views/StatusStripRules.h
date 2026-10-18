@@ -43,6 +43,12 @@ inline constexpr double kStatusStripHeightDip = 26.0;
 // contract (d5 §4.2).
 std::wstring_view StatusStateWord(demo::ConnectState state);
 
+// THE EMPTY WORLD'S STATE (slice 1's review, X-APP-7): what the strip says while no live world has
+// landed. A launch that cannot go on is Offline; a session that has connected - the setup and the
+// account run under it - is Connected; anything else is still Connecting. The plain-launch rule
+// (#11) is about the copy before a live world, not about a connection that is up.
+demo::ConnectState EmptyWorldConnectState(bool stuck, bool sessionConnected);
+
 // Segoe Fluent Icons: e72e closed padlock (Lock), e785 open padlock (Unlock).
 // The two states differ in SHAPE, not only in the colour the view paints them,
 // which is why key verification does not ride on colour alone.
