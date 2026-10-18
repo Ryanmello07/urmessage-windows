@@ -273,21 +273,32 @@ struct MainWindow : MainWindowT<MainWindow> {
   // ---- the identity screens over the fabricated world (identity phase 1, Task 6) ------------
   // One host over the whole content area, below the title bar (so the DEMO chip stays in view),
   // drawing Demo/IdentityDemo.h's model of one screen at a time. ShowIdentity asks for capture
-  // exclusion exactly when the model says the screen shows or takes the words (Property 2), and
-  // CloseIdentity gives it back. Every button's Action comes back through OnIdentityAction, a
-  // beat later, so a handler never replaces the control that raised it.
+  // exclusion exactly when the model says the screen shows or takes the words (Property 2),
+  // before it draws it, and draws the refusal instead when the window is not held; a screen
+  // without the words, and CloseIdentity, give it back once frames without them have been drawn.
+  // Every button's Action comes back through OnIdentityAction, a beat later, so a handler never
+  // replaces the control that raised it.
   void ShowIdentity(urmsg::demo::identity::Screen screen);
   void ShowIdentity(urmsg::demo::identity::Screen screen,
                     urmsg::demo::identity::Selection const& sel);
   void CloseIdentity();
   void OnIdentityAction(urmsg::demo::identity::Button const& button);
   void QueueIdentityAction(urmsg::demo::identity::Button const& button);
-  void ApplyCaptureExclusion(bool excluded, std::wstring const& why);
+  // The mode the identity screens and Settings' Account group are built in: IdentityDemo.h's
+  // IdentityMode over this launch (options_.enabled) and ActiveRunMode(). The one reader of both.
+  urmsg::RunMode IdentityRunMode() const;
+  // True when the window holds what was asked: an exclusion that blacks a capture out, or (for a
+  // release) always. A release is deferred to CompositionTarget::Rendering.
+  bool ApplyCaptureExclusion(bool excluded, std::wstring const& why);
+  bool SetCaptureAffinity(bool excluded, std::wstring const& why);
+  void CancelCaptureRelease();
   HWND hwnd_ = nullptr;
   winrt::Microsoft::UI::Xaml::Controls::Grid identityHost_{nullptr};
   urmsg::views::IdentityScreenView identityView_{};
   urmsg::demo::identity::Selection identitySel_{};
   bool captureExcluded_ = false;
+  winrt::event_token captureRelease_{};
+  int captureReleaseFrames_ = 0;
 
   urmsg::views::SettingsView settings_{};
 

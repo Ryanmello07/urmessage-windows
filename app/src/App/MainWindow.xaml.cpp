@@ -223,8 +223,13 @@ MainWindow::MainWindow() {
 
 void MainWindow::SetNativeHandle(HWND hwnd) {
   hwnd_ = hwnd;
-  // a screen the constructor opened asked before there was a window to ask
-  if (captureExcluded_) ApplyCaptureExclusion(true, L"the screen open at launch");
+  // A screen the constructor opened asked before there was a window to ask. Ask now, before
+  // Activate shows the window, and when the window is not held, draw that screen again:
+  // ShowIdentity then draws the refusal in place of the words.
+  if (captureExcluded_ && !SetCaptureAffinity(true, L"the screen open at launch") &&
+      identityView_.root) {
+    ShowIdentity(identityView_.screen, identitySel_);
+  }
 }
 
 // ---- the identity screens (identity phase 1, Task 6) -------------------------------------------
@@ -241,14 +246,22 @@ void MainWindow::ShowIdentity(urmsg::demo::identity::Screen screen,
     SelectNavTag(L"settings");
     return;
   }
-  const id::ScreenModel model = id::BuildScreen(screen, urmsg::ActiveRunMode(), sel);
+  id::ScreenModel model = id::BuildScreen(screen, IdentityRunMode(), sel);
   if (!model.built) {
-    // live mode, or a screen this build has none of: nothing is drawn, and nothing claims to be
+    // live mode, a launch that is not a fabricated one, or a screen this build has none of:
+    // nothing is drawn, and nothing claims to be
     urnw::LogInfo("identity: no {} screen in this mode; nothing is drawn",
                   urnw::Narrow(std::wstring{id::ScreenName(screen)}));
     CloseIdentity();
     return;
   }
+  // PROPERTY 2, AND IT FAILS CLOSED. The exclusion is asked for BEFORE the screen is drawn, and the
+  // words are drawn only into a window that holds it: one that cannot be kept out of captures
+  // draws the refusal in their place (IdentityDemo.h's CaptureRefusal). A screen without the words
+  // gives the exclusion back, once frames without them have been drawn (ApplyCaptureExclusion).
+  const bool held =
+      ApplyCaptureExclusion(model.excludedFromCapture, std::wstring{id::ScreenName(screen)});
+  if (!held) model = id::CaptureRefusal(model);
   if (!identityHost_) {
     identityHost_ = Grid();
     // rows 1 and 2 of RevealRoot: the destinations and the status strip, and NOT the title bar,
@@ -267,11 +280,10 @@ void MainWindow::ShowIdentity(urmsg::demo::identity::Screen screen,
   identityHost_.Children().Clear();
   identityHost_.Children().Append(identityView_.root);
   identityHost_.Visibility(Visibility::Visible);
-  // PROPERTY 2: the policy is the model's, and this is the one place the window carries it out.
-  ApplyCaptureExclusion(model.excludedFromCapture, std::wstring{id::ScreenName(screen)});
   urnw::LogInfo("identity: screen -> {} (capture {})",
                 urnw::Narrow(std::wstring{id::ScreenName(screen)}),
-                model.excludedFromCapture ? "excluded" : "allowed");
+                !held ? "REFUSED: the window is not held, so the words are not drawn"
+                      : (model.excludedFromCapture ? "excluded" : "allowed"));
 }
 
 void MainWindow::CloseIdentity() {
@@ -326,7 +338,7 @@ void MainWindow::OnIdentityAction(urmsg::demo::identity::Button const& button) {
       urmsg::views::FillIdentityWords(identityView_);
       break;
     case id::Action::CheckWords:
-      if (urmsg::views::CheckIdentityWords(identityView_, urmsg::ActiveRunMode())) {
+      if (urmsg::views::CheckIdentityWords(identityView_, IdentityRunMode())) {
         ShowIdentity(static_cast<id::Screen>(button.arg));
       }
       break;
@@ -368,23 +380,92 @@ void MainWindow::OnIdentityAction(urmsg::demo::identity::Button const& button) {
   }
 }
 
-void MainWindow::ApplyCaptureExclusion(bool excluded, std::wstring const& why) {
-  captureExcluded_ = excluded;
-  if (!hwnd_) {
-    urnw::LogInfo("identity: capture exclusion {} waits for the window handle ({})",
-                  excluded ? "ON" : "off", urnw::Narrow(why));
-    return;
+// THE IDENTITY SCREENS' MODE: fabricated only in a fabricated launch whose latch has not flipped
+// (IdentityDemo.h's IdentityMode says why ActiveRunMode() alone is not enough).
+urmsg::RunMode MainWindow::IdentityRunMode() const {
+  return urmsg::demo::identity::IdentityMode(options_.enabled, urmsg::ActiveRunMode());
+}
+
+// PROPERTY 2's ONE PLACE IN THE WINDOW.
+//
+// ASKING IS IMMEDIATE, AND ITS ANSWER IS RETURNED. ShowIdentity asks before it draws a screen that
+// shows or takes the words, and draws the refusal instead when this answers false. Before
+// SetNativeHandle there is no window to ask and none on screen either: the ask is remembered, and
+// SetNativeHandle makes it before Activate.
+//
+// GIVING IT BACK IS DEFERRED until the window has rendered frames without the words. The affinity
+// changes at the compositor's next frame, and the XAML that removes the words only reaches the
+// screen with a later one, so dropping the exclusion in the same turn left one frame of the words
+// open to a capture. CompositionTarget::Rendering fires once per frame the window renders; after
+// kCaptureReleaseFrames of them the content without the words has been drawn, and only then is
+// the exclusion dropped. A screen that asks again in the meantime cancels the release.
+bool MainWindow::ApplyCaptureExclusion(bool excluded, std::wstring const& why) {
+  if (excluded) {
+    CancelCaptureRelease();
+    captureExcluded_ = true;
+    if (!hwnd_) {
+      urnw::LogInfo("identity: capture exclusion ON for {} waits for the window handle",
+                    urnw::Narrow(why));
+      return true;
+    }
+    return SetCaptureAffinity(true, why);
   }
+  if (!captureExcluded_ || captureRelease_) return true;
+  if (!hwnd_) {
+    captureExcluded_ = false;
+    return true;
+  }
+  constexpr int kCaptureReleaseFrames = 3;
+  captureReleaseFrames_ = 0;
+  captureRelease_ = winrt::Microsoft::UI::Xaml::Media::CompositionTarget::Rendering(
+      [weak = get_weak(), why, frames = kCaptureReleaseFrames](
+          winrt::Windows::Foundation::IInspectable const&,
+          winrt::Windows::Foundation::IInspectable const&) {
+        auto self = weak.get();
+        if (!self || ++self->captureReleaseFrames_ < frames) return;
+        self->CancelCaptureRelease();
+        self->captureExcluded_ = false;
+        self->SetCaptureAffinity(false, why);
+      });
+  urnw::LogInfo("identity: capture exclusion is given back for {} after {} frames without the "
+                "words",
+                urnw::Narrow(why), kCaptureReleaseFrames);
+  return true;
+}
+
+void MainWindow::CancelCaptureRelease() {
+  if (!captureRelease_) return;
+  winrt::Microsoft::UI::Xaml::Media::CompositionTarget::Rendering(captureRelease_);
+  captureRelease_ = {};
+}
+
+bool MainWindow::SetCaptureAffinity(bool excluded, std::wstring const& why) {
   // WDA_EXCLUDEFROMCAPTURE (0x11): the window is shown on the monitor and nowhere else, and
   // PrintWindow answers it black (ci/i1-affinity-probe, run 38894632625, on both runner images).
+  // WDA_MONITOR (0x01) blacks a capture out too, so an affinity read back as either holds.
   constexpr DWORD kExcludeFromCapture = 0x00000011;  // WDA_EXCLUDEFROMCAPTURE
+  constexpr DWORD kMonitor = 0x00000001;             // WDA_MONITOR
   constexpr DWORD kNone = 0x00000000;                // WDA_NONE
+  // --demo-capture=refused, a fabricated launch only: the shots' way to hold the refusal to the
+  // window. It makes the ask fail without asking, so it can take the words off the screen and can
+  // never draw them.
+  if (excluded && options_.captureRefused) {
+    urnw::LogInfo("identity: capture exclusion ON for {} REFUSED by --demo-capture=refused (the "
+                  "window is not asked)",
+                  urnw::Narrow(why));
+    return false;
+  }
   const BOOL ok = ::SetWindowDisplayAffinity(hwnd_, excluded ? kExcludeFromCapture : kNone);
+  const DWORD error = ok ? 0 : ::GetLastError();
   DWORD now = 0xFFFFFFFFu;
-  ::GetWindowDisplayAffinity(hwnd_, &now);
-  urnw::LogInfo("identity: capture exclusion {} for {} (SetWindowDisplayAffinity {}, affinity "
-                "now 0x{:x})",
-                excluded ? "ON" : "off", urnw::Narrow(why), ok ? "ok" : "FAILED", now);
+  const BOOL read = ::GetWindowDisplayAffinity(hwnd_, &now);
+  const bool held = read && (excluded ? (now == kExcludeFromCapture || now == kMonitor)
+                                      : now == kNone);
+  urnw::LogInfo("identity: capture exclusion {} for {} (SetWindowDisplayAffinity {}, error {}, "
+                "affinity now 0x{:x}){}",
+                excluded ? "ON" : "off", urnw::Narrow(why), ok ? "ok" : "FAILED", error, now,
+                excluded && !held ? ": NOT HELD, so the words are not drawn" : "");
+  return excluded ? held : true;
 }
 
 void MainWindow::StartReveal() {
@@ -1921,11 +2002,14 @@ void MainWindow::BuildSettings() {
   // is the ONE OnAdvancedModeChanged registration in EnterDemoMode (W7).
   // AdvancedModeEnabled() is already resolved:
   // EnterDemoMode ran InitAdvancedMode before any Build* call.
+  // IdentityRunMode(), NOT ActiveRunMode(), for the Account group: a plain launch is live and draws
+  // the empty world while ActiveRunMode() still says Fabricated, and the made-up account must not
+  // stand on it (IdentityDemo.h's IdentityMode).
   settings_ = urmsg::views::MakeSettings(
       ActiveWorld(), [](bool on) { urmsg::SetAdvancedModeEnabled(on); },
       urmsg::AdvancedModeEnabled(),
       [](bool on) { urmsg::live::SetRouteThroughUrnetwork(on); },
-      urmsg::live::RouteThroughUrnetwork(),
+      urmsg::live::RouteThroughUrnetwork(), IdentityRunMode(),
       [weak = get_weak()](urmsg::demo::identity::Button const& button) {
         if (auto self = weak.get()) self->QueueIdentityAction(button);
       });

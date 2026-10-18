@@ -3700,30 +3700,40 @@ std::vector<std::wstring> CollectDiagnostics() {
     // the fabricated identity screens on a plain launch and is never live; every other build keeps
     // the rule that a plain launch is live. Printed so a smoke of the zip can say which it ran.
     //
-    // AND ITS IDS ARE ITS OWN (Common/Ids.h): the preview keeps a single-instance key, a folder and
-    // a window placement of its own, so it neither swallows nor is swallowed by a running URmessage,
-    // and never writes the real app's prefs. Ids.h is compiled into Common's Paths.cpp as well as
-    // here, so the line asks Common's StorageRoot() which folder it resolved, and holds it to the
-    // folder name this TU sees: a Common built without the define would answer the real app's.
+    // AND ITS IDS ARE ITS OWN (Common/Ids.h): the preview keeps a single-instance key, a folder, an
+    // override variable and a window placement of its own, so it neither swallows nor is swallowed
+    // by a running URmessage, and never writes the real app's prefs, URMESSAGE_APP_ROOT set or not.
+    // Ids.h is compiled into Common's Paths.cpp as well as here, and its constants are inline, so
+    // a Common built with the other arm would be an ODR violation the linker may settle on either
+    // value. So the line asks COMMON: CommonBuiltAsIdentityPreview() is compiled into Common's own
+    // object and must agree with this TU's build; and, with no override, Common's StorageRoot()
+    // must have resolved the folder this build's name says, which is typed again here.
     wchar_t overrideBuf[8] = {};
     const bool overridden = ::GetEnvironmentVariableW(ids::kAppRootEnvVar, overrideBuf, 8) > 0;
+    const bool preview = urmsg::demo::identity::kIdentityPreviewBuild;
+    const wchar_t* const wantFolder = preview ? L"URmessage-identity-preview" : L"URmessage";
+    const wchar_t* const wantVar =
+        preview ? L"URMESSAGE_IDENTITY_PREVIEW_APP_ROOT" : L"URMESSAGE_APP_ROOT";
     bool folderAgrees = false;
     for (auto const& part : StorageRoot())
-      if (part.wstring() == ids::kStorageFolderName) folderAgrees = true;
-    const bool idsAgree = ids::kIdentityPreviewIds == urmsg::demo::identity::kIdentityPreviewBuild;
+      if (part.wstring() == wantFolder) folderAgrees = true;
+    const bool idsAgree = ids::kIdentityPreviewIds == preview &&
+                          std::wstring_view{ids::kStorageFolderName} == wantFolder &&
+                          std::wstring_view{ids::kAppRootEnvVar} == wantVar;
+    const bool commonAgrees = CommonBuiltAsIdentityPreview() == preview;
     lines.push_back(std::format(
-        L"  build kind       : {}  {}; single-instance key {}, storage folder {} ({}), ids of "
-        L"the {} build",
-        idsAgree && (overridden || folderAgrees) ? L"PASS" : L"FAIL",
-        urmsg::demo::identity::kIdentityPreviewBuild
-            ? L"identity preview (slice 0): a plain launch opens the fabricated identity screens, "
-              L"and no launch is ever live"
-            : L"standard: a plain launch is live",
+        L"  build kind       : {}  {}; single-instance key {}, storage folder {} ({}), override "
+        L"variable {}, ids of the {} build, Common compiled as the {} build",
+        idsAgree && commonAgrees && (overridden || folderAgrees) ? L"PASS" : L"FAIL",
+        preview ? L"identity preview (slice 0): a plain launch opens the fabricated identity "
+                  L"screens, and no launch is ever live"
+                : L"standard: a plain launch is live",
         ids::kSingleInstanceKey, ids::kStorageFolderName,
-        overridden ? L"the root is overridden by URMESSAGE_APP_ROOT"
-                   : (folderAgrees ? L"Common's StorageRoot resolved it"
-                                   : L"Common's StorageRoot resolved ANOTHER folder"),
-        ids::kIdentityPreviewIds ? L"preview" : L"standard"));
+        overridden ? std::format(L"the root is overridden by {}", ids::kAppRootEnvVar)
+                   : std::wstring{folderAgrees ? L"Common's StorageRoot resolved it"
+                                               : L"Common's StorageRoot resolved ANOTHER folder"},
+        ids::kAppRootEnvVar, ids::kIdentityPreviewIds ? L"preview" : L"standard",
+        CommonBuiltAsIdentityPreview() ? L"preview" : L"standard"));
   }
   {
     const nlohmann::json prefs = urnw::LoadAppPrefs();
@@ -6205,10 +6215,13 @@ std::wstring EffectiveSingleInstanceKey() {
   // The override is read here and not through StorageRoot(), because what must key the
   // registration is the thing the PERSON set: two different overrides are two installs even if
   // both resolve under one parent, and StorageRoot() has already folded the default in.
+  // ids::kAppRootEnvVar, the variable THIS build's StorageRoot() honours: URMESSAGE_APP_ROOT in the
+  // standard build, byte for byte as before, and the identity preview's own in that build, so two
+  // preview launches over one root never get two keys.
   wchar_t* raw = nullptr;
   size_t len = 0;
   std::wstring root;
-  if (::_wdupenv_s(&raw, &len, L"URMESSAGE_APP_ROOT") == 0 && raw != nullptr) {
+  if (::_wdupenv_s(&raw, &len, ids::kAppRootEnvVar) == 0 && raw != nullptr) {
     root = raw;
     ::free(raw);
   }

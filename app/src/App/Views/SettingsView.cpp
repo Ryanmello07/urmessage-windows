@@ -243,7 +243,7 @@ void AppendAccountGroup(
 SettingsView MakeSettings(urmsg::demo::World const& world,
                           std::function<void(bool)> onAdvancedChanged, bool advanced,
                           std::function<void(bool)> onRouteChanged,
-                          bool routeThroughUrnetwork,
+                          bool routeThroughUrnetwork, urmsg::RunMode identityMode,
                           std::function<void(urmsg::demo::identity::Button const&)> onIdentity) {
   SettingsView view;
 
@@ -310,8 +310,10 @@ SettingsView MakeSettings(urmsg::demo::World const& world,
 
   // ---- Account, first, in fabricated mode (identity phase 1, Task 6) ------------
   // BuildAccount builds nothing in live mode, where the inert ACCOUNT group stays at the foot of
-  // the page as it was: a live launch has no identity yet to draw (Task 16).
-  const urmsg::demo::identity::AccountModel account = urmsg::demo::identity::BuildAccount(mode);
+  // the page as it was: a live launch has no identity yet to draw (Task 16). In `identityMode`,
+  // not `mode`: a plain launch dialling a mesh is live although `mode` still says Fabricated.
+  const urmsg::demo::identity::AccountModel account =
+      urmsg::demo::identity::BuildAccount(identityMode);
   if (account.built) AppendAccountGroup(column, account, onIdentity);
 
   // ---- Appearance -----------------------------------------------------------

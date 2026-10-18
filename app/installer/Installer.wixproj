@@ -1,4 +1,4 @@
-<Project Sdk="WixToolset.Sdk/5.0.2">
+<Project Sdk="WixToolset.Sdk/5.0.2" InitialTargets="UrmRefuseIdentityPreview">
   <!-- URmessage MSI: a per-user install of the Release output folder (see
        Package.wxs). Build it after the solution, from app:
          msbuild installer\Installer.wixproj /restore /p:Configuration=Release /p:Platform=x64
@@ -64,4 +64,15 @@
          WiX authors that row; nothing here hand-authors Upgrade rows. -->
     <SuppressIces>ICE03;ICE61</SuppressIces>
   </PropertyGroup>
+
+  <!-- THE IDENTITY PREVIEW IS NEVER PACKAGED (identity phase 1, Task 6). It is a zip of made-up
+       screens with no live mode, and it builds into the folder this MSI installs; Package.wxs
+       would give its exe the standard build's user model id, and verify-msi-payload.ps1 would pass
+       it. So this stops before anything else runs: on /p:UrmIdentityPreview=true, and on the marker
+       a preview build leaves in $(BinDir) (App.vcxproj's UrmIdentityPreviewOutput, which a
+       standard build removes). -->
+  <Target Name="UrmRefuseIdentityPreview">
+    <Error Condition="'$(UrmIdentityPreview)'=='true'" Text="The MSI is never built from the identity preview (/p:UrmIdentityPreview=true): the preview ships as a zip. Build the standard app and package that." />
+    <Error Condition="Exists('$(BinDir)\IDENTITY-PREVIEW-BUILD.txt')" Text="$(BinDir) holds the identity preview build (its IDENTITY-PREVIEW-BUILD.txt says so), and the MSI is never built from it. Build the standard app into it (msbuild URmessage.sln without /p:UrmIdentityPreview=true), which removes the marker, then package that." />
+  </Target>
 </Project>
