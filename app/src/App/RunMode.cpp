@@ -372,6 +372,54 @@ std::wstring DisclosureBody(RunMode mode, bool noSession) {
          L"day say about a real message; it is not a statement about one.";
 }
 
+// ---- the identity screens (Task 6) ------------------------------------------------------------
+// Prefix-first in the fabricated arm, as everywhere in this file: a crop keeps the framing. The
+// live arms are SCOPE's own copy for Tasks 16, 28, 38 and 45.
+
+std::wstring PhraseWordsLabel(RunMode mode) {
+  return mode == RunMode::Live ? L"Your recovery phrase" : L"Demo words: not a recovery phrase";
+}
+
+std::wstring PhraseWordsCaveat(RunMode mode) {
+  return mode == RunMode::Live ? L"These words cannot bring your account back yet."
+                               : L"Demo model: these words bring nothing back. A real phrase "
+                                 L"cannot bring your account back yet, either.";
+}
+
+std::wstring AccountIdNote(RunMode mode) {
+  return mode == RunMode::Live ? L"One ID for your whole account, the same on every device."
+                               : L"Demo model: a made-up ID, not an account.";
+}
+
+std::wstring RemovedTitle(RunMode mode) {
+  return mode == RunMode::Live ? L"This device is no longer on your account"
+                               : L"Demo screen: this device is no longer on your account";
+}
+
+std::wstring OnlyDeviceLine(RunMode mode) {
+  return mode == RunMode::Live ? L"This ends this identity."
+                               : L"Demo model: on an only device, this would end this identity.";
+}
+
+std::wstring SelfRemovalNotice(RunMode mode, std::wstring const& device) {
+  const std::wstring body = device +
+                            L" held your recovery phrase's key and removed itself. If this was "
+                            L"not you, lock it out.";
+  return mode == RunMode::Live ? body : L"Demo notice, made up: " + body;
+}
+
+std::wstring PhraseChangedLine(RunMode mode, std::wstring const& device) {
+  if (mode == RunMode::Live)
+    return L"Recovery phrase changed. Your ID and your devices are the same. " + device +
+           L" no longer keeps your phrase's key: type the new phrase there to make it a phrase "
+           L"device again.";
+  return L"Demo model: no phrase was changed. After a real change, your ID and your devices are "
+         L"the same, and " +
+         device +
+         L" no longer keeps your phrase's key: you would type the new phrase there to make it a "
+         L"phrase device again.";
+}
+
 // ---- the gate ---------------------------------------------------------------------------------
 
 std::vector<std::wstring> RunModeCopyDiagnostics() {
@@ -608,6 +656,62 @@ std::vector<std::wstring> RunModeCopyDiagnostics() {
         L"neither \"Demo model\" nor \"Live session\"]",
         ok ? L"PASS" : L"FAIL", none, differs ? L"yes" : L"NO", roleBlind ? L"yes" : L"NO",
         claimsNothing ? L"yes" : L"NO", controlHolds ? L"holds" : L"FAILED"));
+  }
+
+  // ---- THE IDENTITY PAIRS (identity phase 1, Task 6) ------------------------------------------
+  // Their own clause, because their live arms name the ACCOUNT's thing and not the session (see
+  // RunMode.h): the fabricated arm must name the demo and not "live", the live arm must not name
+  // the demo, and they must differ. The device names passed in are the fixture's kind of name, so
+  // a name cannot be what supplies or removes the word.
+  {
+    const Pair identityPairs[] = {
+        {L"words label", PhraseWordsLabel(RunMode::Fabricated), PhraseWordsLabel(RunMode::Live)},
+        {L"words caveat", PhraseWordsCaveat(RunMode::Fabricated),
+         PhraseWordsCaveat(RunMode::Live)},
+        {L"your id note", AccountIdNote(RunMode::Fabricated), AccountIdNote(RunMode::Live)},
+        {L"removed title", RemovedTitle(RunMode::Fabricated), RemovedTitle(RunMode::Live)},
+        {L"only device", OnlyDeviceLine(RunMode::Fabricated), OnlyDeviceLine(RunMode::Live)},
+        {L"self-removal notice", SelfRemovalNotice(RunMode::Fabricated, L"Old laptop"),
+         SelfRemovalNotice(RunMode::Live, L"Old laptop")},
+        {L"phrase changed", PhraseChangedLine(RunMode::Fabricated, L"Linux laptop"),
+         PhraseChangedLine(RunMode::Live, L"Linux laptop")},
+    };
+    size_t idOk = 0;
+    std::wstring idFirstBad = L"(none)";
+    for (auto const& p : identityPairs) {
+      const bool ok = !p.fabricated.empty() && !p.live.empty() && p.fabricated != p.live &&
+                      ContainsWord(p.fabricated, L"demo") && !ContainsWord(p.fabricated, L"live") &&
+                      !ContainsWord(p.live, L"demo");
+      if (ok) {
+        ++idOk;
+      } else if (idFirstBad == L"(none)") {
+        idFirstBad = std::wstring(p.what);
+      }
+    }
+    lines.push_back(std::format(
+        L"  run mode identity: {}  {}/{} identity pairs: the fabricated arm names the demo, the "
+        L"live arm does not, and they differ (first bad: {})   [query: for each pair, fabricated "
+        L"!= live AND fabricated contains \"demo\" and not \"live\" AND live does not contain "
+        L"\"demo\", case-insensitive. The live arms are SCOPE's copy for the live screens of Tasks "
+        L"16, 28, 38 and 45, none of which this build draws]",
+        idOk == std::size(identityPairs) ? L"PASS" : L"FAIL", idOk, std::size(identityPairs),
+        idFirstBad));
+
+    // THE WORDS LABEL, ASKED FOR THE DENIAL ITSELF. A label that named the demo and still called
+    // the words a phrase ("Demo: your recovery phrase") would pass the pair test above and be false
+    // in exactly the way Task 6 exists to prevent, so this line asks for the words "not a recovery
+    // phrase" in the fabricated arm, and for their absence in the live one.
+    const std::wstring fab = PhraseWordsLabel(RunMode::Fabricated);
+    const std::wstring live = PhraseWordsLabel(RunMode::Live);
+    const bool wordsOk = ContainsWord(fab, L"demo words") &&
+                         ContainsWord(fab, L"not a recovery phrase") &&
+                         !ContainsWord(live, L"not a recovery phrase") &&
+                         !ContainsWord(live, L"demo");
+    lines.push_back(std::format(
+        L"  run mode words   : {}  the words label: fabricated \"{}\" | live \"{}\"   [query: the "
+        L"fabricated arm contains \"demo words\" and \"not a recovery phrase\"; the live arm "
+        L"contains neither \"not a recovery phrase\" nor \"demo\"]",
+        wordsOk ? L"PASS" : L"FAIL", AsciiOnly(fab), AsciiOnly(live)));
   }
 
   // THE OTHER THIRD ARMS (fix/plain-launch-run-mode), held to the composer's property: a plain

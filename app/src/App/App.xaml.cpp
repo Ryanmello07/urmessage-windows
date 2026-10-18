@@ -98,8 +98,11 @@ void App::OnLaunched(LaunchActivatedEventArgs const&) {
         // MainWindow::ContentShell() decides every other surface. Keyed on --demo alone, a live
         // launch opened at the compact 480x760 with no rail and no status strip.
         bool wideShell = false;
-        if (auto self = window_.try_as<URmessage::MainWindow>())
+        if (auto self = window_.try_as<URmessage::MainWindow>()) {
           wideShell = winrt::get_self<MainWindow>(self)->ContentShell();
+          // the identity screens' capture exclusion is the HWND's (Task 6)
+          winrt::get_self<MainWindow>(self)->SetNativeHandle(hwnd);
+        }
         urnw::shell::ApplyNativeShell(window_, hwnd,
                                       wideShell ? urnw::shell::kDemoWidthDips : 0,
                                       wideShell ? urnw::shell::kDemoHeightDips : 0);

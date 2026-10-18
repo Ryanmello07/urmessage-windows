@@ -89,4 +89,19 @@
     </ResourceCompile>
   </ItemDefinitionGroup>
 
+  <!-- THE IDENTITY PREVIEW BUILD (identity phase 1, Task 6). /p:UrmIdentityPreview=true makes the
+       zip the owner previews the identity screens with: a plain launch opens the fabricated world on
+       "Set up this device" (App's Demo\DemoSwitches.cpp), no launch of it is ever live (App's
+       Live\LiveMesh.cpp), and it keeps its own single-instance key, folder, override variable and
+       window placement (Common\Ids.h). Its output holds no URnetworkSdk.dll, and the MSI refuses
+       it (App.vcxproj's UrmIdentityPreviewOutput, installer\Installer.wixproj). For EVERY project,
+       because Ids.h is read by Common's Paths.cpp and App's TUs alike, and one inline constant
+       with two values across them would be an ODR violation (Startup.cpp's build kind line asks
+       Common which it was compiled as). Every other build is unchanged. -->
+  <ItemDefinitionGroup Condition="'$(UrmIdentityPreview)'=='true'">
+    <ClCompile>
+      <PreprocessorDefinitions>URM_IDENTITY_PREVIEW=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+
 </Project>
