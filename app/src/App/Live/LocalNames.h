@@ -89,7 +89,7 @@ bool SaveLocalNamesTo(std::filesystem::path const& path, LocalNames const& names
 // read-me says how to delete it by hand.
 std::filesystem::path LocalNamesFile(std::filesystem::path const& storageRoot);
 
-// THE PROCESS'S LABELS: StorageRoot()/local_names.json, loaded on first use. Safe from any thread.
+// THE PROCESS'S LABELS: LocalNamesFile(StorageRoot()), loaded on first use. Safe from any thread.
 LocalNames CurrentLocalNames();
 
 // Store `utf8` as the label for one key, or remove the key's label when `utf8` is empty. `utf8`

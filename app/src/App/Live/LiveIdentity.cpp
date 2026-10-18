@@ -23,10 +23,18 @@ void Overwrite(void* data, size_t bytes) {
   for (size_t i = 0; i < bytes; ++i) p[i] = 0;
 }
 
+// WHITE SPACE, as a box's separator: the ASCII kinds, the no-break space and the Unicode spaces.
+// A box is held to one word by it, so the app is stricter than the library's fold, never looser.
+bool IsSpaceChar(wchar_t c) {
+  return c == L' ' || (c >= 0x09 && c <= 0x0D) || c == 0x85 || c == 0xA0 || c == 0x1680 ||
+         (c >= 0x2000 && c <= 0x200A) || c == 0x2028 || c == 0x2029 || c == 0x202F ||
+         c == 0x205F || c == 0x3000;
+}
+
 std::wstring TrimSpaces(std::wstring const& s) {
   size_t b = 0, e = s.size();
-  while (b < e && (s[b] == L' ' || s[b] == L'\t')) ++b;
-  while (e > b && (s[e - 1] == L' ' || s[e - 1] == L'\t')) --e;
+  while (b < e && IsSpaceChar(s[b])) ++b;
+  while (e > b && IsSpaceChar(s[e - 1])) --e;
   return s.substr(b, e - b);
 }
 
@@ -154,8 +162,12 @@ IdentityInfo ParseIdentityJson(std::string_view json) {
 }
 
 std::vector<std::wstring> SplitOfferedWords(std::string_view utf8) {
+  // RESERVED FIRST, so no buffer that held a word is let go unwiped as the vector or a word grows
+  // (X-APP-2): 25 words, and room for the list's longest
   std::vector<std::wstring> words;
+  words.reserve(kPhraseWords);
   std::wstring word;
+  word.reserve(32);
   for (size_t i = 0; i <= utf8.size(); ++i) {
     const bool end = i == utf8.size();
     const char c = end ? ' ' : utf8[i];
@@ -165,7 +177,8 @@ std::vector<std::wstring> SplitOfferedWords(std::string_view utf8) {
         return {};
       }
       words.push_back(std::move(word));
-      word.clear();
+      word = std::wstring();
+      word.reserve(32);
       continue;
     }
     if (c < 'a' || c > 'z') {  // the list's words are lower-case ASCII letters, and nothing else
@@ -182,21 +195,64 @@ std::vector<std::wstring> SplitOfferedWords(std::string_view utf8) {
   return words;
 }
 
-// NOT BUILT YET (the round's tests come first): no box is named.
-std::vector<BoxIssue> CheckBoxes(std::vector<std::wstring> const&,
-                                 std::function<bool(std::wstring const&)> const&) {
-  return {};
+std::vector<BoxIssue> CheckBoxes(std::vector<std::wstring> const& fields,
+                                 std::function<bool(std::wstring const&)> const& isListWord) {
+  std::vector<BoxIssue> issues;
+  for (size_t i = 0; i < fields.size(); ++i) {
+    // counted by where the white space is, so no word is copied out of its box
+    size_t words = 0;
+    bool inWord = false;
+    for (wchar_t c : fields[i]) {
+      if (IsSpaceChar(c)) {
+        inWord = false;
+      } else if (!inWord) {
+        inWord = true;
+        ++words;
+      }
+    }
+    if (words != 1) {
+      issues.push_back(BoxIssue{static_cast<int>(i + 1), words, false});
+    } else if (!isListWord || !isListWord(fields[i])) {
+      // ONE WORD, AND THE LIST'S OWN CHECK REFUSES IT: in the library's fold it is not exactly one
+      // word of the list (perhaps two, split where NFKD finds white space). With no check to ask,
+      // nothing is let through.
+      issues.push_back(BoxIssue{static_cast<int>(i + 1), 1, true});
+    }
+  }
+  return issues;
 }
-std::wstring BoxesLine(std::vector<BoxIssue> const&) { return {}; }
+
+std::wstring BoxesLine(std::vector<BoxIssue> const& issues) {
+  std::wstring line;
+  for (auto const& issue : issues) {
+    if (!line.empty()) line += L" ";
+    if (issue.words == 0) {
+      line += std::format(L"Word {} is empty.", issue.position);
+    } else if (issue.offList) {
+      line += std::format(L"Word {} is not a word of the list.", issue.position);
+    } else if (issue.words == 2) {
+      line += std::format(L"Word {} holds two words.", issue.position);
+    } else {
+      line += std::format(L"Word {} holds {} words.", issue.position, issue.words);
+    }
+  }
+  if (!line.empty()) line += L" Type one word from your paper in each box. Nothing was sent.";
+  return line;
+}
 
 std::string OneWordUtf8(std::wstring const& word) {
   std::string out;
+  out.reserve(word.size() * 4);
   AppendUtf8(out, word);
   return out;
 }
 
 std::string JoinTypedWords(std::vector<std::wstring> const& fields) {
+  // RESERVED FIRST, for the reason SplitOfferedWords gives: no grown buffer is let go unwiped
+  size_t room = fields.size();
+  for (auto const& f : fields) room += f.size() * 4;
   std::string out;
+  out.reserve(room);
   for (size_t i = 0; i < fields.size(); ++i) {
     if (i > 0) out.push_back(' ');
     std::wstring w = TrimSpaces(fields[i]);

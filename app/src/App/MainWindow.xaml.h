@@ -236,6 +236,9 @@ struct MainWindow : MainWindowT<MainWindow> {
   // The generation this window has already drawn. A publish that lands while an earlier beat is
   // still queued collapses into one redraw rather than N.
   std::uint64_t liveDrawn_ = 0;
+  // The world the status strip was last built off. Before a live world lands that is one of
+  // EmptyWorld()'s three, and the strip is built again when the answer changes (X-APP-7).
+  urmsg::demo::World const* stripWorldDrawn_ = nullptr;
 
   urmsg::views::ThreadView thread_{};
   urmsg::views::InspectRailView rail_{};

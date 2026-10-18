@@ -7,6 +7,7 @@
 // winrt::init_apartment().
 
 #include "Live/LocalNames.h"
+#include "Live/LiveIdentity.h"  // SliceStoreFolder: the names live in the slice's folder
 
 #include <format>
 #include <fstream>
@@ -197,9 +198,8 @@ LocalNames LoadLocalNamesFrom(std::filesystem::path const& path) {
   return ParseLocalNames(text.str());
 }
 
-// NOT BUILT YET (the round's tests come first): where build 03 kept it.
 std::filesystem::path LocalNamesFile(std::filesystem::path const& storageRoot) {
-  return storageRoot / L"local_names.json";
+  return SliceStoreFolder(storageRoot / L"live") / L"local_names.json";
 }
 
 bool SaveLocalNamesTo(std::filesystem::path const& path, LocalNames const& names) {

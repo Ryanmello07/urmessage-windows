@@ -401,6 +401,10 @@ Route ChosenRoute() {
   return RouteThroughUrnetwork() ? Route::Urnetwork : Route::Direct;
 }
 
+// THIS RUN'S SESSION HAS CONNECTED and not closed (X-APP-7): set when device_connect answers, and
+// cleared when the session closes. The strip's empty world reads Connected while it holds.
+std::atomic<bool> g_sessionConnected{false};
+
 struct Session {
   uint64_t ctx = 0;
   uint64_t client = 0;
@@ -415,6 +419,7 @@ struct Session {
   uint64_t group = 0;
 
   void Close() {
+    g_sessionConnected.store(false, std::memory_order_release);
     char* err = nullptr;
     if (group != 0) {
       if (!urnet_message_group_close(group, &err)) {
@@ -1369,6 +1374,13 @@ bool RunIdentitySetUp(Session& s, urmsg::live::IdentityInfo info) {
         }
         urnw::LogError("live: confirm_words answered {} ({}); the identity is not made", kind,
                        why.empty() ? "no reason given" : why);
+        PublishIdentity(IdentityStep::Failed, info, {},
+                        "The words could not be checked just now. Try again.");
+      } else if (kind == URNET_MESSAGE_WORDS_WRONG && named.empty()) {
+        // A WRONG WITH NO POSITION TO MARK (X-APP-1's last case; X-LIB-2): drawn as a sentence, never
+        // as a wrong-word screen that names nothing
+        urnw::LogWarn("live: confirm_words answered WRONG with {} position(s), none of them a box "
+                      "from 1 to 25; nothing was made", count);
         PublishIdentity(IdentityStep::Failed, info, {},
                         "The words could not be checked just now. Try again.");
       } else if (kind == URNET_MESSAGE_WORDS_WRONG) {
@@ -2349,6 +2361,8 @@ void RunSession() {
       "live: *** CONNECTED to the alpha mesh *** after {} device_connect call(s), {} unanswered "
       "Hello(s), {} ms",
       connectCalls, hellos.unanswered.load(), connectMs);
+  g_sessionConnected.store(true, std::memory_order_release);
+  urmsg::live::NotifyPublished();
 
   // ── restore, or join ────────────────────────────────────────────────────────
   const uint64_t restored = urnet_message_device_restore(s.device, s.ctx, &err);
@@ -3044,6 +3058,10 @@ bool StartIfEnabled() {
     // it, and the failure mode of missing it is an enabled Send whose clicks vanish.
     g_canSend.store(false, std::memory_order_relaxed);
     g_hasGroup.store(false, std::memory_order_relaxed);
+    // and the session is not up: the strip, drawn off the session before a live world lands
+    // (X-APP-7), is told, so it never says Connected after the session has gone
+    g_sessionConnected.store(false, std::memory_order_release);
+    urmsg::live::NotifyPublished();
   });
 
   // DETACHED, AND NOT AS A SHORTCUT. This is called from the UI thread of a
@@ -3199,12 +3217,12 @@ bool QueueConfirmWords(std::string typedUtf8) {
   return true;
 }
 
-// NOT BUILT YET (the round's tests come first)
-bool SessionConnected() { return false; }
+bool SessionConnected() { return g_sessionConnected.load(std::memory_order_acquire); }
 
 bool CheckWord(std::wstring const& word) {
   if (!g_sdkLoaded.load(std::memory_order_acquire)) return true;
-  std::string utf8 = JoinTypedWords({word});
+  // one word, with no copy of it but this one (X-APP-2: an initializer list made a second)
+  std::string utf8 = OneWordUtf8(word);
   const bool onList = urnet_message_device_check_word(reinterpret_cast<const uint8_t*>(utf8.data()),
                                                       static_cast<int32_t>(utf8.size()));
   Wipe(utf8);

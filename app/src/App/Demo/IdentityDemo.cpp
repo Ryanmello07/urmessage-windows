@@ -1038,6 +1038,15 @@ ScreenModel BuildLiveScreen(Screen s, LiveInputs const& in) {
   };
   switch (s) {
     case Screen::SetUp: {
+      // THE IDENTITY COULD NOT BE READ (X-APP-3): the session has ended, and the screen says why, in
+      // the worker's sentence, with nothing to press. Not "Set up this device": that would claim
+      // this device has no identity, which nothing has read.
+      if (in.stopped) {
+        m.built = true;
+        m.blocks.push_back(TitleBlock(L"URmessage cannot go on"));
+        failure();
+        break;
+      }
       // SCOPE E1's second road only: the code road, which adds this computer to an account that
       // already exists, is slice 2's (Task 28), so this screen says it cannot, and shows no code
       m.built = true;
@@ -1060,7 +1069,10 @@ ScreenModel BuildLiveScreen(Screen s, LiveInputs const& in) {
     }
     case Screen::Words: {
       m.built = true;
-      m.excludedFromCapture = true;
+      // BY SESSION KIND (Spec C section 6.2; X-APP-5): on the machine itself, excluded from
+      // capture; in a remote session the exclusion would black the window for the only person who
+      // can read it, so it is skipped, and the inline warning says what that means
+      m.excludedFromCapture = !in.remoteSession;
       m.blocks.push_back(TitleBlock(L"Write down these 25 words"));
       if (in.remoteSession) m.blocks.push_back(LiveRemoteBlock());
       m.blocks.push_back(WordsBlock(RunMode::Live, in.words));
@@ -1075,7 +1087,7 @@ ScreenModel BuildLiveScreen(Screen s, LiveInputs const& in) {
     case Screen::TypeBack:
     case Screen::TypeBackWrong: {
       m.built = true;
-      m.excludedFromCapture = true;
+      m.excludedFromCapture = !in.remoteSession;  // by session kind, as the words screen
       m.blocks.push_back(TitleBlock(L"Type the 25 words back"));
       if (in.remoteSession) m.blocks.push_back(LiveRemoteBlock());
       Block fields;
@@ -1090,6 +1102,13 @@ ScreenModel BuildLiveScreen(Screen s, LiveInputs const& in) {
       if (s == Screen::TypeBackWrong) {
         fields.wrongPositions = in.wrong;
         fields.text = urmsg::live::WrongWordsLine(in.wrong);
+        fields.markNote = L"Not the word you were shown.";
+      } else if (!in.boxes.empty()) {
+        // THE APP NAMED THESE BEFORE SENDING (X-APP-1): an empty box, a box of several words, or one
+        // whose word the list's own check refuses. Nothing was sent.
+        for (auto const& issue : in.boxes) fields.wrongPositions.push_back(issue.position);
+        fields.text = urmsg::live::BoxesLine(in.boxes);
+        fields.markNote = L"Type one word from your paper in this box.";
       }
       m.blocks.push_back(std::move(fields));
       failure();
@@ -1118,9 +1137,17 @@ ScreenModel BuildLiveScreen(Screen s, LiveInputs const& in) {
   return m;
 }
 
-// NOT BUILT YET (the round's tests come first): nothing is overwritten.
-void WipeScreenWords(ScreenModel&) {}
-void WipeLiveInputs(LiveInputs&) {}
+void WipeScreenWords(ScreenModel& m) {
+  for (auto& b : m.blocks) {
+    urmsg::live::Wipe(b.words);
+    urmsg::live::Wipe(b.prefill);
+  }
+}
+
+void WipeLiveInputs(LiveInputs& in) {
+  urmsg::live::Wipe(in.words);
+  urmsg::live::Wipe(in.typed);
+}
 
 AccountModel BuildLiveAccount(urmsg::live::IdentityInfo const& id) {
   AccountModel a;

@@ -26,9 +26,9 @@ std::wstring_view StatusStateWord(demo::ConnectState state) {
   return L"Offline";
 }
 
-// NOT BUILT YET (the round's tests come first): a connected session still reads Connecting.
-demo::ConnectState EmptyWorldConnectState(bool stuck, bool) {
-  return stuck ? demo::ConnectState::Offline : demo::ConnectState::Connecting;
+demo::ConnectState EmptyWorldConnectState(bool stuck, bool sessionConnected) {
+  if (stuck) return demo::ConnectState::Offline;
+  return sessionConnected ? demo::ConnectState::Connected : demo::ConnectState::Connecting;
 }
 
 std::wstring StatusLockGlyph(bool keyVerified) {

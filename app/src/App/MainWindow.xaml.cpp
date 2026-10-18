@@ -26,6 +26,7 @@
 #include "Log.h"
 #include "RunMode.h"  // ActiveRunMode / SetActiveRunMode - this file is the latch's one writer
 #include "Strings.h"
+#include "Views/StatusStripRules.h"  // EmptyWorldConnectState: the strip before a live world
 #include "UrColors.h"
 #include "UrComponents.h"  // urnw::kit::kIconFontFamily
 #include "UrMotion.h"
@@ -275,9 +276,10 @@ void MainWindow::ShowLiveIdentity(urmsg::demo::identity::Screen screen,
                   urnw::Narrow(std::wstring{id::ScreenName(screen)}));
     return;
   }
-  // the words stay in exactly one place this window owns, for as long as their screen is up
+  // the words stay in exactly one place this window owns, for as long as their screen is up, and
+  // every copy that goes is overwritten first: the old inputs, words and typed phrase alike
   if (screen != id::Screen::Words) urmsg::live::Wipe(in.words);
-  urmsg::live::Wipe(liveIdentityInputs_.words);
+  id::WipeLiveInputs(liveIdentityInputs_);
   liveIdentityInputs_ = std::move(in);
   liveIdentityShown_ = true;
   PresentIdentity(std::move(model), screen, id::Selection{});
@@ -297,7 +299,11 @@ void MainWindow::PresentIdentity(urmsg::demo::identity::ScreenModel model,
   const std::wstring name{id::ScreenName(screen)};
   const bool asks = model.excludedFromCapture;
   const bool held = !asks || ApplyCaptureExclusion(true, name);
-  if (!held) model = id::CaptureRefusal(model);
+  if (!held) {
+    id::ScreenModel refusal = id::CaptureRefusal(model);
+    id::WipeScreenWords(model);
+    model = std::move(refusal);
+  }
   if (!identityHost_) {
     identityHost_ = Grid();
     // rows 1 and 2 of RevealRoot: the destinations and the status strip, and NOT the title bar,
@@ -318,6 +324,8 @@ void MainWindow::PresentIdentity(urmsg::demo::identity::ScreenModel model,
         if (auto self = weak.get()) self->QueueIdentityAction(button);
       },
       checkWord);
+  // the model's copies of the words are drawn now: overwrite them before it goes (X-APP-2)
+  id::WipeScreenWords(model);
   identityView_.screen = screen;
   identityHost_.Children().Clear();
   identityHost_.Children().Append(identityView_.root);
@@ -350,10 +358,7 @@ void MainWindow::CloseIdentity() {
   }
 }
 
-void MainWindow::ForgetLiveWords() {
-  urmsg::live::Wipe(liveIdentityInputs_.words);
-  urmsg::live::Wipe(liveIdentityInputs_.typed);
-}
+void MainWindow::ForgetLiveWords() { urmsg::demo::identity::WipeLiveInputs(liveIdentityInputs_); }
 
 // THE WORKER'S IDENTITY STATE, DRAWN (identity phase 1, slice 1: PLAN Task 16). The worker reads the
 // identity before the join road; a device without one gets "Set up this device", and each later
@@ -426,8 +431,10 @@ void MainWindow::ApplyIdentity() {
       BuildSettings();
       break;
     case IdentityStep::Unreadable:
-      urnw::LogError("identity: this device's identity could not be read; nothing is drawn");
-      if (liveIdentityShown_) CloseIdentity();
+      // THE SENTENCE IS DRAWN (X-APP-3): the session has ended, and the screen says why
+      urnw::LogError("identity: this device's identity could not be read; the window says so");
+      in.stopped = true;
+      ShowLiveIdentity(id::Screen::SetUp, std::move(in));
       break;
   }
 }
@@ -491,6 +498,24 @@ void MainWindow::OnIdentityAction(urmsg::demo::identity::Button const& button) {
       // THE FIELDS, JOINED, TO THE LIBRARY: it checks them and names every wrong word. Kept as
       // typed, so a wrong word is named with nothing corrected.
       std::vector<std::wstring> typed = urmsg::views::ReadIdentityFields(identityView_);
+      // ONE WORD OF THE LIST IN EACH BOX FIRST (X-APP-1): the library keeps no empty position, so an
+      // empty box or a box of several words would shift every later word onto the wrong number. The
+      // app names such a box itself, and sends nothing; and a box of one word goes to the list's own
+      // check, which reads it in the library's fold (Live/LiveIdentity.h, CheckBoxes).
+      std::vector<urmsg::live::BoxIssue> issues = urmsg::live::CheckBoxes(
+          typed, [](std::wstring const& word) { return urmsg::live::CheckWord(word); });
+      if (!issues.empty()) {
+        urnw::LogInfo("identity: {} box(es) do not hold exactly one word of the list; the words "
+                      "are not sent",
+                      issues.size());
+        id::LiveInputs in;
+        in.typed = typed;
+        in.boxes = std::move(issues);
+        urmsg::live::Wipe(identityTyped_);
+        identityTyped_ = std::move(typed);
+        ShowLiveIdentity(id::Screen::TypeBack, std::move(in));
+        break;
+      }
       std::string joined = urmsg::live::JoinTypedWords(typed);
       urmsg::live::Wipe(identityTyped_);
       identityTyped_ = std::move(typed);
@@ -789,13 +814,23 @@ urmsg::demo::World MakeEmptyWorld(urmsg::demo::ConnectState state) {
 urmsg::demo::World const& EmptyWorld() {
   static const urmsg::demo::World dialling = MakeEmptyWorld(urmsg::demo::ConnectState::Connecting);
   static const urmsg::demo::World stuck = MakeEmptyWorld(urmsg::demo::ConnectState::Offline);
+  static const urmsg::demo::World connected = MakeEmptyWorld(urmsg::demo::ConnectState::Connected);
   auto onboard = urmsg::live::OnboardSnapshot();
+  auto identity = urmsg::live::IdentitySnapshot();
   // A launch that cannot make a join code (Task 58) has closed its session as well: nothing is
-  // dialling there either.
-  return onboard && (onboard->step == urmsg::live::OnboardStep::NoCredential ||
-                     onboard->step == urmsg::live::OnboardStep::NoJoinCode)
-             ? stuck
-             : dialling;
+  // dialling there either. Nor is anything after an identity that could not be read: the worker
+  // ended the session, and the window says so (X-APP-3).
+  const bool cannotGoOn =
+      (onboard && (onboard->step == urmsg::live::OnboardStep::NoCredential ||
+                   onboard->step == urmsg::live::OnboardStep::NoJoinCode)) ||
+      (identity && identity->step == urmsg::live::IdentityStep::Unreadable);
+  // A SESSION THAT IS UP IS CONNECTED (X-APP-7): the setup and the account run under it, before any
+  // live world has landed (Views/StatusStripRules.h, EmptyWorldConnectState)
+  switch (urmsg::views::EmptyWorldConnectState(cannotGoOn, urmsg::live::SessionConnected())) {
+    case urmsg::demo::ConnectState::Offline: return stuck;
+    case urmsg::demo::ConnectState::Connected: return connected;
+    default: return dialling;
+  }
 }
 
 urmsg::demo::World const& MainWindow::ActiveWorld() const {
@@ -1323,6 +1358,11 @@ void MainWindow::ApplyLiveWorld() {
   // writing down their words or reading a join code off the screen.
   ApplyIdentity();
   ApplyOnboard();
+  // THE STRIP FOLLOWS THE SESSION (X-APP-7). Before a live world lands it is drawn off EmptyWorld(),
+  // whose answer moves with the session: dialling, connected (the setup and the account run under a
+  // connected session), or a launch that cannot go on. It is built again whenever that answer
+  // changes, whatever else this beat brings.
+  if (!liveWorld_ && &ActiveWorld() != stripWorldDrawn_) BuildStatusStrip();
   const std::uint64_t generation = urmsg::live::Generation();
   if (generation == liveDrawn_) return;
   auto snapshot = urmsg::live::Snapshot();
@@ -2223,6 +2263,7 @@ void MainWindow::BuildDeveloper() {
 }
 
 void MainWindow::BuildStatusStrip() {
+  stripWorldDrawn_ = &ActiveWorld();  // what ApplyLiveWorld compares with (X-APP-7)
   // The whole surface is demo-only. Design 8: without --demo "the app behaves
   // exactly as it does today", and design 2's hard constraint is that nothing
   // may overstate what exists — a strip reading "Connected | server

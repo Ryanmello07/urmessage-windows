@@ -190,7 +190,8 @@ void AppendMaskedWordFields(StackPanel const& column, id::Block const& b, Identi
       box.BorderBrush(urnw::colors::DangerBrush());
       number.Foreground(urnw::colors::DangerBrush());
       number.FontWeight(winrt::Windows::UI::Text::FontWeights::SemiBold());
-      automation::AutomationProperties::SetHelpText(box, hstring{L"Not the word you were shown."});
+      automation::AutomationProperties::SetHelpText(
+          box, hstring{b.markNote.empty() ? std::wstring(L"Not the word you were shown.") : b.markNote});
     }
     box.GotFocus([](winrt::Windows::Foundation::IInspectable const& sender, RoutedEventArgs const&) {
       sender.as<PasswordBox>().PasswordRevealMode(PasswordRevealMode::Visible);
@@ -253,18 +254,21 @@ void AppendWordFields(StackPanel const& column, id::Block const& b, IdentityScre
     box.FontFamily(MonoFont());
     box.FontSize(14);
     box.MaxLength(32);
-    // SCOPE H1, F3:894-900: no spell check and no prediction on a field that takes the words, so
-    // neither the checker nor the prediction store ever holds one.
-    box.IsSpellCheckEnabled(false);
-    box.IsTextPredictionEnabled(false);
-    try {
-      input::InputScope scope;
-      input::InputScopeName name(input::InputScopeNameValue::Password);
-      scope.Names().Append(name);
-      box.InputScope(scope);
-    } catch (winrt::hresult_error const& e) {
-      urnw::LogWarn("identity: the word field refused a password input scope: {}",
-                    urnw::Narrow(std::wstring{e.message()}));
+    // FROM THE BLOCK'S FieldPolicy (X-APP-4), and from nothing else. SCOPE H1, F3:894-900: no spell
+    // check and no prediction on a field that takes the words, so neither the checker nor the
+    // prediction store ever holds one.
+    box.IsSpellCheckEnabled(b.fields.spellCheck);
+    box.IsTextPredictionEnabled(b.fields.prediction);
+    if (b.fields.passwordScope) {
+      try {
+        input::InputScope scope;
+        input::InputScopeName name(input::InputScopeNameValue::Password);
+        scope.Names().Append(name);
+        box.InputScope(scope);
+      } catch (winrt::hresult_error const& e) {
+        urnw::LogWarn("identity: the word field refused a password input scope: {}",
+                      urnw::Narrow(std::wstring{e.message()}));
+      }
     }
     if (i < b.prefill.size()) box.Text(hstring{b.prefill[i]});
     TextBlock number = MakeNumber(i);
@@ -510,8 +514,13 @@ IdentityScreenView MakeIdentityScreen(id::ScreenModel const& model,
         break;
       }
       case id::BlockType::WordFields:
-        if (b.fields.maskWhenFocusLeaves) AppendMaskedWordFields(column, b, view, checkWord);
-        else AppendWordFields(column, b, view);
+        // THE CONTROL IS THE POLICY (X-APP-4). A PasswordBox both masks a word when focus leaves and
+        // lets nothing be copied or cut; it is drawn exactly when the policy asks for both. A policy
+        // that allows copying is drawn as a TextBox, which can be copied from and masks nothing.
+        if (b.fields.maskWhenFocusLeaves && !b.fields.copyAllowed)
+          AppendMaskedWordFields(column, b, view, checkWord);
+        else
+          AppendWordFields(column, b, view);
         break;
       case id::BlockType::Emoji:
         column.Children().Append(MakeLabel(b.label, b.labelKind));
@@ -570,6 +579,7 @@ IdentityScreenView MakeIdentityScreen(id::ScreenModel const& model,
 
 std::vector<std::wstring> ReadIdentityFields(IdentityScreenView const& view) {
   std::vector<std::wstring> out;
+  out.reserve(25);  // so no grown buffer that held a word is let go unwiped (X-APP-2)
   if (!view.maskedFields.empty()) {
     for (auto const& f : view.maskedFields) out.emplace_back(f.Password());
   } else {
