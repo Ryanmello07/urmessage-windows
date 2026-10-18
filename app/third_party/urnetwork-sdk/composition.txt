@@ -45,10 +45,12 @@
 # message: sdk/cgo, the messaging half, its .def, its header, and the scripts that compose, build
 # and check the library.
 #
-# PINNED TO A FORK COMMIT, dd25d3f621b3, ON Ryanmello07/urmessage's identity/i1: W-lib's Task 14 of
+# PINNED TO A FORK COMMIT, fdbded36c773, ON Ryanmello07/urmessage's identity/i1: W-lib's Task 14 of
 # identity phase 1, the C exports for slice 1 (urnet_message_device_identity, _create_identity,
-# _confirm_words and _check_word, and the member json's device_id and identity). The app's slice 1
-# (Task 16) is built on them. THIS PIN MERGES ONLY AFTER THE LIBRARY'S SLICE-1 PULL REQUEST HAS
+# _confirm_words and _check_word, and the member json's device_id and identity), made at
+# dd25d3f621b3, and the commit after it, which moves one test-layering row and nothing else (LRI
+# R83; the library's fork-ci 39117069583 is green on all four legs there). The app's slice 1 (Task
+# 16) is built on them. The header, the .def and scripts/siblings.txt are the same at both commits. THIS PIN MERGES ONLY AFTER THE LIBRARY'S SLICE-1 PULL REQUEST HAS
 # MERGED: before this app's pull request is ready, a commit moves the line to urnetwork/message at
 # that merge and deletes the review source from build-sdk-dll.ps1 (R69). At this commit message's
 # scripts/siblings.txt pins sdk, connect, glog, gvisor and goidenticons at exactly the commits below,
@@ -64,7 +66,7 @@
 # library sentence changed: FIX 6c changed the store's internals. The composition job holds the
 # vendored export list and headers to the composition's, byte for byte. Its own pins are the two
 # merge commits below.
-message https://github.com/Ryanmello07/urmessage.git dd25d3f621b37b7ddc76ffc738827a74c5d6f249
+message https://github.com/Ryanmello07/urmessage.git fdbded36c7732106dc968242c628c947b0fc79e0
 #
 # sdk: the core SDK. Pinned to urnetwork/sdk main as the removal of messaging merged there
 # (b8209d9d, 2026-10-09 12:25 UTC). compose.sh refuses a core that still carries the messaging
