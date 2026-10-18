@@ -49,6 +49,7 @@
 #include "Live/HeldGroupRules.h"  // the held-group lines below (pure; Task 39)
 #include "Live/RefusalCopy.h"     // the refusal copy lines below (pure; Task 58)
 #include "Demo/DemoSwitches.h"
+#include "Demo/IdentityDemo.h"  // the identity screens' pure gate (Task 6)
 #include "Demo/DemoStress.h"
 
 // The Windows App SDK version this binary was BUILT against, injected from the
@@ -3691,10 +3692,66 @@ std::vector<std::wstring> CollectDiagnostics() {
     constexpr const wchar_t* kScreens[] = {L"none", L"chats", L"thread", L"inspect",
                                            L"network", L"settings", L"developer"};
     lines.push_back(std::format(
-        L"  demo switches    : enabled={} screen={} autoplay={} advanced={} watermark={}",
+        L"  demo switches    : enabled={} screen={} autoplay={} advanced={} watermark={} "
+        L"identity={}",
         o.enabled ? L"yes" : L"no", kScreens[static_cast<size_t>(o.screen)],
         o.autoplay ? L"yes" : L"no", o.advanced ? L"yes" : L"no",
-        o.watermark ? L"on" : L"off"));
+        o.watermark ? L"on" : L"off", urmsg::demo::identity::ScreenName(o.identityScreen)));
+    // WHICH BUILD THIS IS. The identity preview (Task 6's zip, /p:UrmIdentityPreview=true) opens
+    // the fabricated identity screens on a plain launch and is never live; every other build keeps
+    // the rule that a plain launch is live. Printed so a smoke of the zip can say which it ran.
+    //
+    // AND ITS IDS ARE ITS OWN (Common/Ids.h): the preview keeps a single-instance key, a folder, an
+    // override variable and a window placement of its own, so it neither swallows nor is swallowed
+    // by a running URmessage, and never writes the real app's prefs, URMESSAGE_APP_ROOT set or not.
+    // Ids.h is compiled into Common's Paths.cpp as well as here, and its constants are inline, so
+    // a Common built with the other arm would be an ODR violation the linker may settle on either
+    // value. So the line asks COMMON: CommonBuiltAsIdentityPreview() is compiled into Common's own
+    // object and must agree with this TU's build; and, with no override, Common's StorageRoot()
+    // must have resolved the folder this build's name says, which is typed again here.
+    //
+    // AND UNDER THE REAL APP'S VARIABLE THE PREVIEW KEEPS TO A FOLDER OF ITS OWN INSIDE IT
+    // (Ids.h's nested pair), so two worktrees' previews stay apart and neither shares a file with
+    // the real app there: the line checks that Common's StorageRoot() resolved that folder.
+    std::wstring overrideVar;
+    const bool overridden = !StorageRootOverride(&overrideVar).empty();
+    const bool preview = urmsg::demo::identity::kIdentityPreviewBuild;
+    const wchar_t* const wantFolder = preview ? L"URmessage-identity-preview" : L"URmessage";
+    const wchar_t* const wantVar =
+        preview ? L"URMESSAGE_IDENTITY_PREVIEW_APP_ROOT" : L"URMESSAGE_APP_ROOT";
+    const wchar_t* const wantNestedVar = preview ? L"URMESSAGE_APP_ROOT" : L"";
+    const wchar_t* const wantNestedFolder = preview ? L"identity-preview" : L"";
+    const bool nested = overridden && overrideVar == wantNestedVar && *wantNestedVar != L'\0';
+    const auto root = StorageRoot();
+    bool folderAgrees = false;
+    if (!overridden) {
+      for (auto const& part : root)
+        if (part.wstring() == wantFolder) folderAgrees = true;
+    } else {
+      // the build's own variable: the person chose the folder; the nested one: the preview's own
+      folderAgrees = !nested || root.filename().wstring() == wantNestedFolder;
+    }
+    const bool idsAgree = ids::kIdentityPreviewIds == preview &&
+                          std::wstring_view{ids::kStorageFolderName} == wantFolder &&
+                          std::wstring_view{ids::kAppRootEnvVar} == wantVar &&
+                          std::wstring_view{ids::kAppRootNestedEnvVar} == wantNestedVar &&
+                          std::wstring_view{ids::kAppRootNestedFolder} == wantNestedFolder;
+    const bool commonAgrees = CommonBuiltAsIdentityPreview() == preview;
+    lines.push_back(std::format(
+        L"  build kind       : {}  {}; single-instance key {}, storage folder {} ({}), override "
+        L"variable {}, ids of the {} build, Common compiled as the {} build",
+        idsAgree && commonAgrees && folderAgrees ? L"PASS" : L"FAIL",
+        preview ? L"identity preview (slice 0): a plain launch opens the fabricated identity "
+                  L"screens, and no launch is ever live"
+                : L"standard: a plain launch is live",
+        ids::kSingleInstanceKey, ids::kStorageFolderName,
+        !overridden ? std::wstring{folderAgrees ? L"Common's StorageRoot resolved it"
+                                                : L"Common's StorageRoot resolved ANOTHER folder"}
+        : nested    ? std::format(L"the root is its {} folder inside {}'s{}", wantNestedFolder,
+                                  overrideVar, folderAgrees ? L"" : L", and Common's is ANOTHER")
+                    : std::format(L"the root is overridden by {}", overrideVar),
+        ids::kAppRootEnvVar, ids::kIdentityPreviewIds ? L"preview" : L"standard",
+        CommonBuiltAsIdentityPreview() ? L"preview" : L"standard"));
   }
   {
     const nlohmann::json prefs = urnw::LoadAppPrefs();
@@ -3847,6 +3904,12 @@ std::vector<std::wstring> CollectDiagnostics() {
   // join code (Task 58): the rule per row, R13 on its own line, the table's words, and the dialog's
   // own copy. Pure, like the held-group lines above.
   for (auto& line : RefusalCopyDiagnostics()) lines.push_back(std::move(line));
+  // The identity screens over the fabricated world (identity phase 1, Task 6): every screen built
+  // and read for Property 1, the demo words, the capture policy against the blocks, the typed-back
+  // check, the phrase field's rule, the fixture, and live mode drawing none of them. Pure, like
+  // the lines above; the copy pairs these screens use are gated in RunModeCopyDiagnostics.
+  for (auto& line : urmsg::demo::identity::IdentityDemoDiagnostics())
+    lines.push_back(std::move(line));
   {
     using namespace urmsg::demo;
     World const& w = GetWorld();
@@ -6266,13 +6329,11 @@ std::wstring EffectiveSingleInstanceKey() {
   // The override is read here and not through StorageRoot(), because what must key the
   // registration is the thing the PERSON set: two different overrides are two installs even if
   // both resolve under one parent, and StorageRoot() has already folded the default in.
-  wchar_t* raw = nullptr;
-  size_t len = 0;
-  std::wstring root;
-  if (::_wdupenv_s(&raw, &len, L"URMESSAGE_APP_ROOT") == 0 && raw != nullptr) {
-    root = raw;
-    ::free(raw);
-  }
+  // StorageRootOverride (Paths.h) is that thing, and the same thing StorageRoot() honours:
+  // URMESSAGE_APP_ROOT's value in the standard build, byte for byte as before; in the identity
+  // preview its own variable's, else its folder inside URMESSAGE_APP_ROOT's - so two preview
+  // launches over one root never get two keys, and two worktrees' previews never get one.
+  const std::wstring root = StorageRootOverride();
   if (root.empty()) return ids::kSingleInstanceKey;
 
   // FNV-1a over the case-folded path. Not a cryptographic hash and it does not need to be: the

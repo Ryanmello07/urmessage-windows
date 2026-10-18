@@ -17,17 +17,36 @@
 #pragma once
 
 #include <filesystem>
+#include <string>
 
 namespace urnw {
 
 // Root storage dir for this user, created if missing. Honours
-// %URMESSAGE_APP_ROOT% so concurrent worktrees can be isolated.
+// %URMESSAGE_APP_ROOT% so concurrent worktrees can be isolated
+// (StorageRootOverride below).
 std::filesystem::path StorageRoot();
+
+// THE ROOT THIS RUN WAS TOLD TO USE, or empty when it was told nothing: this
+// build's own variable (Ids.h's kAppRootEnvVar), else - in the identity preview
+// only - its own folder inside the real app's (kAppRootNestedEnvVar,
+// kAppRootNestedFolder). `variable`, when given, receives the name of the
+// variable that decided it. StorageRoot() and the single-instance key
+// (Startup.cpp's EffectiveSingleInstanceKey) both read this, so the two agree
+// on what a run was told. Any length; an empty value counts as unset.
+std::wstring StorageRootOverride(std::wstring* variable = nullptr);
 
 // Log directory (a subdir of StorageRoot).
 std::filesystem::path LogDir();
 
 // The app's own preferences: one small JSON document (AppPrefs.h).
 std::filesystem::path AppPrefsFile();
+
+// True when COMMON was compiled as the identity preview (URM_IDENTITY_PREVIEW, identity phase 1,
+// Task 6). Not inline, on purpose: Ids.h's folder name and override variable are inline constants,
+// so a Common compiled with one arm and an App with the other would be an ODR violation the linker
+// may settle on either value, and a check reading the header from both sides would compare one
+// value with itself. This answer is compiled into Common's own object; --diagnose's build kind
+// line holds it to App's.
+bool CommonBuiltAsIdentityPreview();
 
 }  // namespace urnw

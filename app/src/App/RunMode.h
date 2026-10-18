@@ -234,6 +234,38 @@ std::wstring DisclosureCaption(RunMode mode, bool noSession);
 std::wstring DisclosureTitle(RunMode mode, bool noSession);
 std::wstring DisclosureBody(RunMode mode, bool noSession);
 
+// ---- the identity screens (identity phase 1, Task 6: slice 0) ---------------------------------
+//
+// A SECOND KIND OF PAIR, gated by its own clause rather than by the session pairs' rule. Every pair
+// above is about the SESSION, so its live arm names the live session. These are about the ACCOUNT:
+// the words, the ID, a removal, a notice. Their live arm says the account's own thing, with no
+// session prefix, because a phrase and an ID exist whether or not a mesh answered. So the clause
+// asks that the fabricated arm name the demo ("demo", and not "live"), that the live arm NOT name
+// the demo, and that the two differ. With Demo/IdentityDemo.h's rule that every fabricated fact
+// names the demo, that is the task's Property 1: no fabricated screen shows a string the live
+// screen would show as a fact.
+//
+// The live arms are the copy SCOPE gives the live screens of Tasks 16, 28, 38 and 45, which are not
+// built yet: in this build no identity screen is drawn in live mode at all. They are here now so
+// that the clause holds the two arms apart from the first commit that has either.
+
+// The label over the 25 words (SCOPE H2). In fabricated mode it is what makes 25 words on a screen
+// not a recovery phrase, which is why its clause asks for the denial itself and not just a
+// difference (PLAN Task 6, MA1).
+std::wstring PhraseWordsLabel(RunMode mode);
+// The sentence under the words (M5:416, SCOPE H2).
+std::wstring PhraseWordsCaveat(RunMode mode);
+// The note beside "Your ID" in Settings -> Account (SCOPE H4, B1).
+std::wstring AccountIdNote(RunMode mode);
+// The removed screen's title (SCOPE G5).
+std::wstring RemovedTitle(RunMode mode);
+// The Remove dialog's line on an only device (SCOPE G1).
+std::wstring OnlyDeviceLine(RunMode mode);
+// The notice a phrase device's self-removal leaves (SCOPE G6).
+std::wstring SelfRemovalNotice(RunMode mode, std::wstring const& device);
+// The done line of a phrase change (PLAN Task 45's toast; SCOPE K3, K6).
+std::wstring PhraseChangedLine(RunMode mode, std::wstring const& device);
+
 // ---- the gate -------------------------------------------------------------------------------
 // One line per pair, each printing PASS/FAIL, the QUERY it asked, and both wordings, so a reader
 // can tell what was checked rather than trusting the word PASS. Called from CollectDiagnostics on
@@ -252,6 +284,10 @@ std::wstring DisclosureBody(RunMode mode, bool noSession);
 //   * the ABSENCE clause - the live disclosure's "What is NOT here:" list, printed in full, must
 //     not name the send path among the things the app cannot do, nor the member list or the
 //     roles, which the app reads off the group since item 242 R3;
+//   * the IDENTITY clause (Task 6) - the account pairs above, each fabricated arm naming the demo
+//     and no live arm naming it - and the WORDS line, which asks the words label for the denial
+//     itself: the fabricated arm must say the words are "not a recovery phrase", and the live arm
+//     must not;
 //   * the NO-SESSION clause, over EVERY third arm (the composer's and the six above): each differs
 //     from both of its function's arms, names neither mode, and the disclosure's keeps the live
 //     absence list word for word; and the LAUNCH table, DrawnRunModeFor and NoSessionFor over all
