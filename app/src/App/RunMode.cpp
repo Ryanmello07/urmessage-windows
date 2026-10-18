@@ -28,6 +28,11 @@ namespace {
 // worker (a log line, a future probe) is defined behaviour rather than a data race.
 std::atomic<int> g_mode{static_cast<int>(RunMode::Fabricated)};
 
+// Whether this is a fabricated launch (RunMode.h, "which arm a string takes"). False until
+// MainWindow's constructor records it, so a reader that ever ran before that would draw no demo
+// word. The same relaxed order as the latch, for the same reason.
+std::atomic<bool> g_fabricatedLaunch{false};
+
 // Every non-ASCII character printed as <U+XXXX>. --diagnose writes UTF-8 bytes through a
 // redirected handle (Startup.cpp:156-171) and Windows PowerShell 5.1's Get-Content decodes ANSI by
 // default, so an em dash comes back as mojibake in the one place these lines are read. The same
@@ -156,6 +161,16 @@ void SetActiveRunMode(RunMode mode) {
   g_mode.store(static_cast<int>(mode), std::memory_order_relaxed);
 }
 
+void SetFabricatedLaunch(bool fabricated) {
+  g_fabricatedLaunch.store(fabricated, std::memory_order_relaxed);
+}
+
+bool FabricatedLaunch() { return g_fabricatedLaunch.load(std::memory_order_relaxed); }
+
+RunMode DrawnRunMode() { return DrawnRunModeFor(FabricatedLaunch(), ActiveRunMode()); }
+
+bool DrawnNoSession() { return NoSessionFor(FabricatedLaunch(), ActiveRunMode()); }
+
 // ---- the copy ---------------------------------------------------------------------------------
 
 std::wstring ModeChipText(RunMode mode) {
@@ -239,18 +254,25 @@ std::wstring ComposerNote(RunMode mode, bool maySend, bool noSession) {
          L"delivery, so a message you send stops at Sent.";
 }
 
-std::wstring RelayPathGroupTitle(RunMode mode) {
+std::wstring RelayPathGroupTitle(RunMode mode, bool noSession) {
+  // THE THIRD ARM FIRST, as ComposerNote's: no session has produced a path yet, so the caption
+  // says that instead of naming either mode.
+  if (noSession) return L"NO SESSION YET: RELAY PATH";
   return mode == RunMode::Live ? L"LIVE SESSION: RELAY PATH" : L"DEMO MODEL: RELAY PATH";
 }
 
-std::wstring RelayDrawerName(RunMode mode) {
+std::wstring RelayDrawerName(RunMode mode, bool noSession) {
   // "preview" drops in live mode and nothing replaces it: the three nodes there are the platform
   // url the library actually dialled and the message server's own client_id (Live/LiveWorld.cpp),
   // so the drawer is showing a path rather than previewing what one would look like.
+  if (noSession) return L"No session yet: relay path";
   return mode == RunMode::Live ? L"Live session: relay path" : L"Demo model: relay path preview";
 }
 
-std::wstring ServerKeyStateName(bool keyVerified, RunMode mode) {
+std::wstring ServerKeyStateName(bool keyVerified, RunMode mode, bool noSession) {
+  // NO SESSION: there is no session whose key could be named, so the padlock says that and
+  // reports no result - the house placeholder, behind the third arm's own prefix.
+  if (noSession) return L"No session yet: server key unavailable";
   // LIVE: the true bit is the PIN (ledger 268) - the URnetwork and direct routes refuse any
   // endpoint key but the compiled-in one - and the false bit is the platform route, which pins
   // nothing, so "not verified" would report the RESULT of a check that never ran. "pinning
@@ -283,16 +305,34 @@ std::wstring RosterNote(RunMode mode) {
              : L"Demo model: fabricated members, names and roles";
 }
 
-std::wstring DisclosureCaption(RunMode mode) {
+std::wstring DisclosureCaption(RunMode mode, bool noSession) {
+  if (noSession) return L"NO GROUP YET";
   return mode == RunMode::Live ? L"LIVE SESSION" : L"THIS DEMO";
 }
 
-std::wstring DisclosureTitle(RunMode mode) {
+std::wstring DisclosureTitle(RunMode mode, bool noSession) {
+  // The absence list below is about the APP, so with no session the title names the app.
+  if (noSession) return L"What this app does not do";
   return mode == RunMode::Live ? L"What this live session does not do"
                                : L"What this demo does not do";
 }
 
-std::wstring DisclosureBody(RunMode mode) {
+std::wstring DisclosureBody(RunMode mode, bool noSession) {
+  // THE THIRD ARM: a launch that is not fabricated, before its live world lands. The live
+  // paragraph's opening is false there - no message is on these screens and none was fetched for
+  // them - so this one says so, then says what the live one says about a group IN THE CONDITIONAL,
+  // then carries the live absence list WORD FOR WORD (the no-session clause of
+  // RunModeCopyDiagnostics holds the two lists equal), so a reader learns the same limits before
+  // the first group as after it. It names neither mode: there is no demo, and no session yet.
+  if (noSession) {
+    return L"No group yet \u2014 no group is on these screens yet, so no message is either. In a "
+           L"group, the messages here are records this device fetches from the message server "
+           L"and opens under MLS, a message you write is sealed on this device and submitted to "
+           L"the group, and the members list and each member's role are the group's own. What "
+           L"is NOT here: delivery and read receipts, contact discovery and the names behind "
+           L"members, group names, attachments, and any per-message attestation check. Every "
+           L"field this build has no source for reads \"unavailable\" rather than a guess.";
+  }
   // The fabricated paragraph is the one that shipped, with the mode prefix added so it is framed
   // the way every other string here is framed. Not one word of its content changed.
   //
@@ -561,6 +601,105 @@ std::vector<std::wstring> RunModeCopyDiagnostics() {
         L"neither \"Demo model\" nor \"Live session\"]",
         ok ? L"PASS" : L"FAIL", none, differs ? L"yes" : L"NO", roleBlind ? L"yes" : L"NO",
         claimsNothing ? L"yes" : L"NO", controlHolds ? L"holds" : L"FAILED"));
+  }
+
+  // THE OTHER THIRD ARMS (fix/plain-launch-run-mode), held to the composer's property: a plain
+  // launch draws the EMPTY world with ActiveRunMode() still Fabricated, and every string it draws
+  // there is chosen by DrawnRunMode() and DrawnNoSession() - the live mode and the no-session bit.
+  // Each third arm must differ from BOTH of its function's arms, name neither mode ("demo", "live
+  // session"), win over the mode (the same string whichever mode is passed beside it), and not be
+  // empty; the paired arms must still name their modes, so a third arm that swallowed them is
+  // caught; and the disclosure's must keep the live absence list WORD FOR WORD. Every third arm is
+  // printed, in full: the complement of what the window draws in the empty world.
+  {
+    struct Third {
+      std::wstring_view what;
+      std::wstring fabricated, live, thirdLive, thirdFab;
+    };
+    const Third thirds[] = {
+        {L"relay title", RelayPathGroupTitle(RunMode::Fabricated),
+         RelayPathGroupTitle(RunMode::Live), RelayPathGroupTitle(RunMode::Live, true),
+         RelayPathGroupTitle(RunMode::Fabricated, true)},
+        {L"drawer name", RelayDrawerName(RunMode::Fabricated), RelayDrawerName(RunMode::Live),
+         RelayDrawerName(RunMode::Live, true), RelayDrawerName(RunMode::Fabricated, true)},
+        {L"key name +", ServerKeyStateName(true, RunMode::Fabricated),
+         ServerKeyStateName(true, RunMode::Live), ServerKeyStateName(true, RunMode::Live, true),
+         ServerKeyStateName(true, RunMode::Fabricated, true)},
+        {L"key name -", ServerKeyStateName(false, RunMode::Fabricated),
+         ServerKeyStateName(false, RunMode::Live), ServerKeyStateName(false, RunMode::Live, true),
+         ServerKeyStateName(false, RunMode::Fabricated, true)},
+        {L"disclosure caption", DisclosureCaption(RunMode::Fabricated),
+         DisclosureCaption(RunMode::Live), DisclosureCaption(RunMode::Live, true),
+         DisclosureCaption(RunMode::Fabricated, true)},
+        {L"disclosure title", DisclosureTitle(RunMode::Fabricated), DisclosureTitle(RunMode::Live),
+         DisclosureTitle(RunMode::Live, true), DisclosureTitle(RunMode::Fabricated, true)},
+        {L"disclosure body", DisclosureBody(RunMode::Fabricated), DisclosureBody(RunMode::Live),
+         DisclosureBody(RunMode::Live, true), DisclosureBody(RunMode::Fabricated, true)},
+    };
+    size_t good = 0;
+    std::wstring firstBad = L"(none)", printed;
+    for (auto const& t : thirds) {
+      const bool ok = !t.thirdLive.empty() && t.thirdLive == t.thirdFab &&
+                      t.thirdLive != t.fabricated && t.thirdLive != t.live &&
+                      !ContainsWord(t.thirdLive, L"demo") &&
+                      !ContainsWord(t.thirdLive, L"live session") &&
+                      ContainsWord(t.fabricated, L"demo") && ContainsWord(t.live, L"live");
+      if (ok)
+        ++good;
+      else if (firstBad == L"(none)")
+        firstBad = std::wstring(t.what);
+      if (!printed.empty()) printed += L" | ";
+      printed += std::wstring(t.what) + L" \"" + AsciiOnly(t.thirdLive) + L"\"";
+    }
+    const std::wstring liveAbsences = AbsenceList(DisclosureBody(RunMode::Live));
+    const std::wstring thirdAbsences = AbsenceList(DisclosureBody(RunMode::Live, true));
+    const bool absencesKept = !liveAbsences.empty() && thirdAbsences == liveAbsences;
+    const bool ok = good == std::size(thirds) && absencesKept;
+    lines.push_back(std::format(
+        L"  run mode thirds  : {}  {}/{} third arms differ from both arms, name neither mode, win "
+        L"over the mode, and leave the paired arms naming theirs (first bad: {}); the disclosure "
+        L"keeps the live absence list word for word: {}; the empty world draws: {}   [query: for "
+        L"each function with a noSession arm, f(Live, true) == f(Fabricated, true), it differs "
+        L"from f(Fabricated) and f(Live), contains neither \"demo\" nor \"live session\" "
+        L"(case-insensitive), f(Fabricated) contains \"demo\" and f(Live) \"live\"; "
+        L"AbsenceList(body(Live, true)) == AbsenceList(body(Live))]",
+        ok ? L"PASS" : L"FAIL", good, std::size(thirds), firstBad, absencesKept ? L"yes" : L"NO",
+        printed));
+  }
+
+  // THE LAUNCH TABLE: which arm each (launch, latch) pair takes. Written out from RunMode.h's
+  // three rules and not from the functions, so the functions cannot mark their own paper; the
+  // fourth row is the one a plain launch sits in for as long as its mesh does not answer.
+  {
+    struct Row {
+      bool launch;
+      RunMode latch;
+      RunMode wantMode;
+      bool wantNoSession;
+      wchar_t const* label;
+    };
+    const Row rows[] = {
+        {true, RunMode::Fabricated, RunMode::Fabricated, false, L"fabricated launch, no live world"},
+        {true, RunMode::Live, RunMode::Live, false, L"fabricated launch, live world"},
+        {false, RunMode::Live, RunMode::Live, false, L"plain launch, live world"},
+        {false, RunMode::Fabricated, RunMode::Live, true, L"plain launch, no live world"},
+    };
+    size_t right = 0;
+    std::wstring table;
+    for (auto const& r : rows) {
+      const RunMode m = DrawnRunModeFor(r.launch, r.latch);
+      const bool n = NoSessionFor(r.launch, r.latch);
+      right += (m == r.wantMode && n == r.wantNoSession) ? 1 : 0;
+      if (!table.empty()) table += L"; ";
+      table += std::format(L"{} -> {}{}", r.label, m == RunMode::Live ? L"live" : L"fabricated",
+                           n ? L", no session" : L"");
+    }
+    lines.push_back(std::format(
+        L"  run mode launch  : {}  {}/{} (launch, latch) pairs take the arm RunMode.h names: {}   "
+        L"[query: DrawnRunModeFor and NoSessionFor against a table written from the three rules: "
+        L"fabricated only for a fabricated launch with no live world; no session only for any "
+        L"other launch with no live world]",
+        right == std::size(rows) ? L"PASS" : L"FAIL", right, std::size(rows), table));
   }
 
   return lines;

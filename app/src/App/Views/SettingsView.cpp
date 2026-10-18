@@ -98,12 +98,18 @@ SettingsView MakeSettings(urmsg::demo::World const& world,
                           bool routeThroughUrnetwork) {
   SettingsView view;
 
-  // THE ONE urmsg::ActiveRunMode() READ ON THIS PAGE, taken at build time and never
-  // inside the copy functions themselves — they stay pure functions of their arguments
-  // so RunModeCopyDiagnostics can evaluate both arms from one launch (RunMode.h says
-  // why). MainWindow rebuilds this page on the beat it latches a live world, so the read
-  // happens after the flip rather than before it.
-  const urmsg::RunMode mode = urmsg::ActiveRunMode();
+  // THE ONE READ OF THE MODE ON THIS PAGE, taken at build time and never inside the copy
+  // functions themselves — they stay pure functions of their arguments so
+  // RunModeCopyDiagnostics can evaluate every arm from one launch (RunMode.h says why).
+  // MainWindow rebuilds this page on the beat it latches a live world, so the read happens
+  // after the flip rather than before it.
+  //
+  // DrawnRunMode() AND DrawnNoSession(), NOT ActiveRunMode(): the latch alone says
+  // Fabricated over a plain launch's EMPTY world, and this page drew "THIS DEMO" and "Demo
+  // model: not verified" there (ci/plain-control-1, run 39098035170). The launch decides
+  // too (RunMode.h, "which arm a string takes").
+  const urmsg::RunMode mode = urmsg::DrawnRunMode();
+  const bool noSession = urmsg::DrawnNoSession();
 
   // SettingsHost (MainWindow.xaml:284) is a bare UrPaneStyle Grid — no pane
   // header strip and no scroller, the same shape NetworkHost is — so the page
@@ -317,11 +323,12 @@ SettingsView MakeSettings(urmsg::demo::World const& world,
   // Design §2's hard constraint, IN the product — cheaper than hoping a
   // presenter says it. A click that opens a panel THIS FILE owns, so it cannot
   // become a dead affordance if another surface slips.
-  AppendCaption(column, winrt::hstring{urmsg::DisclosureCaption(mode)}, {}, /*first=*/false);
+  AppendCaption(column, winrt::hstring{urmsg::DisclosureCaption(mode, noSession)}, {},
+                /*first=*/false);
   {
     auto card = kit::MakePaneCard();
     auto row = kit::MakePaneTwoLineRowButton(
-        winrt::hstring{urmsg::DisclosureTitle(mode)},
+        winrt::hstring{urmsg::DisclosureTitle(mode, noSession)},
         L"Read this before drawing a conclusion from any screen.", kRowHeight);
     // The ON-CARD button variant: UrPaneRowButtonStyle's hover fill IS the
     // card token, so on a card it would paint nothing (the same reason
@@ -344,7 +351,7 @@ SettingsView MakeSettings(urmsg::demo::World const& world,
     // shape — what is real, then the complete list of what is absent, then how the
     // absences are drawn — because that shape is what makes a disclosure checkable
     // against the app rather than merely reassuring.
-    body.Text(winrt::hstring{urmsg::DisclosureBody(mode)});
+    body.Text(winrt::hstring{urmsg::DisclosureBody(mode, noSession)});
     panel.Child(body);
 
     // The row's bottom hairline follows the panel's visibility: open, it

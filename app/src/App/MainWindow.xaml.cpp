@@ -141,6 +141,10 @@ MainWindow::MainWindow() {
   SetTitleBar(AppTitleBar());
 
   options_ = urmsg::demo::ParseDemoOptions();
+  // WHICH ARM EVERY STRING TAKES, recorded before any view is built (RunMode.h, "which arm a string
+  // takes"): a fabricated launch takes the fabricated arm until a live world lands, and every
+  // other launch takes the live one - with the no-session arm before its live world lands.
+  urmsg::SetFabricatedLaunch(options_.enabled);
   urmsg::views::SetThreadActionsRevealedForCapture(options_.actionsRevealed);
   ApplyStrings();
   // Seeded before anything can navigate: CrossfadePageSwap with a null outgoing
@@ -1990,7 +1994,7 @@ void MainWindow::EnterDemoMode() {
   }
   Controls::ToolTipService::SetToolTip(developerNavItem_, box_value(hstring{kDemoNavDeveloper}));
 
-  DemoChipText().Text(winrt::hstring{urmsg::ModeChipText(urmsg::ActiveRunMode())});
+  DemoChipText().Text(winrt::hstring{urmsg::ModeChipText(urmsg::DrawnRunMode())});
   // d3 3.4: the identicon lattice as the chip's prefix - decorative, links
   // the chip to the identicon language. It adds no WORDS, so nothing
   // honesty-bearing depends on a chip --demo-watermark=off removes (G4).
@@ -1998,10 +2002,11 @@ void MainWindow::EnterDemoMode() {
   DemoChipLatticeHost().Children().Clear();
   DemoChipLatticeHost().Children().Append(urmsg::MakeIdenticonLattice(10));
   // HIDDEN ON A LIVE-ONLY LAUNCH UNTIL THE LATCH, and this is an honesty rule rather than a
-  // cosmetic one. ActiveRunMode() is Fabricated until ApplyLiveWorld latches it, so the chip's
-  // text here would read DEMO - over an EMPTY world, on a run whose whole purpose is the mesh.
-  // Neither chip is true in that window: there is no fabricated data to warn about and no live
-  // session to announce. An absent chip claims nothing, which is the only one of the three that
+  // cosmetic one. ActiveRunMode() is Fabricated until ApplyLiveWorld latches it, so read alone it
+  // would have the chip say DEMO - over an EMPTY world, on a run whose whole purpose is the mesh;
+  // DrawnRunMode() above answers LIVE there instead, and that is not true yet either. Neither
+  // chip is true in that window: there is no fabricated data to warn about and no live session
+  // to announce. An absent chip claims nothing, which is the only one of the three that
   // is honest. ApplyLiveWorld shows it, with the Live wording, in the same statement that puts
   // the live world on screen.
   DemoChip().Visibility(options_.watermark && !LiveOnlyLaunch() ? Visibility::Visible

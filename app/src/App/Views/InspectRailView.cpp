@@ -1241,6 +1241,9 @@ Border MakeLocalNameButtonRow(bool conversation, bool named, std::wstring key, s
 
 // Whether a label control may be drawn right now: the host has the store's verbs, and the world on
 // screen is a live one (a fabricated member has no identity key to keep a label under anyway).
+// A CAPABILITY GATE, so it stays on the latch: ActiveRunMode() == Live is "a live world is on
+// screen", the right question for a control that acts on one (RunMode.h). The rail's STRINGS take
+// DrawnRunMode() instead.
 bool CanNameLocally(bool conversation) {
   auto const& host = MutableRosterVerb();
   const bool verb = conversation ? static_cast<bool>(host.nameConversation)
@@ -1628,7 +1631,8 @@ void PopulateConversation(InspectRailView& v, demo::Conversation const& conv,
                                        conv.localName, 0));
   // DELETE ALL MY MESSAGES, live only and only while a deletion can be sent: the session is up
   // and this device is not an observer (ruling 19 refuses an observer every sendable kind,
-  // TOMBSTONE included). Absent rather than dark when there is nothing of mine to delete.
+  // TOMBSTONE included). Absent rather than dark when there is nothing of mine to delete. A
+  // capability gate, so on the latch (as CanNameLocally).
   {
     auto const& host = MutableRosterVerb();
     const auto mine = OwnDeletableMessageIds(conv);
@@ -1639,7 +1643,8 @@ void PopulateConversation(InspectRailView& v, demo::Conversation const& conv,
   // DELETE FOR ME AND LEAVE, live only (ledger 273), and under the bulk delete because that is the
   // order a person who wants their lines gone for everyone has to take them in. Not gated by
   // `enabled` for a plain leave: a device whose group is closed, or that was removed, can still
-  // erase its own copy. PlanLeave decides what the confirmation offers.
+  // erase its own copy. PlanLeave decides what the confirmation offers. A capability gate, so on
+  // the latch (as CanNameLocally).
   {
     auto const& host = MutableRosterVerb();
     const bool inFlight = host.leaveInFlight && host.leaveInFlight();
@@ -1680,7 +1685,7 @@ void PopulateConversation(InspectRailView& v, demo::Conversation const& conv,
   // ActiveRunMode() read PopulateMessage takes for the lock header, at populate time, so it
   // follows the beat that put a live world on screen and never precedes it. Both arms are gated
   // as a pair in RunModeCopyDiagnostics.
-  body.Append(MakeRailNote(urmsg::RosterNote(urmsg::ActiveRunMode()), /*danger=*/false));
+  body.Append(MakeRailNote(urmsg::RosterNote(urmsg::DrawnRunMode()), /*danger=*/false));
 
   AppendFieldRows(panel, conv, BuildConversationFields(conv, advanced),
                   /*messageMode=*/false, /*captionsAlreadyOpened=*/true);
@@ -1701,7 +1706,12 @@ void PopulateMessage(InspectRailView const& v, demo::Conversation const& conv,
   // thread and re-populates this panel on the beat that a live world lands
   // (MainWindow::ApplyLiveWorld), so the header and the Attestation row are chosen
   // after ActiveRunMode() has flipped, never before.
-  const urmsg::RunMode mode = urmsg::ActiveRunMode();
+  //
+  // DrawnRunMode(), not ActiveRunMode() (fix/plain-launch-run-mode): the launch decides the arm as
+  // well as the latch (RunMode.h). The rail is only populated over a conversation, so in practice
+  // a live one has latched by then; the read is the drawn one so that no string here is chosen
+  // by the latch alone.
+  const urmsg::RunMode mode = urmsg::DrawnRunMode();
   body.Append(MakeLockHeader(mode));
 
   // failureReason is documented non-empty ONLY when state == Failed, and an

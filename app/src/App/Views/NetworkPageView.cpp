@@ -757,7 +757,12 @@ NetworkPageView MakeNetworkPage(urmsg::demo::World const& world) {
   // groups below use: a ruled sheet strip across the capped column would
   // re-bleed exactly what this wave capped. The STRING is untouched —
   // urmsg::RelayPathGroupTitle is still what the `net framing` gate reads.
-  AppendCaption(pathSection, winrt::hstring{urmsg::RelayPathGroupTitle(urmsg::ActiveRunMode())},
+  // DrawnRunMode() and DrawnNoSession(), not ActiveRunMode(), for this page's strings and the
+  // key row's colour: the latch alone answers Fabricated over a plain launch's empty world
+  // (RunMode.h, "which arm a string takes").
+  AppendCaption(pathSection,
+                winrt::hstring{urmsg::RelayPathGroupTitle(urmsg::DrawnRunMode(),
+                                                          urmsg::DrawnNoSession())},
                 winrt::to_hstring(static_cast<int>(world.relayPath.size())) + L" nodes",
                 /*first=*/true);
 
@@ -820,7 +825,7 @@ NetworkPageView MakeNetworkPage(urmsg::demo::World const& world) {
   // The bare "Verified" and MessageInspect::cipher render nowhere on this
   // page, under any label.
   auto keyRow = urnw::kit::MakePaneKeyValueRow(
-      L"Server key", winrt::hstring{FormatKeyState(world.server.keyVerified, urmsg::ActiveRunMode())});
+      L"Server key", winrt::hstring{FormatKeyState(world.server.keyVerified, urmsg::DrawnRunMode())});
   // COLOUR IS A CLAIM TOO, and in live mode it was making the one the words had just
   // stopped making: the value reads "unavailable" there, and DangerBrush painted it the
   // same red as a failed verification — a viewer scanning the page sees a red row and
@@ -831,7 +836,7 @@ NetworkPageView MakeNetworkPage(urmsg::demo::World const& world) {
   // the colour only ever restates them (contract rule 6).
   // Live and pinned restates "Live session: pinned" in green; live and unpinned is the placeholder,
   // muted as every other absence on this page is.
-  keyRow.value.Foreground(urmsg::ActiveRunMode() == urmsg::RunMode::Live
+  keyRow.value.Foreground(urmsg::DrawnRunMode() == urmsg::RunMode::Live
                               ? (world.server.keyVerified
                                      ? urnw::colors::MakeBrush(urnw::colors::kUrGreen)
                                      : urnw::colors::MutedBrush())

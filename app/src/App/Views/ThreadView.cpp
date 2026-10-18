@@ -2337,8 +2337,11 @@ FrameworkElement MakeComposer(std::shared_ptr<ThreadParts> const& parts) {
   // InspectRailView.cpp). It costs nothing: the composer bar is Auto-height.
   TextBlock note;
   // The START POSE only. UpdateComposerSend is the one writer from here on, and it runs at the
-  // bottom of this function; parts->noteMode carries the mode it writes for.
-  parts->noteMode = urmsg::ActiveRunMode();
+  // bottom of this function; parts->noteMode carries the mode it writes for. DrawnRunMode(), not
+  // ActiveRunMode(): the launch decides the arm as well as the latch (RunMode.h). Over a plain
+  // launch's empty world the no-session arm wins anyway (SetThreadNoSession), and this keeps the
+  // demo's arm out of reach there even if that bit were ever missed.
+  parts->noteMode = urmsg::DrawnRunMode();
   note.Text(winrt::hstring{
       urmsg::ComposerNote(parts->noteMode, parts->mayRoleSend, parts->noteNoSession)});
   note.TextWrapping(TextWrapping::Wrap);

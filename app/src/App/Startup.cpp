@@ -33,6 +33,7 @@
 #include "RunMode.h"  // RunModeCopyDiagnostics - the mode-dependent honesty copy's gate
 #include "Views/DeveloperDump.h"
 #include "Views/InspectRailFields.h"
+#include "Views/NetworkPageView.h"  // FormatKeyState, for the plain launch walk
 #include "Views/RosterRules.h"  // the roster's pure table, for the roster lines below
 #include "Views/StatusStripRules.h"
 #include "Demo/DemoShellState.h"
@@ -3727,6 +3728,96 @@ std::vector<std::wstring> CollectDiagnostics() {
   // the app say right now" would have gated exactly half the copy and would have gated
   // the half that was already correct.
   for (auto& line : urmsg::RunModeCopyDiagnostics()) lines.push_back(std::move(line));
+  // A PLAIN LAUNCH, EVERY PAGE (fix/plain-launch-run-mode). A plain launch of the standard build is
+  // live and draws the EMPTY world until its mesh answers, with ActiveRunMode() still Fabricated,
+  // and main drew the demo's words there on every page (ci/plain-control-1, run 39098035170). This
+  // walks every page a plain launch can show and every string on it whose wording depends on the
+  // mode, chosen the way the views now choose it - DrawnRunModeFor and NoSessionFor over (launch,
+  // no live world yet) - and asks of each that it names no demo and claims no live session. The
+  // strings are PRINTED, page by page: the complement of the verdict. THE CONTROL is the same walk
+  // for a fabricated launch, where every one of them must name the demo, so the walk is shown to
+  // read the arms rather than some text that names neither. The rail is not walked: it is only
+  // populated over a conversation, and the empty world has none. The views' own reads are held by
+  // the shots' plain launch, page by page, in the window.
+  {
+    struct Drawn {
+      wchar_t const* page;
+      std::wstring text;
+    };
+    auto walk = [](bool fabricatedLaunch) {
+      const urmsg::RunMode latch = urmsg::RunMode::Fabricated;  // no live world has landed
+      const urmsg::RunMode mode = urmsg::DrawnRunModeFor(fabricatedLaunch, latch);
+      const bool none = urmsg::NoSessionFor(fabricatedLaunch, latch);
+      std::vector<Drawn> d;
+      // the status strip, under every page: the padlock's name, and the relay drawer's
+      d.push_back({L"strip", urmsg::ServerKeyStateName(false, mode, none)});
+      d.push_back({L"drawer", urmsg::RelayDrawerName(mode, none)});
+      d.push_back({L"drawer", urmsg::RelayPathGroupTitle(mode, none)});
+      // chats: the composer's note
+      d.push_back({L"chats", urmsg::ComposerNote(mode, true, none)});
+      // settings: the server key row and the disclosure group
+      d.push_back({L"settings", urmsg::views::FormatKeyState(false, mode)});
+      d.push_back({L"settings", urmsg::DisclosureCaption(mode, none)});
+      d.push_back({L"settings", urmsg::DisclosureTitle(mode, none)});
+      d.push_back({L"settings", urmsg::DisclosureBody(mode, none)});
+      // network: the hero's caption and the key row
+      d.push_back({L"network", urmsg::RelayPathGroupTitle(mode, none)});
+      d.push_back({L"network", urmsg::views::FormatKeyState(false, mode)});
+      // developer: the state caption, and the dump's framing where the dump is built at all
+      d.push_back({L"developer", urmsg::views::DeveloperStateCaption(fabricatedLaunch)});
+      if (urmsg::views::DeveloperShowsDemoSections(fabricatedLaunch))
+        d.push_back({L"developer", urmsg::WorldDumpFramingLine(mode)});
+      // the title-bar chip (collapsed on a plain launch until a live world lands)
+      d.push_back({L"chip", urmsg::ModeChipText(mode)});
+      return d;
+    };
+    auto lowerHas = [](std::wstring const& text, std::wstring_view needle) {
+      std::wstring lower = text;
+      for (auto& c : lower)
+        if (L'A' <= c && c <= L'Z') c = static_cast<wchar_t>(c - L'A' + L'a');
+      return lower.find(needle) != std::wstring::npos;
+    };
+    auto ascii = [](std::wstring const& s) {
+      std::wstring out;
+      for (wchar_t c : s) {
+        if (c < 0x20 || 0x7E < c)
+          out += std::format(L"<U+{:04X}>", static_cast<unsigned int>(c));
+        else
+          out.push_back(c);
+      }
+      return out;
+    };
+    const auto plain = walk(false);
+    const auto fabricated = walk(true);
+    size_t plainBad = 0;
+    std::wstring firstBad = L"(none)", printed;
+    for (auto const& s : plain) {
+      const bool bad = lowerHas(s.text, L"demo") || lowerHas(s.text, L"live session");
+      if (bad) {
+        ++plainBad;
+        if (firstBad == L"(none)") firstBad = std::wstring(s.page) + L" \"" + ascii(s.text) + L"\"";
+      }
+      if (!printed.empty()) printed += L" | ";
+      printed += std::wstring(s.page) + L": \"" + ascii(s.text) + L"\"";
+    }
+    size_t controlNamed = 0;
+    for (auto const& s : fabricated) controlNamed += lowerHas(s.text, L"demo") ? 1 : 0;
+    const bool developerOff = !urmsg::views::DeveloperShowsDemoSections(false) &&
+                              urmsg::views::DeveloperShowsDemoSections(true);
+    const bool ok = !plain.empty() && plainBad == 0 && controlNamed == fabricated.size() &&
+                    developerOff;
+    lines.push_back(std::format(
+        L"  plain launch     : {}  a plain launch, no live world yet: {} strings on its pages "
+        L"name no demo and claim no live session (first bad: {}); the Developer page builds the "
+        L"demo's sections in a fabricated launch only: {}; control, a fabricated launch: {}/{} "
+        L"name the demo; drawn: {}   [query: every page a plain launch can show (the strip, the "
+        L"relay drawer, chats, settings, network, developer, the chip; the rail needs a "
+        L"conversation) and each string on it whose wording depends on the mode, through "
+        L"DrawnRunModeFor and NoSessionFor over (launch, no live world); none may contain "
+        L"\"demo\" or \"live session\", case-insensitive]",
+        ok ? L"PASS" : L"FAIL", plain.size() - plainBad, firstBad,
+        developerOff ? L"yes" : L"NO", controlNamed, fabricated.size(), printed));
+  }
   // The reply and reaction affordances: their names in both arms, the picker against the ABI's
   // rule, the chip words, and the live mapping over an adversarial group. Beside the copy gate
   // because the action names are copy of the same kind - true by which arm is chosen - and
