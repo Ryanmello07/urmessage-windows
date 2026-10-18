@@ -140,8 +140,9 @@ void AppendAccountGroup(
           value, winrt::hstring{a.idTitle + L", " + a.idValue});
       automation::AutomationProperties::SetAutomationId(value, L"AccountYourId");
       trailing.Children().Append(value);
-      // COPY COPIES THE FRAMING TOO: pasted somewhere else, a bare UUID would be a made-up ID with
-      // nothing left to say so.
+      // COPY COPIES WHAT THE MODEL SAYS IT COPIES: in the fabricated world the framing too, since
+      // pasted somewhere else a bare UUID would be a made-up ID with nothing left to say so; in live
+      // mode "Your ID" itself, character for character (Task 16's Property 3).
       Button copy;
       copy.Content(winrt::box_value(winrt::hstring{a.copy.label}));
       copy.Padding(ThicknessHelper::FromLengths(12, 4, 12, 4));
@@ -157,7 +158,8 @@ void AppendAccountGroup(
       row.trailing.Children().Append(trailing);
       card.body.Children().Append(row.root);
     }
-    {
+    // a live account has no "Change my recovery phrase" in this build (slice 4), so no row
+    if (!a.changeTitle.empty()) {
       auto row = kit::MakePaneTwoLineRow(winrt::hstring{a.changeTitle},
                                          winrt::hstring{a.changeNote}, kRowHeight);
       row.trailing.Children().Append(MakeAccountButton(a.change, onIdentity));
@@ -189,17 +191,21 @@ void AppendAccountGroup(
       text.Spacing(2);
       TextBlock name;
       if (auto style = StyleByKey(L"UrBodyStrongTextStyle")) name.Style(style);
-      name.Text(winrt::hstring{d.name + (d.thisDevice ? std::wstring(L" (this device)")
-                                                      : std::wstring())});
+      // the live row is called "This device" already; the fabricated rows carry a name
+      name.Text(winrt::hstring{d.name + (d.thisDevice && d.name != L"This device"
+                                             ? std::wstring(L" (this device)")
+                                             : std::wstring())});
       text.Children().Append(name);
       TextBlock detail;
       if (auto style = StyleByKey(L"UrCaptionTextStyle")) detail.Style(style);
       detail.Text(winrt::hstring{d.detail});
       text.Children().Append(detail);
-      TextBlock added;
-      if (auto style = StyleByKey(L"UrCaptionTextStyle")) added.Style(style);
-      added.Text(winrt::hstring{d.added});
-      text.Children().Append(added);
+      if (!d.added.empty()) {
+        TextBlock added;
+        if (auto style = StyleByKey(L"UrCaptionTextStyle")) added.Style(style);
+        added.Text(winrt::hstring{d.added});
+        text.Children().Append(added);
+      }
       grid.Children().Append(text);
       StackPanel buttons;
       buttons.Orientation(Orientation::Horizontal);
@@ -215,7 +221,8 @@ void AppendAccountGroup(
       rowRoot.Child(grid);
       card.body.Children().Append(rowRoot);
     }
-    {
+    // no "Add a device" on a live account in this build (slice 2)
+    if (!a.add.label.empty()) {
       Border rowRoot = kit::MakePaneRow(52);
       rowRoot.Child(MakeAccountButton(a.add, onIdentity));
       card.body.Children().Append(rowRoot);
@@ -224,6 +231,7 @@ void AppendAccountGroup(
     column.Children().Append(card.root);
   }
 
+  if (a.more.empty()) return;  // the demo's way into its other screens, and only the demo's
   AppendCaption(column, winrt::hstring{a.moreCaption}, {}, /*first=*/false);
   {
     auto card = kit::MakePaneCard();
@@ -244,7 +252,8 @@ SettingsView MakeSettings(urmsg::demo::World const& world,
                           std::function<void(bool)> onAdvancedChanged, bool advanced,
                           std::function<void(bool)> onRouteChanged,
                           bool routeThroughUrnetwork, urmsg::RunMode identityMode,
-                          std::function<void(urmsg::demo::identity::Button const&)> onIdentity) {
+                          std::function<void(urmsg::demo::identity::Button const&)> onIdentity,
+                          urmsg::live::IdentityInfo const* liveIdentity) {
   SettingsView view;
 
   // THE ONE READ OF THE MODE ON THIS PAGE, taken at build time and never inside the copy
@@ -323,8 +332,13 @@ SettingsView MakeSettings(urmsg::demo::World const& world,
   // BuildAccount builds nothing in live mode, where the inert ACCOUNT group stays at the foot of
   // the page as it was: a live launch has no identity yet to draw (Task 16). In `identityMode`,
   // not `mode`: a plain launch dialling a mesh is live although `mode` still says Fabricated.
+  // IN LIVE MODE, THE LIBRARY'S OWN IDENTITY (identity phase 1, Task 16): "Your ID" and this
+  // device, once the identity is made; the inert ACCOUNT group until then. Never the made-up one.
   const urmsg::demo::identity::AccountModel account =
-      urmsg::demo::identity::BuildAccount(identityMode);
+      identityMode == urmsg::RunMode::Live
+          ? (liveIdentity ? urmsg::demo::identity::BuildLiveAccount(*liveIdentity)
+                          : urmsg::demo::identity::AccountModel{})
+          : urmsg::demo::identity::BuildAccount(identityMode);
   if (account.built) AppendAccountGroup(column, account, onIdentity);
 
   // ---- Appearance -----------------------------------------------------------

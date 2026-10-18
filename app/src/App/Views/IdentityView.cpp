@@ -5,13 +5,17 @@
 
 #include "Views/IdentityView.h"
 
+#include <algorithm>
+#include <memory>
 #include <string>
+#include <vector>
 
 #include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
 #include <winrt/Microsoft.UI.Xaml.Input.h>
 #include <winrt/Microsoft.UI.Xaml.Media.h>
 
+#include "Live/LiveIdentity.h"
 #include "Log.h"
 #include "Strings.h"
 #include "UrColors.h"
@@ -143,6 +147,98 @@ FrameworkElement MakeWordsGrid(std::vector<std::wstring> const& words) {
     g.Children().Append(cell);
   }
   return g;
+}
+
+// THE LIVE WORD FIELDS (PLAN Task 16; F3 section 2.11.3). A PasswordBox per word: it has no
+// spelling and no prediction, takes a password's input scope, and lets nothing be copied or cut, so
+// no word reaches the clipboard or its history. Its word shows while it is typed in and is hidden
+// when focus leaves (PasswordRevealMode), and the screen's one switch shows them all. A word that
+// is not on the list is marked as it is left, by the list's own check; the library names the
+// wrong ones when Check is pressed.
+void AppendMaskedWordFields(StackPanel const& column, id::Block const& b, IdentityScreenView& view,
+                            CheckWordFn const& checkWord) {
+  column.Children().Append(MakeLabel(b.label, b.labelKind));
+  Grid g = MakeFiveByFive(12);
+  auto revealAll = std::make_shared<bool>(false);
+  auto fields = std::make_shared<std::vector<PasswordBox>>();
+  for (size_t i = 0; i < b.words.size() && i < 25; ++i) {
+    StackPanel cell;
+    cell.Orientation(Orientation::Horizontal);
+    cell.Spacing(6);
+    PasswordBox box;
+    box.Width(118);
+    box.FontFamily(MonoFont());
+    box.FontSize(14);
+    box.MaxLength(32);
+    box.PasswordRevealMode(PasswordRevealMode::Hidden);
+    if (b.fields.passwordScope) {
+      try {
+        input::InputScope scope;
+        input::InputScopeName name(input::InputScopeNameValue::Password);
+        scope.Names().Append(name);
+        box.InputScope(scope);
+      } catch (winrt::hresult_error const& e) {
+        urnw::LogWarn("identity: a live word field refused a password input scope: {}",
+                      urnw::Narrow(std::wstring{e.message()}));
+      }
+    }
+    if (i < b.prefill.size()) box.Password(hstring{b.prefill[i]});
+    TextBlock number = MakeNumber(i);
+    const bool named = std::find(b.wrongPositions.begin(), b.wrongPositions.end(),
+                                 static_cast<int>(i + 1)) != b.wrongPositions.end();
+    if (named) {
+      box.BorderBrush(urnw::colors::DangerBrush());
+      number.Foreground(urnw::colors::DangerBrush());
+      number.FontWeight(winrt::Windows::UI::Text::FontWeights::SemiBold());
+      automation::AutomationProperties::SetHelpText(box, hstring{L"Not the word you were shown."});
+    }
+    box.GotFocus([](winrt::Windows::Foundation::IInspectable const& sender, RoutedEventArgs const&) {
+      sender.as<PasswordBox>().PasswordRevealMode(PasswordRevealMode::Visible);
+    });
+    box.LostFocus([revealAll, number, checkWord, named](
+                      winrt::Windows::Foundation::IInspectable const& sender, RoutedEventArgs const&) {
+      PasswordBox self = sender.as<PasswordBox>();
+      if (!*revealAll) self.PasswordRevealMode(PasswordRevealMode::Hidden);
+      if (!checkWord || named) return;
+      std::wstring word{self.Password()};
+      const bool onList = word.empty() || checkWord(word);
+      urmsg::live::Wipe(word);
+      number.Foreground(onList ? urnw::colors::MutedBrush() : urnw::colors::DangerBrush());
+      automation::AutomationProperties::SetHelpText(
+          self, onList ? hstring{} : hstring{L"This is not a word of the list."});
+    });
+    automation::AutomationProperties::SetName(box, hstring{L"Word " + std::to_wstring(i + 1)});
+    cell.Children().Append(number);
+    cell.Children().Append(box);
+    view.wordNumbers.push_back(number);
+    Grid::SetRow(cell, static_cast<int32_t>(i % 5));
+    Grid::SetColumn(cell, static_cast<int32_t>(i / 5));
+    g.Children().Append(cell);
+    view.maskedFields.push_back(box);
+    fields->push_back(box);
+  }
+  column.Children().Append(g);
+  if (b.fields.revealToggle) {
+    CheckBox reveal;
+    reveal.Content(box_value(hstring{L"Show the words I typed"}));
+    automation::AutomationProperties::SetName(reveal, hstring{L"Show the words I typed"});
+    reveal.Checked([revealAll, fields](auto const&, auto const&) {
+      *revealAll = true;
+      for (auto& f : *fields) f.PasswordRevealMode(PasswordRevealMode::Visible);
+    });
+    reveal.Unchecked([revealAll, fields](auto const&, auto const&) {
+      *revealAll = false;
+      for (auto& f : *fields)
+        if (f.FocusState() == FocusState::Unfocused) f.PasswordRevealMode(PasswordRevealMode::Hidden);
+    });
+    column.Children().Append(reveal);
+    view.revealToggle = reveal;
+  }
+  TextBlock status = MakeLine(b.text, id::TextStyle::Error);
+  automation::AutomationProperties::SetAutomationId(status, L"IdentityWordStatus");
+  status.Visibility(b.text.empty() ? Visibility::Collapsed : Visibility::Visible);
+  column.Children().Append(status);
+  view.wordStatus = status;
 }
 
 void AppendWordFields(StackPanel const& column, id::Block const& b, IdentityScreenView& view) {
@@ -318,7 +414,8 @@ void AppendKeepOrRemove(StackPanel const& column, id::Block const& b) {
 }  // namespace
 
 IdentityScreenView MakeIdentityScreen(id::ScreenModel const& model,
-                                      IdentityActionHandler const& onAction) {
+                                      IdentityActionHandler const& onAction,
+                                      CheckWordFn const& checkWord) {
   IdentityScreenView view;
   view.screen = model.screen;
 
@@ -413,7 +510,8 @@ IdentityScreenView MakeIdentityScreen(id::ScreenModel const& model,
         break;
       }
       case id::BlockType::WordFields:
-        AppendWordFields(column, b, view);
+        if (b.fields.maskWhenFocusLeaves) AppendMaskedWordFields(column, b, view, checkWord);
+        else AppendWordFields(column, b, view);
         break;
       case id::BlockType::Emoji:
         column.Children().Append(MakeLabel(b.label, b.labelKind));
@@ -468,6 +566,21 @@ IdentityScreenView MakeIdentityScreen(id::ScreenModel const& model,
 
   view.root = root;
   return view;
+}
+
+std::vector<std::wstring> ReadIdentityFields(IdentityScreenView const& view) {
+  std::vector<std::wstring> out;
+  if (!view.maskedFields.empty()) {
+    for (auto const& f : view.maskedFields) out.emplace_back(f.Password());
+  } else {
+    for (auto const& f : view.wordFields) out.emplace_back(f.Text());
+  }
+  return out;
+}
+
+void ClearIdentityFields(IdentityScreenView const& view) {
+  for (auto const& f : view.maskedFields) f.Password(L"");
+  for (auto const& f : view.wordFields) f.Text(L"");
 }
 
 bool CheckIdentityWords(IdentityScreenView const& view, urmsg::RunMode mode) {

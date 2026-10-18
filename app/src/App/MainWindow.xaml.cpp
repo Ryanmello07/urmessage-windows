@@ -230,7 +230,10 @@ void MainWindow::SetNativeHandle(HWND hwnd) {
   // A screen the constructor opened asked before there was a window to ask, so it was drawn
   // without the words. Draw it again now, before Activate shows the window: ShowIdentity asks
   // with the handle, and draws the words only if the window holds the exclusion.
-  if (captureExcluded_ && identityView_.root) ShowIdentity(identityView_.screen, identitySel_);
+  if (captureExcluded_ && identityView_.root) {
+    if (liveIdentityShown_) ShowLiveIdentity(identityView_.screen, liveIdentityInputs_);
+    else ShowIdentity(identityView_.screen, identitySel_);
+  }
 }
 
 // ---- the identity screens (identity phase 1, Task 6) -------------------------------------------
@@ -256,6 +259,35 @@ void MainWindow::ShowIdentity(urmsg::demo::identity::Screen screen,
     CloseIdentity();
     return;
   }
+  ForgetLiveWords();
+  liveIdentityShown_ = false;
+  PresentIdentity(std::move(model), screen, sel);
+}
+
+// THE LIVE SCREENS (Task 16), built from what the worker published and nothing else.
+void MainWindow::ShowLiveIdentity(urmsg::demo::identity::Screen screen,
+                                  urmsg::demo::identity::LiveInputs in) {
+  namespace id = urmsg::demo::identity;
+  in.remoteSession = ::GetSystemMetrics(SM_REMOTESESSION) != 0;
+  id::ScreenModel model = id::BuildLiveScreen(screen, in);
+  if (!model.built) {
+    urnw::LogInfo("identity: no live {} screen; nothing is drawn",
+                  urnw::Narrow(std::wstring{id::ScreenName(screen)}));
+    return;
+  }
+  // the words stay in exactly one place this window owns, for as long as their screen is up
+  if (screen != id::Screen::Words) urmsg::live::Wipe(in.words);
+  urmsg::live::Wipe(liveIdentityInputs_.words);
+  liveIdentityInputs_ = std::move(in);
+  liveIdentityShown_ = true;
+  PresentIdentity(std::move(model), screen, id::Selection{});
+}
+
+// THE ONE PLACE AN IDENTITY SCREEN IS HOSTED, fabricated or live.
+void MainWindow::PresentIdentity(urmsg::demo::identity::ScreenModel model,
+                                 urmsg::demo::identity::Screen screen,
+                                 urmsg::demo::identity::Selection const& sel) {
+  namespace id = urmsg::demo::identity;
   // PROPERTY 2, AND IT FAILS CLOSED. The exclusion is asked for BEFORE the screen is drawn, and the
   // words are drawn only into a window that holds it: one that cannot be kept out of captures
   // draws the refusal in their place (IdentityDemo.h's CaptureRefusal). A screen without the words
@@ -276,10 +308,16 @@ void MainWindow::ShowIdentity(urmsg::demo::identity::Screen screen,
     RevealRoot().Children().Append(identityHost_);
   }
   identitySel_ = sel;
+  if (identityView_.root) urmsg::views::ClearIdentityFields(identityView_);
+  // a live field marks a word that is not on the list as it is left, by the list's own check
+  urmsg::views::CheckWordFn checkWord;
+  if (liveIdentityShown_) checkWord = [](std::wstring const& w) { return urmsg::live::CheckWord(w); };
   identityView_ = urmsg::views::MakeIdentityScreen(
-      model, [weak = get_weak()](id::Button const& button) {
+      model,
+      [weak = get_weak()](id::Button const& button) {
         if (auto self = weak.get()) self->QueueIdentityAction(button);
-      });
+      },
+      checkWord);
   identityView_.screen = screen;
   identityHost_.Children().Clear();
   identityHost_.Children().Append(identityView_.root);
@@ -295,12 +333,103 @@ void MainWindow::ShowIdentity(urmsg::demo::identity::Screen screen,
 }
 
 void MainWindow::CloseIdentity() {
+  if (identityView_.root) urmsg::views::ClearIdentityFields(identityView_);
   if (identityHost_) {
     identityHost_.Children().Clear();
     identityHost_.Visibility(Visibility::Collapsed);
   }
   identityView_ = {};
+  ForgetLiveWords();
+  const bool wasLive = liveIdentityShown_;
+  liveIdentityShown_ = false;
   if (captureExcluded_) ApplyCaptureExclusion(false, L"closed");
+  // the join dialog waited for the live setup to be closed (ApplyOnboard)
+  if (wasLive) {
+    onboardDrawn_ = 0;
+    ApplyOnboard();
+  }
+}
+
+void MainWindow::ForgetLiveWords() {
+  urmsg::live::Wipe(liveIdentityInputs_.words);
+  urmsg::live::Wipe(liveIdentityInputs_.typed);
+}
+
+// THE WORKER'S IDENTITY STATE, DRAWN (identity phase 1, slice 1: PLAN Task 16). The worker reads the
+// identity before the join road; a device without one gets "Set up this device", and each later
+// state the worker publishes - the words made, the check out, a wrong word named, the identity made
+// - draws its screen. The words are taken from the worker once, split, and kept in one place
+// (liveIdentityInputs_) for as long as their screen is up.
+void MainWindow::ApplyIdentity() {
+  if (!urmsg::live::IsEnabled()) return;
+  const uint64_t generation = urmsg::live::IdentityGeneration();
+  if (generation == identityDrawn_) return;
+  auto state = urmsg::live::IdentitySnapshot();
+  if (!state) return;
+  identityDrawn_ = generation;
+  namespace id = urmsg::demo::identity;
+  using urmsg::live::IdentityStep;
+  const bool settingUp = identityState_ && identityState_->step != IdentityStep::Done &&
+                         identityState_->step != IdentityStep::Unknown;
+  identityState_ = state;
+  const id::Screen on = liveIdentityShown_ ? identityView_.screen : id::Screen::None;
+  id::LiveInputs in;
+  in.failure = urnw::Widen(state->failure);
+  switch (state->step) {
+    case IdentityStep::Unknown:
+      break;
+    case IdentityStep::NeedsSetUp:
+      ShowLiveIdentity(id::Screen::SetUp, std::move(in));
+      break;
+    case IdentityStep::MakingWords:
+      in.waiting = true;
+      ShowLiveIdentity(id::Screen::SetUp, std::move(in));
+      break;
+    case IdentityStep::WordsReady: {
+      if (state->wordsSerial == identityWordsTaken_) break;
+      identityWordsTaken_ = state->wordsSerial;
+      std::string octets = urmsg::live::TakeOfferedWords();
+      in.words = urmsg::live::SplitOfferedWords(octets);
+      urmsg::live::Wipe(octets);
+      if (in.words.empty()) {
+        urnw::LogError("identity: the words the library offered could not be read, so none is drawn");
+        in.failure = L"Your words could not be shown. Make them again.";
+        ShowLiveIdentity(id::Screen::SetUp, std::move(in));
+        break;
+      }
+      urmsg::live::Wipe(identityTyped_);
+      ShowLiveIdentity(id::Screen::Words, std::move(in));
+      break;
+    }
+    case IdentityStep::Checking:
+      in.typed = identityTyped_;
+      in.waiting = true;
+      ShowLiveIdentity(id::Screen::TypeBack, std::move(in));
+      break;
+    case IdentityStep::Wrong:
+      in.typed = identityTyped_;
+      in.wrong = state->wrong;
+      ShowLiveIdentity(id::Screen::TypeBackWrong, std::move(in));
+      break;
+    case IdentityStep::Failed:
+      if (on == id::Screen::TypeBack || on == id::Screen::TypeBackWrong) {
+        in.typed = identityTyped_;
+        ShowLiveIdentity(id::Screen::TypeBack, std::move(in));
+      } else {
+        ShowLiveIdentity(id::Screen::SetUp, std::move(in));
+      }
+      break;
+    case IdentityStep::Done:
+      urmsg::live::Wipe(identityTyped_);
+      // the setup ran in this session: say so, then Settings shows "Your ID"
+      if (settingUp || liveIdentityShown_) ShowLiveIdentity(id::Screen::SetUpDone, std::move(in));
+      BuildSettings();
+      break;
+    case IdentityStep::Unreadable:
+      urnw::LogError("identity: this device's identity could not be read; nothing is drawn");
+      if (liveIdentityShown_) CloseIdentity();
+      break;
+  }
 }
 
 void MainWindow::QueueIdentityAction(urmsg::demo::identity::Button const& button) {
@@ -323,6 +452,12 @@ void MainWindow::OnIdentityAction(urmsg::demo::identity::Button const& button) {
   switch (button.action) {
     case id::Action::Go: {
       const auto to = static_cast<id::Screen>(button.arg);
+      // the live words screen's "I wrote them down": the words go from this window's memory now
+      if (liveIdentityShown_) {
+        id::LiveInputs in;
+        ShowLiveIdentity(to, std::move(in));
+        break;
+      }
       id::Selection sel = id::PresetSelection(to);
       if (button.device >= 0 && button.device < 32) {
         if (to == id::Screen::Rename) {
@@ -345,6 +480,26 @@ void MainWindow::OnIdentityAction(urmsg::demo::identity::Button const& button) {
     case id::Action::FillWords:
       urmsg::views::FillIdentityWords(identityView_);
       break;
+    case id::Action::MakeWords:
+      // "This is my first device", or "Back to the words": the library answers with the same
+      // words until the identity is made. What was typed is let go.
+      urmsg::live::Wipe(identityTyped_);
+      if (!urmsg::live::QueueMakeWords())
+        urnw::LogWarn("identity: the words were asked for while the worker waits for no setup");
+      break;
+    case id::Action::ConfirmWords: {
+      // THE FIELDS, JOINED, TO THE LIBRARY: it checks them and names every wrong word. Kept as
+      // typed, so a wrong word is named with nothing corrected.
+      std::vector<std::wstring> typed = urmsg::views::ReadIdentityFields(identityView_);
+      std::string joined = urmsg::live::JoinTypedWords(typed);
+      urmsg::live::Wipe(identityTyped_);
+      identityTyped_ = std::move(typed);
+      if (!urmsg::live::QueueConfirmWords(std::move(joined)))
+        urnw::LogWarn("identity: the words were sent while the worker waits for no setup, or a "
+                      "check was already out");
+      urmsg::live::Wipe(joined);
+      break;
+    }
     case id::Action::CheckWords:
       if (urmsg::views::CheckIdentityWords(identityView_, IdentityRunMode())) {
         ShowIdentity(static_cast<id::Screen>(button.arg));
@@ -998,6 +1153,9 @@ void MainWindow::ApplyOnboard() {
   // ONLY A LIVE LAUNCH HAS AN ONBOARDING STATE. A fabricated one is already in a group that was
   // never joined.
   if (!urmsg::live::IsEnabled()) return;
+  // THE LIVE SETUP FIRST (Task 16): the join dialog is not drawn over "Set up this device", the
+  // words or the setup done. Left unconsumed, it is drawn when the setup is closed.
+  if (liveIdentityShown_ && identityView_.root) return;
   const uint64_t generation = urmsg::live::OnboardGeneration();
   if (generation == onboardDrawn_) return;
   auto state = urmsg::live::OnboardSnapshot();
@@ -1160,9 +1318,10 @@ void MainWindow::ApplyOnboard() {
 }
 
 void MainWindow::ApplyLiveWorld() {
-  // THE ONBOARDING HALF FIRST, and unconditionally: it has its own generation and its own early
-  // return, and the world below may have nothing to say for minutes while a person is reading a
-  // join code off the screen.
+  // THE IDENTITY, THEN THE ONBOARDING HALF, both unconditionally: each has its own generation and
+  // its own early return, and the world below may have nothing to say for minutes while a person is
+  // writing down their words or reading a join code off the screen.
+  ApplyIdentity();
   ApplyOnboard();
   const std::uint64_t generation = urmsg::live::Generation();
   if (generation == liveDrawn_) return;
@@ -2022,7 +2181,10 @@ void MainWindow::BuildSettings() {
       urmsg::live::RouteThroughUrnetwork(), IdentityRunMode(),
       [weak = get_weak()](urmsg::demo::identity::Button const& button) {
         if (auto self = weak.get()) self->QueueIdentityAction(button);
-      });
+      },
+      identityState_ && identityState_->step == urmsg::live::IdentityStep::Done
+          ? &identityState_->info
+          : nullptr);
   // SettingsHost, NOT a Grid of this task's own: MainWindow.xaml:284 already
   // declares it and ShowDestination's settings arm routes to it (the d7
   // audit's A3 override — do not add a SettingsPage Grid; that is "mounted

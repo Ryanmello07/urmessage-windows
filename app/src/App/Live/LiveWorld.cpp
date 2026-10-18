@@ -37,6 +37,7 @@
 #include <mutex>
 
 #include "Strings.h"
+#include "Views/RosterRules.h"  // KindByIdentities: the roster by identity (identity phase 1)
 
 // The kind codes. This TU does not link the SDK; it only needs the numbers, and repeating them
 // here would be a second copy to drift. The header is include-only for these defines.
@@ -264,6 +265,10 @@ urmsg::demo::World BuildWorld(LiveGroup const& group) {
     m.role = urnw::Widen(lm.role);
     m.mine = lm.mine;
     m.identityPubHex = urnw::Widen(lm.identityPub);
+    // identity phase 1 (Task 14's member json): the leaf's device ID and its identity's root, ""
+    // for a leaf no identity binds
+    m.deviceId = urnw::Widen(lm.deviceId);
+    m.identity = urnw::Widen(lm.identity);
     m.devices.clear();
     // A change this device asked for on this identity. The newest entry wins when several name
     // one identity (a retry after a refusal), which is also the order the worker appends them.
@@ -286,10 +291,16 @@ urmsg::demo::World BuildWorld(LiveGroup const& group) {
     conv.members.push_back(std::move(m));
   }
   conv.memberCount = static_cast<int>(conv.members.size());
-  // A GROUP FROM THREE MEMBERS UP, off the roster the library handed over. Two is a direct
+  // A GROUP FROM THREE PEOPLE UP, off the roster the library handed over. Two is a direct
   // conversation - the product model is that a DM IS a two-member group - and so is one, the
   // founder alone before anybody has joined, which has no "N members" worth drawing.
-  if (3 <= conv.members.size()) conv.kind = urmsg::demo::ConversationKind::Group;
+  //
+  // PEOPLE, NOT LEAVES (identity phase 1, PLAN Task 16; SCOPE H6). A person's devices are leaves of
+  // one identity, so the leaf count would make one person on two devices and a friend look like a
+  // group of three. The count is of identities, by the member json's `identity`
+  // (Views/RosterRules.h, KindByIdentities); --diagnose's id live roster holds three leaves of two
+  // identities direct.
+  conv.kind = urmsg::views::KindByIdentities(conv.members);
   // THIS DEVICE'S OWN ROLE, off urnet_message_group_my_role and not derived from the row marked
   // mine: the ABI answers it directly, and the rail's control set is chosen by it. Empty (a group
   // that could not be read) is the placeholder, which the control table treats as no role.
