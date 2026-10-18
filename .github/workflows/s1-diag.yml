@@ -1,0 +1,163 @@
+# THROWAWAY, NEVER MERGE, NEVER IN AN UPSTREAM PULL REQUEST. identity/i1-slice1 (Task 16): the
+# --diagnose cases, one job per variant. A variant passes when exactly its listed lines FAIL, each
+# for its own reason (an empty list: the control, no FAIL at all). The checkout is the tested head
+# plus CI files only (the first step proves it).
+name: Slice 1 diagnose cases (throwaway)
+
+on:
+  push:
+    branches:
+      - 'ci/s1diag-**'
+
+permissions:
+  contents: read
+
+env:
+  TESTED_HEAD: 2da43e47f1b61b884adf30bd0f06831a1ce5b8fb
+
+jobs:
+  diagnose:
+    name: Diagnose (${{ matrix.variant }})
+    runs-on: windows-2022
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [control, md-nocheck, md-empty, md-doubled, md-offlist, md-remote, md-wipe-model, md-wipe-inputs, md-stopped, md-names, md-connected, ma4, ma5, ma10, mx-store, mx-copy, mx-strip]
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Prove the checkout is the tested head plus CI files only
+        shell: pwsh
+        run: |
+          Write-Host "checkout $(git rev-parse HEAD)"
+          Write-Host "tested   $(git rev-parse HEAD^)"
+          if ((git rev-parse HEAD^) -ne $env:TESTED_HEAD) { Write-Host "::error::the tested head is not $env:TESTED_HEAD"; exit 1 }
+          $outside = @(git diff --name-only HEAD^ HEAD | Where-Object { $_ -notlike '.github/*' })
+          if ($outside.Count -gt 0) { Write-Host "::error::the CI commit changes files outside .github: $($outside -join ', ')"; exit 1 }
+
+      - name: Apply the variant (${{ matrix.variant }})
+        shell: pwsh
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          $edits = @(
+            @{ v = 'md-nocheck'; path = 'app/src/App/Live/LiveIdentity.cpp'; old = '  return issues;'; new = '  return {};' },
+            @{ v = 'md-empty'; path = 'app/src/App/Live/LiveIdentity.cpp'; old = '    if (words != 1) {'; new = '    if (words == 0) { continue; } else if (words != 1) {' },
+            @{ v = 'md-doubled'; path = 'app/src/App/Live/LiveIdentity.cpp'; old = '        ++words;'; new = '        words = 1;' },
+            @{ v = 'md-offlist'; path = 'app/src/App/Live/LiveIdentity.cpp'; old = '    } else if (!isListWord || !isListWord(fields[i])) {'; new = '    } else if (!isListWord) {' },
+            @{ v = 'md-remote'; path = 'app/src/App/Demo/IdentityDemo.cpp'; old = '      m.excludedFromCapture = !in.remoteSession;  // by session kind, as the words screen'; new = '      m.excludedFromCapture = true;  // by session kind, as the words screen' },
+            @{ v = 'md-remote'; path = 'app/src/App/Demo/IdentityDemo.cpp'; old = '      m.excludedFromCapture = !in.remoteSession;'; new = '      m.excludedFromCapture = true;' },
+            @{ v = 'md-wipe-model'; path = 'app/src/App/Demo/IdentityDemo.cpp'; old = '    urmsg::live::Wipe(b.words);'; new = '    (void)b.words;' },
+            @{ v = 'md-wipe-inputs'; path = 'app/src/App/Demo/IdentityDemo.cpp'; old = '  urmsg::live::Wipe(in.typed);'; new = '  (void)in.typed;' },
+            @{ v = 'md-stopped'; path = 'app/src/App/Demo/IdentityDemo.cpp'; old = '      if (in.stopped) {'; new = '      if (false && in.stopped) {' },
+            @{ v = 'md-names'; path = 'app/src/App/Live/LocalNames.cpp'; old = '  return SliceStoreFolder(storageRoot / L"live") / L"local_names.json";'; new = '  return storageRoot / L"local_names.json";' },
+            @{ v = 'md-connected'; path = 'app/src/App/Views/StatusStripRules.cpp'; old = '  return sessionConnected ? demo::ConnectState::Connected : demo::ConnectState::Connecting;'; new = '  return sessionConnected && false ? demo::ConnectState::Connected : demo::ConnectState::Connecting;' },
+            @{ v = 'ma4'; path = 'app/src/App/Live/LiveIdentity.cpp'; old = '  return kind == URNET_MESSAGE_WORDS_OK;'; new = '  return kind == URNET_MESSAGE_WORDS_OK || (kind == URNET_MESSAGE_WORDS_WRONG && namedPositions <= 1);' },
+            @{ v = 'ma5'; path = 'app/src/App/Demo/IdentityDemo.cpp'; old = '  a.idValue = AsciiWide(id.accountId);'; new = '  a.idValue = AsciiWide(id.deviceId);' },
+            @{ v = 'ma10'; path = 'app/src/App/Live/LiveWorld.cpp'; old = '  conv.kind = urmsg::views::KindByIdentities(conv.members);'; new = '  if (3 <= conv.members.size()) conv.kind = urmsg::demo::ConversationKind::Group;' },
+            @{ v = 'mx-store'; path = 'app/src/App/Live/LiveIdentity.cpp'; old = '  return liveRoot / kSliceStoreFolder;'; new = '  return liveRoot;' },
+            @{ v = 'mx-copy'; path = 'app/src/App/Demo/IdentityDemo.h'; old = 'inline constexpr FieldPolicy kLiveWordFieldPolicy{true, true, false, false, true, false};'; new = 'inline constexpr FieldPolicy kLiveWordFieldPolicy{true, true, false, false, true, true};' },
+            @{ v = 'mx-strip'; path = 'app/src/App/RunMode.cpp'; old = '  return L"Demo: " + word;'; new = '  return word;' }
+          )
+          $mine = @($edits | Where-Object { $_.v -eq $env:VARIANT })
+          Write-Host "edits for $env:VARIANT`: $($mine.Count)"
+          foreach ($e in $mine) {
+            $text = [IO.File]::ReadAllText($e.path)
+            $n = ([regex]::Matches($text, [regex]::Escape($e.old))).Count
+            if ($n -ne 1) { Write-Host "::error::'$($e.old)' occurs $n times in $($e.path), not once"; exit 1 }
+            [IO.File]::WriteAllText($e.path, $text.Replace($e.old, $e.new), (New-Object Text.UTF8Encoding($false)))
+          }
+          git --no-pager diff
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build the app (Release x64)
+        shell: pwsh
+        working-directory: app
+        run: |
+          $pin = '10.0.22621.0'
+          $roots = @("${env:ProgramFiles(x86)}\Windows Kits\10", "$env:ProgramFiles\Windows Kits\10") | Where-Object { Test-Path -LiteralPath $_ }
+          $usable = @(foreach ($r in $roots) {
+            Get-ChildItem (Join-Path $r 'Include') -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' -and
+                (Test-Path -LiteralPath (Join-Path $r "Include\$($_.Name)\um\windows.h")) -and
+                (Test-Path -LiteralPath (Join-Path $r "Lib\$($_.Name)\um\x64\kernel32.lib")) } |
+              Select-Object -ExpandProperty Name
+          }) | Select-Object -Unique | Sort-Object { [version]$_ }
+          $usable = @($usable)
+          $sdk = if ($usable -contains $pin) { $pin } else { $usable[-1] }
+          msbuild URmessage.sln /restore /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=$sdk /m /v:minimal /clp:Summary
+          exit $LASTEXITCODE
+
+      - name: Run --diagnose and judge (${{ matrix.variant }})
+        shell: pwsh
+        env:
+          VARIANT: ${{ matrix.variant }}
+          URMESSAGE_APP_ROOT: ${{ github.workspace }}/.ci-appstate
+        run: |
+          $expect = @{
+            'control' = @()
+            'md-nocheck' = @('id live boxes')
+            'md-empty' = @('id live boxes')
+            'md-doubled' = @('id live boxes')
+            'md-offlist' = @('id live boxes')
+            'md-remote' = @('id live remote')
+            'md-wipe-model' = @('id live words')
+            'md-wipe-inputs' = @('id live words')
+            'md-stopped' = @('id live stopped')
+            'md-names' = @('id live store')
+            'md-connected' = @('id live strip')
+            'ma4' = @('id live gate')
+            'ma5' = @('id live your id')
+            'ma10' = @('id live roster')
+            'mx-store' = @('id live store')
+            'mx-copy' = @('id live fields')
+            'mx-strip' = @('run mode strip')
+          }
+          $exe = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'app/build/x64/Release/URmessage.exe'))
+          $psi = [System.Diagnostics.ProcessStartInfo]::new($exe)
+          $psi.Arguments = '--diagnose'
+          $psi.UseShellExecute = $false
+          $psi.CreateNoWindow = $true
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+          $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+          $p = [System.Diagnostics.Process]::Start($psi)
+          $outTask = $p.StandardOutput.ReadToEndAsync()
+          $errTask = $p.StandardError.ReadToEndAsync()
+          if (-not $p.WaitForExit(120000)) { try { $p.Kill() } catch { }; Write-Host '::error::--diagnose did not exit'; exit 1 }
+          $out = $outTask.GetAwaiter().GetResult()
+          $null = $errTask.GetAwaiter().GetResult()
+          New-Item -ItemType Directory -Force (Join-Path $env:GITHUB_WORKSPACE 'diagout') | Out-Null
+          [IO.File]::WriteAllText((Join-Path (Join-Path $env:GITHUB_WORKSPACE 'diagout') "diagnose-$env:VARIANT.out"), $out, (New-Object Text.UTF8Encoding($false)))
+          $lines = @($out -split "`r?`n")
+          $pass = @($lines | Where-Object { $_ -match '\bPASS\b' }).Count
+          $fails = @($lines | Where-Object { $_ -match '\bFAIL\b' })
+          Write-Host "--diagnose: $($lines.Count) lines, $pass PASS, $($fails.Count) FAIL"
+          $fails | ForEach-Object { Write-Host "  FAIL line: $($_.Substring(0, [Math]::Min(300, $_.Length)))" }
+          @($lines | Where-Object { $_ -match '^\s+(id live [a-z ]+|identity live)\s+:' }) | ForEach-Object { Write-Host "  $($_.Trim())" }
+          $labels = @($fails | ForEach-Object { ($_.TrimStart() -split ':')[0].Trim() })
+          $want = @($expect[$env:VARIANT])
+          $missing = @($want | Where-Object { $labels -notcontains $_ })
+          $extra = @($labels | Where-Object { $want -notcontains $_ })
+          if ($want.Count -eq 0) {
+            if ($fails.Count -eq 0 -and $pass -gt 100) { Write-Host "$env:VARIANT`: no FAIL"; exit 0 }
+            Write-Host "::error::$env:VARIANT`: --diagnose printed FAIL: $($labels -join ', ')"; exit 1
+          }
+          if ($missing.Count -eq 0 -and $extra.Count -eq 0) { Write-Host "$($env:VARIANT.ToUpper()) KILLED by exactly its own lines: $($want -join ', ')"; exit 0 }
+          Write-Host "::error::$env:VARIANT not killed for its own reason: missing $($missing -join ', '); other $($extra -join ', ')"
+          exit 1
+
+      - name: Upload the diagnose output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s1diag-${{ matrix.variant }}
+          path: diagout/
+          if-no-files-found: warn
