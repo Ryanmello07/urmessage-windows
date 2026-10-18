@@ -1,0 +1,83 @@
+# THROWAWAY, NEVER MERGE, NEVER IN AN UPSTREAM PULL REQUEST. The control for the preview marker's
+# fail-closed case, on a head before the fix: the same locked-dll preview build; green only when
+# the failed build leaves no marker and the MSI is built from its folder (the defect, reproduced).
+name: I1 marker fail-closed control (throwaway)
+
+on:
+  push:
+    branches:
+      - 'ci/i1-failclosed-control**'
+
+permissions:
+  contents: read
+
+env:
+  I1_HEAD: bcb81909017f3f6626b3276e401497deb8e48434
+
+jobs:
+  control:
+    name: Marker fail-closed control
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Prove the checkout is the tested head plus CI files only
+        shell: pwsh
+        run: |
+          Write-Host "checkout $(git rev-parse HEAD)"
+          Write-Host "tested   $(git rev-parse HEAD^)"
+          if ((git rev-parse HEAD^) -ne $env:I1_HEAD) { Write-Host "::error::the tested head is not $env:I1_HEAD"; exit 1 }
+          $outside = @(git diff --name-only HEAD^ HEAD | Where-Object { $_ -notlike '.github/*' })
+          if ($outside.Count -gt 0) { Write-Host "::error::the CI commit changes files outside .github"; exit 1 }
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build the identity preview (Release x64, no SDK)
+        shell: pwsh
+        working-directory: app
+        run: |
+          $pin = '10.0.22621.0'
+          $roots = @("${env:ProgramFiles(x86)}\Windows Kits\10", "$env:ProgramFiles\Windows Kits\10") | Where-Object { Test-Path -LiteralPath $_ }
+          $usable = @(foreach ($r in $roots) {
+            Get-ChildItem (Join-Path $r 'Include') -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' -and
+                (Test-Path -LiteralPath (Join-Path $r "Include\$($_.Name)\um\windows.h")) -and
+                (Test-Path -LiteralPath (Join-Path $r "Lib\$($_.Name)\um\x64\kernel32.lib")) } |
+              Select-Object -ExpandProperty Name
+          }) | Select-Object -Unique | Sort-Object { [version]$_ }
+          $usable = @($usable)
+          $sdk = if ($usable -contains $pin) { $pin } else { $usable[-1] }
+          # THE TWO WAYS A DLL COULD RIDE ALONG (the review's should-fix 3): one staged where the
+          # standard build copies it from, and one left in the output by a standard build. Both are
+          # stand-ins, a few bytes of text: nothing loads them, and the preview must carry neither.
+          $staged = 'third_party\urnetwork-sdk\bin\x64\URnetworkSdk.dll'
+          $leftover = 'build\x64\Release\URnetworkSdk.dll'
+          if (Test-Path -LiteralPath $staged) { Write-Host '::error::a real SDK dll is staged on this runner'; exit 1 }
+          New-Item -ItemType Directory -Force (Split-Path -Parent $staged), (Split-Path -Parent $leftover) | Out-Null
+          Set-Content -LiteralPath $staged -Value 'stand-in: staged' -Encoding ascii
+          Set-Content -LiteralPath $leftover -Value 'stand-in: left by a standard build' -Encoding ascii
+          Write-Host "stand-ins: $staged ($((Get-Item $staged).Length) bytes), $leftover ($((Get-Item $leftover).Length) bytes)"
+          # THE GATE FAILS CLOSED (the second review's should-fix): a preview build that links its exe
+          # over the standard one and then fails must still leave the folder marked, so the MSI
+          # refuses it. The leftover is held open with no sharing, so the build's Delete cannot
+          # remove it and the build fails after the link.
+          $held = [IO.File]::Open((Resolve-Path -LiteralPath $leftover).Path, 'Open', 'Read', 'None')
+          msbuild URmessage.sln /restore /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=$sdk /p:UrmIdentityPreview=true /m /v:minimal /clp:Summary
+          $lockedExit = $LASTEXITCODE
+          $held.Dispose()
+          $bad = 0
+          if ($lockedExit -eq 0) { Write-Host '::error::the preview build did not fail with the leftover dll held open'; $bad++ } else { Write-Host "PASS  the preview build failed with the leftover dll held open (exit $lockedExit)" }
+          if (Test-Path -LiteralPath 'build\x64\Release\URmessage.exe') { Write-Host "  the failed build left an exe: $((Get-Item 'build\x64\Release\URmessage.exe').Length) bytes" }
+          $marker = Test-Path -LiteralPath 'build\x64\Release\IDENTITY-PREVIEW-BUILD.txt'; Write-Host "the failed preview build left a marker: $marker"
+          $msiOut = & msbuild installer\Installer.wixproj /restore /p:Configuration=Release /p:Platform=x64 "/p:BinDir=$env:GITHUB_WORKSPACE\app\build\x64\Release" /v:minimal /nologo 2>&1 | Out-String
+          $msiExit = $LASTEXITCODE
+          Write-Host "the MSI from the folder the failed preview build left: exit $msiExit"; Write-Host ($msiOut.Trim() -split "`r?`n" | Select-Object -Last 4 | Out-String)
+          $msi = @(Get-ChildItem -Recurse -Filter *.msi -Path installer -ErrorAction SilentlyContinue)
+          if ($lockedExit -ne 0 -and -not $marker -and $msiExit -eq 0 -and $msi.Count -gt 0) { Write-Host "CONTROL: the defect is there before the fix: the failed preview build left no marker, and the MSI was built from its folder ($($msi[0].Name))"; exit 0 }
+          Write-Host "::error::the control did not show the defect: build exit $lockedExit, marker $marker, MSI exit $msiExit, MSI files $($msi.Count)"; exit 1
+
