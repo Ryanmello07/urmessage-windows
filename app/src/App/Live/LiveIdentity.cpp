@@ -182,6 +182,16 @@ std::vector<std::wstring> SplitOfferedWords(std::string_view utf8) {
   return words;
 }
 
+// NOT BUILT YET (the round's tests come first): no box is named.
+std::vector<BoxIssue> CheckBoxes(std::vector<std::wstring> const&) { return {}; }
+std::wstring BoxesLine(std::vector<BoxIssue> const&) { return {}; }
+
+std::string OneWordUtf8(std::wstring const& word) {
+  std::string out;
+  AppendUtf8(out, word);
+  return out;
+}
+
 std::string JoinTypedWords(std::vector<std::wstring> const& fields) {
   std::string out;
   for (size_t i = 0; i < fields.size(); ++i) {

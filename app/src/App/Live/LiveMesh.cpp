@@ -3199,6 +3199,9 @@ bool QueueConfirmWords(std::string typedUtf8) {
   return true;
 }
 
+// NOT BUILT YET (the round's tests come first)
+bool SessionConnected() { return false; }
+
 bool CheckWord(std::wstring const& word) {
   if (!g_sdkLoaded.load(std::memory_order_acquire)) return true;
   std::string utf8 = JoinTypedWords({word});
