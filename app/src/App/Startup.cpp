@@ -4010,6 +4010,35 @@ std::vector<std::wstring> CollectDiagnostics() {
   // lines above are: it builds no world and names no hostname, so a plain
   // launch's log gains nothing fabricated by carrying it.
   lines.push_back(StatusStripFieldsAssertion());
+  // THE STRIP'S STATE WORD AS A PAIR (identity phase 1, Task 16: the lead's note on the preview).
+  // Each of the three words: the fabricated arm names the demo and not a live session, the live arm
+  // is the word itself, naming no demo, and the two differ.
+  {
+    namespace demo = urmsg::demo;
+    size_t good = 0;
+    std::wstring printed;
+    for (demo::ConnectState state : {demo::ConnectState::Connected, demo::ConnectState::Connecting,
+                                     demo::ConnectState::Offline}) {
+      const std::wstring word(urmsg::views::StatusStateWord(state));
+      const std::wstring fab = urmsg::StatusStateText(urmsg::RunMode::Fabricated, word);
+      const std::wstring live = urmsg::StatusStateText(urmsg::RunMode::Live, word);
+      auto has = [](std::wstring s, std::wstring const& needle) {
+        for (auto& c : s)
+          if (L'A' <= c && c <= L'Z') c = static_cast<wchar_t>(c - L'A' + L'a');
+        return s.find(needle) != std::wstring::npos;
+      };
+      const bool ok = has(fab, L"demo") && !has(fab, L"live") && live == word &&
+                      !has(live, L"demo") && fab != live;
+      good += ok ? 1 : 0;
+      if (!printed.empty()) printed += L" | ";
+      printed += L"'" + fab + L"' / '" + live + L"'";
+    }
+    lines.push_back(std::format(
+        L"  run mode strip   : {}  {}/3 state words framed by the mode (fabricated / live): {}   "
+        L"[query: StatusStateText over StatusStateWord's three words; the fabricated arm names the "
+        L"demo, the live arm is the word and names none, and the two differ]",
+        good == 3 ? L"PASS" : L"FAIL", good, printed));
+  }
   // S3: the relay drawer's rows and the strip fit their own width. The same terms: a typed
   // client_id and platform url, and stand-in widths, so nothing fabricated reaches the log.
   lines.push_back(RelayRowFitAssertion());
