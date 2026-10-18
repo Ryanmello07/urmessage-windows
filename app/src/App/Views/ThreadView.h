@@ -89,7 +89,7 @@ void SetThreadSendEnabled(ThreadView& v, bool enabled, bool mayRoleSend);
 // rebuild; MainWindow calls this on the beat it latches a live world.
 void SetThreadRunMode(ThreadView& v, urmsg::RunMode mode);
 
-// THIS RUN IS DRAWING THE EMPTY WORLD: --live, and no group yet. A third fact, separate from the
+// THIS RUN IS DRAWING THE EMPTY WORLD: --live, and no group on it. A third fact, separate from the
 // mode and from the capability, because what it says is that there is nothing to send TO - and
 // the composer's caption is false in BOTH existing wordings while it holds. Set by MainWindow on
 // a live-only launch and cleared on the beat a live world arrives, which is the beat the mode

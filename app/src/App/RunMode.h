@@ -165,8 +165,8 @@ std::wstring LockHeaderNote(RunMode mode);
 // expectation is keyed on the role's NAME so the mapping cannot mark its own paper.
 //
 // AND A THIRD ARM, FOR A STATE THAT DID NOT EXIST WHEN THE PAIR WAS WRITTEN. `noSession` is true on
-// a --live launch that is drawing the EMPTY world: the mesh is dialling, or has answered and this
-// device is in no group yet. Both wordings above are false there and in different ways. "Demo
+// a --live launch that is drawing the EMPTY world: the mesh is dialling, or has answered and no
+// group is on the screen. Both wordings above are false there and in different ways. "Demo
 // model - nothing is sent, and no message leaves this window" is false because there is no demo:
 // no fabricated row is on screen, the list is empty, and the sentence invites a reader to think
 // the thing they are looking at is a mock-up. "Live session - these messages are real" is false
@@ -176,8 +176,13 @@ std::wstring LockHeaderNote(RunMode mode);
 // whose mesh has not answered draws the FABRICATED world, so the fabricated wording is true there
 // - and that held for exactly as long as --live implied --demo. It does not any more.
 //
-// The true sentence names the absence and says what to do about it, and it claims nothing about
-// encryption in either direction, because nothing has been encrypted or decrypted yet.
+// The true sentence names the absence ON THE SCREEN and claims nothing about this device. The
+// empty world is drawn for a device in no group, and also for one whose group is on its disk and
+// did not open (R25 Q4), one that cannot make a join code, and a launch whose mesh has not
+// answered, which knows none of this yet. So it neither says "no group" of the device nor tells
+// it to join one - the onboarding dialog says the right thing for each (Live/RefusalCopy.h) -
+// and RunModeCopyDiagnostics' `run mode held` holds every third arm to that. It claims nothing
+// about encryption in either direction, because nothing has been encrypted or decrypted yet.
 std::wstring ComposerNote(RunMode mode, bool maySend, bool noSession = false);
 
 // The Network page's relay-path caption (chrome voice, letterspaced uppercase) and the status

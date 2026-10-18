@@ -947,8 +947,8 @@ void MainWindow::ApplyLiveWorld() {
   if (thread_.root) {
     urmsg::views::SetThreadRunMode(thread_, urmsg::RunMode::Live);
     // CLEARED IN THE SAME BREATH AS THE MODE LATCHES, which is the only moment at which both
-    // are true: there is a live world on screen, so the empty one is gone and "no group yet"
-    // has stopped being the fact about this run.
+    // are true: there is a live world on screen, so the empty one is gone and "no group is on
+    // these screens yet" has stopped being the fact about this run.
     //
     // AND SET AGAIN WHEN THE WORLD IS EMPTY: a device that LEFT its group (ledger 273) is back to
     // having none, and the caption says so.
@@ -1598,6 +1598,10 @@ void MainWindow::ClearMessageSelection() {
 }
 
 void MainWindow::ApplyAdvanced(bool on) {
+  // TURNED ON, as opposed to applied: the one beat at which the Developer page is built again
+  // (below). The first apply, from EnterDemoMode, is not one: advanced_ already holds the
+  // resolved mode there, and the constructor's BuildDeveloper builds the page with it.
+  const bool turnedOn = on && !advanced_;
   advanced_ = on;
 
   // Developer is a destination that exists only under Advanced Mode. Leaving
@@ -1629,6 +1633,15 @@ void MainWindow::ApplyAdvanced(bool on) {
     }
   }
   if (!on && currentTag_ == L"developer") SelectNavTag(L"chats");
+  // THE DEVELOPER PAGE IS BUILT AGAIN WHEN THE MODE TURNS ON. It reports what it read at build
+  // time (DeveloperView.h), and one of its figures is this mode: built at launch with the mode
+  // off and reached after Settings turned it on, it read "Advanced Mode: off" on the one page
+  // that exists only while the mode is on (ci/plain-pages-5, run 39103282732). Contract v2
+  // section 4 gives the view no Set*Advanced; the rebuild is this subscriber's (DeveloperView.h).
+  // Only on the way IN: the page cannot be reached while the mode is off, so there is nothing to
+  // correct on the way out, and a rebuild then would swap the page under the crossfade away
+  // from it.
+  if (turnedOn) BuildDeveloper();
 
   urmsg::views::SetConversationListAdvanced(list_, on);
   urmsg::views::SetStatusStripAdvanced(statusStrip_, on);

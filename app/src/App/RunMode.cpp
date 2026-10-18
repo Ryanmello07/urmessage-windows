@@ -18,6 +18,10 @@
 // DemoWorld.h is pure C++ and compiled NotUsing the pch for the same reason this file is, so the
 // "no winrt before init_apartment" property survives the include.
 #include "Demo/DemoWorld.h"
+// RefusalCopy's sentences for the held-group clause below (R25 Q4): kWaitingNotInAGroup, the one
+// that is false of a device whose group did not open, and kHeldIntro, the one that is true of it.
+// Pure C++ like this file (<string> and <string_view> only), so the property above survives.
+#include "Live/RefusalCopy.h"
 
 namespace urmsg {
 namespace {
@@ -245,8 +249,13 @@ std::wstring ComposerNote(RunMode mode, bool maySend, bool noSession) {
   // THE THIRD ARM FIRST, because it is about whether there is anything to send TO, and the two
   // below are about what happens when there is. See the header for why both of them are false
   // while the empty world is on screen.
-  if (noSession)
-    return L"No group yet \u2014 there is nothing to send to. Join a group to start a conversation.";
+  //
+  // IT SAYS WHAT THE SCREEN HAS, AND NOTHING OF WHAT THIS DEVICE HOLDS (R25 Q4). It said "No group
+  // yet ... Join a group to start a conversation", which is false of a device whose group is on
+  // its disk and did not open, and the advice is wrong for that device and for a store that
+  // cannot make a join code. The onboarding dialog says the right thing for each of them
+  // (Live/RefusalCopy.h); this line says what Settings' disclosure says over the same world.
+  if (noSession) return L"No group is on these screens yet, so there is nothing to send to.";
   if (mode != RunMode::Live) return L"Demo model \u2014 nothing is sent, and no message leaves this window.";
   if (!maySend)
     return L"Live session \u2014 these messages are real. You can read this group but not send "
@@ -677,6 +686,68 @@ std::vector<std::wstring> RunModeCopyDiagnostics() {
         L"AbsenceList(body(Live, true)) == AbsenceList(body(Live))]",
         ok ? L"PASS" : L"FAIL", good, std::size(thirds), firstBad, absencesKept ? L"yes" : L"NO",
         printed));
+  }
+
+  // THE EMPTY WORLD SAYS NOTHING OF WHAT THIS DEVICE HOLDS (R25 Q4). Every third arm is drawn
+  // over the empty world, and that world is not only a device in no group: it is also a device
+  // whose group is on its disk and did not open (it predates the join seal, or its record could
+  // not be read just now), a store that cannot make a join code, and a launch whose mesh has not
+  // answered, which knows none of this yet. So no third arm may say that this device is in no
+  // group, nor tell it to join one: the onboarding dialog says the right thing for each state
+  // (Live/RefusalCopy.h). THE NEEDLES COME FROM THE SENTENCES THAT SAID IT - the composer's own
+  // third arm until fix/advanced-figure-held-group, kept here as the control's text, and
+  // RefusalCopy's kWaitingNotInAGroup, R25 Q4's own example - and THE CONTROL IS IN THE SAME
+  // QUERY: every needle must find one of those two sentences, and none may find kHeldIntro, the
+  // dialog's sentence for a device that holds a group. Every arm that a needle finds is printed.
+  {
+    const std::wstring needles[] = {L"no group yet", L"not in a group", L"join a group"};
+    const std::wstring oldComposer =
+        L"No group yet \u2014 there is nothing to send to. Join a group to start a conversation.";
+    const std::wstring waiting(live::kWaitingNotInAGroup.begin(), live::kWaitingNotInAGroup.end());
+    const std::wstring held(live::kHeldIntro);
+    struct Arm {
+      std::wstring_view what;
+      std::wstring text;
+    };
+    const Arm arms[] = {
+        {L"composer", ComposerNote(RunMode::Live, true, true)},
+        {L"composer (observer)", ComposerNote(RunMode::Live, false, true)},
+        {L"composer (fabricated)", ComposerNote(RunMode::Fabricated, true, true)},
+        {L"relay title", RelayPathGroupTitle(RunMode::Live, true)},
+        {L"drawer name", RelayDrawerName(RunMode::Live, true)},
+        {L"key name +", ServerKeyStateName(true, RunMode::Live, true)},
+        {L"key name -", ServerKeyStateName(false, RunMode::Live, true)},
+        {L"disclosure caption", DisclosureCaption(RunMode::Live, true)},
+        {L"disclosure title", DisclosureTitle(RunMode::Live, true)},
+        {L"disclosure body", DisclosureBody(RunMode::Live, true)},
+    };
+    size_t clean = 0;
+    std::wstring found;
+    for (auto const& a : arms) {
+      bool hit = false;
+      for (auto const& n : needles) {
+        if (!ContainsWord(a.text, n)) continue;
+        hit = true;
+        if (!found.empty()) found += L" | ";
+        found += std::wstring(a.what) + L" says \"" + n + L"\": \"" + AsciiOnly(a.text) + L"\"";
+      }
+      clean += hit ? 0 : 1;
+    }
+    size_t fired = 0;
+    for (auto const& n : needles)
+      fired += (ContainsWord(oldComposer, n) || ContainsWord(waiting, n)) ? 1 : 0;
+    bool heldQuiet = !held.empty();
+    for (auto const& n : needles) heldQuiet = heldQuiet && !ContainsWord(held, n);
+    const bool controlHolds = fired == std::size(needles) && heldQuiet;
+    const bool ok = clean == std::size(arms) && controlHolds;
+    lines.push_back(std::format(
+        L"  run mode held    : {}  {}/{} third arms say nothing of what this device holds{}{}; "
+        L"control: {}/{} needles find the sentences that said it (the composer's old third arm, "
+        L"kWaitingNotInAGroup), and none finds the held intro \"{}\": {}   [query: R25 Q4, the "
+        L"empty world is also a device whose group did not open; no third arm may contain \"no "
+        L"group yet\", \"not in a group\" or \"join a group\" (case-insensitive)]",
+        ok ? L"PASS" : L"FAIL", clean, std::size(arms), found.empty() ? L"" : L" - FOUND: ",
+        found, fired, std::size(needles), held, heldQuiet ? L"yes" : L"NO"));
   }
 
   // THE LAUNCH TABLE: which arm each (launch, latch) pair takes. Written out from RunMode.h's
