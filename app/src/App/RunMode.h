@@ -272,7 +272,7 @@ std::wstring PhraseChangedLine(RunMode mode, std::wstring const& device);
 // every launch; the mode of the RUN is irrelevant to it, because it evaluates BOTH arms by passing
 // the enum explicitly. That is the only way a fabricated launch can gate the live copy at all.
 //
-// THREE CLAUSES BEYOND THE PAIRS, each one a property the pair test cannot see:
+// THE CLAUSES BEYOND THE PAIRS, each one a property the pair test cannot see:
 //   * the DUMP line, whose two arms deliberately share a prefix;
 //   * the SEND clause, asserted PER (MODE, ROLE) since item 242 R4 - the fabricated arm must deny
 //     the send path whatever the role and must be ONE string across the roles; the live arm must
@@ -291,7 +291,10 @@ std::wstring PhraseChangedLine(RunMode mode, std::wstring const& device);
 //   * the NO-SESSION clause, over EVERY third arm (the composer's and the six above): each differs
 //     from both of its function's arms, names neither mode, and the disclosure's keeps the live
 //     absence list word for word; and the LAUNCH table, DrawnRunModeFor and NoSessionFor over all
-//     four (launch, latch) pairs.
+//     four (launch, latch) pairs;
+//   * the HELD clause - no third arm says this device is in no group, or tells it to join one: the
+//     empty world is also a device whose group did not open (R25 Q4) and a store that cannot make a
+//     join code (Task 58). Its control is in the same query, both ways.
 std::vector<std::wstring> RunModeCopyDiagnostics();
 
 }  // namespace urmsg

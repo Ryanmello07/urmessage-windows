@@ -958,7 +958,7 @@ void MainWindow::BuildOnboardDialog() {
   onboardDialog_.Closed([weak = get_weak()](auto const&, auto const&) {
     if (auto self = weak.get()) self->onboardOpen_ = false;
   });
-  onboardDialog_.Title(box_value(hstring{L"Join a group"}));
+  onboardDialog_.Title(box_value(hstring{urmsg::live::kJoinTitle}));
   onboardDialog_.Content(panel);
   onboardDialog_.PrimaryButtonText(hstring{L"Join"});
   onboardDialog_.CloseButtonText(hstring{L"Not now"});
@@ -1108,8 +1108,10 @@ void MainWindow::ApplyOnboard() {
   if (onboardOrElse_)
     onboardOrElse_.Visibility(founded || stuck ? Visibility::Collapsed : Visibility::Visible);
   if (onboardDialog_) {
-    onboardDialog_.Title(box_value(noCredential ? hstring{L"URmessage needs its credential"}
-                                                : hstring{L"Join a group"}));
+    // THE TITLE NEVER CONTRADICTS THE SENTENCE UNDER IT (Live/RefusalCopy.h, OnboardTitle): a
+    // store that cannot make a join code was titled "Join a group" over "...so it cannot join a group"
+    onboardDialog_.Title(box_value(hstring{urmsg::live::OnboardTitle(
+        noCredential, state->step == urmsg::live::OnboardStep::NoJoinCode)}));
     onboardDialog_.PrimaryButtonText(founded || stuck ? hstring{} : hstring{L"Join"});
     // AND THE CLOSE BUTTON SAYS WHAT CLOSING MEANS, which changes with the road. "Not now" is
     // right for somebody who has not joined anything: they are putting it off. It is WRONG for a
@@ -1213,8 +1215,8 @@ void MainWindow::ApplyLiveWorld() {
     // are true: there is a live world on screen, so the empty one is gone and "no group is on
     // these screens yet" has stopped being the fact about this run.
     //
-    // AND SET AGAIN WHEN THE WORLD IS EMPTY: a device that LEFT its group (ledger 273) is back to
-    // having none, and the caption says so.
+    // AND SET AGAIN WHEN THE WORLD IS EMPTY: a device that LEFT its group (ledger 273) draws the
+    // empty world again, and the caption says that no group is on the screen.
     urmsg::views::SetThreadNoSession(thread_, liveWorld_->conversations.empty());
   }
   // AND THE SEND BUTTON, on the same beat and for the same reason the caption is: the composer bar
