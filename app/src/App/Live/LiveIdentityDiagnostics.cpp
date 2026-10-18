@@ -238,7 +238,8 @@ std::vector<std::wstring> LiveIdentityDiagnostics() {
     const bool ok = okGoes && oneWrongStays && allWrongStays && othersStay && namedOk && lineOk;
     lines.push_back(std::format(
         L"  id live gate     : {}  OK goes on: {}; WRONG naming 1 word (24 of 25) stays: {}; WRONG "
-        L"naming 25 stays: {}; NOT_OFFERED, IDENTITY_EXISTS, FAILED and an unknown kind stay: {}; "
+        L"naming 25 stays: {}; not offered, identity exists, the library's failure and an unknown kind "
+        L"stay: {}; "
         L"positions marked 1..25, in order, once (17,3,3,0,26,1 of 6 -> 1,3,17): {}; the line names "
         L"each and says nothing was corrected: {} ('{}')   [query: ConfirmAccepted, NamedPositions "
         L"and WrongWordsLine]",

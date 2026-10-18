@@ -23,6 +23,7 @@
 #include "Demo/DemoAutoplayLoop.h"
 #include "Demo/DemoShellState.h"
 #include "Demo/DemoSwitches.h"
+#include "Live/LiveMesh.h"
 #include "Live/LiveWorld.h"
 #include "UrComponents.h"
 #include "Views/ConversationListView.h"
@@ -282,6 +283,16 @@ struct MainWindow : MainWindowT<MainWindow> {
   void ShowIdentity(urmsg::demo::identity::Screen screen,
                     urmsg::demo::identity::Selection const& sel);
   void CloseIdentity();
+  // THE LIVE IDENTITY (identity phase 1, slice 1: PLAN Task 16). The worker's IdentityState, drawn:
+  // "Set up this device", the 25 words, the type-back and the setup done, over the library's own
+  // identity (BuildLiveScreen), and Settings' Account group from that identity once it is made.
+  // PresentIdentity is the one place either kind of screen is hosted, with Property 2's ask first.
+  void ApplyIdentity();
+  void ShowLiveIdentity(urmsg::demo::identity::Screen screen, urmsg::demo::identity::LiveInputs in);
+  void PresentIdentity(urmsg::demo::identity::ScreenModel model, urmsg::demo::identity::Screen screen,
+                       urmsg::demo::identity::Selection const& sel);
+  // Overwrite every copy of the words and of the typed words this window owns.
+  void ForgetLiveWords();
   void OnIdentityAction(urmsg::demo::identity::Button const& button);
   void QueueIdentityAction(urmsg::demo::identity::Button const& button);
   // The mode the identity screens and Settings' Account group are built in: RunMode.h's
@@ -296,6 +307,15 @@ struct MainWindow : MainWindowT<MainWindow> {
   winrt::Microsoft::UI::Xaml::Controls::Grid identityHost_{nullptr};
   urmsg::views::IdentityScreenView identityView_{};
   urmsg::demo::identity::Selection identitySel_{};
+  urmsg::live::IdentityPtr identityState_;
+  uint64_t identityDrawn_ = 0;
+  uint64_t identityWordsTaken_ = 0;
+  bool liveIdentityShown_ = false;  // the identity view on screen was built by BuildLiveScreen
+  // what that view was built from: the words while the words screen is up. WIPED when it goes.
+  urmsg::demo::identity::LiveInputs liveIdentityInputs_{};
+  // the type-back's fields as last sent, kept so a wrong word is named with every field as it was
+  // typed (nothing corrected). WIPED once the identity is made, and on the way back to the words.
+  std::vector<std::wstring> identityTyped_;
   bool captureExcluded_ = false;
   winrt::event_token captureRelease_{};
   int captureReleaseFrames_ = 0;

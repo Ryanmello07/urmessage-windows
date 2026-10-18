@@ -35,6 +35,9 @@
 
 #include <memory>
 #include <string>
+#include <vector>
+
+#include "Live/LiveIdentity.h"
 
 namespace urmsg::live {
 
@@ -323,6 +326,59 @@ bool QueueCreateGroup();
 // that cannot open a sealed invitation, an identity whose entry stands), which arrive in the
 // person's words (Live/RefusalCopy.h, Task 58). Either way the add panel stays (addRoad).
 bool QueueAddMemberFromCode(std::string base64JoinCode);
+
+// ── the identity (identity phase 1, slice 1: PLAN Task 16) ──────────────────
+
+// WHERE THE FIRST IDENTITY STANDS. The worker reads urnet_message_device_identity once it has
+// connected and restored, and BEFORE the join road: a device with no identity has no key package,
+// so no join code, and the setup comes first (urnetwork_message.h). While the identity is being
+// made the worker answers the window's two requests below and nothing else; once the library says
+// OK it reads the identity again, publishes Done, and goes on to the join road.
+enum class IdentityStep {
+  Unknown,      // not read yet: the device is still connecting, or no live session runs
+  NeedsSetUp,   // read: no identity. The window shows "Set up this device"
+  MakingWords,  // the library is making the 25 words
+  WordsReady,   // they are made and waiting to be taken (TakeOfferedWords), once
+  Checking,     // the typed words are with urnet_message_device_confirm_words
+  Wrong,        // WRONG: `wrong` names the words, from 1; nothing was corrected or made
+  Failed,       // the library could not make or check the words; `failure` says so
+  Done,         // the identity is made, or was already there; `info` holds it
+  Unreadable,   // the identity json could not be read; `failure` says so, and nothing goes on
+};
+
+struct IdentityState {
+  IdentityStep step = IdentityStep::Unknown;
+  IdentityInfo info;           // the identity as last read (no phrase secret is ever in it)
+  std::vector<int> wrong;      // Wrong: the positions the library named
+  std::string failure;         // Failed and Unreadable: a sentence for the screen, never the words
+  uint64_t wordsSerial = 0;    // bumped each time new words wait to be taken
+};
+using IdentityPtr = std::shared_ptr<const IdentityState>;
+
+// The most recent identity state, or nullptr before the worker has read one. Safe from any thread,
+// the same way OnboardSnapshot is.
+IdentityPtr IdentitySnapshot();
+uint64_t IdentityGeneration();
+
+// "This is my first device", and "Back to the words": ask the library for the 25 words. Asked
+// again before the identity is made it answers the same words. False, having queued nothing, when
+// the worker is not waiting for a setup.
+bool QueueMakeWords();
+
+// The type-back's Check: the fields joined by JoinTypedWords. The worker hands the octets to
+// urnet_message_device_confirm_words and overwrites them once it returns. False, having queued
+// nothing, when the worker is not waiting for a setup or a check is already out.
+bool QueueConfirmWords(std::string typedUtf8);
+
+// THE WORDS, TAKEN ONCE. The octets the library wrote, for the window that shows them, and the
+// worker's slot is overwritten and emptied by the take: a second take answers "". The caller wipes
+// what it took (Wipe) as soon as the words are off the screen.
+std::string TakeOfferedWords();
+
+// WHETHER ONE TYPED WORD IS A WORD OF THE RECOVERY PHRASE'S LIST, by the list's own fold
+// (urnet_message_device_check_word): a live word field marks a word that is not, as it is left. It
+// takes no device and makes nothing. True - mark nothing - while the library is not loaded.
+bool CheckWord(std::wstring const& word);
 
 // ── how this app reaches the message server (ledger 268) ──────────────────────
 
