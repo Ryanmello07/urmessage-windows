@@ -304,13 +304,16 @@ struct MainWindow : MainWindowT<MainWindow> {
 
   // The Developer destination's whole content, built in code into
   // DeveloperHost (MainWindow.xaml:286 — the d7 audit's A5 override: mount
-  // into the existing host, do NOT add a DeveloperPage Grid). Demo-gated for
-  // the same reason BuildSettings is: the page reads the demo world, so
-  // building it on a normal launch would construct that world on the
-  // shipping path (design D7/D8). Built ONCE here: contract §4 gives the
-  // view no Set*Advanced, and the live rebuild on a mode toggle belongs to
-  // the ONE OnAdvancedModeChanged registration in EnterDemoMode (W7, the
-  // d7 distillation's §1.2 ruling).
+  // into the existing host, do NOT add a DeveloperPage Grid). Built only
+  // when the window has content (ContentShell(): a fabricated launch, or a
+  // live one), and from ActiveWorld(), so a launch that is neither builds
+  // nothing and never constructs the demo world (design D7/D8). Contract §4
+  // gives the view no
+  // Set*Advanced: the rebuild on a mode toggle belongs to the ONE
+  // OnAdvancedModeChanged registration in EnterDemoMode (W7, the d7
+  // distillation's §1.2 ruling), and ApplyAdvanced makes it when the mode
+  // turns on, so the page's "Advanced Mode" figure is never older than the
+  // mode while the page can be reached. ApplyLiveWorld builds it again too.
   void BuildDeveloper();
 
   urmsg::views::DeveloperView developer_{};
