@@ -573,6 +573,17 @@ std::wstring FormatRoundTrip(urmsg::demo::ServerInfo const& server) {
   return FormatLatency(server.latencyMs) + L" round trip";
 }
 
+std::wstring FormatServerLine(std::wstring const& host, std::wstring const& jurisdiction) {
+  // Over a plain launch's EMPTY world both facts are empty, and joining them drew a lone middle
+  // dot as the Settings value: a separator standing where a value goes, which reads as one and
+  // says nothing (fix/plain-launch-run-mode). The empty world's wording instead, true while the
+  // mesh dials, while a first run waits to be let into a group, and with no credential.
+  if (host.empty() && jurisdiction.empty()) return L"nothing to show yet";
+  if (host.empty()) return jurisdiction;
+  if (jurisdiction.empty()) return host;
+  return host + L"  \u00B7  " + jurisdiction;
+}
+
 std::vector<std::wstring> CollectNetworkDiagnostics() {
   const urmsg::demo::World& world = urmsg::demo::GetWorld();
   std::vector<std::wstring> lines;
@@ -580,6 +591,26 @@ std::vector<std::wstring> CollectNetworkDiagnostics() {
   lines.push_back(std::format(
       L"  net fmt latency  : {}  FormatLatency(18) == \"18 ms\" -> \"{}\"",
       Check(FormatLatency(18) == L"18 ms"), FormatLatency(18)));
+
+  // The server line is never only its separator: each of the four shapes, and the empty one
+  // must hold a letter or a digit (it once drew a lone middle dot over the empty world).
+  {
+    const std::wstring neither = FormatServerLine(L"", L"");
+    const std::wstring hostOnly = FormatServerLine(L"server.example", L"");
+    const std::wstring placeOnly = FormatServerLine(L"", L"Somewhere");
+    const std::wstring both = FormatServerLine(L"server.example", L"Somewhere");
+    bool word = false;
+    for (wchar_t c : neither)
+      word = word || (L'a' <= c && c <= L'z') || (L'A' <= c && c <= L'Z') || (L'0' <= c && c <= L'9');
+    const bool ok = word && hostOnly == L"server.example" && placeOnly == L"Somewhere" &&
+                    both == L"server.example  \u00B7  Somewhere";
+    std::wstring bothPrinted;
+    for (wchar_t c : both) bothPrinted += (c == L'\u00B7') ? std::wstring(L"<U+00B7>") : std::wstring(1, c);
+    lines.push_back(std::format(
+        L"  net fmt server   : {}  FormatServerLine: neither -> \"{}\" (never only a separator); "
+        L"host alone -> \"{}\"; jurisdiction alone -> \"{}\"; both -> \"{}\"",
+        Check(ok), neither, hostOnly, placeOnly, bothPrinted));
+  }
 
   // The prefix-first pair, and nothing else: the bare words "Verified" /
   // "Not verified" state that a check RAN (G4), so a regression to them fails

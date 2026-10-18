@@ -235,8 +235,7 @@ SettingsView MakeSettings(urmsg::demo::World const& world,
             .root);
     card.body.Children().Append(
         MakeValueRow(L"Message server", L"Host and jurisdiction.",
-                     winrt::hstring{world.server.host + L"  ·  " +
-                                    world.server.jurisdiction})
+                     winrt::hstring{FormatServerLine(world.server.host, world.server.jurisdiction)})
             .root);
     {
       // Ledger 268. ON (the default): the connection to the server's own endpoint leaves
