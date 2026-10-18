@@ -36,6 +36,14 @@ namespace urmsg::views {
 // in one process are byte-identical, which WorldDumpDiagnostics asserts.
 std::wstring DumpDemoWorld(urmsg::RunMode mode);
 
+// THE DEVELOPER PAGE'S DEMO SECTIONS (fix/plain-launch-run-mode): the demo's switch figures, the
+// switch that pauses its ambient activity and the dump above are built in a FABRICATED LAUNCH only
+// (RunMode.h, "which arm a string takes"). Every other launch keeps the page's real figures, under
+// the caption below, which then names no demo. Pure, so --diagnose's plain launch walk asks the
+// same two questions DeveloperView does.
+bool DeveloperShowsDemoSections(bool fabricatedLaunch);
+std::wstring DeveloperStateCaption(bool fabricatedLaunch);
+
 // The --diagnose assertions for the dump. Touches no global state and writes
 // nothing. What is asserted is a PROPERTY — every conversation and every row
 // appears exactly once, two calls are byte-identical, and the framing first
