@@ -90,7 +90,13 @@ void SetInspectRailMessage(InspectRailView& v, demo::Conversation const& c,
 // meta's instant visibility flip. Called once at startup by BuildInspectRail
 // to seed the density; the LIVE subscription that re-calls it on every toggle
 // belongs to the wiring task (wiring.md:578), not here.
-void SetInspectRailAdvanced(InspectRailView& v, bool advanced);
+//
+// `world` IS THE WORLD ON SCREEN, and the rail's subject is looked up in it by id (F2, the
+// conversation-list design). It used to be looked up in demo::GetWorld(), the fabricated world,
+// whatever the window drew: on a live world the lookup found nothing, so the toggle changed the
+// density tag and redrew no row until the next live publish, which a quiet conversation never
+// sends. The caller passes the world it is drawing (MainWindow::ActiveWorld()).
+void SetInspectRailAdvanced(InspectRailView& v, bool advanced, demo::World const& world);
 
 // The device row. `showOwner` keeps the ` · owner` suffix (message mode's
 // delivered-by / read-by lists, where the devices belong to DIFFERENT people

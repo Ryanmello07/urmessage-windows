@@ -27,6 +27,81 @@
 
 namespace urnw::kit {
 
+// ---- the one icon font -----------------------------------------------------
+//
+// Every icon the code builds names this family; App.xaml carries the same list
+// under UrIconFontFamily for the markup. Windows 11 ships Segoe Fluent Icons
+// and Windows 10 does not (nor does Windows Server 2022, the Windows 10 code
+// base), so the list falls back to Segoe MDL2 Assets, which both ship: naming
+// Segoe Fluent Icons alone drew every icon as an empty box there. The same
+// list is WinUI's own FontIcon default and its SymbolThemeFontFamily. Ported
+// from urnetwork/windows#12. app/tools/verify-icon-font.ps1 holds every source
+// that names an icon font to exactly this list.
+inline constexpr wchar_t kIconFontFamily[] = L"Segoe Fluent Icons,Segoe MDL2 Assets";
+
+// EVERY ICON THE APP DRAWS: each code point of the icon font a source names, and
+// what it is drawn for. --diagnose's `icon glyphs` line asks the machine it runs
+// on which family of kIconFontFamily draws each one, and fails on a glyph that
+// none draws (an empty box). app/tools/verify-icon-font.ps1 holds this table to
+// the sources both ways: a code point a source draws that is not here fails it,
+// and so does one here that no source draws.
+//
+// A FALLBACK, for the glyph an older Segoe MDL2 Assets does not map: the code
+// point drawn instead where no family of kIconFontFamily on the machine maps the
+// glyph (IconGlyphText). ED1A, the eye with a stroke, is not in Windows 10's
+// Segoe MDL2 Assets (1.84 on windows-2022; 1.86 on windows-2025 has it), so the
+// family fallback alone still drew it as an empty box there. E890, an eye, is in
+// both of those, and IconGlyphText draws it only where a family of the list maps
+// it. Every draw of a glyph with a fallback goes through IconGlyphText
+// (app/tools/verify-icon-font.ps1 fails any other). 0 is no fallback.
+struct IconGlyph {
+  char32_t codePoint;
+  wchar_t const* what;
+  char32_t fallback = 0;
+};
+inline constexpr IconGlyph kIconGlyphs[] = {
+    {0xE121, L"a line still sending (clock)"},
+    {0xE192, L"a key, on a warning about a member's key"},
+    {0xE70D, L"a collapsed card (chevron down)"},
+    {0xE70E, L"an expanded card (chevron up)"},
+    {0xE711, L"cancel a reply"},
+    {0xE713, L"Settings (nav)"},
+    {0xE721, L"search"},
+    {0xE723, L"attach"},
+    {0xE724, L"send"},
+    {0xE72E, L"the server key pinned (lock)"},
+    {0xE73E, L"a reaction this device holds (check)"},
+    {0xE74D, L"delete"},
+    {0xE74F, L"a muted conversation"},
+    {0xE753, L"the message server's hop (cloud)"},
+    {0xE76C, L"a row that opens (chevron right)"},
+    {0xE76E, L"react"},
+    {0xE774, L"URnetwork's hop, demo (globe)"},
+    {0xE77B, L"Contacts (nav)"},
+    {0xE783, L"a line not sent"},
+    {0xE785, L"the server key not pinned (unlock)"},
+    {0xE839, L"Network (nav, demo)"},
+    {0xE8BD, L"Chats (nav)"},
+    {0xE8C8, L"copy"},
+    {0xE916, L"a timer, or a line that disappears"},
+    {0xE930, L"a line sent or delivered"},
+    {0xE943, L"Developer (nav, demo)"},
+    {0xE968, L"a hop of the relay path (server tower)"},
+    {0xE977, L"this device's hop (devices)"},
+    {0xE97A, L"reply"},
+    {0xEC61, L"a line read"},
+    {0xED1A, L"an observer's hidden line (eye with a stroke)", 0xE890},
+};
+
+// Whether a family of kIconFontFamily installed on this machine maps `codePoint`:
+// asked of DirectWrite's system fonts once per code point, and kept.
+bool IconFontMaps(char32_t codePoint);
+
+// THE TEXT TO DRAW for a glyph of kIconGlyphs: `glyph` where a family of
+// kIconFontFamily on this machine maps it, else its fallback where one maps
+// that, else `glyph` (and --diagnose's `icon glyphs` line fails on it).
+winrt::hstring IconGlyphText(wchar_t const* glyph);
+
 // ---- the one desktop breakpoint --------------------------------------------
 //
 // The app has exactly two layouts and this number decides which:
@@ -138,7 +213,8 @@ void SetTextOrCollapse(winrt::Microsoft::UI::Xaml::Controls::TextBlock const& li
 // A dash cannot distinguish "nothing" from "not loaded" from "failed", and an
 // empty panel says nothing at all - both shipped in this app.
 //
-// `glyph` is a Segoe Fluent Icons codepoint (e.g. L""); `text` must come
+// `glyph` is a code point of the icon font, kIconFontFamily, listed in
+// kIconGlyphs (e.g. L"\uE8BD"); `text` must come
 // from the localization store.
 winrt::Microsoft::UI::Xaml::FrameworkElement MakeEmptyState(winrt::hstring const& glyph,
                                                             winrt::hstring const& text);
@@ -358,6 +434,29 @@ struct PaneListRow {
   winrt::Microsoft::UI::Xaml::Controls::TextBlock meta{nullptr};
 };
 PaneListRow MakePaneListRow(double height = 36);
+
+// HOW ONE INSTANCE'S TWO TEXT COLUMNS SHARE ITS ROW (S3). MakePaneListRow builds the species with
+// the title taking the rest of the row, cut with an ellipsis, and the meta at its natural width.
+// That is right for a long name beside a short figure, which is what every caller but one
+// shows. The inspector rail's device rows are the measured case: a device name and its owner
+// beside "online". It is wrong for a list whose titles are short labels and whose values are
+// long: the relay drawer's hops ("Message server", then a 36-character client_id). There the
+// value took its whole width and squeezed the label to "M…".
+//
+// So the roles are set on ONE INSTANCE, the way the drawer already drops an instance's
+// hairline. The species is unchanged: the same three elements on the same grid at the same
+// height. Only this row's column sizing and trimming follow the fit.
+//
+// The defaults are the species as MakePaneListRow builds it.
+struct PaneListRowFit {
+  bool titleSizesToContent = false;  // true: the title's column is Auto and the meta's Star
+  bool titleCut = true;              // the title is cut with an ellipsis
+  bool metaCut = true;               // the meta is cut with an ellipsis, given a Star column
+};
+// `wholeMeta`, when not empty, becomes the meta's tooltip and its help text, so a cut value is
+// still there whole. The meta's own text, and so its automation name, is whole already.
+void SetPaneListRowFit(PaneListRow const& row, PaneListRowFit const& fit,
+                       winrt::hstring const& wholeMeta = {});
 
 // The SAME row, SELECTABLE (D5 / Advanced Mode). Identical grid, identical
 // height, identical three elements — the only difference is that the root is a

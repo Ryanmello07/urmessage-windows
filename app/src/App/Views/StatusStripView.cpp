@@ -3,7 +3,10 @@
 
 #include "Views/StatusStripView.h"
 
+#include <format>
+#include <limits>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
@@ -12,6 +15,8 @@
 #include <winrt/Microsoft.UI.Xaml.Media.h>
 #include <winrt/Microsoft.UI.Xaml.Shapes.h>
 
+#include "Log.h"
+#include "Strings.h"  // Narrow, for the fit's log line
 #include "UrColors.h"
 #include "UrComponents.h"
 #include "UrMotion.h"
@@ -54,6 +59,12 @@ constexpr wchar_t kStripName[] = L"Connection status. Activate to show the relay
 // is left floating at the end of the Normal strip. Namespaced so it cannot
 // collide with a Tag anything else in the app sets.
 constexpr wchar_t kAdvancedTag[] = L"ur.status.advanced";
+// THE FIT'S MARKERS (S3), on the same terms: the server field, whose caption and value are the
+// fit's Caption and Value, and the panel's own mode, which SetStatusStripAdvanced writes so the fit
+// knows whether the Advanced fields are part of the strip at all. A Fixed item carries no tag.
+constexpr wchar_t kServerFieldTag[] = L"ur.status.server";
+constexpr wchar_t kModeNormalTag[] = L"ur.status.mode.normal";
+constexpr wchar_t kModeAdvancedTag[] = L"ur.status.mode.advanced";
 
 // ThreadView.cpp:43's idiom, for the one brush this view reads by key
 // (UrBorderStrongBrush — the drawer's d1 edge and the mini-path's rules).
@@ -69,9 +80,9 @@ Media::Brush BrushByKey(wchar_t const* key, winrt::Windows::UI::Color fallback) 
   return urnw::colors::MakeBrush(fallback);
 }
 
-// Named, for the reason UrComponents.cpp:25-29 states: FontIcon defaults to
-// the older Segoe MDL2 Assets, whose metrics differ.
-Media::FontFamily IconFont() { return Media::FontFamily(L"Segoe Fluent Icons"); }
+// The one icon font (kIconFontFamily, UrComponents.h): Segoe Fluent Icons,
+// falling back to Segoe MDL2 Assets where Windows 10 lacks it.
+Media::FontFamily IconFont() { return Media::FontFamily(urnw::kit::kIconFontFamily); }
 
 // The dot's fill. Spends the connect-status ramp UrColors.h already carries
 // for exactly this dot. NOT kProGold (the Pro entitlement's, reachable from
@@ -365,6 +376,20 @@ Border MakeStatusDrawer(std::vector<demo::RelayNode> const& path) {
 
   // Every node is one MakePaneListRow, which is what stops the list acquiring
   // a 52px row the day someone gives one of them a second line.
+  //
+  // THE ROW'S FIT (S3). A live hop's value is what the session observed: the platform url the
+  // library dialled, and the message server's 36-character client_id. The species gives the
+  // title the rest of the row and the meta its natural width, so the value took its whole width
+  // and squeezed "Message server" to "M…". RelayDrawerRowFit (StatusStripRules.h, asserted by
+  // --diagnose) turns the roles round on these instances only: the label sizes to its content
+  // and is never cut, and the value takes the rest and is cut with an ellipsis, its whole text in
+  // its tooltip and help text. The species is unchanged (UrComponents.h on SetPaneListRowFit):
+  // the inspector rail's device rows, a long name beside a short figure, keep it as it is.
+  const RelayRowFit fit = RelayDrawerRowFit();
+  kit::PaneListRowFit rowFit;
+  rowFit.titleSizesToContent = fit.labelSizesToContent;
+  rowFit.titleCut = fit.label == TextCut::Ellipsis;
+  rowFit.metaCut = fit.value == TextCut::Ellipsis;
   for (size_t i = 0; i < path.size(); ++i) {
     auto const& node = path[i];
     auto row = kit::MakePaneListRow();
@@ -375,14 +400,14 @@ Border MakeStatusDrawer(std::vector<demo::RelayNode> const& path) {
     // marks its dot Raw on the explicit premise that "the colour is a
     // restatement of what the row's text already says" (UrComponents.cpp) —
     // here that premise holds only because this line makes it hold.
-    row.meta.Text(winrt::hstring{node.healthy ? node.subLabel
-                                              : node.subLabel + L"  offline"});
+    const winrt::hstring value{RelayRowValue(node.subLabel, node.healthy)};
+    row.meta.Text(value);
+    kit::SetPaneListRowFit(row, rowFit, value);
     // ...and the row is named, so the whole fact reaches a screen reader as
     // one item rather than as three fragments with a colour nobody is told
     // about.
     Automation::AutomationProperties::SetName(
-        row.root, winrt::hstring{node.label + L", " + node.subLabel + L", " +
-                                 (node.healthy ? L"online" : L"offline")});
+        row.root, winrt::hstring{RelayRowName(node.label, node.subLabel, node.healthy)});
     // The last row's bottom hairline would land one DIP above the strip's own
     // top hairline and read as a 2 px rule. The row species is unchanged;
     // only this instance's trailing edge goes.
@@ -394,6 +419,145 @@ Border MakeStatusDrawer(std::vector<demo::RelayNode> const& path) {
   DrawerRegistry().push_back(parts);
   drawer.Child(nodes);
   return drawer;
+}
+
+// ---- S3: the strip fits its own width ------------------------------------------------------
+//
+// THE STRIP IS ONE HORIZONTAL PANEL. A horizontal StackPanel measures its children at their
+// natural widths and never cuts one, so at narrow widths the strip's text ran past its own right
+// edge. FitStatusStrip (StatusStripRules.h, asserted by --diagnose) decides which item shows
+// whole, which is cut and which is dropped. This function walks the panel, measures each item at
+// its natural width, asks the rule, and applies the answer.
+//
+// It runs on every resize of the strip (its SizeChanged) and on every mode change
+// (SetStatusStripAdvanced). It holds no state of its own: the mode is the panel's Tag and each
+// item is told apart by its own, so nothing outlives a strip the live world rebuilds.
+
+// MakeStatusField's row.Spacing(6), which a dropped caption takes with it.
+constexpr double kFieldSpacingDip = 6.0;
+// A cut value keeps a few characters and its ellipsis.
+constexpr double kValueFloorDip = 48.0;
+
+bool HasTag(FrameworkElement const& element, wchar_t const* tag) {
+  if (!element) return false;
+  auto boxed = element.Tag().try_as<winrt::hstring>();
+  return boxed && *boxed == winrt::hstring{tag};
+}
+
+// What an item says to a screen reader: a field's value carries "<name>, <value>"
+// (SetStatusFieldValue), and the padlock its framed key state. The dot and the rules say nothing.
+std::wstring SpokenFact(FrameworkElement const& element) {
+  if (!element) return {};
+  if (auto panel = element.try_as<StackPanel>()) {
+    const auto children = panel.Children();
+    if (children.Size() == 0) return {};
+    auto value = children.GetAt(children.Size() - 1).try_as<TextBlock>();
+    return value ? std::wstring{Automation::AutomationProperties::GetName(value)} : std::wstring{};
+  }
+  if (auto text = element.try_as<TextBlock>())
+    return std::wstring{Automation::AutomationProperties::GetName(text)};
+  return std::wstring{Automation::AutomationProperties::GetName(element)};
+}
+
+void FitStripToWidth(Button const& strip) {
+  if (!strip) return;
+  auto fields = strip.Content().try_as<StackPanel>();
+  if (!fields) return;
+  const bool advanced = HasTag(fields, kModeAdvancedTag);
+
+  // The items, left to right. An Advanced field's separator is the rule in front of it, and it
+  // goes with its field: measured with it, dropped with it.
+  struct Item {
+    FrameworkElement element{nullptr};
+    FrameworkElement rule{nullptr};
+    StripPart part = StripPart::Fixed;
+  };
+  std::vector<Item> items;
+  std::vector<std::wstring> facts;
+  FrameworkElement pendingRule{nullptr};
+  for (auto const& child : fields.Children()) {
+    auto element = child.try_as<FrameworkElement>();
+    if (!element) continue;
+    if (HasTag(element, kAdvancedTag)) {
+      // The mode decides whether an Advanced element is part of the strip at all.
+      element.Visibility(advanced ? Visibility::Visible : Visibility::Collapsed);
+      if (!advanced) continue;
+      if (element.try_as<Border>()) {
+        pendingRule = element;  // MakeStatusSeparator's rule
+        continue;
+      }
+      items.push_back({element, pendingRule, StripPart::Optional});
+      pendingRule = nullptr;
+      facts.push_back(SpokenFact(element));
+      continue;
+    }
+    if (HasTag(element, kServerFieldTag)) {
+      // MakeStatusField's row: its caption, then its value
+      auto panel = element.as<StackPanel>();
+      const auto children = panel.Children();
+      TextBlock caption{nullptr};
+      TextBlock value{nullptr};
+      if (children.Size() >= 2) caption = children.GetAt(0).try_as<TextBlock>();
+      if (children.Size() >= 1) value = children.GetAt(children.Size() - 1).try_as<TextBlock>();
+      if (caption) items.push_back({caption, nullptr, StripPart::Caption});
+      if (value) items.push_back({value, nullptr, StripPart::Value});
+      facts.push_back(SpokenFact(element));
+      continue;
+    }
+    items.push_back({element, nullptr, StripPart::Fixed});
+    facts.push_back(SpokenFact(element));
+  }
+
+  // EVERY FACT STAYS REACHABLE, whatever the fit drops or cuts: the whole set is the strip's
+  // tooltip and its help text, in the words a screen reader already hears for each.
+  const winrt::hstring factsText{StatusStripFacts(facts)};
+  ToolTipService::SetToolTip(strip, winrt::box_value(factsText));
+  Automation::AutomationProperties::SetHelpText(strip, factsText);
+
+  const auto padding = strip.Padding();
+  const double room = strip.ActualWidth() - padding.Left - padding.Right;
+  if (room <= 0) return;  // not laid out yet: its first SizeChanged fits it
+
+  const float unbounded = std::numeric_limits<float>::infinity();
+  std::vector<StripItem> asked;
+  asked.reserve(items.size());
+  for (auto const& item : items) {
+    item.element.Visibility(Visibility::Visible);
+    if (item.rule) item.rule.Visibility(Visibility::Visible);
+    if (item.part == StripPart::Value) item.element.ClearValue(FrameworkElement::MaxWidthProperty());
+    item.element.Measure({unbounded, unbounded});
+    double width = item.element.DesiredSize().Width;
+    if (item.rule) {
+      item.rule.Measure({unbounded, unbounded});
+      width += item.rule.DesiredSize().Width;
+    }
+    if (item.part == StripPart::Caption) width += kFieldSpacingDip;
+    asked.push_back({item.part, width, item.part == StripPart::Value ? kValueFloorDip : 0.0});
+  }
+
+  const StripFit fit = FitStatusStrip(asked, room);
+  std::wstring summary;
+  for (size_t i = 0; i < items.size(); ++i) {
+    auto const& item = items[i];
+    if (fit.fit[i] == StripItemFit::Dropped) {
+      item.element.Visibility(Visibility::Collapsed);
+      if (item.rule) item.rule.Visibility(Visibility::Collapsed);
+      summary += std::format(L" {}:dropped", i);
+    } else if (fit.fit[i] == StripItemFit::Cut) {
+      item.element.MaxWidth(fit.width[i]);
+      summary += std::format(L" {}:cut {:.0f}/{:.0f}", i, fit.width[i], asked[i].width);
+    }
+  }
+  // Logged when the answer changes, not on every frame of a drag: one strip per window, and
+  // this runs on the UI thread only.
+  static std::wstring lastLogged;
+  const std::wstring line = std::format(L"room {:.0f} dip, {} item(s), total {:.0f}{}{}", room,
+                                        items.size(), fit.total, fit.fits ? L"" : L" (does NOT fit)",
+                                        summary.empty() ? std::wstring{L", all whole"} : summary);
+  if (line != lastLogged) {
+    lastLogged = line;
+    urnw::LogInfo("window: status strip fit: {}", urnw::Narrow(line));
+  }
 }
 
 }  // namespace
@@ -445,6 +609,8 @@ StatusStripView MakeStatusStrip(urmsg::demo::World const& world) {
   // rule.
   fields.Spacing(0);
   fields.VerticalAlignment(VerticalAlignment::Center);
+  // The fit's mode (S3): Normal until SetStatusStripAdvanced says otherwise.
+  fields.Tag(winrt::box_value(winrt::hstring{kModeNormalTag}));
 
   shapes::Ellipse dot{nullptr};
   shapes::Ellipse ring{nullptr};
@@ -471,6 +637,9 @@ StatusStripView MakeStatusStrip(urmsg::demo::World const& world) {
 
   auto host = kit::MakeStatusField(winrt::hstring{kServerCaption});
   kit::SetStatusFieldValue(host, winrt::hstring{world.server.host});
+  // The fit's Caption and Value (S3): at narrow widths the caption drops and the value is cut
+  // with an ellipsis (UrStatusFieldValueStyle's own trimming, given a width to trim to).
+  host.root.Tag(winrt::box_value(winrt::hstring{kServerFieldTag}));
   fields.Children().Append(host.root);
   // Deliberately NOT world.server.jurisdiction or latencyMs. The owner ruled
   // this a connect indicator, not a network readout (design D4); those two
@@ -546,6 +715,13 @@ StatusStripView MakeStatusStrip(urmsg::demo::World const& world) {
   root.Child(v.strip);
   v.root = root;
 
+  // THE FIT (S3), on every resize: the strip's width is the window's, and its own content never
+  // changes it, so applying the fit from here cannot loop. A WEAK capture, so the handler does
+  // not keep a strip the live world has rebuilt alive.
+  v.strip.SizeChanged([weak = winrt::make_weak(v.strip)](auto const&, auto const&) {
+    if (auto strip = weak.get()) FitStripToWidth(strip);
+  });
+
   // Built with the strip and hosted separately by MainWindow: the drawer must
   // draw OVER the destination, and a child of the strip's own Auto-height row
   // would grow that row instead (d5 §4.4).
@@ -570,15 +746,10 @@ void SetStatusStripAdvanced(StatusStripView& v, bool advanced) {
   if (!v.strip) return;
   auto fields = v.strip.Content().try_as<StackPanel>();
   if (!fields) return;
-  const auto visibility = advanced ? Visibility::Visible : Visibility::Collapsed;
-  const auto marker = winrt::hstring{kAdvancedTag};
-  for (auto const& child : fields.Children()) {
-    auto element = child.try_as<FrameworkElement>();
-    if (!element) continue;
-    auto tag = element.Tag().try_as<winrt::hstring>();
-    if (!tag || *tag != marker) continue;
-    element.Visibility(visibility);
-  }
+  // The mode is the panel's Tag, and the fit is the one writer of the Advanced fields'
+  // Visibility (S3): it shows them for this mode, then drops what the width cannot hold.
+  fields.Tag(winrt::box_value(winrt::hstring{advanced ? kModeAdvancedTag : kModeNormalTag}));
+  FitStripToWidth(v.strip);
 }
 
 void SetStatusStripDrawerOpen(StatusStripView& v, bool open) {

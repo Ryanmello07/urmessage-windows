@@ -16,6 +16,7 @@
 
 #include "Demo/DemoWorld.h"
 #include "UrComponents.h"
+#include "Views/ConversationRowModel.h"
 
 namespace urmsg::views {
 
@@ -35,6 +36,11 @@ struct ConversationListView {
   // limits MutableWorld() to appending a MessageRow and advancing one
   // DeliveryState, so an index stays valid for the life of the view.
   std::vector<urnw::kit::PaneTwoLineRowButton> rows;
+  // names[i] is what rows[i] says to a screen reader, unselected and selected, taken from the
+  // SAME conversation the row was drawn from when the list was built (ConversationRowNamesFor).
+  // Selection reads it back and never looks a world up, so a row cannot be announced as some other
+  // world's conversation (F1: it used to be named from demo::GetWorld()).
+  std::vector<ConversationRowNames> names;
 };
 
 // The whole list: the RECENT group header, then one row per conversation.
@@ -48,7 +54,8 @@ ConversationListView MakeConversationList(urmsg::demo::World const& world,
 // "nothing is selected". Three channels, because one is not enough: a fill step,
 // a 2px leading accent bar (a SHAPE change, so colour is never the only carrier)
 // and the row's automation Name -- the same three kit::SetPaneListRowSelected
-// carries, for the same reason (UrComponents.h:333-340).
+// carries, for the same reason (UrComponents.h:333-340). The Name comes from `v.names`, which the
+// list took from the world it was built from, and from no other world.
 void SetConversationSelected(ConversationListView& v, int index);
 
 // Start the staggered row entrance: opacity PLUS an 8dip rise per row, and
