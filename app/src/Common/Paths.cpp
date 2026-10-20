@@ -34,10 +34,37 @@ std::filesystem::path EnsureDir(std::filesystem::path p) {
   return p;
 }
 
+// An environment variable's whole value, any length; empty when it is unset or empty.
+std::wstring EnvValue(wchar_t const* name) {
+  if (name == nullptr || *name == L'\0') return {};
+  const DWORD need = ::GetEnvironmentVariableW(name, nullptr, 0);
+  if (need == 0) return {};
+  std::wstring value(need, L'\0');
+  const DWORD got = ::GetEnvironmentVariableW(name, value.data(), need);
+  if (got == 0 || got >= need) return {};
+  value.resize(got);
+  return value;
+}
+
 }  // namespace
 
+std::wstring StorageRootOverride(std::wstring* variable) {
+  const std::wstring own = EnvValue(ids::kAppRootEnvVar);
+  if (!own.empty()) {
+    if (variable) *variable = ids::kAppRootEnvVar;
+    return own;
+  }
+  const std::wstring outer = EnvValue(ids::kAppRootNestedEnvVar);
+  if (!outer.empty()) {
+    if (variable) *variable = ids::kAppRootNestedEnvVar;
+    return (std::filesystem::path(outer) / ids::kAppRootNestedFolder).wstring();
+  }
+  return {};
+}
+
 std::filesystem::path StorageRoot() {
-  // %URMESSAGE_APP_ROOT% overrides the per-user root. Several agents build and
+  // %URMESSAGE_APP_ROOT% overrides the per-user root (the identity preview's is
+  // %URMESSAGE_IDENTITY_PREVIEW_APP_ROOT%: Ids.h). Several agents build and
   // run this repo concurrently from separate worktrees, and every one of them
   // otherwise shares a single %LOCALAPPDATA%\URmessage\app: one prefs file and
   // one log, with two unsynchronised writers. That is a state-corruption risk,
@@ -45,9 +72,8 @@ std::filesystem::path StorageRoot() {
   // another agent's evidence.
   //
   //   $env:URMESSAGE_APP_ROOT = 'C:\...\wt-p1\.localstate'
-  wchar_t buf[MAX_PATH];
-  const DWORD n = ::GetEnvironmentVariableW(ids::kAppRootEnvVar, buf, MAX_PATH);
-  if (n > 0 && n < MAX_PATH) return EnsureDir(std::filesystem::path(buf, buf + n));
+  const std::wstring root = StorageRootOverride();
+  if (!root.empty()) return EnsureDir(std::filesystem::path(root));
 
   // FOLDERID_LocalAppData -> C:\Users\<u>\AppData\Local
   return EnsureDir(KnownFolder(FOLDERID_LocalAppData) / ids::kStorageFolderName / L"app");
@@ -56,5 +82,13 @@ std::filesystem::path StorageRoot() {
 std::filesystem::path LogDir() { return EnsureDir(StorageRoot() / L"logs"); }
 
 std::filesystem::path AppPrefsFile() { return StorageRoot() / L"app_prefs.json"; }
+
+bool CommonBuiltAsIdentityPreview() {
+#if defined(URM_IDENTITY_PREVIEW) && URM_IDENTITY_PREVIEW
+  return true;
+#else
+  return false;
+#endif
+}
 
 }  // namespace urnw

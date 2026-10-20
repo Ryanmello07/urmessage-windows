@@ -151,9 +151,9 @@ urnw::kit::PaneGroupHeader AppendCaption(StackPanel const& column,
   return header;
 }
 
-// Named, for the reason UrComponents.cpp:25-29 states: FontIcon defaults to the
-// older Segoe MDL2 Assets, whose metrics differ.
-Media::FontFamily IconFont() { return Media::FontFamily(L"Segoe Fluent Icons"); }
+// The one icon font (kIconFontFamily, UrComponents.h): Segoe Fluent Icons,
+// falling back to Segoe MDL2 Assets where Windows 10 lacks it.
+Media::FontFamily IconFont() { return Media::FontFamily(urnw::kit::kIconFontFamily); }
 
 // One node of the relay path: a 28epx glyph over a title and one muted
 // sub-line, every string from the RelayNode — nothing on this diagram is a
@@ -573,6 +573,17 @@ std::wstring FormatRoundTrip(urmsg::demo::ServerInfo const& server) {
   return FormatLatency(server.latencyMs) + L" round trip";
 }
 
+std::wstring FormatServerLine(std::wstring const& host, std::wstring const& jurisdiction) {
+  // Over a plain launch's EMPTY world both facts are empty, and joining them drew a lone middle
+  // dot as the Settings value: a separator standing where a value goes, which reads as one and
+  // says nothing (fix/plain-launch-run-mode). The empty world's wording instead, true while the
+  // mesh dials, while a first run waits to be let into a group, and with no credential.
+  if (host.empty() && jurisdiction.empty()) return L"nothing to show yet";
+  if (host.empty()) return jurisdiction;
+  if (jurisdiction.empty()) return host;
+  return host + L"  \u00B7  " + jurisdiction;
+}
+
 std::vector<std::wstring> CollectNetworkDiagnostics() {
   const urmsg::demo::World& world = urmsg::demo::GetWorld();
   std::vector<std::wstring> lines;
@@ -580,6 +591,26 @@ std::vector<std::wstring> CollectNetworkDiagnostics() {
   lines.push_back(std::format(
       L"  net fmt latency  : {}  FormatLatency(18) == \"18 ms\" -> \"{}\"",
       Check(FormatLatency(18) == L"18 ms"), FormatLatency(18)));
+
+  // The server line is never only its separator: each of the four shapes, and the empty one
+  // must hold a letter or a digit (it once drew a lone middle dot over the empty world).
+  {
+    const std::wstring neither = FormatServerLine(L"", L"");
+    const std::wstring hostOnly = FormatServerLine(L"server.example", L"");
+    const std::wstring placeOnly = FormatServerLine(L"", L"Somewhere");
+    const std::wstring both = FormatServerLine(L"server.example", L"Somewhere");
+    bool word = false;
+    for (wchar_t c : neither)
+      word = word || (L'a' <= c && c <= L'z') || (L'A' <= c && c <= L'Z') || (L'0' <= c && c <= L'9');
+    const bool ok = word && hostOnly == L"server.example" && placeOnly == L"Somewhere" &&
+                    both == L"server.example  \u00B7  Somewhere";
+    std::wstring bothPrinted;
+    for (wchar_t c : both) bothPrinted += (c == L'\u00B7') ? std::wstring(L"<U+00B7>") : std::wstring(1, c);
+    lines.push_back(std::format(
+        L"  net fmt server   : {}  FormatServerLine: neither -> \"{}\" (never only a separator); "
+        L"host alone -> \"{}\"; jurisdiction alone -> \"{}\"; both -> \"{}\"",
+        Check(ok), neither, hostOnly, placeOnly, bothPrinted));
+  }
 
   // The prefix-first pair, and nothing else: the bare words "Verified" /
   // "Not verified" state that a check RAN (G4), so a regression to them fails
@@ -675,10 +706,10 @@ std::vector<std::wstring> CollectNetworkDiagnostics() {
   // is the false denial, and the drawer's "preview" was wrong on top of it. The
   // fourth clause is the disjointness: the fabricated strings must not be the
   // live ones.
-  const std::wstring relayTitle{urmsg::RelayPathGroupTitle(urmsg::RunMode::Fabricated)};
-  const std::wstring drawerName{urmsg::RelayDrawerName(urmsg::RunMode::Fabricated)};
-  const std::wstring relayTitleLive{urmsg::RelayPathGroupTitle(urmsg::RunMode::Live)};
-  const std::wstring drawerNameLive{urmsg::RelayDrawerName(urmsg::RunMode::Live)};
+  const std::wstring relayTitle{urmsg::RelayPathGroupTitle(urmsg::RunMode::Fabricated, false)};
+  const std::wstring drawerName{urmsg::RelayDrawerName(urmsg::RunMode::Fabricated, false)};
+  const std::wstring relayTitleLive{urmsg::RelayPathGroupTitle(urmsg::RunMode::Live, false)};
+  const std::wstring drawerNameLive{urmsg::RelayDrawerName(urmsg::RunMode::Live, false)};
   const bool framingOk = StartsWithDemoModel(relayTitle) && StartsWithDemoModel(drawerName) &&
                          StartsWithLiveSession(relayTitleLive) &&
                          StartsWithLiveSession(drawerNameLive) && relayTitle != relayTitleLive &&
@@ -757,7 +788,12 @@ NetworkPageView MakeNetworkPage(urmsg::demo::World const& world) {
   // groups below use: a ruled sheet strip across the capped column would
   // re-bleed exactly what this wave capped. The STRING is untouched —
   // urmsg::RelayPathGroupTitle is still what the `net framing` gate reads.
-  AppendCaption(pathSection, winrt::hstring{urmsg::RelayPathGroupTitle(urmsg::ActiveRunMode())},
+  // DrawnRunMode() and DrawnNoSession(), not ActiveRunMode(), for this page's strings and the
+  // key row's colour: the latch alone answers Fabricated over a plain launch's empty world
+  // (RunMode.h, "which arm a string takes").
+  AppendCaption(pathSection,
+                winrt::hstring{urmsg::RelayPathGroupTitle(urmsg::DrawnRunMode(),
+                                                          urmsg::DrawnNoSession())},
                 winrt::to_hstring(static_cast<int>(world.relayPath.size())) + L" nodes",
                 /*first=*/true);
 
@@ -820,7 +856,7 @@ NetworkPageView MakeNetworkPage(urmsg::demo::World const& world) {
   // The bare "Verified" and MessageInspect::cipher render nowhere on this
   // page, under any label.
   auto keyRow = urnw::kit::MakePaneKeyValueRow(
-      L"Server key", winrt::hstring{FormatKeyState(world.server.keyVerified, urmsg::ActiveRunMode())});
+      L"Server key", winrt::hstring{FormatKeyState(world.server.keyVerified, urmsg::DrawnRunMode())});
   // COLOUR IS A CLAIM TOO, and in live mode it was making the one the words had just
   // stopped making: the value reads "unavailable" there, and DangerBrush painted it the
   // same red as a failed verification — a viewer scanning the page sees a red row and
@@ -831,7 +867,7 @@ NetworkPageView MakeNetworkPage(urmsg::demo::World const& world) {
   // the colour only ever restates them (contract rule 6).
   // Live and pinned restates "Live session: pinned" in green; live and unpinned is the placeholder,
   // muted as every other absence on this page is.
-  keyRow.value.Foreground(urmsg::ActiveRunMode() == urmsg::RunMode::Live
+  keyRow.value.Foreground(urmsg::DrawnRunMode() == urmsg::RunMode::Live
                               ? (world.server.keyVerified
                                      ? urnw::colors::MakeBrush(urnw::colors::kUrGreen)
                                      : urnw::colors::MutedBrush())

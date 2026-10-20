@@ -9,6 +9,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include "Demo/IdentityDemo.h"  // identity::Screen, for --demo-identity (pure C++)
+
 namespace urmsg::demo {
 
 enum class DemoScreen { None, Chats, Thread, Inspect, Network, Settings, Developer };
@@ -70,6 +72,15 @@ struct DemoOptions {
   // device's own lines) are drawn as though hovered, so they can be captured without a
   // synthesised pointer. It changes an opacity and fabricates nothing.
   bool actionsRevealed;
+  // --demo-identity=<screen> (identity phase 1, Task 6): opens one of the identity screens over the
+  // fabricated world (Demo/IdentityDemo.h names them), so each can be captured and read without a
+  // click. A fabricated launch only: a live world never draws them.
+  identity::Screen identityScreen;
+  // --demo-capture=refused (Task 6, Property 2): the window answers every ask for capture
+  // exclusion as though Windows had said no, without asking, so the shots can hold the refusal it
+  // draws in place of the words (MainWindow::SetCaptureAffinity). It can only take the words off
+  // the screen, never put them on it.
+  bool captureRefused;
 };
 
 // Inspect is a STATE, not a screen: it opens Chats, selects conversation 0,

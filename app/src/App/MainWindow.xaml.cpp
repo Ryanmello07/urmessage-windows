@@ -27,6 +27,7 @@
 #include "RunMode.h"  // ActiveRunMode / SetActiveRunMode - this file is the latch's one writer
 #include "Strings.h"
 #include "UrColors.h"
+#include "UrComponents.h"  // urnw::kit::kIconFontFamily
 #include "UrMotion.h"
 #include "Views/InspectRailFields.h"
 #include "Views/InspectRailView.h"
@@ -140,6 +141,10 @@ MainWindow::MainWindow() {
   SetTitleBar(AppTitleBar());
 
   options_ = urmsg::demo::ParseDemoOptions();
+  // WHICH ARM EVERY STRING TAKES, recorded before any view is built (RunMode.h, "which arm a string
+  // takes"): a fabricated launch takes the fabricated arm until a live world lands, and every
+  // other launch takes the live one - with the no-session arm before its live world lands.
+  urmsg::SetFabricatedLaunch(options_.enabled);
   urmsg::views::SetThreadActionsRevealedForCapture(options_.actionsRevealed);
   ApplyStrings();
   // Seeded before anything can navigate: CrossfadePageSwap with a null outgoing
@@ -168,6 +173,15 @@ MainWindow::MainWindow() {
   BuildSettings();
   BuildDeveloper();
   BuildStatusStrip();
+
+  // THE IDENTITY SCREENS (identity phase 1, Task 6): --demo-identity=<screen>, or the identity
+  // preview build's plain launch, opens one over the fabricated world. A fabricated launch only:
+  // BuildScreen builds nothing in live mode, and ApplyLiveWorld closes whatever is open when it
+  // latches. Account is Settings, which EnterDemoMode's deep link opens instead.
+  if (options_.enabled && options_.identityScreen != urmsg::demo::identity::Screen::None &&
+      options_.identityScreen != urmsg::demo::identity::Screen::Account) {
+    ShowIdentity(options_.identityScreen);
+  }
 
   // LAST, and after every builder above: the first live publication may already be standing by the
   // time this runs, and ApplyLiveWorld redraws the views those builders created. Arming it before
@@ -209,6 +223,258 @@ MainWindow::MainWindow() {
   }
   ApplyBreakpoint();
   urnw::LogInfo("window: main window constructed");
+}
+
+void MainWindow::SetNativeHandle(HWND hwnd) {
+  hwnd_ = hwnd;
+  // A screen the constructor opened asked before there was a window to ask, so it was drawn
+  // without the words. Draw it again now, before Activate shows the window: ShowIdentity asks
+  // with the handle, and draws the words only if the window holds the exclusion.
+  if (captureExcluded_ && identityView_.root) ShowIdentity(identityView_.screen, identitySel_);
+}
+
+// ---- the identity screens (identity phase 1, Task 6) -------------------------------------------
+
+void MainWindow::ShowIdentity(urmsg::demo::identity::Screen screen) {
+  ShowIdentity(screen, urmsg::demo::identity::PresetSelection(screen));
+}
+
+void MainWindow::ShowIdentity(urmsg::demo::identity::Screen screen,
+                              urmsg::demo::identity::Selection const& sel) {
+  namespace id = urmsg::demo::identity;
+  if (screen == id::Screen::Account) {
+    CloseIdentity();
+    SelectNavTag(L"settings");
+    return;
+  }
+  id::ScreenModel model = id::BuildScreen(screen, IdentityRunMode(), sel);
+  if (!model.built) {
+    // live mode, a launch that is not a fabricated one, or a screen this build has none of:
+    // nothing is drawn, and nothing claims to be
+    urnw::LogInfo("identity: no {} screen in this mode; nothing is drawn",
+                  urnw::Narrow(std::wstring{id::ScreenName(screen)}));
+    CloseIdentity();
+    return;
+  }
+  // PROPERTY 2, AND IT FAILS CLOSED. The exclusion is asked for BEFORE the screen is drawn, and the
+  // words are drawn only into a window that holds it: one that cannot be kept out of captures
+  // draws the refusal in their place (IdentityDemo.h's CaptureRefusal). A screen without the words
+  // gives the exclusion back only AFTER it is in the tree, below, and then once frames without the
+  // words have been drawn (ApplyCaptureExclusion): armed any earlier, a throw while the new view is
+  // built or swapped in would leave the words up with their release already on its way.
+  const std::wstring name{id::ScreenName(screen)};
+  const bool asks = model.excludedFromCapture;
+  const bool held = !asks || ApplyCaptureExclusion(true, name);
+  if (!held) model = id::CaptureRefusal(model);
+  if (!identityHost_) {
+    identityHost_ = Grid();
+    // rows 1 and 2 of RevealRoot: the destinations and the status strip, and NOT the title bar,
+    // whose DEMO chip stays in view over every identity screen
+    Grid::SetRow(identityHost_, 1);
+    Grid::SetRowSpan(identityHost_, 2);
+    Canvas::SetZIndex(identityHost_, 100);
+    RevealRoot().Children().Append(identityHost_);
+  }
+  identitySel_ = sel;
+  identityView_ = urmsg::views::MakeIdentityScreen(
+      model, [weak = get_weak()](id::Button const& button) {
+        if (auto self = weak.get()) self->QueueIdentityAction(button);
+      });
+  identityView_.screen = screen;
+  identityHost_.Children().Clear();
+  identityHost_.Children().Append(identityView_.root);
+  identityHost_.Visibility(Visibility::Visible);
+  // The way out, now that the screen without the words is the one in the tree. Not for a screen
+  // that asked and was refused: its words are not drawn, and a release here would also forget the
+  // ask that SetNativeHandle answers when there was no handle yet.
+  if (!asks) ApplyCaptureExclusion(false, name);
+  urnw::LogInfo("identity: screen -> {} (capture {})", urnw::Narrow(name),
+                held ? (model.excludedFromCapture ? "excluded" : "allowed")
+                     : (hwnd_ ? "REFUSED: the window is not held, so the words are not drawn"
+                              : "not asked yet: there is no window handle, so the words wait"));
+}
+
+void MainWindow::CloseIdentity() {
+  if (identityHost_) {
+    identityHost_.Children().Clear();
+    identityHost_.Visibility(Visibility::Collapsed);
+  }
+  identityView_ = {};
+  if (captureExcluded_) ApplyCaptureExclusion(false, L"closed");
+}
+
+void MainWindow::QueueIdentityAction(urmsg::demo::identity::Button const& button) {
+  // A BEAT LATER, never inline: a tick in the Remove dialog rebuilds the dialog, and replacing a
+  // control inside its own Checked handler is the one way this could go wrong. The static
+  // GetForCurrentThread(), as EnterDemoMode's autoplay takes it: a click runs on the UI thread,
+  // which owns the queue.
+  auto queue = winrt::Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread();
+  if (!queue) {
+    OnIdentityAction(button);
+    return;
+  }
+  queue.TryEnqueue([weak = get_weak(), button]() {
+    if (auto self = weak.get()) self->OnIdentityAction(button);
+  });
+}
+
+void MainWindow::OnIdentityAction(urmsg::demo::identity::Button const& button) {
+  namespace id = urmsg::demo::identity;
+  switch (button.action) {
+    case id::Action::Go: {
+      const auto to = static_cast<id::Screen>(button.arg);
+      id::Selection sel = id::PresetSelection(to);
+      if (button.device >= 0 && button.device < 32) {
+        if (to == id::Screen::Rename) {
+          sel.device = button.device;
+        } else if (to == id::Screen::Remove) {
+          sel.devices = 1u << button.device;
+          sel.preset = false;
+        }
+      }
+      ShowIdentity(to, sel);
+      break;
+    }
+    case id::Action::Close:
+      CloseIdentity();
+      break;
+    case id::Action::OpenAccount:
+      CloseIdentity();
+      SelectNavTag(L"settings");
+      break;
+    case id::Action::FillWords:
+      urmsg::views::FillIdentityWords(identityView_);
+      break;
+    case id::Action::CheckWords:
+      if (urmsg::views::CheckIdentityWords(identityView_, IdentityRunMode())) {
+        ShowIdentity(static_cast<id::Screen>(button.arg));
+      }
+      break;
+    case id::Action::ToggleDevice: {
+      if (button.arg < 0 || button.arg >= 32) break;
+      id::Selection sel = identitySel_;
+      sel.devices ^= 1u << button.arg;
+      sel.preset = false;
+      ShowIdentity(identityView_.screen, sel);
+      break;
+    }
+    case id::Action::RemoveChosen: {
+      // NOTHING IS REMOVED: a demo. A removal that names this device shows what a removed device
+      // shows; on an only device, what the next setup shows.
+      id::Fixture const& f = id::GetFixture();
+      bool self = false;
+      for (size_t i = 0; i < f.devices.size() && i < 32; ++i)
+        if (f.devices[i].thisDevice && ((identitySel_.devices >> i) & 1u)) self = true;
+      if (self && identitySel_.onlyDevice) {
+        ShowIdentity(id::Screen::SetUp);
+      } else if (self) {
+        ShowIdentity(id::Screen::Removed);
+      } else {
+        CloseIdentity();
+      }
+      break;
+    }
+    case id::Action::SaveName: {
+      if (identityView_.nameField && button.arg >= 0) {
+        id::SetDemoDeviceName(static_cast<size_t>(button.arg),
+                              std::wstring{identityView_.nameField.Text()});
+        urnw::LogInfo("identity: demo device {} renamed for this session", button.arg);
+      }
+      CloseIdentity();
+      // the Account group draws the name it now has
+      BuildSettings();
+      break;
+    }
+  }
+}
+
+// THE IDENTITY SCREENS' MODE: fabricated only in a fabricated launch whose latch has not flipped,
+// which is RunMode.h's DrawnRunMode - the rule every string in the app takes (IdentityDemo.h says
+// why ActiveRunMode() alone is not enough). The launch is the one this constructor recorded with
+// SetFabricatedLaunch.
+urmsg::RunMode MainWindow::IdentityRunMode() const { return urmsg::DrawnRunMode(); }
+
+// PROPERTY 2's ONE PLACE IN THE WINDOW.
+//
+// ASKING IS IMMEDIATE, AND ITS ANSWER IS RETURNED. ShowIdentity asks before it draws a screen that
+// shows or takes the words, and draws the refusal instead when this answers false. Before
+// SetNativeHandle there is no window to ask (and none on screen): the ask is remembered and answered
+// false, so not even a window nobody can see yet holds the words, and SetNativeHandle draws the
+// screen again with the handle, before Activate.
+//
+// GIVING IT BACK IS DEFERRED until the window has rendered frames without the words. The affinity
+// changes at the compositor's next frame, and the XAML that removes the words only reaches the
+// screen with a later one, so dropping the exclusion in the same turn left one frame of the words
+// open to a capture. CompositionTarget::Rendering fires once per frame the window renders; after
+// kCaptureReleaseFrames of them the content without the words has been drawn, and only then is
+// the exclusion dropped. A screen that asks again in the meantime cancels the release.
+bool MainWindow::ApplyCaptureExclusion(bool excluded, std::wstring const& why) {
+  if (excluded) {
+    CancelCaptureRelease();
+    captureExcluded_ = true;
+    if (!hwnd_) {
+      urnw::LogInfo("identity: capture exclusion ON for {} waits for the window handle",
+                    urnw::Narrow(why));
+      return false;
+    }
+    return SetCaptureAffinity(true, why);
+  }
+  if (!captureExcluded_ || captureRelease_) return true;
+  if (!hwnd_) {
+    captureExcluded_ = false;
+    return true;
+  }
+  constexpr int kCaptureReleaseFrames = 3;
+  captureReleaseFrames_ = 0;
+  captureRelease_ = winrt::Microsoft::UI::Xaml::Media::CompositionTarget::Rendering(
+      [weak = get_weak(), why, frames = kCaptureReleaseFrames](
+          winrt::Windows::Foundation::IInspectable const&,
+          winrt::Windows::Foundation::IInspectable const&) {
+        auto self = weak.get();
+        if (!self || ++self->captureReleaseFrames_ < frames) return;
+        self->CancelCaptureRelease();
+        self->captureExcluded_ = false;
+        self->SetCaptureAffinity(false, why);
+      });
+  urnw::LogInfo("identity: capture exclusion is given back for {} after {} frames without the "
+                "words",
+                urnw::Narrow(why), kCaptureReleaseFrames);
+  return true;
+}
+
+void MainWindow::CancelCaptureRelease() {
+  if (!captureRelease_) return;
+  winrt::Microsoft::UI::Xaml::Media::CompositionTarget::Rendering(captureRelease_);
+  captureRelease_ = {};
+}
+
+bool MainWindow::SetCaptureAffinity(bool excluded, std::wstring const& why) {
+  // WDA_EXCLUDEFROMCAPTURE (0x11): the window is shown on the monitor and nowhere else, and
+  // PrintWindow answers it black (ci/i1-affinity-probe, run 38894632625, on both runner images).
+  // WDA_MONITOR (0x01) blacks a capture out too, so an affinity read back as either holds.
+  constexpr DWORD kExcludeFromCapture = 0x00000011;  // WDA_EXCLUDEFROMCAPTURE
+  constexpr DWORD kMonitor = 0x00000001;             // WDA_MONITOR
+  constexpr DWORD kNone = 0x00000000;                // WDA_NONE
+  // --demo-capture=refused, a fabricated launch only: the shots' way to hold the refusal to the
+  // window. It makes the ask fail without asking, so it can take the words off the screen and can
+  // never draw them.
+  if (excluded && options_.captureRefused) {
+    urnw::LogInfo("identity: capture exclusion ON for {} REFUSED by --demo-capture=refused (the "
+                  "window is not asked)",
+                  urnw::Narrow(why));
+    return false;
+  }
+  const BOOL ok = ::SetWindowDisplayAffinity(hwnd_, excluded ? kExcludeFromCapture : kNone);
+  const DWORD error = ok ? 0 : ::GetLastError();
+  DWORD now = 0xFFFFFFFFu;
+  const BOOL read = ::GetWindowDisplayAffinity(hwnd_, &now);
+  const bool held = read && (excluded ? (now == kExcludeFromCapture || now == kMonitor)
+                                      : now == kNone);
+  urnw::LogInfo("identity: capture exclusion {} for {} (SetWindowDisplayAffinity {}, error {}, "
+                "affinity now 0x{:x}){}",
+                excluded ? "ON" : "off", urnw::Narrow(why), ok ? "ok" : "FAILED", error, now,
+                excluded && !held ? ": NOT HELD, so the words are not drawn" : "");
+  return excluded ? held : true;
 }
 
 void MainWindow::StartReveal() {
@@ -692,7 +958,7 @@ void MainWindow::BuildOnboardDialog() {
   onboardDialog_.Closed([weak = get_weak()](auto const&, auto const&) {
     if (auto self = weak.get()) self->onboardOpen_ = false;
   });
-  onboardDialog_.Title(box_value(hstring{L"Join a group"}));
+  onboardDialog_.Title(box_value(hstring{urmsg::live::kJoinTitle}));
   onboardDialog_.Content(panel);
   onboardDialog_.PrimaryButtonText(hstring{L"Join"});
   onboardDialog_.CloseButtonText(hstring{L"Not now"});
@@ -842,8 +1108,10 @@ void MainWindow::ApplyOnboard() {
   if (onboardOrElse_)
     onboardOrElse_.Visibility(founded || stuck ? Visibility::Collapsed : Visibility::Visible);
   if (onboardDialog_) {
-    onboardDialog_.Title(box_value(noCredential ? hstring{L"URmessage needs its credential"}
-                                                : hstring{L"Join a group"}));
+    // THE TITLE NEVER CONTRADICTS THE SENTENCE UNDER IT (Live/RefusalCopy.h, OnboardTitle): a
+    // store that cannot make a join code was titled "Join a group" over "...so it cannot join a group"
+    onboardDialog_.Title(box_value(hstring{urmsg::live::OnboardTitle(
+        noCredential, state->step == urmsg::live::OnboardStep::NoJoinCode)}));
     onboardDialog_.PrimaryButtonText(founded || stuck ? hstring{} : hstring{L"Join"});
     // AND THE CLOSE BUTTON SAYS WHAT CLOSING MEANS, which changes with the road. "Not now" is
     // right for somebody who has not joined anything: they are putting it off. It is WRONG for a
@@ -912,8 +1180,9 @@ void MainWindow::ApplyLiveWorld() {
       urmsg::live::WithLocalNames(*snapshot, urmsg::live::CurrentLocalNames()));
 
   // ── THE LATCH, AND IT IS DELIBERATELY IN THIS STATEMENT AND NOT AT STARTUP ──
-  // Every honesty string in the app that differs between the two worlds is chosen by
-  // urmsg::ActiveRunMode(), and this is its only writer. It sits HERE, on the UI thread,
+  // Every honesty string in the app that differs between the worlds is chosen by
+  // urmsg::DrawnRunMode() - urmsg::ActiveRunMode() and the launch together (RunMode.h) - and
+  // this is the latch's only writer. It sits HERE, on the UI thread,
   // in the same breath as the assignment above, because the property that has to hold is
   // "the mode names the world that is on screen" — not "the mode names the switch the
   // process was started with".
@@ -927,6 +1196,8 @@ void MainWindow::ApplyLiveWorld() {
   // the arrival of a real world cannot do that: there IS one, and the rebuilds below draw
   // it in the same beat.
   urmsg::SetActiveRunMode(urmsg::RunMode::Live);
+  // The identity screens draw the FABRICATED account (Task 6); none may stand over a live world.
+  if (identityHost_ && identityHost_.Visibility() == Visibility::Visible) CloseIdentity();
   // The chip and the composer caption are the two mode-dependent surfaces that are NOT
   // rebuilt below — the chip is written once in EnterDemoMode and the composer bar once
   // by MakeThread — so they are re-pointed by hand. Both are cheap and both are idempotent.
@@ -941,11 +1212,11 @@ void MainWindow::ApplyLiveWorld() {
   if (thread_.root) {
     urmsg::views::SetThreadRunMode(thread_, urmsg::RunMode::Live);
     // CLEARED IN THE SAME BREATH AS THE MODE LATCHES, which is the only moment at which both
-    // are true: there is a live world on screen, so the empty one is gone and "no group yet"
-    // has stopped being the fact about this run.
+    // are true: there is a live world on screen, so the empty one is gone and "no group is on
+    // these screens yet" has stopped being the fact about this run.
     //
-    // AND SET AGAIN WHEN THE WORLD IS EMPTY: a device that LEFT its group (ledger 273) is back to
-    // having none, and the caption says so.
+    // AND SET AGAIN WHEN THE WORLD IS EMPTY: a device that LEFT its group (ledger 273) draws the
+    // empty world again, and the caption says that no group is on the screen.
     urmsg::views::SetThreadNoSession(thread_, liveWorld_->conversations.empty());
   }
   // AND THE SEND BUTTON, on the same beat and for the same reason the caption is: the composer bar
@@ -1422,7 +1693,7 @@ void MainWindow::BuildDemoViews() {
   // not two). NOT options_.advanced: the switch is session-only and
   // InitAdvancedMode has already folded it in. The LIVE toggle subscription
   // is the ONE OnAdvancedModeChanged registration in EnterDemoMode (W7).
-  urmsg::views::SetInspectRailAdvanced(rail_, urmsg::AdvancedModeEnabled());
+  urmsg::views::SetInspectRailAdvanced(rail_, urmsg::AdvancedModeEnabled(), ActiveWorld());
 
   // The roster's verbs (item 242 R3), handed to the rail the way the composer's are handed to
   // the thread: get_weak(), not `this`, because the rail keeps them for the window's life. The
@@ -1592,6 +1863,10 @@ void MainWindow::ClearMessageSelection() {
 }
 
 void MainWindow::ApplyAdvanced(bool on) {
+  // TURNED ON, as opposed to applied: the one beat at which the Developer page is built again
+  // (below). The first apply, from EnterDemoMode, is not one: advanced_ already holds the
+  // resolved mode there, and the constructor's BuildDeveloper builds the page with it.
+  const bool turnedOn = on && !advanced_;
   advanced_ = on;
 
   // Developer is a destination that exists only under Advanced Mode. Leaving
@@ -1623,6 +1898,15 @@ void MainWindow::ApplyAdvanced(bool on) {
     }
   }
   if (!on && currentTag_ == L"developer") SelectNavTag(L"chats");
+  // THE DEVELOPER PAGE IS BUILT AGAIN WHEN THE MODE TURNS ON. It reports what it read at build
+  // time (DeveloperView.h), and one of its figures is this mode: built at launch with the mode
+  // off and reached after Settings turned it on, it read "Advanced Mode: off" on the one page
+  // that exists only while the mode is on (ci/plain-pages-5, run 39103282732). Contract v2
+  // section 4 gives the view no Set*Advanced; the rebuild is this subscriber's (DeveloperView.h).
+  // Only on the way IN: the page cannot be reached while the mode is off, so there is nothing to
+  // correct on the way out, and a rebuild then would swap the page under the crossfade away
+  // from it.
+  if (turnedOn) BuildDeveloper();
 
   urmsg::views::SetConversationListAdvanced(list_, on);
   urmsg::views::SetStatusStripAdvanced(statusStrip_, on);
@@ -1632,7 +1916,10 @@ void MainWindow::ApplyAdvanced(bool on) {
   // pane the viewer is looking at out over itself for a change that is not a
   // mode change. The one SetInspectRailMessage call site in this file sits
   // inside SelectMessage; this function must never grow one.
-  urmsg::views::SetInspectRailAdvanced(rail_, on);
+  //
+  // THE WORLD ON SCREEN (F2): the rail finds its conversation in the world this window draws, the
+  // live one included, and redraws it at the new density now rather than at the next publish.
+  urmsg::views::SetInspectRailAdvanced(rail_, on, ActiveWorld());
 
   urnw::LogInfo("window: advanced mode {}", on);
 }
@@ -1740,11 +2027,17 @@ void MainWindow::BuildSettings() {
   // is the ONE OnAdvancedModeChanged registration in EnterDemoMode (W7).
   // AdvancedModeEnabled() is already resolved:
   // EnterDemoMode ran InitAdvancedMode before any Build* call.
+  // IdentityRunMode(), NOT ActiveRunMode(), for the Account group: a plain launch is live and draws
+  // the empty world while ActiveRunMode() still says Fabricated, and the made-up account must not
+  // stand on it (RunMode.h's DrawnRunMode, which IdentityRunMode answers with).
   settings_ = urmsg::views::MakeSettings(
       ActiveWorld(), [](bool on) { urmsg::SetAdvancedModeEnabled(on); },
       urmsg::AdvancedModeEnabled(),
       [](bool on) { urmsg::live::SetRouteThroughUrnetwork(on); },
-      urmsg::live::RouteThroughUrnetwork());
+      urmsg::live::RouteThroughUrnetwork(), IdentityRunMode(),
+      [weak = get_weak()](urmsg::demo::identity::Button const& button) {
+        if (auto self = weak.get()) self->QueueIdentityAction(button);
+      });
   // SettingsHost, NOT a Grid of this task's own: MainWindow.xaml:284 already
   // declares it and ShowDestination's settings arm routes to it (the d7
   // audit's A3 override — do not add a SettingsPage Grid; that is "mounted
@@ -1926,7 +2219,12 @@ void MainWindow::SetSearchEmptyVisible(bool show) {
 }
 
 void MainWindow::EnterDemoMode() {
-  const auto link = urmsg::demo::DeepLinkFor(options_.screen);
+  // --demo-identity=account is Settings, whose ACCOUNT group the fabricated world fills (Task 6).
+  const auto link = urmsg::demo::DeepLinkFor(
+      options_.identityScreen == urmsg::demo::identity::Screen::Account &&
+              options_.screen == urmsg::demo::DemoScreen::None
+          ? urmsg::demo::DemoScreen::Settings
+          : options_.screen);
 
   // Advanced Mode resolves FIRST: the Developer nav item and every view built
   // below depends on it. --demo-advanced and a --demo=developer deep link are
@@ -1968,10 +2266,10 @@ void MainWindow::EnterDemoMode() {
   developerNavItem_.Content(box_value(hstring{kDemoNavDeveloper}));
   developerNavItem_.Tag(box_value(hstring{L"developer"}));
   {
-    // Segoe Fluent Icons out of the app dictionary, with the same fallback
-    // ConversationListView.cpp's IconFont() records: FontIcon otherwise
-    // defaults to the older Segoe MDL2 Assets, whose metrics differ.
-    Media::FontFamily family{L"Segoe Fluent Icons"};
+    // The icon font out of the app dictionary, and the same list when the key
+    // is missing (kIconFontFamily, UrComponents.h): Segoe Fluent Icons, falling
+    // back to Segoe MDL2 Assets where Windows 10 lacks it.
+    Media::FontFamily family{urnw::kit::kIconFontFamily};
     if (auto app = Application::Current()) {
       auto key = box_value(hstring{L"UrIconFontFamily"});
       if (app.Resources().HasKey(key))
@@ -1986,7 +2284,7 @@ void MainWindow::EnterDemoMode() {
   }
   Controls::ToolTipService::SetToolTip(developerNavItem_, box_value(hstring{kDemoNavDeveloper}));
 
-  DemoChipText().Text(winrt::hstring{urmsg::ModeChipText(urmsg::ActiveRunMode())});
+  DemoChipText().Text(winrt::hstring{urmsg::ModeChipText(urmsg::DrawnRunMode())});
   // d3 3.4: the identicon lattice as the chip's prefix - decorative, links
   // the chip to the identicon language. It adds no WORDS, so nothing
   // honesty-bearing depends on a chip --demo-watermark=off removes (G4).
@@ -1994,14 +2292,16 @@ void MainWindow::EnterDemoMode() {
   DemoChipLatticeHost().Children().Clear();
   DemoChipLatticeHost().Children().Append(urmsg::MakeIdenticonLattice(10));
   // HIDDEN ON A LIVE-ONLY LAUNCH UNTIL THE LATCH, and this is an honesty rule rather than a
-  // cosmetic one. ActiveRunMode() is Fabricated until ApplyLiveWorld latches it, so the chip's
-  // text here would read DEMO - over an EMPTY world, on a run whose whole purpose is the mesh.
-  // Neither chip is true in that window: there is no fabricated data to warn about and no live
-  // session to announce. An absent chip claims nothing, which is the only one of the three that
+  // cosmetic one. ActiveRunMode() is Fabricated until ApplyLiveWorld latches it, so read alone it
+  // would have the chip say DEMO - over an EMPTY world, on a run whose whole purpose is the mesh;
+  // DrawnRunMode() above answers LIVE there instead, and that is not true yet either. Neither
+  // chip is true in that window: there is no fabricated data to warn about and no live session
+  // to announce. An absent chip claims nothing, which is the only one of the three that
   // is honest. ApplyLiveWorld shows it, with the Live wording, in the same statement that puts
   // the live world on screen.
-  DemoChip().Visibility(options_.watermark && !LiveOnlyLaunch() ? Visibility::Visible
-                                                               : Visibility::Collapsed);
+  DemoChip().Visibility(urmsg::ModeChipShownBeforeLiveWorld(options_.enabled, options_.watermark)
+                            ? Visibility::Visible
+                            : Visibility::Collapsed);
 
   // The demo's three content views, built ONCE here (W5: BuildDemoViews is
   // their sole builder - the placeholder-era BuildThread/BuildInspectRail/

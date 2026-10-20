@@ -18,6 +18,10 @@
 // DemoWorld.h is pure C++ and compiled NotUsing the pch for the same reason this file is, so the
 // "no winrt before init_apartment" property survives the include.
 #include "Demo/DemoWorld.h"
+// RefusalCopy's sentences for the held-group clause below (R25 Q4): kWaitingNotInAGroup, the one
+// that is false of a device whose group did not open, and kHeldIntro, the one that is true of it.
+// Pure C++ like this file (<string> and <string_view> only), so the property above survives.
+#include "Live/RefusalCopy.h"
 
 namespace urmsg {
 namespace {
@@ -27,6 +31,13 @@ namespace {
 // building views a few statements later. The atomic is here so that a stray read from the live
 // worker (a log line, a future probe) is defined behaviour rather than a data race.
 std::atomic<int> g_mode{static_cast<int>(RunMode::Fabricated)};
+
+// Whether this is a fabricated launch (RunMode.h, "which arm a string takes"). MainWindow's
+// constructor records it in the statement after it parses the options, before any view is built,
+// so no reader runs before it (neither default would be right for one that did: false would put
+// the third arms over the fixture, true the demo's words over the empty world). The same relaxed
+// order as the latch, for the same reason.
+std::atomic<bool> g_fabricatedLaunch{false};
 
 // Every non-ASCII character printed as <U+XXXX>. --diagnose writes UTF-8 bytes through a
 // redirected handle (Startup.cpp:156-171) and Windows PowerShell 5.1's Get-Content decodes ANSI by
@@ -156,6 +167,16 @@ void SetActiveRunMode(RunMode mode) {
   g_mode.store(static_cast<int>(mode), std::memory_order_relaxed);
 }
 
+void SetFabricatedLaunch(bool fabricated) {
+  g_fabricatedLaunch.store(fabricated, std::memory_order_relaxed);
+}
+
+bool FabricatedLaunch() { return g_fabricatedLaunch.load(std::memory_order_relaxed); }
+
+RunMode DrawnRunMode() { return DrawnRunModeFor(FabricatedLaunch(), ActiveRunMode()); }
+
+bool DrawnNoSession() { return NoSessionFor(FabricatedLaunch(), ActiveRunMode()); }
+
 // ---- the copy ---------------------------------------------------------------------------------
 
 std::wstring ModeChipText(RunMode mode) {
@@ -228,8 +249,14 @@ std::wstring ComposerNote(RunMode mode, bool maySend, bool noSession) {
   // THE THIRD ARM FIRST, because it is about whether there is anything to send TO, and the two
   // below are about what happens when there is. See the header for why both of them are false
   // while the empty world is on screen.
-  if (noSession)
-    return L"No group yet \u2014 there is nothing to send to. Join a group to start a conversation.";
+  //
+  // IT SAYS WHAT THE SCREEN HAS, AND NOTHING OF WHAT THIS DEVICE HOLDS. It said "No group yet ...
+  // Join a group to start a conversation". "No group yet" is false of a device whose group is on its
+  // disk and did not open (R25 Q4), and "join a group" is advice that a store which cannot make a
+  // join code cannot take (Task 58: such an installation "cannot join a group"). The onboarding
+  // dialog's sentences say the right thing for each (Live/RefusalCopy.h); this line says what
+  // Settings' disclosure says over the same world.
+  if (noSession) return L"No group is on these screens yet, so there is nothing to send to.";
   if (mode != RunMode::Live) return L"Demo model \u2014 nothing is sent, and no message leaves this window.";
   if (!maySend)
     return L"Live session \u2014 these messages are real. You can read this group but not send "
@@ -239,18 +266,26 @@ std::wstring ComposerNote(RunMode mode, bool maySend, bool noSession) {
          L"delivery, so a message you send stops at Sent.";
 }
 
-std::wstring RelayPathGroupTitle(RunMode mode) {
+std::wstring RelayPathGroupTitle(RunMode mode, bool noSession) {
+  // THE THIRD ARM FIRST, as ComposerNote's. It says what the WINDOW has, which is no path to
+  // show, and nothing about the session: a first run with a credential is connected and waiting
+  // to be let into a group (LiveMesh's Waiting step), so "no session" would be false there.
+  if (noSession) return L"RELAY PATH: NOTHING TO SHOW YET";
   return mode == RunMode::Live ? L"LIVE SESSION: RELAY PATH" : L"DEMO MODEL: RELAY PATH";
 }
 
-std::wstring RelayDrawerName(RunMode mode) {
+std::wstring RelayDrawerName(RunMode mode, bool noSession) {
   // "preview" drops in live mode and nothing replaces it: the three nodes there are the platform
   // url the library actually dialled and the message server's own client_id (Live/LiveWorld.cpp),
   // so the drawer is showing a path rather than previewing what one would look like.
+  if (noSession) return L"Relay path: nothing to show yet";
   return mode == RunMode::Live ? L"Live session: relay path" : L"Demo model: relay path preview";
 }
 
-std::wstring ServerKeyStateName(bool keyVerified, RunMode mode) {
+std::wstring ServerKeyStateName(bool keyVerified, RunMode mode, bool noSession) {
+  // THE EMPTY WORLD: the window has no result to name, so the padlock says the house placeholder
+  // and nothing about a session (a waiting first run is connected).
+  if (noSession) return L"Server key: unavailable";
   // LIVE: the true bit is the PIN (ledger 268) - the URnetwork and direct routes refuse any
   // endpoint key but the compiled-in one - and the false bit is the platform route, which pins
   // nothing, so "not verified" would report the RESULT of a check that never ran. "pinning
@@ -283,16 +318,35 @@ std::wstring RosterNote(RunMode mode) {
              : L"Demo model: fabricated members, names and roles";
 }
 
-std::wstring DisclosureCaption(RunMode mode) {
+std::wstring DisclosureCaption(RunMode mode, bool noSession) {
+  if (noSession) return L"THIS APP";
   return mode == RunMode::Live ? L"LIVE SESSION" : L"THIS DEMO";
 }
 
-std::wstring DisclosureTitle(RunMode mode) {
+std::wstring DisclosureTitle(RunMode mode, bool noSession) {
+  // The absence list below is about the APP, so over the empty world the title names the app.
+  if (noSession) return L"What this app does not do";
   return mode == RunMode::Live ? L"What this live session does not do"
                                : L"What this demo does not do";
 }
 
-std::wstring DisclosureBody(RunMode mode) {
+std::wstring DisclosureBody(RunMode mode, bool noSession) {
+  // THE THIRD ARM: the EMPTY WORLD - a launch that is not fabricated before its live world lands,
+  // or a live world with no group in it (SettingsView passes both). The live paragraph's opening
+  // is false there - no message is on these screens - so this one says so, then says what the live
+  // one says about a group IN THE CONDITIONAL, then carries the live absence list WORD FOR WORD
+  // (RunModeCopyDiagnostics holds the two lists equal). It says "on these screens", and never "no
+  // group": a device whose group is on its disk but did not open still holds one (R25 Q4). And it
+  // does not repeat the live paragraph's "every field ... reads unavailable", which the same page
+  // contradicts over the empty world (Linked devices 0, a blank server). It names neither mode.
+  if (noSession) {
+    return L"No group is on these screens yet, so no message is either. In a group, the messages "
+           L"here are records this device fetches from the message server and opens under MLS, a "
+           L"message you write is sealed on this device and submitted to the group, and the "
+           L"members list and each member's role are the group's own. What is NOT here: delivery "
+           L"and read receipts, contact discovery and the names behind members, group names, "
+           L"attachments, and any per-message attestation check.";
+  }
   // The fabricated paragraph is the one that shipped, with the mode prefix added so it is framed
   // the way every other string here is framed. Not one word of its content changed.
   //
@@ -328,6 +382,54 @@ std::wstring DisclosureBody(RunMode mode) {
          L"day say about a real message; it is not a statement about one.";
 }
 
+// ---- the identity screens (Task 6) ------------------------------------------------------------
+// Prefix-first in the fabricated arm, as everywhere in this file: a crop keeps the framing. The
+// live arms are SCOPE's own copy for Tasks 16, 28, 38 and 45.
+
+std::wstring PhraseWordsLabel(RunMode mode) {
+  return mode == RunMode::Live ? L"Your recovery phrase" : L"Demo words: not a recovery phrase";
+}
+
+std::wstring PhraseWordsCaveat(RunMode mode) {
+  return mode == RunMode::Live ? L"These words cannot bring your account back yet."
+                               : L"Demo model: these words bring nothing back. A real phrase "
+                                 L"cannot bring your account back yet, either.";
+}
+
+std::wstring AccountIdNote(RunMode mode) {
+  return mode == RunMode::Live ? L"One ID for your whole account, the same on every device."
+                               : L"Demo model: a made-up ID, not an account.";
+}
+
+std::wstring RemovedTitle(RunMode mode) {
+  return mode == RunMode::Live ? L"This device is no longer on your account"
+                               : L"Demo screen: this device is no longer on your account";
+}
+
+std::wstring OnlyDeviceLine(RunMode mode) {
+  return mode == RunMode::Live ? L"This ends this identity."
+                               : L"Demo model: on an only device, this would end this identity.";
+}
+
+std::wstring SelfRemovalNotice(RunMode mode, std::wstring const& device) {
+  const std::wstring body = device +
+                            L" held your recovery phrase's key and removed itself. If this was "
+                            L"not you, lock it out.";
+  return mode == RunMode::Live ? body : L"Demo notice, made up: " + body;
+}
+
+std::wstring PhraseChangedLine(RunMode mode, std::wstring const& device) {
+  if (mode == RunMode::Live)
+    return L"Recovery phrase changed. Your ID and your devices are the same. " + device +
+           L" no longer keeps your phrase's key: type the new phrase there to make it a phrase "
+           L"device again.";
+  return L"Demo model: no phrase was changed. After a real change, your ID and your devices are "
+         L"the same, and " +
+         device +
+         L" no longer keeps your phrase's key: you would type the new phrase there to make it a "
+         L"phrase device again.";
+}
+
 // ---- the gate ---------------------------------------------------------------------------------
 
 std::vector<std::wstring> RunModeCopyDiagnostics() {
@@ -342,17 +444,20 @@ std::vector<std::wstring> RunModeCopyDiagnostics() {
       // fabricated string and they must still name their own modes.
       {L"composer (observer)", ComposerNote(RunMode::Fabricated, false),
        ComposerNote(RunMode::Live, false)},
-      {L"relay title", RelayPathGroupTitle(RunMode::Fabricated),
-       RelayPathGroupTitle(RunMode::Live)},
-      {L"drawer name", RelayDrawerName(RunMode::Fabricated), RelayDrawerName(RunMode::Live)},
-      {L"key name +", ServerKeyStateName(true, RunMode::Fabricated),
-       ServerKeyStateName(true, RunMode::Live)},
-      {L"key name -", ServerKeyStateName(false, RunMode::Fabricated),
-       ServerKeyStateName(false, RunMode::Live)},
-      {L"disclosure caption", DisclosureCaption(RunMode::Fabricated),
-       DisclosureCaption(RunMode::Live)},
-      {L"disclosure title", DisclosureTitle(RunMode::Fabricated), DisclosureTitle(RunMode::Live)},
-      {L"disclosure body", DisclosureBody(RunMode::Fabricated), DisclosureBody(RunMode::Live)},
+      {L"relay title", RelayPathGroupTitle(RunMode::Fabricated, false),
+       RelayPathGroupTitle(RunMode::Live, false)},
+      {L"drawer name", RelayDrawerName(RunMode::Fabricated, false),
+       RelayDrawerName(RunMode::Live, false)},
+      {L"key name +", ServerKeyStateName(true, RunMode::Fabricated, false),
+       ServerKeyStateName(true, RunMode::Live, false)},
+      {L"key name -", ServerKeyStateName(false, RunMode::Fabricated, false),
+       ServerKeyStateName(false, RunMode::Live, false)},
+      {L"disclosure caption", DisclosureCaption(RunMode::Fabricated, false),
+       DisclosureCaption(RunMode::Live, false)},
+      {L"disclosure title", DisclosureTitle(RunMode::Fabricated, false),
+       DisclosureTitle(RunMode::Live, false)},
+      {L"disclosure body", DisclosureBody(RunMode::Fabricated, false),
+       DisclosureBody(RunMode::Live, false)},
       {L"roster note", RosterNote(RunMode::Fabricated), RosterNote(RunMode::Live)},
   };
 
@@ -508,7 +613,7 @@ std::vector<std::wstring> RunModeCopyDiagnostics() {
   // AND, SINCE ITEM 242 R3, THE ROSTER: the list must not say the app lacks the member list or
   // the roles it now reads off the group. "names behind members" is allowed - it is the thing
   // that IS still absent - so the words gated are "member list" and "role", not "member".
-  const std::wstring absences = AbsenceList(DisclosureBody(RunMode::Live));
+  const std::wstring absences = AbsenceList(DisclosureBody(RunMode::Live, false));
   const bool absenceOk = !absences.empty() && !ContainsWord(absences, L"send") &&
                          !ContainsWord(absences, L"member list") &&
                          !ContainsWord(absences, L"role");
@@ -561,6 +666,258 @@ std::vector<std::wstring> RunModeCopyDiagnostics() {
         L"neither \"Demo model\" nor \"Live session\"]",
         ok ? L"PASS" : L"FAIL", none, differs ? L"yes" : L"NO", roleBlind ? L"yes" : L"NO",
         claimsNothing ? L"yes" : L"NO", controlHolds ? L"holds" : L"FAILED"));
+  }
+
+  // ---- THE IDENTITY PAIRS (identity phase 1, Task 6) ------------------------------------------
+  // Their own clause, because their live arms name the ACCOUNT's thing and not the session (see
+  // RunMode.h): the fabricated arm must name the demo and not "live", the live arm must not name
+  // the demo, and they must differ. The device names passed in are the fixture's kind of name, so
+  // a name cannot be what supplies or removes the word.
+  {
+    const Pair identityPairs[] = {
+        {L"words label", PhraseWordsLabel(RunMode::Fabricated), PhraseWordsLabel(RunMode::Live)},
+        {L"words caveat", PhraseWordsCaveat(RunMode::Fabricated),
+         PhraseWordsCaveat(RunMode::Live)},
+        {L"your id note", AccountIdNote(RunMode::Fabricated), AccountIdNote(RunMode::Live)},
+        {L"removed title", RemovedTitle(RunMode::Fabricated), RemovedTitle(RunMode::Live)},
+        {L"only device", OnlyDeviceLine(RunMode::Fabricated), OnlyDeviceLine(RunMode::Live)},
+        {L"self-removal notice", SelfRemovalNotice(RunMode::Fabricated, L"Old laptop"),
+         SelfRemovalNotice(RunMode::Live, L"Old laptop")},
+        {L"phrase changed", PhraseChangedLine(RunMode::Fabricated, L"Linux laptop"),
+         PhraseChangedLine(RunMode::Live, L"Linux laptop")},
+    };
+    size_t idOk = 0;
+    std::wstring idFirstBad = L"(none)";
+    for (auto const& p : identityPairs) {
+      const bool ok = !p.fabricated.empty() && !p.live.empty() && p.fabricated != p.live &&
+                      ContainsWord(p.fabricated, L"demo") && !ContainsWord(p.fabricated, L"live") &&
+                      !ContainsWord(p.live, L"demo");
+      if (ok) {
+        ++idOk;
+      } else if (idFirstBad == L"(none)") {
+        idFirstBad = std::wstring(p.what);
+      }
+    }
+    lines.push_back(std::format(
+        L"  run mode identity: {}  {}/{} identity pairs: the fabricated arm names the demo, the "
+        L"live arm does not, and they differ (first bad: {})   [query: for each pair, fabricated "
+        L"!= live AND fabricated contains \"demo\" and not \"live\" AND live does not contain "
+        L"\"demo\", case-insensitive. The live arms are SCOPE's copy for the live screens of Tasks "
+        L"16, 28, 38 and 45, none of which this build draws]",
+        idOk == std::size(identityPairs) ? L"PASS" : L"FAIL", idOk, std::size(identityPairs),
+        idFirstBad));
+
+    // THE WORDS LABEL, ASKED FOR THE DENIAL ITSELF. A label that named the demo and still called
+    // the words a phrase ("Demo: your recovery phrase") would pass the pair test above and be false
+    // in exactly the way Task 6 exists to prevent, so this line asks for the words "not a recovery
+    // phrase" in the fabricated arm, and for their absence in the live one.
+    const std::wstring fab = PhraseWordsLabel(RunMode::Fabricated);
+    const std::wstring live = PhraseWordsLabel(RunMode::Live);
+    const bool wordsOk = ContainsWord(fab, L"demo words") &&
+                         ContainsWord(fab, L"not a recovery phrase") &&
+                         !ContainsWord(live, L"not a recovery phrase") &&
+                         !ContainsWord(live, L"demo");
+    lines.push_back(std::format(
+        L"  run mode words   : {}  the words label: fabricated \"{}\" | live \"{}\"   [query: the "
+        L"fabricated arm contains \"demo words\" and \"not a recovery phrase\"; the live arm "
+        L"contains neither \"not a recovery phrase\" nor \"demo\"]",
+        wordsOk ? L"PASS" : L"FAIL", AsciiOnly(fab), AsciiOnly(live)));
+  }
+
+  // THE OTHER THIRD ARMS (fix/plain-launch-run-mode), held to the composer's property: a plain
+  // launch draws the EMPTY world with ActiveRunMode() still Fabricated, and every string it draws
+  // there is chosen by DrawnRunMode() and DrawnNoSession() - the live mode and the no-session bit.
+  // Each third arm must differ from BOTH of its function's arms, name neither mode ("demo", "live
+  // session"), win over the mode (the same string whichever mode is passed beside it), and not be
+  // empty; the paired arms must still name their modes, so a third arm that swallowed them is
+  // caught; and the disclosure's must keep the live absence list WORD FOR WORD. Every third arm is
+  // printed, in full: the complement of what the window draws in the empty world.
+  {
+    struct Third {
+      std::wstring_view what;
+      std::wstring fabricated, live, thirdLive, thirdFab;
+    };
+    const Third thirds[] = {
+        {L"relay title", RelayPathGroupTitle(RunMode::Fabricated, false),
+         RelayPathGroupTitle(RunMode::Live, false), RelayPathGroupTitle(RunMode::Live, true),
+         RelayPathGroupTitle(RunMode::Fabricated, true)},
+        {L"drawer name", RelayDrawerName(RunMode::Fabricated, false),
+         RelayDrawerName(RunMode::Live, false), RelayDrawerName(RunMode::Live, true),
+         RelayDrawerName(RunMode::Fabricated, true)},
+        {L"key name +", ServerKeyStateName(true, RunMode::Fabricated, false),
+         ServerKeyStateName(true, RunMode::Live, false), ServerKeyStateName(true, RunMode::Live, true),
+         ServerKeyStateName(true, RunMode::Fabricated, true)},
+        {L"key name -", ServerKeyStateName(false, RunMode::Fabricated, false),
+         ServerKeyStateName(false, RunMode::Live, false),
+         ServerKeyStateName(false, RunMode::Live, true),
+         ServerKeyStateName(false, RunMode::Fabricated, true)},
+        {L"disclosure caption", DisclosureCaption(RunMode::Fabricated, false),
+         DisclosureCaption(RunMode::Live, false), DisclosureCaption(RunMode::Live, true),
+         DisclosureCaption(RunMode::Fabricated, true)},
+        {L"disclosure title", DisclosureTitle(RunMode::Fabricated, false),
+         DisclosureTitle(RunMode::Live, false), DisclosureTitle(RunMode::Live, true),
+         DisclosureTitle(RunMode::Fabricated, true)},
+        {L"disclosure body", DisclosureBody(RunMode::Fabricated, false),
+         DisclosureBody(RunMode::Live, false), DisclosureBody(RunMode::Live, true),
+         DisclosureBody(RunMode::Fabricated, true)},
+    };
+    size_t good = 0;
+    std::wstring firstBad = L"(none)", printed;
+    for (auto const& t : thirds) {
+      const bool ok = !t.thirdLive.empty() && t.thirdLive == t.thirdFab &&
+                      t.thirdLive != t.fabricated && t.thirdLive != t.live &&
+                      !ContainsWord(t.thirdLive, L"demo") &&
+                      !ContainsWord(t.thirdLive, L"live session") &&
+                      ContainsWord(t.fabricated, L"demo") &&
+                      ContainsWord(t.live, L"live session");
+      if (ok)
+        ++good;
+      else if (firstBad == L"(none)")
+        firstBad = std::wstring(t.what);
+      if (!printed.empty()) printed += L" | ";
+      printed += std::wstring(t.what) + L" \"" + AsciiOnly(t.thirdLive) + L"\"";
+    }
+    const std::wstring liveAbsences = AbsenceList(DisclosureBody(RunMode::Live, false));
+    const std::wstring thirdAbsences = AbsenceList(DisclosureBody(RunMode::Live, true));
+    const bool absencesKept = !liveAbsences.empty() && thirdAbsences == liveAbsences;
+    const bool ok = good == std::size(thirds) && absencesKept;
+    lines.push_back(std::format(
+        L"  run mode thirds  : {}  {}/{} third arms differ from both arms, name neither mode, win "
+        L"over the mode, and leave the paired arms naming theirs (first bad: {}); the disclosure "
+        L"keeps the live absence list word for word: {}; the empty world draws: {}   [query: for "
+        L"each function with a noSession arm, f(Live, true) == f(Fabricated, true), it differs "
+        L"from f(Fabricated) and f(Live), contains neither \"demo\" nor \"live session\" "
+        L"(case-insensitive), f(Fabricated) contains \"demo\" and f(Live) \"live session\"; "
+        L"AbsenceList(body(Live, true)) == AbsenceList(body(Live))]",
+        ok ? L"PASS" : L"FAIL", good, std::size(thirds), firstBad, absencesKept ? L"yes" : L"NO",
+        printed));
+  }
+
+  // THE EMPTY WORLD SAYS NOTHING OF WHAT THIS DEVICE HOLDS. Every third arm is drawn over the empty
+  // world, and that world is not only a device in no group: it is also a device whose group is on
+  // its disk and did not open (it predates the join seal, or its record could not be read just
+  // now), a store that cannot make a join code, and a launch whose mesh has not answered, which
+  // knows none of this yet. So no third arm may say that this device is in no group, nor tell it to
+  // join one. EACH NEEDLE COMES FROM A SENTENCE THAT SAID IT, AND IS FALSE OF A STATE THE EMPTY WORLD
+  // DRAWS: "no group yet" (the composer's own third arm until fix/advanced-figure-held-group, kept
+  // here as the control's text) and "not in a group" (RefusalCopy's kWaitingNotInAGroup) are false
+  // of a device whose group did not open (R25 Q4); "join a group" is advice a store that cannot make
+  // a join code cannot take (Task 58's kSayNoDeviceWrapKey: it "cannot join a group").
+  //
+  // THE CONTROL IS IN THE SAME QUERY, BOTH WAYS. Every needle must find a sentence that said it, and
+  // none may find a sentence that is TRUE of the empty world: kHeldIntro, the dialog's sentence for a
+  // device that holds a group, and the two screen-scoped phrasings the third arms use, "No group is
+  // on these screens yet" in the composer's and the disclosure's ("In a group, ..."). So a needle
+  // widened until it also hits the true ones ("no group", "in a group") fails the control, and is
+  // not read as two bad arms.
+  //
+  // A LIST OF PHRASES IS A BLACKLIST, AND THAT IS ADMITTED, as the send clause admits it: "No groups
+  // yet", "isn't in a group" or "join one" would pass it. It holds the sentences that have been
+  // written; add to it when a new one is. Every arm a needle finds is printed.
+  {
+    const std::wstring needles[] = {L"no group yet", L"not in a group", L"join a group"};
+    const std::wstring oldComposer =
+        L"No group yet \u2014 there is nothing to send to. Join a group to start a conversation.";
+    const std::wstring waiting(live::kWaitingNotInAGroup.begin(), live::kWaitingNotInAGroup.end());
+    const std::wstring noJoinCode(live::kSayNoDeviceWrapKey.begin(), live::kSayNoDeviceWrapKey.end());
+    const std::wstring held(live::kHeldIntro);
+    // what must NOT match: sentences that are true of the empty world, as literals, so that a change
+    // to an arm cannot move the control with it
+    const std::wstring trueSamples[] = {
+        held,
+        L"No group is on these screens yet, so there is nothing to send to.",
+        L"No group is on these screens yet, so no message is either. In a group, the messages here "
+        L"are records this device fetches from the message server and opens under MLS.",
+    };
+    struct Arm {
+      std::wstring_view what;
+      std::wstring text;
+    };
+    const Arm arms[] = {
+        {L"composer", ComposerNote(RunMode::Live, true, true)},
+        {L"composer (observer)", ComposerNote(RunMode::Live, false, true)},
+        {L"composer (fabricated)", ComposerNote(RunMode::Fabricated, true, true)},
+        {L"relay title", RelayPathGroupTitle(RunMode::Live, true)},
+        {L"drawer name", RelayDrawerName(RunMode::Live, true)},
+        {L"key name +", ServerKeyStateName(true, RunMode::Live, true)},
+        {L"key name -", ServerKeyStateName(false, RunMode::Live, true)},
+        {L"disclosure caption", DisclosureCaption(RunMode::Live, true)},
+        {L"disclosure title", DisclosureTitle(RunMode::Live, true)},
+        {L"disclosure body", DisclosureBody(RunMode::Live, true)},
+    };
+    size_t clean = 0;
+    std::wstring found;
+    for (auto const& a : arms) {
+      bool hit = false;
+      for (auto const& n : needles) {
+        if (!ContainsWord(a.text, n)) continue;
+        hit = true;
+        if (!found.empty()) found += L" | ";
+        found += std::wstring(a.what) + L" says \"" + n + L"\": \"" + AsciiOnly(a.text) + L"\"";
+      }
+      clean += hit ? 0 : 1;
+    }
+    size_t fired = 0;
+    for (auto const& n : needles)
+      fired += (ContainsWord(oldComposer, n) || ContainsWord(waiting, n) ||
+                ContainsWord(noJoinCode, n))
+                   ? 1
+                   : 0;
+    size_t quiet = 0;
+    std::wstring hitTrue;
+    for (auto const& t : trueSamples) {
+      bool hit = t.empty();
+      for (auto const& n : needles) hit = hit || ContainsWord(t, n);
+      if (hit && hitTrue.empty()) hitTrue = L" (first hit: \"" + AsciiOnly(t) + L"\")";
+      quiet += hit ? 0 : 1;
+    }
+    const bool controlHolds = fired == std::size(needles) && quiet == std::size(trueSamples);
+    const bool ok = clean == std::size(arms) && controlHolds;
+    lines.push_back(std::format(
+        L"  run mode held    : {}  {}/{} third arms say nothing of what this device holds{}{}; "
+        L"control: {}/{} needles find a sentence that said it (the composer's old third arm, "
+        L"kWaitingNotInAGroup, kSayNoDeviceWrapKey), and {}/{} sentences true of the empty world "
+        L"(the held intro and the two screen-scoped phrasings) are found by none{}   [query: no third "
+        L"arm may contain \"no group yet\" or \"not in a group\" (R25 Q4: false of a group that did not "
+        L"open) or \"join a group\" (Task 58: advice a store with no join code cannot take), "
+        L"case-insensitive; a list of phrases, admitted as one]",
+        ok ? L"PASS" : L"FAIL", clean, std::size(arms), found.empty() ? L"" : L" - FOUND: ",
+        found, fired, std::size(needles), quiet, std::size(trueSamples), hitTrue));
+  }
+
+  // THE LAUNCH TABLE: which arm each (launch, latch) pair takes. Written out from RunMode.h's
+  // three rules and not from the functions, so the functions cannot mark their own paper; the
+  // fourth row is the one a plain launch sits in for as long as its mesh does not answer.
+  {
+    struct Row {
+      bool launch;
+      RunMode latch;
+      RunMode wantMode;
+      bool wantNoSession;
+      wchar_t const* label;
+    };
+    const Row rows[] = {
+        {true, RunMode::Fabricated, RunMode::Fabricated, false, L"fabricated launch, no live world"},
+        {true, RunMode::Live, RunMode::Live, false, L"fabricated launch, live world"},
+        {false, RunMode::Live, RunMode::Live, false, L"plain launch, live world"},
+        {false, RunMode::Fabricated, RunMode::Live, true, L"plain launch, no live world"},
+    };
+    size_t right = 0;
+    std::wstring table;
+    for (auto const& r : rows) {
+      const RunMode m = DrawnRunModeFor(r.launch, r.latch);
+      const bool n = NoSessionFor(r.launch, r.latch);
+      right += (m == r.wantMode && n == r.wantNoSession) ? 1 : 0;
+      if (!table.empty()) table += L"; ";
+      table += std::format(L"{} -> {}{}", r.label, m == RunMode::Live ? L"live" : L"fabricated",
+                           n ? L", no session" : L"");
+    }
+    lines.push_back(std::format(
+        L"  run mode launch  : {}  {}/{} (launch, latch) pairs take the arm RunMode.h names: {}   "
+        L"[query: DrawnRunModeFor and NoSessionFor against a table written from the three rules: "
+        L"fabricated only for a fabricated launch with no live world; no session only for any "
+        L"other launch with no live world]",
+        right == std::size(rows) ? L"PASS" : L"FAIL", right, std::size(rows), table));
   }
 
   return lines;

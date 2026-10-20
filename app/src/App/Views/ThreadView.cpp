@@ -74,11 +74,11 @@ CornerRadius CornerRadiusFromCorners(double const c[4]) {
   return cr;
 }
 
-// The icon face, named EVERY time. FontIcon defaults to the older
-// "Segoe MDL2 Assets", whose metrics differ and whose coverage is not the same
-// set of codepoints, so a glyph picked from the Fluent set can land on a
-// different drawing - or on nothing - if the family is left to the default.
-Media::FontFamily IconFont() { return Media::FontFamily(L"Segoe Fluent Icons"); }
+// The icon face, named EVERY time, and it is the one icon font (kIconFontFamily,
+// UrComponents.h): Segoe Fluent Icons, falling back to Segoe MDL2 Assets where
+// Windows 10 lacks it. Every glyph this file draws is in kIconGlyphs, and
+// --diagnose's `icon glyphs` line says which family draws each one.
+Media::FontFamily IconFont() { return Media::FontFamily(urnw::kit::kIconFontFamily); }
 
 namespace anim = winrt::Microsoft::UI::Xaml::Media::Animation;
 
@@ -1535,7 +1535,9 @@ FrameworkElement MakeHiddenObserverRecord(winrt::hstring const& body) {
 
   FontIcon eye;
   eye.FontFamily(IconFont());
-  eye.Glyph(L"\uED1A");  // Segoe Fluent "Hide" — an eye with a stroke through it
+  // Segoe Fluent "Hide", an eye with a stroke through it; where no icon font on the machine maps it
+  // (Windows 10's Segoe MDL2 Assets does not), its fallback, an eye (kIconGlyphs)
+  eye.Glyph(urnw::kit::IconGlyphText(L"\uED1A"));
   eye.FontSize(14);
   eye.Foreground(urnw::colors::MutedBrush());
   eye.VerticalAlignment(VerticalAlignment::Center);
@@ -2135,10 +2137,15 @@ FrameworkElement MakeComposer(std::shared_ptr<ThreadParts> const& parts) {
     g.Glyph(L"\uE916");  // Segoe Fluent "Timer"
     g.FontSize(14);
     chip.Children().Append(g);
-    TextBlock t;
-    t.Text(L"24h");
-    t.FontSize(12);
-    chip.Children().Append(t);
+    // THE VALUE ONLY IN A FABRICATED LAUNCH (fix/plain-launch-run-mode): "24h" is the fixture's
+    // setting, and no conversation of a plain launch has a timer this build can read. The glyph
+    // alone stays, disabled, as the control that is not there yet.
+    if (urmsg::FabricatedLaunch()) {
+      TextBlock t;
+      t.Text(L"24h");
+      t.FontSize(12);
+      chip.Children().Append(t);
+    }
     timer.Content(chip);
   }
   // design d2 §3 (its optional seating): cardHover fill, so the chip reads as
@@ -2153,7 +2160,9 @@ FrameworkElement MakeComposer(std::shared_ptr<ThreadParts> const& parts) {
   timer.MinWidth(0);
   timer.IsEnabled(false);
   Automation::AutomationProperties::SetName(
-      timer, L"Disappearing messages: 24 hours (not available in this build)");
+      timer, urmsg::FabricatedLaunch()
+                 ? L"Disappearing messages: 24 hours (not available in this build)"
+                 : L"Disappearing messages: not available in this build");
   Grid::SetColumn(timer, 2);
   row.Children().Append(timer);
 
@@ -2335,8 +2344,13 @@ FrameworkElement MakeComposer(std::shared_ptr<ThreadParts> const& parts) {
   // InspectRailView.cpp). It costs nothing: the composer bar is Auto-height.
   TextBlock note;
   // The START POSE only. UpdateComposerSend is the one writer from here on, and it runs at the
-  // bottom of this function; parts->noteMode carries the mode it writes for.
-  parts->noteMode = urmsg::ActiveRunMode();
+  // bottom of this function; parts->noteMode carries the mode it writes for. DrawnRunMode() and
+  // DrawnNoSession(), not ActiveRunMode(): the launch decides the arm as well as the latch
+  // (RunMode.h). The window sets the no-session bit again (SetThreadNoSession) on the beats it
+  // knows more; seeding it here means the first paint over a plain launch's empty world is
+  // already the no-session sentence, and never the live arm's "these messages are real".
+  parts->noteMode = urmsg::DrawnRunMode();
+  parts->noteNoSession = urmsg::DrawnNoSession();
   note.Text(winrt::hstring{
       urmsg::ComposerNote(parts->noteMode, parts->mayRoleSend, parts->noteNoSession)});
   note.TextWrapping(TextWrapping::Wrap);

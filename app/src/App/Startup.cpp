@@ -6,6 +6,8 @@
 #include "Startup.h"
 
 #include <shellapi.h>  // CommandLineToArgvW
+#include <dwrite.h>    // the icon font's glyphs, asked of this machine (IconGlyphsLine)
+#pragma comment(lib, "dwrite.lib")
 
 #include <algorithm>  // sort/unique, for the T5 badge-table assertion
 #include <array>
@@ -25,11 +27,13 @@
 #include "Log.h"
 #include "Paths.h"
 #include "Strings.h"
+#include "UrComponents.h"  // kIconFontFamily and kIconGlyphs, for the icon glyphs line
 #include "UrMotion.h"
 #include "Views/ConversationRowModel.h"
 #include "RunMode.h"  // RunModeCopyDiagnostics - the mode-dependent honesty copy's gate
 #include "Views/DeveloperDump.h"
 #include "Views/InspectRailFields.h"
+#include "Views/NetworkPageView.h"  // FormatKeyState, for the plain launch walk
 #include "Views/RosterRules.h"  // the roster's pure table, for the roster lines below
 #include "Views/StatusStripRules.h"
 #include "Demo/DemoShellState.h"
@@ -45,6 +49,7 @@
 #include "Live/HeldGroupRules.h"  // the held-group lines below (pure; Task 39)
 #include "Live/RefusalCopy.h"     // the refusal copy lines below (pure; Task 58)
 #include "Demo/DemoSwitches.h"
+#include "Demo/IdentityDemo.h"  // the identity screens' pure gate (Task 6)
 #include "Demo/DemoStress.h"
 
 // The Windows App SDK version this binary was BUILT against, injected from the
@@ -1847,6 +1852,155 @@ std::wstring StatusStripFieldsAssertion() {
       offline, connecting, connected, code(lockOn), code(lockOff), epoch, records);
 }
 
+// ---- S3: the relay drawer's rows and the strip fit their own width -----------------------------
+//
+// PURE, on the same terms as the line above: StatusStripRules.h's decisions, asked with the long
+// values of a real live session TYPED HERE (the message server's client_id, Live/LiveMesh.cpp's
+// kServerClientId, and the platform url the screenshot rig dials) and with widths that stand in
+// for the strip's measured ones. The view turns each answer into XAML; these lines hold the
+// answers. Each prints PASS or FAIL, what it asked, and the QUERY.
+std::wstring RelayRowFitAssertion() {
+  using namespace urmsg::views;
+  const RelayRowFit fit = RelayDrawerRowFit();
+  const std::wstring id = L"01a0a199-5b06-5117-e86a-4bf5c01db15c";  // 36 characters
+  const std::wstring url = L"wss://127.0.0.1:64809/urmessage/v1";     // 34 characters
+  const bool labelOk = fit.label == TextCut::None;
+  const bool valueOk = fit.value == TextCut::Ellipsis;
+  const bool columnsOk = fit.labelSizesToContent;
+  // The tooltip and the help text are RelayRowValue itself: whole, with the state in words.
+  const std::wstring idValue = RelayRowValue(id, true);
+  const std::wstring urlOffline = RelayRowValue(url, false);
+  const bool wholeOk = idValue == id && idValue.size() == 36 && urlOffline == url + L"  offline";
+  const std::wstring name = RelayRowName(L"Message server", id, true);
+  const std::wstring nameOffline = RelayRowName(L"URnetwork", url, false);
+  const bool nameOk = name == L"Message server, " + id + L", online" &&
+                      nameOffline == L"URnetwork, " + url + L", offline";
+  const bool ok = labelOk && valueOk && columnsOk && wholeOk && nameOk;
+  return std::format(
+      L"  relay row fit    : {}  label cut {} | value cut {} | label sizes to content {} | "
+      L"tooltip and help text whole ({} of 36 chars) {} | automation name holds label, value and "
+      L"state {}   [query: S3, a relay drawer row's label is never cut and its value is cut with "
+      L"an ellipsis, the whole value in its tooltip, help text and automation name]",
+      ok ? L"PASS" : L"FAIL", labelOk ? L"none" : L"NOT NONE", valueOk ? L"ellipsis" : L"NOT ELLIPSIS",
+      columnsOk ? L"true" : L"FALSE", idValue.size(), wholeOk ? L"true" : L"FALSE",
+      nameOk ? L"true" : L"FALSE");
+}
+
+std::wstring StatusStripFitAssertion() {
+  using namespace urmsg::views;
+  // Stand-in widths, in DIPs, of the strip's items: the dot's host, "Connected", a separator,
+  // the "server" caption with its 6 of spacing, the value, a separator and the padlock; then the
+  // three Advanced fields, each with its separator. The value's floor is the view's 48.
+  const auto normal = [](double value) {
+    return std::vector<StripItem>{{StripPart::Fixed, 20},     {StripPart::Fixed, 62},
+                                  {StripPart::Fixed, 29},     {StripPart::Caption, 39},
+                                  {StripPart::Value, value, 48}, {StripPart::Fixed, 29},
+                                  {StripPart::Fixed, 14}};
+  };
+  const auto advanced = [&normal](double value) {
+    auto items = normal(value);
+    items.push_back({StripPart::Optional, 29 + 52});   // epoch
+    items.push_back({StripPart::Optional, 29 + 108});  // session
+    items.push_back({StripPart::Optional, 29 + 40});   // rec/s
+    return items;
+  };
+  // The strip's room at the window's 400 DIP minimum less its 16 + 16 inset, up to the widest
+  // window the app opens at.
+  const double minRoom = 400.0 - 32.0;
+  const double maxRoom = 1560.0 - 32.0;
+
+  // THE PROPERTY, for one fit: it fits; a Fixed item is whole; the value is never dropped and
+  // never cut below its floor; an Optional is whole or dropped, never cut; the dropped Optionals
+  // are the rightmost ones; the caption goes only once every Optional has gone; and the value is
+  // cut only once the caption has gone.
+  const auto holds = [](std::vector<StripItem> const& items, double room) {
+    const StripFit fit = FitStatusStrip(items, room);
+    if (!fit.fits || fit.total > room + 0.01 || fit.fit.size() != items.size()) return false;
+    bool optionalDropped = false, optionalShown = false, captionDropped = false, valueCut = false;
+    for (size_t i = 0; i < items.size(); ++i) {
+      const auto f = fit.fit[i];
+      switch (items[i].part) {
+        case StripPart::Fixed:
+          if (f != StripItemFit::Whole || fit.width[i] != items[i].width) return false;
+          break;
+        case StripPart::Caption:
+          if (f == StripItemFit::Cut) return false;
+          if (f == StripItemFit::Dropped) captionDropped = true;
+          break;
+        case StripPart::Value:
+          if (f == StripItemFit::Dropped) return false;
+          if (fit.width[i] + 0.01 < std::min(items[i].floor, items[i].width)) return false;
+          if (f == StripItemFit::Cut) valueCut = true;
+          break;
+        case StripPart::Optional:
+          if (f == StripItemFit::Cut) return false;
+          if (f == StripItemFit::Dropped) optionalDropped = true;
+          else if (optionalDropped) return false;  // a shown Optional right of a dropped one
+          else optionalShown = true;
+          break;
+      }
+    }
+    if (captionDropped && optionalShown) return false;
+    if (valueCut && !captionDropped) {
+      for (size_t i = 0; i < items.size(); ++i)
+        if (items[i].part == StripPart::Caption) return false;
+    }
+    return true;
+  };
+
+  int asked = 0, held = 0;
+  std::wstring firstBad;
+  for (double value : {40.0, 170.0, 260.0, 600.0}) {
+    for (double room = minRoom; room <= maxRoom; room += 8.0) {
+      for (int mode = 0; mode < 2; ++mode) {
+        ++asked;
+        if (holds(mode == 0 ? normal(value) : advanced(value), room)) {
+          ++held;
+        } else if (firstBad.empty()) {
+          firstBad = std::format(L"{} value {:.0f} in {:.0f}", mode == 0 ? L"normal" : L"advanced",
+                                 value, room);
+        }
+      }
+    }
+  }
+
+  // Four answers by name. "URnetwork exit · United States" (170) at the minimum fits whole in
+  // Normal mode, and in Advanced Mode the three extras go. Two exit countries (260) cost the
+  // caption, and the value is cut to the room that is left. At the widest window nothing goes.
+  const StripFit a = FitStatusStrip(normal(170), minRoom);
+  const bool aOk = a.fits && a.fit[3] == StripItemFit::Whole && a.fit[4] == StripItemFit::Whole;
+  const StripFit b = FitStatusStrip(advanced(170), minRoom);
+  const bool bOk = b.fits && b.fit[7] == StripItemFit::Dropped && b.fit[8] == StripItemFit::Dropped &&
+                   b.fit[9] == StripItemFit::Dropped && b.fit[4] == StripItemFit::Whole;
+  const StripFit c = FitStatusStrip(normal(260), minRoom);
+  const bool cOk = c.fits && c.fit[3] == StripItemFit::Dropped && c.fit[4] == StripItemFit::Cut &&
+                   c.width[4] > 213.9 && c.width[4] < 214.1;
+  const StripFit d = FitStatusStrip(advanced(260), maxRoom);
+  bool dOk = d.fits;
+  for (auto f : d.fit) dOk = dOk && f == StripItemFit::Whole;
+
+  // EVERY FACT STAYS REACHABLE: the tooltip and help text hold each item's spoken fact whole, one
+  // per line, the empty ones (the dot and the rules) skipped.
+  const std::wstring facts = StatusStripFacts(
+      {L"Connection, Connected", L"", L"server, URnetwork exit · United States", L"",
+       L"Live session: server key pinned", L"epoch, 3", L"session, unavailable", L"rec/s, 0"});
+  const bool factsOk = facts ==
+      L"Connection, Connected\nserver, URnetwork exit · United States\nLive session: server "
+      L"key pinned\nepoch, 3\nsession, unavailable\nrec/s, 0";
+
+  const bool ok = held == asked && aOk && bOk && cOk && dOk && factsOk;
+  return std::format(
+      L"  strip fit        : {}  {}/{} fits hold from {:.0f} to {:.0f} dip{}{} | exit at the "
+      L"minimum whole {} | Advanced extras dropped there {} | two countries: caption dropped, "
+      L"value cut to 214 {} | widest window whole {} | facts reachable whole {}   [query: S3, the "
+      L"strip never draws past its own edge: the Advanced fields drop rightmost first, then the "
+      L"caption, then the value is cut with an ellipsis, and every fact stays in its tooltip and "
+      L"help text]",
+      ok ? L"PASS" : L"FAIL", held, asked, minRoom, maxRoom, firstBad.empty() ? L"" : L", first not: ",
+      firstBad, aOk ? L"true" : L"FALSE", bOk ? L"true" : L"FALSE", cOk ? L"true" : L"FALSE",
+      dOk ? L"true" : L"FALSE", factsOk ? L"true" : L"FALSE");
+}
+
 // ---- an invitation refused over a held group, and the leave that answers it (Task 39) --------
 //
 // PURE on the same terms as the lines above: every function asked is Live/HeldGroupRules.h's, no
@@ -2582,6 +2736,37 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
         L"device that holds a group; Task 58 Step 3's adder copy word for word; R40 A11, the joiner's "
         L"label says only this device can open the invitation]",
         Verdict(ok), held, heldTrue, joinKept, adderVerbatim, adder, pasteTrue));
+  }
+
+  // 6b. THE DIALOG'S TITLE AGAINST THE SENTENCE UNDER IT (the lead's ruling on item 4). A store
+  //     that cannot make a join code is titled by that state, as its sentence (kSayNoDeviceWrapKey)
+  //     names it, and is not offered the join the sentence says it cannot make; a computer with no
+  //     credential is titled by the credential; only the join road keeps "Join a group".
+  {
+    auto lower = [](std::wstring s) {
+      for (auto& c : s)
+        if (L'A' <= c && c <= L'Z') c = static_cast<wchar_t>(c - L'A' + L'a');
+      return s;
+    };
+    const std::wstring credTitle(OnboardTitle(true, false));
+    const std::wstring codeTitle(OnboardTitle(false, true));
+    const std::wstring joinTitle(OnboardTitle(false, false));
+    const std::wstring codeSentence = lower(std::wstring(kSayNoDeviceWrapKey.begin(), kSayNoDeviceWrapKey.end()));
+    const bool codeAgrees = lower(codeTitle).find(L"join code") != std::wstring::npos &&
+                            codeSentence.find(L"join code") != std::wstring::npos &&
+                            lower(codeTitle).find(L"join a group") == std::wstring::npos &&
+                            codeSentence.find(L"cannot join a group") != std::wstring::npos;
+    const bool credAgrees = lower(credTitle).find(L"credential") != std::wstring::npos &&
+                            lower(credTitle).find(L"join") == std::wstring::npos;
+    const bool joinKept = joinTitle == L"Join a group";
+    const bool distinct = credTitle != codeTitle && codeTitle != joinTitle && credTitle != joinTitle;
+    const bool ok = codeAgrees && credAgrees && joinKept && distinct;
+    out.push_back(std::format(
+        L"  dialog title     : {}  no join code: '{}' names the join code its sentence names, and "
+        L"offers no join the sentence says cannot happen: {} | no credential: '{}' names the "
+        L"credential and no join: {} | the join road keeps 'Join a group': {} | three titles: {}   "
+        L"[query: OnboardTitle for the three roads, against kSayNoDeviceWrapKey]",
+        Verdict(ok), codeTitle, codeAgrees, credTitle, credAgrees, joinKept, distinct));
   }
 
   // 7. "Make a new join code" (R25 Q2): offered on exactly the two rows that ask for one.
@@ -3349,6 +3534,148 @@ void StartupLogInit() {
             Narrow(logFile.wstring()));
 }
 
+// THE ICON FONT ON THE MACHINE THIS RUNS ON (urnetwork/windows#12, ported). Every glyph the app draws
+// (urnw::kit::kIconGlyphs), and the family of urnw::kit::kIconFontFamily that draws it here: the
+// first family of the list that is installed and maps the code point, the one a XAML family list
+// falls back to, or, where none maps it, the first that maps its fallback (kIconGlyphs). A glyph that
+// nothing draws is an empty box, and fails the line. Where every family of the list is installed the
+// line also says which glyphs only the FIRST (Segoe Fluent Icons) maps HERE: on a machine with only the
+// second (Segoe MDL2 Assets), each of those is drawn through its fallback, or is an empty box. Which
+// those are is that machine's to say: Windows 10's Segoe MDL2 Assets maps fewer glyphs than Windows
+// 11's. NO FAMILY IS NAMED HERE BUT THROUGH kIconFontFamily: app/tools/verify-icon-font.ps1 holds every
+// string that names an icon font to the list, so the names come from splitting it.
+std::wstring IconGlyphsLine() {
+  using urnw::kit::kIconFontFamily;
+  using urnw::kit::kIconGlyphs;
+  // the list's families, in order, each trimmed
+  std::vector<std::wstring> families;
+  {
+    const std::wstring_view list = kIconFontFamily;
+    size_t at = 0;
+    for (;;) {
+      const size_t comma = list.find(L',', at);
+      std::wstring_view one =
+          list.substr(at, comma == std::wstring_view::npos ? std::wstring_view::npos : comma - at);
+      while (!one.empty() && one.front() == L' ') one.remove_prefix(1);
+      while (!one.empty() && one.back() == L' ') one.remove_suffix(1);
+      if (!one.empty()) families.emplace_back(one);
+      if (comma == std::wstring_view::npos) break;
+      at = comma + 1;
+    }
+  }
+  winrt::com_ptr<IDWriteFactory> factory;
+  HRESULT hr = ::DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+                                     reinterpret_cast<::IUnknown**>(factory.put()));
+  winrt::com_ptr<IDWriteFontCollection> system;
+  if (SUCCEEDED(hr)) hr = factory->GetSystemFontCollection(system.put(), FALSE);
+  if (FAILED(hr) || !system)
+    return std::format(L"  icon glyphs      : FAIL  DirectWrite could not list this machine's fonts "
+                       L"(0x{:08X})",
+                       static_cast<uint32_t>(hr));
+  // the installed font of one family name, or none
+  auto fontOf = [&](std::wstring_view name) -> winrt::com_ptr<IDWriteFont> {
+    UINT32 index = 0;
+    BOOL exists = FALSE;
+    const std::wstring z(name);
+    if (FAILED(system->FindFamilyName(z.c_str(), &index, &exists)) || !exists) return nullptr;
+    winrt::com_ptr<IDWriteFontFamily> family;
+    if (FAILED(system->GetFontFamily(index, family.put())) || !family) return nullptr;
+    winrt::com_ptr<IDWriteFont> font;
+    if (FAILED(family->GetFirstMatchingFont(DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                            DWRITE_FONT_STYLE_NORMAL, font.put())))
+      return nullptr;
+    return font;
+  };
+  auto has = [](winrt::com_ptr<IDWriteFont> const& font, char32_t cp) {
+    BOOL exists = FALSE;
+    return font && SUCCEEDED(font->HasCharacter(static_cast<UINT32>(cp), &exists)) && exists;
+  };
+  std::vector<winrt::com_ptr<IDWriteFont>> listFonts;
+  std::wstring installed;
+  for (auto const& f : families) {
+    listFonts.push_back(fontOf(f));
+    installed += std::format(L"{}{} {}", installed.empty() ? L"" : L", ", f,
+                             listFonts.back() ? L"installed" : L"not installed");
+  }
+  // THE FAMILY THAT DRAWS EACH GLYPH: the first of the list that maps it, as XAML falls back; where
+  // none does, the first that maps its fallback (kIconGlyphs), which IconGlyphText then draws instead
+  std::vector<std::wstring> drawnBy(families.size());
+  std::wstring none;
+  std::wstring throughFallback;
+  size_t drawn = 0;
+  size_t textAgrees = 0;
+  auto firstMapping = [&](char32_t cp) -> int {
+    for (size_t i = 0; i < families.size(); ++i)
+      if (has(listFonts[i], cp)) return static_cast<int>(i);
+    return -1;
+  };
+  for (auto const& g : kIconGlyphs) {
+    const int by = firstMapping(g.codePoint);
+    const int byFallback = (by < 0 && g.fallback != 0) ? firstMapping(g.fallback) : -1;
+    if (by >= 0) {
+      drawnBy[static_cast<size_t>(by)] += std::format(L" {:04X}", static_cast<uint32_t>(g.codePoint));
+      ++drawn;
+    } else if (byFallback >= 0) {
+      throughFallback += std::format(L" {:04X} as its fallback {:04X} ({}, by {})",
+                                     static_cast<uint32_t>(g.codePoint),
+                                     static_cast<uint32_t>(g.fallback), g.what,
+                                     families[static_cast<size_t>(byFallback)]);
+      ++drawn;
+    } else {
+      none += std::format(L" {:04X} ({})", static_cast<uint32_t>(g.codePoint), g.what);
+    }
+    // AND IconGlyphText ANSWERS THAT GLYPH: the one, or its fallback, this line says is drawn. Every draw
+    // of a glyph with a fallback goes through IconGlyphText (verify-icon-font.ps1 fails any other), so
+    // what it answers is what the app draws
+    const wchar_t primary[2] = {static_cast<wchar_t>(g.codePoint), L'\0'};
+    const winrt::hstring text = urnw::kit::IconGlyphText(primary);
+    const char32_t want = (by < 0 && byFallback >= 0) ? g.fallback : g.codePoint;
+    if (text.size() == 1 && static_cast<char32_t>(text[0]) == want) ++textAgrees;
+  }
+  std::wstring by;
+  for (size_t i = 0; i < families.size(); ++i)
+    if (!drawnBy[i].empty())
+      by += std::format(L"; drawn by {}:{}", families[i], drawnBy[i]);
+  // ONLY IN THE FIRST FAMILY: asked where every family of the list is installed, and said not to be
+  // askable elsewhere
+  std::wstring onlyFluent;
+  std::wstring missing;
+  for (size_t i = 0; i < families.size(); ++i)
+    if (!listFonts[i]) missing += std::format(L"{}{}", missing.empty() ? L"" : L", ", families[i]);
+  if (families.size() < 2) {
+    onlyFluent = L"only in the first family: not askable, the list has one family";
+  } else if (!missing.empty()) {
+    onlyFluent = std::format(L"only in {}: not askable here, {} is not installed", families[0], missing);
+  } else {
+    std::wstring which;
+    for (auto const& g : kIconGlyphs) {
+      bool elsewhere = false;
+      for (size_t i = 1; i < families.size() && !elsewhere; ++i) elsewhere = has(listFonts[i], g.codePoint);
+      if (has(listFonts[0], g.codePoint) && !elsewhere)
+        which += std::format(L" {:04X} ({})", static_cast<uint32_t>(g.codePoint), g.what);
+    }
+    // THIS MACHINE'S second family, which is not every machine's: Windows 10's Segoe MDL2 Assets maps
+    // fewer glyphs than Windows 11's, and only a machine without the first family shows which
+    onlyFluent = which.empty()
+                     ? std::format(L"only in {} here: none (this machine's {} maps every one)",
+                                   families[0], families[1])
+                     : std::format(L"only in {} here, each drawn through its fallback or as an empty box "
+                                   L"where only {} is installed:{}",
+                                   families[0], families[1], which);
+  }
+  const bool agrees = textAgrees == std::size(kIconGlyphs);
+  const bool ok = !families.empty() && none.empty() && agrees;
+  return std::format(
+      L"  icon glyphs      : {}  family \"{}\" ({}); {} of {} glyphs drawn{}{}{}{}{}; IconGlyphText "
+      L"draws that glyph for {} of {}; {}   [query: DirectWrite's system fonts, for each code point "
+      L"of kIconGlyphs the first family of kIconFontFamily that maps it, or that maps its fallback; "
+      L"urnetwork/windows#12, ported]",
+      ok ? L"PASS" : L"FAIL", kIconFontFamily, installed, drawn, std::size(kIconGlyphs),
+      none.empty() ? L"" : L"; drawn by NO family of the list, an empty box:", none,
+      throughFallback.empty() ? L"" : L"; drawn through a fallback:", throughFallback, by, textAgrees,
+      std::size(kIconGlyphs), onlyFluent);
+}
+
 std::vector<std::wstring> CollectDiagnostics() {
   const std::filesystem::path exe = ExePath();
   const std::filesystem::path dir = exe.parent_path();
@@ -3388,15 +3715,74 @@ std::vector<std::wstring> CollectDiagnostics() {
   lines.push_back(std::format(L"  fonts            : {}",
                               Presence(dir / L"Assets" / L"Fonts" /
                                        L"pp_neue_bit_bold.ttf")));
+  // THE ICON FONT ON THIS MACHINE (urnetwork/windows#12, ported): every glyph, and the family that
+  // draws it here
+  lines.push_back(IconGlyphsLine());
   {
     const urmsg::demo::DemoOptions o = urmsg::demo::ParseDemoOptions();
     constexpr const wchar_t* kScreens[] = {L"none", L"chats", L"thread", L"inspect",
                                            L"network", L"settings", L"developer"};
     lines.push_back(std::format(
-        L"  demo switches    : enabled={} screen={} autoplay={} advanced={} watermark={}",
+        L"  demo switches    : enabled={} screen={} autoplay={} advanced={} watermark={} "
+        L"identity={}",
         o.enabled ? L"yes" : L"no", kScreens[static_cast<size_t>(o.screen)],
         o.autoplay ? L"yes" : L"no", o.advanced ? L"yes" : L"no",
-        o.watermark ? L"on" : L"off"));
+        o.watermark ? L"on" : L"off", urmsg::demo::identity::ScreenName(o.identityScreen)));
+    // WHICH BUILD THIS IS. The identity preview (Task 6's zip, /p:UrmIdentityPreview=true) opens
+    // the fabricated identity screens on a plain launch and is never live; every other build keeps
+    // the rule that a plain launch is live. Printed so a smoke of the zip can say which it ran.
+    //
+    // AND ITS IDS ARE ITS OWN (Common/Ids.h): the preview keeps a single-instance key, a folder, an
+    // override variable and a window placement of its own, so it neither swallows nor is swallowed
+    // by a running URmessage, and never writes the real app's prefs, URMESSAGE_APP_ROOT set or not.
+    // Ids.h is compiled into Common's Paths.cpp as well as here, and its constants are inline, so
+    // a Common built with the other arm would be an ODR violation the linker may settle on either
+    // value. So the line asks COMMON: CommonBuiltAsIdentityPreview() is compiled into Common's own
+    // object and must agree with this TU's build; and, with no override, Common's StorageRoot()
+    // must have resolved the folder this build's name says, which is typed again here.
+    //
+    // AND UNDER THE REAL APP'S VARIABLE THE PREVIEW KEEPS TO A FOLDER OF ITS OWN INSIDE IT
+    // (Ids.h's nested pair), so two worktrees' previews stay apart and neither shares a file with
+    // the real app there: the line checks that Common's StorageRoot() resolved that folder.
+    std::wstring overrideVar;
+    const bool overridden = !StorageRootOverride(&overrideVar).empty();
+    const bool preview = urmsg::demo::identity::kIdentityPreviewBuild;
+    const wchar_t* const wantFolder = preview ? L"URmessage-identity-preview" : L"URmessage";
+    const wchar_t* const wantVar =
+        preview ? L"URMESSAGE_IDENTITY_PREVIEW_APP_ROOT" : L"URMESSAGE_APP_ROOT";
+    const wchar_t* const wantNestedVar = preview ? L"URMESSAGE_APP_ROOT" : L"";
+    const wchar_t* const wantNestedFolder = preview ? L"identity-preview" : L"";
+    const bool nested = overridden && overrideVar == wantNestedVar && *wantNestedVar != L'\0';
+    const auto root = StorageRoot();
+    bool folderAgrees = false;
+    if (!overridden) {
+      for (auto const& part : root)
+        if (part.wstring() == wantFolder) folderAgrees = true;
+    } else {
+      // the build's own variable: the person chose the folder; the nested one: the preview's own
+      folderAgrees = !nested || root.filename().wstring() == wantNestedFolder;
+    }
+    const bool idsAgree = ids::kIdentityPreviewIds == preview &&
+                          std::wstring_view{ids::kStorageFolderName} == wantFolder &&
+                          std::wstring_view{ids::kAppRootEnvVar} == wantVar &&
+                          std::wstring_view{ids::kAppRootNestedEnvVar} == wantNestedVar &&
+                          std::wstring_view{ids::kAppRootNestedFolder} == wantNestedFolder;
+    const bool commonAgrees = CommonBuiltAsIdentityPreview() == preview;
+    lines.push_back(std::format(
+        L"  build kind       : {}  {}; single-instance key {}, storage folder {} ({}), override "
+        L"variable {}, ids of the {} build, Common compiled as the {} build",
+        idsAgree && commonAgrees && folderAgrees ? L"PASS" : L"FAIL",
+        preview ? L"identity preview (slice 0): a plain launch opens the fabricated identity "
+                  L"screens, and no launch is ever live"
+                : L"standard: a plain launch is live",
+        ids::kSingleInstanceKey, ids::kStorageFolderName,
+        !overridden ? std::wstring{folderAgrees ? L"Common's StorageRoot resolved it"
+                                                : L"Common's StorageRoot resolved ANOTHER folder"}
+        : nested    ? std::format(L"the root is its {} folder inside {}'s{}", wantNestedFolder,
+                                  overrideVar, folderAgrees ? L"" : L", and Common's is ANOTHER")
+                    : std::format(L"the root is overridden by {}", overrideVar),
+        ids::kAppRootEnvVar, ids::kIdentityPreviewIds ? L"preview" : L"standard",
+        CommonBuiltAsIdentityPreview() ? L"preview" : L"standard"));
   }
   {
     const nlohmann::json prefs = urnw::LoadAppPrefs();
@@ -3430,6 +3816,102 @@ std::vector<std::wstring> CollectDiagnostics() {
   // the app say right now" would have gated exactly half the copy and would have gated
   // the half that was already correct.
   for (auto& line : urmsg::RunModeCopyDiagnostics()) lines.push_back(std::move(line));
+  // A PLAIN LAUNCH, EVERY PAGE (fix/plain-launch-run-mode). A plain launch of the standard build is
+  // live and draws the EMPTY world until its mesh answers, with ActiveRunMode() still Fabricated,
+  // and main drew the demo's words there on every page (ci/plain-control-1, run 39098035170). This
+  // walks every page a plain launch can show and every string on it whose wording depends on the
+  // mode, chosen the way the views now choose it - DrawnRunModeFor and NoSessionFor over (launch,
+  // no live world yet) - and asks of each that it names no demo and claims no live session. The
+  // strings are PRINTED, page by page: the complement of the verdict. THE CONTROL is the same walk
+  // for a fabricated launch, where every one of them must name the demo, so the walk is shown to
+  // read the arms rather than some text that names neither. The rail is not walked: it is only
+  // populated over a conversation, and the empty world has none. The views' own reads are held by
+  // the shots' plain launch, page by page, in the window.
+  {
+    struct Drawn {
+      wchar_t const* page;
+      std::wstring text;
+    };
+    auto walk = [](bool fabricatedLaunch) {
+      const urmsg::RunMode latch = urmsg::RunMode::Fabricated;  // no live world has landed
+      const urmsg::RunMode mode = urmsg::DrawnRunModeFor(fabricatedLaunch, latch);
+      const bool none = urmsg::NoSessionFor(fabricatedLaunch, latch);
+      std::vector<Drawn> d;
+      // the status strip, under every page: the padlock's name, and the relay drawer's
+      d.push_back({L"strip", urmsg::ServerKeyStateName(false, mode, none)});
+      d.push_back({L"drawer", urmsg::RelayDrawerName(mode, none)});
+      d.push_back({L"drawer", urmsg::RelayPathGroupTitle(mode, none)});
+      // chats: the composer's note
+      d.push_back({L"chats", urmsg::ComposerNote(mode, true, none)});
+      // settings: the server key row and the disclosure group
+      d.push_back({L"settings", urmsg::views::FormatKeyState(false, mode)});
+      d.push_back({L"settings", urmsg::DisclosureCaption(mode, none)});
+      d.push_back({L"settings", urmsg::DisclosureTitle(mode, none)});
+      d.push_back({L"settings", urmsg::DisclosureBody(mode, none)});
+      // network: the hero's caption and the key row
+      d.push_back({L"network", urmsg::RelayPathGroupTitle(mode, none)});
+      d.push_back({L"network", urmsg::views::FormatKeyState(false, mode)});
+      // developer: the state caption, and the dump's framing where the dump is built at all
+      d.push_back({L"developer", urmsg::views::DeveloperStateCaption(fabricatedLaunch)});
+      if (urmsg::views::DeveloperShowsDemoSections(fabricatedLaunch))
+        d.push_back({L"developer", urmsg::WorldDumpFramingLine(mode)});
+      return d;
+    };
+    auto lowerHas = [](std::wstring const& text, std::wstring_view needle) {
+      std::wstring lower = text;
+      for (auto& c : lower)
+        if (L'A' <= c && c <= L'Z') c = static_cast<wchar_t>(c - L'A' + L'a');
+      return lower.find(needle) != std::wstring::npos;
+    };
+    auto ascii = [](std::wstring const& s) {
+      std::wstring out;
+      for (wchar_t c : s) {
+        if (c < 0x20 || 0x7E < c)
+          out += std::format(L"<U+{:04X}>", static_cast<unsigned int>(c));
+        else
+          out.push_back(c);
+      }
+      return out;
+    };
+    const auto plain = walk(false);
+    const auto fabricated = walk(true);
+    size_t plainBad = 0;
+    std::wstring firstBad = L"(none)", printed;
+    for (auto const& s : plain) {
+      const bool bad = lowerHas(s.text, L"demo") || lowerHas(s.text, L"live session");
+      if (bad) {
+        ++plainBad;
+        if (firstBad == L"(none)") firstBad = std::wstring(s.page) + L" \"" + ascii(s.text) + L"\"";
+      }
+      if (!printed.empty()) printed += L" | ";
+      printed += std::wstring(s.page) + L": \"" + ascii(s.text) + L"\"";
+    }
+    size_t controlNamed = 0;
+    for (auto const& s : fabricated) controlNamed += lowerHas(s.text, L"demo") ? 1 : 0;
+    const bool developerOff = !urmsg::views::DeveloperShowsDemoSections(false) &&
+                              urmsg::views::DeveloperShowsDemoSections(true);
+    // THE CHIP IS NOT A STRING THE WALK MAY READ: over the empty world neither of its words is
+    // true, so the rule is that it is not shown there at all (RunMode.h's
+    // ModeChipShownBeforeLiveWorld), and the control is a fabricated launch, where it is.
+    const bool chipHidden = !urmsg::ModeChipShownBeforeLiveWorld(false, true) &&
+                            urmsg::ModeChipShownBeforeLiveWorld(true, true) &&
+                            !urmsg::ModeChipShownBeforeLiveWorld(true, false);
+    const bool ok = !plain.empty() && plainBad == 0 && controlNamed == fabricated.size() &&
+                    developerOff && chipHidden;
+    lines.push_back(std::format(
+        L"  plain launch     : {}  a plain launch, no live world yet: {} strings on its pages "
+        L"name no demo and claim no live session (first bad: {}); the Developer page builds the "
+        L"demo's sections in a fabricated launch only: {}; the title-bar chip is not shown before "
+        L"a live world lands, but in a fabricated launch it is: {}; control, a fabricated launch: "
+        L"{}/{} name the demo; drawn: {}   [query: every page a plain launch can show (the strip, "
+        L"the relay drawer, chats, settings, network, developer; the rail needs a conversation) "
+        L"and each string on it whose wording depends on the mode, through DrawnRunModeFor and "
+        L"NoSessionFor over (launch, no live world); none may contain \"demo\" or \"live "
+        L"session\", case-insensitive; the chip by ModeChipShownBeforeLiveWorld]",
+        ok ? L"PASS" : L"FAIL", plain.size() - plainBad, firstBad,
+        developerOff ? L"yes" : L"NO", chipHidden ? L"yes" : L"NO", controlNamed,
+        fabricated.size(), printed));
+  }
   // The reply and reaction affordances: their names in both arms, the picker against the ABI's
   // rule, the chip words, and the live mapping over an adversarial group. Beside the copy gate
   // because the action names are copy of the same kind - true by which arm is chosen - and
@@ -3453,6 +3935,12 @@ std::vector<std::wstring> CollectDiagnostics() {
   // join code (Task 58): the rule per row, R13 on its own line, the table's words, and the dialog's
   // own copy. Pure, like the held-group lines above.
   for (auto& line : RefusalCopyDiagnostics()) lines.push_back(std::move(line));
+  // The identity screens over the fabricated world (identity phase 1, Task 6): every screen built
+  // and read for Property 1, the demo words, the capture policy against the blocks, the typed-back
+  // check, the phrase field's rule, the fixture, and live mode drawing none of them. Pure, like
+  // the lines above; the copy pairs these screens use are gated in RunModeCopyDiagnostics.
+  for (auto& line : urmsg::demo::identity::IdentityDemoDiagnostics())
+    lines.push_back(std::move(line));
   {
     using namespace urmsg::demo;
     World const& w = GetWorld();
@@ -3547,6 +4035,10 @@ std::vector<std::wstring> CollectDiagnostics() {
   // lines above are: it builds no world and names no hostname, so a plain
   // launch's log gains nothing fabricated by carrying it.
   lines.push_back(StatusStripFieldsAssertion());
+  // S3: the relay drawer's rows and the strip fit their own width. The same terms: a typed
+  // client_id and platform url, and stand-in widths, so nothing fabricated reaches the log.
+  lines.push_back(RelayRowFitAssertion());
+  lines.push_back(StatusStripFitAssertion());
   // The demo surfaces' own invariants. One collector per surface, and every one
   // of them must be pure C++: this function runs before winrt::init_apartment
   // (main.cpp:168 vs :180), so a WinRT object built from here would die on the
@@ -5868,13 +6360,11 @@ std::wstring EffectiveSingleInstanceKey() {
   // The override is read here and not through StorageRoot(), because what must key the
   // registration is the thing the PERSON set: two different overrides are two installs even if
   // both resolve under one parent, and StorageRoot() has already folded the default in.
-  wchar_t* raw = nullptr;
-  size_t len = 0;
-  std::wstring root;
-  if (::_wdupenv_s(&raw, &len, L"URMESSAGE_APP_ROOT") == 0 && raw != nullptr) {
-    root = raw;
-    ::free(raw);
-  }
+  // StorageRootOverride (Paths.h) is that thing, and the same thing StorageRoot() honours:
+  // URMESSAGE_APP_ROOT's value in the standard build, byte for byte as before; in the identity
+  // preview its own variable's, else its folder inside URMESSAGE_APP_ROOT's - so two preview
+  // launches over one root never get two keys, and two worktrees' previews never get one.
+  const std::wstring root = StorageRootOverride();
   if (root.empty()) return ids::kSingleInstanceKey;
 
   // FNV-1a over the case-folded path. Not a cryptographic hash and it does not need to be: the

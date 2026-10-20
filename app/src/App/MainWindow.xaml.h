@@ -27,6 +27,7 @@
 #include "UrComponents.h"
 #include "Views/ConversationListView.h"
 #include "Views/DeveloperView.h"
+#include "Views/IdentityView.h"
 #include "Views/InspectRailView.h"
 #include "Views/NetworkPageView.h"
 #include "Views/SettingsView.h"
@@ -69,6 +70,11 @@ struct MainWindow : MainWindowT<MainWindow> {
   // BEFORE the window is shown, off the instance that already parsed the command line, so there
   // stays exactly one parser.
   bool ContentShell() const;
+
+  // Called by App::OnLaunched with the window's handle, before Activate(): the identity screens'
+  // capture exclusion (Task 6) is a property of the HWND, and a screen opened by the constructor
+  // asks for it before there is one to ask.
+  void SetNativeHandle(HWND hwnd);
 
  private:
   // Every label in the window, from the localization store. One place, so a
@@ -264,17 +270,50 @@ struct MainWindow : MainWindowT<MainWindow> {
   // D7/D8).
   void BuildSettings();
 
+  // ---- the identity screens over the fabricated world (identity phase 1, Task 6) ------------
+  // One host over the whole content area, below the title bar (so the DEMO chip stays in view),
+  // drawing Demo/IdentityDemo.h's model of one screen at a time. ShowIdentity asks for capture
+  // exclusion exactly when the model says the screen shows or takes the words (Property 2),
+  // before it draws it, and draws the refusal instead when the window is not held; a screen
+  // without the words, and CloseIdentity, give it back once frames without them have been drawn.
+  // Every button's Action comes back through OnIdentityAction, a beat later, so a handler never
+  // replaces the control that raised it.
+  void ShowIdentity(urmsg::demo::identity::Screen screen);
+  void ShowIdentity(urmsg::demo::identity::Screen screen,
+                    urmsg::demo::identity::Selection const& sel);
+  void CloseIdentity();
+  void OnIdentityAction(urmsg::demo::identity::Button const& button);
+  void QueueIdentityAction(urmsg::demo::identity::Button const& button);
+  // The mode the identity screens and Settings' Account group are built in: RunMode.h's
+  // DrawnRunMode(), over this launch and the latch.
+  urmsg::RunMode IdentityRunMode() const;
+  // True when the window holds what was asked: an exclusion that blacks a capture out, or (for a
+  // release) always. A release is deferred to CompositionTarget::Rendering.
+  bool ApplyCaptureExclusion(bool excluded, std::wstring const& why);
+  bool SetCaptureAffinity(bool excluded, std::wstring const& why);
+  void CancelCaptureRelease();
+  HWND hwnd_ = nullptr;
+  winrt::Microsoft::UI::Xaml::Controls::Grid identityHost_{nullptr};
+  urmsg::views::IdentityScreenView identityView_{};
+  urmsg::demo::identity::Selection identitySel_{};
+  bool captureExcluded_ = false;
+  winrt::event_token captureRelease_{};
+  int captureReleaseFrames_ = 0;
+
   urmsg::views::SettingsView settings_{};
 
   // The Developer destination's whole content, built in code into
   // DeveloperHost (MainWindow.xaml:286 — the d7 audit's A5 override: mount
-  // into the existing host, do NOT add a DeveloperPage Grid). Demo-gated for
-  // the same reason BuildSettings is: the page reads the demo world, so
-  // building it on a normal launch would construct that world on the
-  // shipping path (design D7/D8). Built ONCE here: contract §4 gives the
-  // view no Set*Advanced, and the live rebuild on a mode toggle belongs to
-  // the ONE OnAdvancedModeChanged registration in EnterDemoMode (W7, the
-  // d7 distillation's §1.2 ruling).
+  // into the existing host, do NOT add a DeveloperPage Grid). Built only
+  // when the window has content (ContentShell(): a fabricated launch, or a
+  // live one), and from ActiveWorld(), so a launch that is neither builds
+  // nothing and never constructs the demo world (design D7/D8). Contract §4
+  // gives the view no
+  // Set*Advanced: the rebuild on a mode toggle belongs to the ONE
+  // OnAdvancedModeChanged registration in EnterDemoMode (W7, the d7
+  // distillation's §1.2 ruling), and ApplyAdvanced makes it when the mode
+  // turns on, so the page's "Advanced Mode" figure is never older than the
+  // mode while the page can be reached. ApplyLiveWorld builds it again too.
   void BuildDeveloper();
 
   urmsg::views::DeveloperView developer_{};
