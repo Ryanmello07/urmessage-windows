@@ -303,10 +303,13 @@ void Wipe(std::string& s) {
   s.clear();
 }
 
-// NOT BUILT YET (the round's tests come first): the name as the words screen built it, in a
-// temporary.
 void WriteWordCellName(size_t position, std::wstring const& word, std::wstring& out) {
-  out = L"Word " + std::to_wstring(position) + L": " + word;
+  // appended in place, the word last: a buffer too small to hold it grows before any of it is in
+  out.clear();
+  out.append(L"Word ");
+  out.append(std::to_wstring(position));
+  out.append(L": ");
+  out.append(word);
 }
 
 void Wipe(std::wstring& s) {

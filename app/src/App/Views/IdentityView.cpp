@@ -128,6 +128,10 @@ TextBlock MakeNumber(size_t i) {
 // The 25 words: numbered, column-major (F3's grid), in the mono face.
 FrameworkElement MakeWordsGrid(std::vector<std::wstring> const& words) {
   Grid g = MakeFiveByFive(26);
+  // each cell's name is written into this one reserved buffer and overwritten once it is set, so
+  // no buffer that held a word is let go unwiped (R89, X2-3)
+  std::wstring name;
+  name.reserve(64);
   for (size_t i = 0; i < words.size() && i < 25; ++i) {
     StackPanel cell;
     cell.Orientation(Orientation::Horizontal);
@@ -138,8 +142,9 @@ FrameworkElement MakeWordsGrid(std::vector<std::wstring> const& words) {
     w.FontSize(16);
     w.Foreground(urnw::colors::TextBrush());
     w.VerticalAlignment(VerticalAlignment::Center);
-    automation::AutomationProperties::SetName(
-        w, hstring{L"Word " + std::to_wstring(i + 1) + L": " + words[i]});
+    urmsg::live::WriteWordCellName(i + 1, words[i], name);
+    automation::AutomationProperties::SetName(w, hstring{name});
+    urmsg::live::Wipe(name);
     cell.Children().Append(MakeNumber(i));
     cell.Children().Append(w);
     Grid::SetRow(cell, static_cast<int32_t>(i % 5));

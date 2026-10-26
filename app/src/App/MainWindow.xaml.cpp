@@ -394,7 +394,9 @@ void MainWindow::CloseIdentity() {
   }
 }
 
-void MainWindow::ForgetLiveWords() { urmsg::demo::identity::WipeLiveInputs(liveIdentityInputs_); }
+void MainWindow::ForgetLiveWords() {
+  urmsg::demo::identity::ForgetWindowWords(liveIdentityInputs_, identityTyped_);
+}
 
 // THE SESSION KIND, WATCHED (Spec C section 6.2; the lead's addition to LRI R84). Asked for once,
 // with the window: its procedure is wrapped for WM_WTSSESSION_CHANGE, and the session's changes are
@@ -527,6 +529,8 @@ void MainWindow::ApplyIdentity() {
     case IdentityStep::Unreadable:
       // THE SENTENCE IS DRAWN (X-APP-3): the session has ended, and the screen says why
       urnw::LogError("identity: this device's identity could not be read; the window says so");
+      // the setup is over: every copy of the words and of the typed phrase goes now (R89, X2-3)
+      ForgetLiveWords();
       in.stopped = true;
       ShowLiveIdentity(id::Screen::SetUp, std::move(in));
       break;

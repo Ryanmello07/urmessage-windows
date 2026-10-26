@@ -179,7 +179,8 @@ function Write-Utf8([string]$path, [string]$text) {
 #   - before it is ready, a commit moves the line back to urnetwork at the merged commit and
 #     deletes the source from this list, so that the list is empty again;
 #   - no other source is ever added without a ruling.
-# Today: identity phase 1's slice 1 (Task 16) pins message at W-lib's Task 14 on the owner's fork.
+# Today: identity phase 1's slice 1 pins message at W-lib's slice-1 head on the owner's fork
+# (identity/i1); composition.txt names the commit, and is the one place that does.
 $script:ReviewSources = @('https://github.com/Ryanmello07/urmessage.git')
 # message's file is read for its commits: where message fetches a commit from is message's rule
 # (its scripts/siblings.sh lists the forks a pull request head may come from, and at the commit

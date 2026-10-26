@@ -309,12 +309,15 @@ std::wstring ComposerSendNameAt(ComposerState state, bool hasText, bool replying
   return ComposerSendName(state, hasText, replying);
 }
 
-// NOT BUILT YET (the round's tests come first): the empty world borrows the no-session names.
-std::wstring ComposerSendNameFor(ComposerState state, bool, bool hasText, bool replying,
+std::wstring ComposerSendNameFor(ComposerState state, bool noGroup, bool hasText, bool replying,
                                  bool overLimit) {
+  if (noGroup && state == ComposerState::NoSession)
+    return L"Send: no group yet, so there is nothing to send to";
   return ComposerSendNameAt(state, hasText, replying, overLimit);
 }
-std::wstring ComposerBoxNameFor(ComposerState state, bool, bool replying) {
+std::wstring ComposerBoxNameFor(ComposerState state, bool noGroup, bool replying) {
+  if (noGroup && state == ComposerState::NoSession)
+    return L"Message: no group yet, so nothing is sent";
   return ComposerBoxName(state, replying);
 }
 

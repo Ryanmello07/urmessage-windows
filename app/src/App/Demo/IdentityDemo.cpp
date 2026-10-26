@@ -1149,8 +1149,10 @@ void WipeLiveInputs(LiveInputs& in) {
   urmsg::live::Wipe(in.typed);
 }
 
-// NOT BUILT YET (the round's tests come first): what the window had before, the inputs only.
-void ForgetWindowWords(LiveInputs& in, std::vector<std::wstring>&) { WipeLiveInputs(in); }
+void ForgetWindowWords(LiveInputs& in, std::vector<std::wstring>& typed) {
+  WipeLiveInputs(in);
+  urmsg::live::Wipe(typed);
+}
 
 bool RebuildForSessionKind(Screen shown, bool liveShown, bool builtRemote, bool remoteNow) {
   if (!liveShown || builtRemote == remoteNow) return false;

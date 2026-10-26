@@ -1886,11 +1886,13 @@ void UpdateComposerSend(std::shared_ptr<ThreadParts> const& parts) {
   const bool live = state == ComposerState::MaySend && hasText && !overLimit;
 
   parts->composerSend.IsEnabled(live);
+  // the empty world's names say "no group yet", as its caption does (R89, X2-7)
   Automation::AutomationProperties::SetName(
       parts->composerSend,
-      winrt::hstring{ComposerSendNameAt(state, hasText, replying, overLimit)});
-  Automation::AutomationProperties::SetName(parts->composerBox,
-                                            winrt::hstring{ComposerBoxName(state, replying)});
+      winrt::hstring{ComposerSendNameFor(state, parts->noteNoSession, hasText, replying, overLimit)});
+  Automation::AutomationProperties::SetName(
+      parts->composerBox,
+      winrt::hstring{ComposerBoxNameFor(state, parts->noteNoSession, replying)});
   parts->composerBox.PlaceholderText(winrt::hstring{ComposerBoxPlaceholder(state)});
   parts->composerBox.IsEnabled(ComposerBoxEnabled(state));
   // THE CAPTION, from here and nowhere else: it is a function of the mode AND the role, and the
