@@ -1149,6 +1149,9 @@ void WipeLiveInputs(LiveInputs& in) {
   urmsg::live::Wipe(in.typed);
 }
 
+// NOT BUILT YET (the round's tests come first): what the window had before, the inputs only.
+void ForgetWindowWords(LiveInputs& in, std::vector<std::wstring>&) { WipeLiveInputs(in); }
+
 bool RebuildForSessionKind(Screen shown, bool liveShown, bool builtRemote, bool remoteNow) {
   if (!liveShown || builtRemote == remoteNow) return false;
   // exactly the screens whose build turns on the kind: the ones that show or take the words

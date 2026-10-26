@@ -394,6 +394,9 @@ struct LiveInputs {
 // Overwrite every word a model or its inputs hold, before they are freed (X-APP-2).
 void WipeScreenWords(ScreenModel& m);
 void WipeLiveInputs(LiveInputs& in);
+// EVERY COPY OF THE WORDS AND OF THE TYPED PHRASE THE WINDOW OWNS (R89, X2-3): the screen's inputs
+// and the type-back's fields as last sent.
+void ForgetWindowWords(LiveInputs& in, std::vector<std::wstring>& typed);
 
 // SetUp, Words, TypeBack, TypeBackWrong and SetUpDone; every other screen is unbuilt.
 ScreenModel BuildLiveScreen(Screen s, LiveInputs const& in);

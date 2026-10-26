@@ -982,6 +982,47 @@ std::vector<std::wstring> ObserverDiagnostics() {
         EscapeNonAscii(liveEmpty), EscapeNonAscii(liveBox), boxState ? L"yes" : L"NO"));
   }
 
+  // 1b. THE EMPTY WORLD'S NAMES (R89, X2-7): with no group yet the composer's two names say there
+  // is no group yet, as the caption does, and never "no live session", which is false while the
+  // session is up. CONTROLS: without the empty world's bit every arm keeps its shipped name, and
+  // the bit changes no other arm.
+  {
+    constexpr std::wstring_view kSessionDenial = L"no live session";
+    constexpr std::wstring_view kNoGroup = L"no group yet";
+    const std::wstring send = ComposerSendNameFor(ComposerState::NoSession, true, true, false, false);
+    const std::wstring sendEmpty =
+        ComposerSendNameFor(ComposerState::NoSession, true, false, false, false);
+    const std::wstring box = ComposerBoxNameFor(ComposerState::NoSession, true, false);
+    const bool saysNoGroup = send.find(kNoGroup) != std::wstring::npos &&
+                             sendEmpty.find(kNoGroup) != std::wstring::npos &&
+                             box.find(kNoGroup) != std::wstring::npos;
+    const bool noDenial = send.find(kSessionDenial) == std::wstring::npos &&
+                          sendEmpty.find(kSessionDenial) == std::wstring::npos &&
+                          box.find(kSessionDenial) == std::wstring::npos;
+    bool shipped = true;
+    for (ComposerState s : {ComposerState::NoSession, ComposerState::ObserverOnly,
+                            ComposerState::MaySend}) {
+      for (bool text : {false, true}) {
+        shipped = shipped && ComposerSendNameFor(s, false, text, false, false) ==
+                                 ComposerSendNameAt(s, text, false, false);
+        if (s != ComposerState::NoSession)
+          shipped = shipped && ComposerSendNameFor(s, true, text, false, false) ==
+                                   ComposerSendNameAt(s, text, false, false);
+      }
+      shipped = shipped && ComposerBoxNameFor(s, false, false) == ComposerBoxName(s, false);
+      if (s != ComposerState::NoSession)
+        shipped = shipped && ComposerBoxNameFor(s, true, false) == ComposerBoxName(s, false);
+    }
+    const bool ok = saysNoGroup && noDenial && shipped;
+    out.push_back(std::format(
+        L"  composer nogroup : {}  no group yet: send \"{}\" (empty box \"{}\") / box \"{}\"; they say "
+        L"\"no group yet\": {}, and never \"no live session\": {}; without the bit, and in every other "
+        L"arm, the shipped names: {}   [query: ComposerSendNameFor and ComposerBoxNameFor with the "
+        L"empty world's bit, against ComposerSendNameAt and ComposerBoxName]",
+        Verdict(ok), EscapeNonAscii(send), EscapeNonAscii(sendEmpty), EscapeNonAscii(box),
+        saysNoGroup ? L"yes" : L"NO", noDenial ? L"yes" : L"NO", shipped ? L"yes" : L"NO"));
+  }
+
   // 2. the hidden row, over the fabricated world, with BOTH sets printed
   {
     demo::World const& w = demo::GetWorld();

@@ -233,6 +233,35 @@ std::vector<std::wstring> LiveIdentityDiagnostics() {
         YesNo(joinOk), joined.size(), YesNo(wipesOk), left));
   }
 
+  // 2a. THE WINDOW'S OTHER COPIES (R89, X2-3). The words screen names each word's cell in a buffer
+  // the caller reserved: written in place, never swapped for a temporary, and wiped once read. And
+  // forgetting the words takes the type-back's fields as last sent along with the screen's inputs.
+  {
+    std::wstring name;
+    name.reserve(64);
+    const wchar_t* before = name.data();
+    WriteWordCellName(7, L"qzqzqzqzg", name);
+    const bool written = name == L"Word 7: qzqzqzqzg";
+    const bool inPlace = name.data() == before;
+    const size_t length = name.size();
+    Wipe(name);
+    bool zeroed = inPlace;
+    for (size_t i = 0; inPlace && i < length; ++i) zeroed = zeroed && before[i] == 0;
+    id::LiveInputs in;
+    in.words = MadeUpWords();
+    in.typed = MadeUpWords();
+    std::vector<std::wstring> typed = MadeUpWords();
+    id::ForgetWindowWords(in, typed);
+    const bool forgotten = in.words.empty() && in.typed.empty() && typed.empty();
+    const bool ok = written && inPlace && zeroed && forgotten;
+    lines.push_back(std::format(
+        L"  id live copies   : {}  a word's cell name written in its reserved buffer: {}, in place: "
+        L"{}, and that buffer overwritten once read: {}; forgetting the words takes the screen's "
+        L"inputs and the type-back's fields as last sent: {}   [query: WriteWordCellName into a "
+        L"reserved buffer, Wipe, and ForgetWindowWords over 25 made-up words]",
+        Verdict(ok), YesNo(written), YesNo(inPlace), YesNo(zeroed), YesNo(forgotten)));
+  }
+
   // 2b. EACH BOX HOLDS EXACTLY ONE WORD OF THE LIST BEFORE ANYTHING IS SENT (X-APP-1, MAJOR). The
   // library keeps no empty position, so an empty box or a box of two words would shift every later
   // word. The app names such a box itself, by its number and without the words, and a box of one

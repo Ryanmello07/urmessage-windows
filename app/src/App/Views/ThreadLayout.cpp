@@ -309,6 +309,15 @@ std::wstring ComposerSendNameAt(ComposerState state, bool hasText, bool replying
   return ComposerSendName(state, hasText, replying);
 }
 
+// NOT BUILT YET (the round's tests come first): the empty world borrows the no-session names.
+std::wstring ComposerSendNameFor(ComposerState state, bool, bool hasText, bool replying,
+                                 bool overLimit) {
+  return ComposerSendNameAt(state, hasText, replying, overLimit);
+}
+std::wstring ComposerBoxNameFor(ComposerState state, bool, bool replying) {
+  return ComposerBoxName(state, replying);
+}
+
 std::wstring ComposerTooLongNote(std::size_t octets, std::size_t limit) {
   // U+2014 EM DASH as an escape, never a pasted glyph (the house non-ASCII rule)
   return std::format(L"Too long to send \u2014 {} of {} bytes. Shorten it, or send it in parts.",

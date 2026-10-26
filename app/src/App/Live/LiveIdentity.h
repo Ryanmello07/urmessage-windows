@@ -137,6 +137,11 @@ void Wipe(std::string& s);
 void Wipe(std::wstring& s);
 void Wipe(std::vector<std::wstring>& words);
 
+// A WORD'S CELL NAME ON THE WORDS SCREEN ("Word 7: <word>", what UI Automation reads), written into
+// `out`, which the caller reserved and wipes once the name is set (R89, X2-3). Nothing is built in
+// a temporary: a buffer that grew or was swapped in would be let go unwiped.
+void WriteWordCellName(size_t position, std::wstring const& word, std::wstring& out);
+
 // THE REMOTE-SESSION WARNING (F3 section 2.11.3; Spec C section 6.2's sentence; REDTEAM L4), shown
 // on every words screen while GetSystemMetrics(SM_REMOTESESSION) is non-zero.
 inline constexpr wchar_t kRemoteSessionWarning[] =
