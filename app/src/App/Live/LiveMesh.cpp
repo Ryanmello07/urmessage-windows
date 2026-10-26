@@ -976,6 +976,26 @@ struct HeldRestore {
   std::string error;
 };
 
+// THE DEVICE'S GROUPS, READ AGAIN after a leave whose outcome is not known (R89 item 5,
+// URNET_MESSAGE_FORGET_UNKNOWN): whether `gid` is among them. Every handle the list gave is released.
+bool StillHolds(Session& s, const uint8_t* gid, int32_t gidLen) {
+  const uint64_t groups = urnet_message_device_groups(s.device);
+  const int32_t count = urnet_message_group_list_count(groups);
+  bool held = false;
+  for (int32_t i = 0; i < count; ++i) {
+    const uint64_t group = urnet_message_group_list_at(groups, i);
+    if (group == 0) continue;
+    uint8_t id[urmsg::live::kGroupIdOctets] = {};
+    int32_t len = static_cast<int32_t>(sizeof(id));
+    if (urnet_message_group_id(group, id, &len) && len == gidLen &&
+        std::memcmp(id, gid, static_cast<size_t>(len)) == 0)
+      held = true;
+    urnet_release(group);
+  }
+  if (groups != 0) urnet_release(groups);
+  return held;
+}
+
 HeldRestore RestoreHeldGroup(Session& s, HeldInvite const& held) {
   char* err = nullptr;
   const int32_t gidLen = static_cast<int32_t>(held.groupId.size());
@@ -1085,23 +1105,38 @@ HeldLeave LeaveHeldGroup(Session& s, HeldInvite const& held, std::string const& 
     kind = urnet_message_device_forget_group(s.device, held.groupId.data(), gidLen, &err);
     why = TakeError(&err);
   }
-  switch (kind) {
-    case URNET_MESSAGE_FORGET_OK:
+  // DECIDED BY ForgetOutcomeOf (Live/LiveIdentity.h), the one reading of the leave's kinds
+  switch (urmsg::live::ForgetOutcomeOf(kind)) {
+    case urmsg::live::ForgetOutcome::Left:
       urnw::LogInfo("live: *** LEFT *** the old copy of group {}: its record and its epoch states are "
                     "erased; opening the same invitation again",
                     gidHex);
       return HeldLeave::Left;
-    case URNET_MESSAGE_FORGET_UNFINISHED:
+    case urmsg::live::ForgetOutcome::LeftUnfinished:
       urnw::LogWarn("live: held leave: left group {}, and the erase is still unfinished ({}); the join "
                     "finishes it",
                     gidHex, why);
       return HeldLeave::Left;
-    case URNET_MESSAGE_FORGET_FAILED:
+    case urmsg::live::ForgetOutcome::NotHeld:
       urnw::LogWarn("live: held leave: the library holds no group {} any more ({}); opening the "
                     "invitation again",
                     gidHex, why);
       return HeldLeave::Left;
-    default:
+    case urmsg::live::ForgetOutcome::Unknown: {
+      // NOT KNOWN TO BE LEFT (R89 item 5): the handles stay, and the device's groups decide
+      const bool stillHeld = StillHolds(s, held.groupId.data(), gidLen);
+      const urmsg::live::ForgetOutcome after = urmsg::live::AfterUnknownLeave(stillHeld);
+      urnw::LogWarn("live: held leave: whether group {} was left is not known ({}); the device's "
+                    "groups, read again, {} it",
+                    gidHex, why, stillHeld ? "still hold" : "no longer hold");
+      if (after == urmsg::live::ForgetOutcome::NotHeld) return HeldLeave::Left;
+      PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
+                     "URmessage could not tell whether it left the old copy of this group, and "
+                     "this computer still holds it. Try leaving it again.",
+                     {}, true);
+      return HeldLeave::Offered;
+    }
+    case urmsg::live::ForgetOutcome::Refused:
       break;
   }
 
@@ -2146,11 +2181,12 @@ bool LeaveGroup(Session& s, std::string const& transferTo, std::string& refusal)
     kind = urnet_message_device_forget_group(s.device, gid, gidLen, &err);
     why = TakeError(&err);
   }
-  switch (kind) {
-    case URNET_MESSAGE_FORGET_OK:
+  // DECIDED BY ForgetOutcomeOf (Live/LiveIdentity.h), the one reading of the leave's kinds
+  switch (urmsg::live::ForgetOutcomeOf(kind)) {
+    case urmsg::live::ForgetOutcome::Left:
       urnw::LogInfo("live: *** LEFT *** this device's copy of the group is erased; nobody was told");
       break;
-    case URNET_MESSAGE_FORGET_UNFINISHED: {
+    case urmsg::live::ForgetOutcome::LeftUnfinished: {
       urnw::LogWarn("live: *** LEFT *** but the erase is still unfinished: {}", why);
       std::lock_guard<std::mutex> lock(g_onboardMutex);
       g_afterLeaveNote =
@@ -2158,11 +2194,22 @@ bool LeaveGroup(Session& s, std::string const& transferTo, std::string& refusal)
           "URmessage finishes that the next time it starts.";
       break;
     }
-    case URNET_MESSAGE_FORGET_FAILED:
+    case urmsg::live::ForgetOutcome::NotHeld:
       // the library holds no such group, so there is nothing left to leave: this handle is stale
       urnw::LogWarn("live: leave: the library holds no such group ({}); treating it as left", why);
       break;
-    default:
+    case urmsg::live::ForgetOutcome::Unknown: {
+      // NOT KNOWN TO BE LEFT (R89 item 5): the handles stay, and the device's groups decide
+      const bool stillHeld = StillHolds(s, gid, gidLen);
+      urnw::LogWarn("live: leave: whether the group was left is not known ({}); the device's groups, "
+                    "read again, {} it",
+                    why, stillHeld ? "still hold" : "no longer hold");
+      if (urmsg::live::AfterUnknownLeave(stillHeld) == urmsg::live::ForgetOutcome::NotHeld) break;
+      refusal = "URmessage could not tell whether this computer left the conversation, and it is "
+                "still in it. Try leaving again.";
+      return false;
+    }
+    case urmsg::live::ForgetOutcome::Refused:
       refusal = why.empty() ? std::string("the library refused to leave and gave no reason") : why;
       urnw::LogError("live: leave: forget_group refused: {}", refusal);
       return false;
@@ -2403,23 +2450,37 @@ void RunSession() {
   // THE IDENTITY BEFORE THE JOIN ROAD (identity phase 1, PLAN Task 16). A device with no identity
   // makes no key package, so no join code: the setup comes first, and the worker stays in it until
   // the library has made the identity and it reads back.
+  // AND THE IDENTITY'S STATE IS ASKED BEFORE SETUP IS OFFERED (R89 item 1): an identity whose
+  // identity record was moved away reads as no identity in the json, and setting up over it would
+  // replace it. Setup only for NONE; UNREADABLE, FAILED and every disagreement are the Unreadable
+  // step (Live/LiveIdentity.h, RoadFor).
   {
     urmsg::live::IdentityInfo identity = ReadIdentity(s);
-    if (!identity.read) {
-      urnw::LogError("live: the identity could not be read: {}", identity.problem);
-      PublishIdentity(urmsg::live::IdentityStep::Unreadable, identity, {},
-                      "URmessage could not read this device's identity. Close it and open it "
-                      "again.");
-      s.Close();
-      return;
-    }
-    if (!identity.hasIdentity) {
-      if (!RunIdentitySetUp(s, std::move(identity))) {
+    char* stateErr = nullptr;
+    const int32_t state = urnet_message_device_identity_state(s.device, &stateErr);
+    const std::string stateWhy = TakeError(&stateErr);
+    urnw::LogInfo("live: identity state {} ({}){}", state, urmsg::live::IdentityStateName(state),
+                  stateWhy.empty() ? std::string() : ": " + stateWhy);
+    switch (urmsg::live::RoadFor(identity.read, identity.hasIdentity, state)) {
+      case urmsg::live::IdentityRoad::Unreadable:
+        urnw::LogError("live: the identity could not be read (json {}, state {}): {}; setup is not "
+                       "offered",
+                       identity.read ? "read" : "not read", urmsg::live::IdentityStateName(state),
+                       stateWhy.empty() ? identity.problem : stateWhy);
+        PublishIdentity(urmsg::live::IdentityStep::Unreadable, identity, {},
+                        "URmessage could not read this device's identity. Close it and open it "
+                        "again.");
         s.Close();
         return;
-      }
-    } else {
-      PublishIdentity(urmsg::live::IdentityStep::Done, std::move(identity));
+      case urmsg::live::IdentityRoad::SetUp:
+        if (!RunIdentitySetUp(s, std::move(identity))) {
+          s.Close();
+          return;
+        }
+        break;
+      case urmsg::live::IdentityRoad::Made:
+        PublishIdentity(urmsg::live::IdentityStep::Done, std::move(identity));
+        break;
     }
   }
 

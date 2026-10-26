@@ -303,22 +303,36 @@ void Wipe(std::string& s) {
   s.clear();
 }
 
-// NOT BUILT YET (the round's tests come first): what the app did before, which read the json
-// alone, and a leave whose every unnamed answer was a refusal.
-IdentityRoad RoadFor(bool jsonRead, bool hasIdentity, int32_t) {
-  if (!jsonRead) return IdentityRoad::Unreadable;
-  return hasIdentity ? IdentityRoad::Made : IdentityRoad::SetUp;
+IdentityRoad RoadFor(bool jsonRead, bool hasIdentity, int32_t state) {
+  // SETUP FOR EXACTLY ONE ANSWER; the identity for exactly one; every other the Unreadable step
+  if (jsonRead && !hasIdentity && state == URNET_MESSAGE_IDENTITY_NONE) return IdentityRoad::SetUp;
+  if (jsonRead && hasIdentity && state == URNET_MESSAGE_IDENTITY_MADE) return IdentityRoad::Made;
+  return IdentityRoad::Unreadable;
 }
-const char* IdentityStateName(int32_t) { return "unread"; }
+
+const char* IdentityStateName(int32_t state) {
+  switch (state) {
+    case URNET_MESSAGE_IDENTITY_NONE: return "NONE";
+    case URNET_MESSAGE_IDENTITY_MADE: return "MADE";
+    case URNET_MESSAGE_IDENTITY_UNREADABLE: return "UNREADABLE";
+    case URNET_MESSAGE_IDENTITY_FAILED: return "FAILED";
+    default: return "an unknown state";
+  }
+}
+
 ForgetOutcome ForgetOutcomeOf(int32_t kind) {
   switch (kind) {
     case URNET_MESSAGE_FORGET_OK: return ForgetOutcome::Left;
     case URNET_MESSAGE_FORGET_UNFINISHED: return ForgetOutcome::LeftUnfinished;
     case URNET_MESSAGE_FORGET_FAILED: return ForgetOutcome::NotHeld;
+    case URNET_MESSAGE_FORGET_UNKNOWN: return ForgetOutcome::Unknown;
     default: return ForgetOutcome::Refused;
   }
 }
-ForgetOutcome AfterUnknownLeave(bool) { return ForgetOutcome::Refused; }
+
+ForgetOutcome AfterUnknownLeave(bool stillHeld) {
+  return stillHeld ? ForgetOutcome::Refused : ForgetOutcome::NotHeld;
+}
 
 void WriteWordCellName(size_t position, std::wstring const& word, std::wstring& out) {
   // appended in place, the word last: a buffer too small to hold it grows before any of it is in
