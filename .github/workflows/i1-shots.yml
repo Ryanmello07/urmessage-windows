@@ -1,0 +1,229 @@
+# THROWAWAY, NEVER MERGE, NEVER IN AN UPSTREAM PULL REQUEST. Identity phase 1, Task 6 (slice 0): the
+# identity screens over the fabricated world, read with UI Automation and captured with PrintWindow
+# (.github/i1/shots.ps1), twice:
+#   as-built  the tested head: every check must pass, the words screens capture black and no other
+#             screen does.
+#   ma2       PLAN Task 6's MA2: capture exclusion is off on the words screen (MainWindow's
+#             ShowIdentity skips it for Screen::Words). Green only when the driver failed, and failed
+#             on the words screen's black capture and on nothing else: the mutant must fail for its
+#             own reason.
+#   control-all  capture exclusion off on EVERY screen: each black-capture check must fail, and no
+#             other check, so each fires for its own reason; and its captures show the word screens
+#             that the as-built run captures black, so they can be looked at.
+#   ma-open   the review's should-fix 2 put back: the window draws the words although it is not
+#             held (ShowIdentity ignores the answer). Only the 'refused' and 'words' legs run; green
+#             only when the refused leg's four word checks fail, and nothing else.
+#   ma-mode   the review's BLOCKER put back: MainWindow::IdentityRunMode answers ActiveRunMode()
+#             alone. Only the 'plain-settings' leg runs; green only when its ACCOUNT check and its
+#             four made-up-account checks fail, and nothing else.
+# ma2 and control-all skip the 'refused' leg: with the exclusion never asked for, the refusal never
+# draws, which is ma-open's case and not theirs.
+# The checkout is the tested head plus CI files only (the first step proves it). Nothing is published.
+name: I1 identity screens (throwaway)
+
+on:
+  push:
+    branches:
+      - 'ci/i1-shots**'
+
+permissions:
+  contents: read
+
+env:
+  I1_HEAD: 31a93abc0be4fea693a3ee0bcf6772f0b6acb726
+
+jobs:
+  shots:
+    name: Identity screens (${{ matrix.variant }})
+    runs-on: windows-2022
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [as-built, ma2, control-all, ma-open, ma-mode]
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Prove the checkout is the tested head plus CI files only
+        shell: pwsh
+        run: |
+          Write-Host "checkout $(git rev-parse HEAD)"
+          Write-Host "tested   $(git rev-parse HEAD^)"
+          if ((git rev-parse HEAD^) -ne $env:I1_HEAD) { Write-Host "::error::the tested head is not $env:I1_HEAD"; exit 1 }
+          $changed = @(git diff --name-only HEAD^ HEAD)
+          $changed | ForEach-Object { Write-Host "  added by the CI commit: $_" }
+          $outside = @($changed | Where-Object { $_ -notlike '.github/*' })
+          if ($outside.Count -gt 0) { Write-Host "::error::the CI commit changes files outside .github: $($outside -join ', ')"; exit 1 }
+
+      - name: Put the defect back (${{ matrix.variant }})
+        if: matrix.variant != 'as-built'
+        shell: pwsh
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          $path = 'app\src\App\MainWindow.xaml.cpp'
+          $ask = '  const bool held = !asks || ApplyCaptureExclusion(true, name);'
+          switch ($env:VARIANT) {
+            'ma2' { $old = $ask; $new = '  const bool held = !asks || screen == id::Screen::Words || ApplyCaptureExclusion(true, name);' }
+            'control-all' { $old = $ask; $new = '  const bool held = true;' }
+            'ma-open' { $old = '  if (!held) {'; $new = '  if (!held && false) {' }
+            'ma-mode' { $old = 'urmsg::RunMode MainWindow::IdentityRunMode() const { return urmsg::DrawnRunMode(); }'; $new = 'urmsg::RunMode MainWindow::IdentityRunMode() const { return urmsg::ActiveRunMode(); }' }
+            default { Write-Host "::error::no mutant named $env:VARIANT"; exit 1 }
+          }
+          $text = [IO.File]::ReadAllText($path)
+          $n = ([regex]::Matches($text, [regex]::Escape($old))).Count
+          if ($n -ne 1) { Write-Host "::error::the mutant's edit occurs $n times, not once"; exit 1 }
+          [IO.File]::WriteAllText($path, $text.Replace($old, $new), (New-Object Text.UTF8Encoding($false)))
+          git --no-pager diff -- $path
+
+      - name: Make the screen 1920 x 1080
+        shell: powershell
+        run: |
+          $code = @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class I1Display {
+            [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+            public struct DEVMODE {
+              [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+              public short dmSpecVersion; public short dmDriverVersion; public short dmSize; public short dmDriverExtra;
+              public int dmFields; public int dmPositionX; public int dmPositionY; public int dmDisplayOrientation;
+              public int dmDisplayFixedOutput; public short dmColor; public short dmDuplex; public short dmYResolution;
+              public short dmTTOption; public short dmCollate;
+              [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+              public short dmLogPixels; public int dmBitsPerPel; public int dmPelsWidth; public int dmPelsHeight;
+              public int dmDisplayFlags; public int dmDisplayFrequency; public int dmICMMethod; public int dmICMIntent;
+              public int dmMediaType; public int dmDitherType; public int dmReserved1; public int dmReserved2;
+              public int dmPanningWidth; public int dmPanningHeight;
+            }
+            [DllImport("user32.dll", CharSet = CharSet.Ansi)] public static extern int EnumDisplaySettings(string deviceName, int modeNum, ref DEVMODE devMode);
+            [DllImport("user32.dll", CharSet = CharSet.Ansi)] public static extern int ChangeDisplaySettings(ref DEVMODE devMode, int flags);
+            [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
+            public static string Size() { return GetSystemMetrics(0) + " x " + GetSystemMetrics(1); }
+            public static int Set(int w, int h) {
+              DEVMODE dm = new DEVMODE();
+              dm.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
+              if (EnumDisplaySettings(null, -1, ref dm) == 0) return -100;
+              dm.dmPelsWidth = w; dm.dmPelsHeight = h; dm.dmFields = 0x80000 | 0x100000;
+              return ChangeDisplaySettings(ref dm, 0);
+            }
+          }
+          '@
+          Add-Type -TypeDefinition $code
+          Write-Host "the primary screen was $([I1Display]::Size())"
+          try { Set-DisplayResolution -Width 1920 -Height 1080 -Force -ErrorAction Stop; Write-Host 'Set-DisplayResolution answered' } catch { Write-Host "Set-DisplayResolution: $_" }
+          if ([I1Display]::GetSystemMetrics(0) -lt 1920) {
+            Write-Host "ChangeDisplaySettings answered $([I1Display]::Set(1920, 1080)) (0 is DISP_CHANGE_SUCCESSFUL)"
+          }
+          Write-Host "the primary screen is $([I1Display]::Size())"
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build the app (Release x64)
+        shell: pwsh
+        working-directory: app
+        run: |
+          $pin = '10.0.22621.0'
+          $roots = @("${env:ProgramFiles(x86)}\Windows Kits\10", "$env:ProgramFiles\Windows Kits\10") | Where-Object { Test-Path -LiteralPath $_ }
+          $usable = @(foreach ($r in $roots) {
+            Get-ChildItem (Join-Path $r 'Include') -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' -and
+                (Test-Path -LiteralPath (Join-Path $r "Include\$($_.Name)\um\windows.h")) -and
+                (Test-Path -LiteralPath (Join-Path $r "Lib\$($_.Name)\um\x64\kernel32.lib")) } |
+              Select-Object -ExpandProperty Name
+          }) | Select-Object -Unique | Sort-Object { [version]$_ }
+          $usable = @($usable)
+          $sdk = if ($usable -contains $pin) { $pin } else { $usable[-1] }
+          msbuild URmessage.sln /restore /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=$sdk /m /v:minimal /clp:Summary
+          exit $LASTEXITCODE
+
+      - name: Drive the identity screens (${{ matrix.variant }})
+        shell: powershell
+        run: |
+          # an empty argument never reaches a native command in Windows PowerShell, so each filter is
+          # passed only when it is set
+          $extra = @()
+          switch ('${{ matrix.variant }}') {
+            'ma2' { $extra = @('-Skip', 'refused') }
+            'control-all' { $extra = @('-Skip', 'refused') }
+            'ma-open' { $extra = @('-Only', 'refused,words') }
+            'ma-mode' { $extra = @('-Only', 'plain-settings') }
+          }
+          Write-Host "filters: $($extra -join ' ')"
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github\i1\shots.ps1 `
+            -Exe "$env:GITHUB_WORKSPACE\app\build\x64\Release\URmessage.exe" `
+            -Out "$env:GITHUB_WORKSPACE\i1out" -Variant '${{ matrix.variant }}' @extra | Tee-Object -FilePath "$env:RUNNER_TEMP\shots.out"
+          $code = $LASTEXITCODE
+          Set-Content -LiteralPath "$env:RUNNER_TEMP\shots.code" -Value $code
+          Write-Host "the driver exited $code"
+          exit 0
+
+      - name: Judge (${{ matrix.variant }})
+        shell: powershell
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          $code = [int](Get-Content -LiteralPath "$env:RUNNER_TEMP\shots.code")
+          $failed = @(Get-Content -LiteralPath "$env:GITHUB_WORKSPACE\i1out\$env:VARIANT-failed.txt" -Encoding UTF8 | Where-Object { $_ -ne '' })
+          Write-Host "the driver exited $code, with $($failed.Count) failed check(s):"
+          $failed | ForEach-Object { Write-Host "  $_" }
+          if ($env:VARIANT -eq 'as-built') {
+            if ($code -eq 0 -and $failed.Count -eq 0) { Write-Host 'as-built: every check passed'; exit 0 }
+            Write-Host '::error::as-built: the driver failed'
+            exit 1
+          }
+          if ($env:VARIANT -eq 'control-all') {
+            # every black-capture check, and nothing else: 9 screens and 3 flow steps
+            $black = @($failed | Where-Object { $_.Contains(' captures black (') })
+            $other = @($failed | Where-Object { -not $_.Contains(' captures black (') })
+            if ($code -ne 0 -and $black.Count -eq 12 -and $other.Count -eq 0) {
+              Write-Host "control-all: each of the 12 black-capture checks failed with exclusion off, and nothing else did"
+              exit 0
+            }
+            Write-Host "::error::control-all: $($black.Count) black-capture checks failed (12 expected), and $($other.Count) others: $($other -join ' | ')"
+            exit 1
+          }
+          function Exactly([string]$name, [string[]]$own) {
+            $mine = @($failed | Where-Object { $f = $_; @($own | Where-Object { $f.StartsWith($_) }).Count -gt 0 })
+            $other = @($failed | Where-Object { $f = $_; @($own | Where-Object { $f.StartsWith($_) }).Count -eq 0 })
+            $hit = @($own | Where-Object { $o = $_; @($failed | Where-Object { $_.StartsWith($o) }).Count -gt 0 })
+            if ($code -ne 0 -and $hit.Count -eq $own.Count -and $other.Count -eq 0) {
+              Write-Host "$name KILLED by its own checks, and by nothing else: $($mine -join ' | ')"
+              exit 0
+            }
+            Write-Host "::error::$name not killed for its own reason: own checks failed $($hit.Count)/$($own.Count); other failures $($other.Count): $($other -join ' | ')"
+            exit 1
+          }
+          if ($env:VARIANT -eq 'ma-open') {
+            Exactly 'MA-OPEN' @("refused: shows the refusal '", "refused: does not show 'Word 1: lighthouse'",
+              "refused: does not show 'Word 25: watermelon'", "refused: does not show 'Demo words: not a recovery phrase'")
+          }
+          if ($env:VARIANT -eq 'ma-mode') {
+            Exactly 'MA-MODE' @('plain-settings: Settings keeps its inert ACCOUNT group',
+              "plain-settings: does not show 'DEMO MODEL: ACCOUNT'", "plain-settings: does not show 'DEMO ONLY: MORE SCREENS'",
+              "plain-settings: does not show 'DEMO MODEL: DEVICES'", "plain-settings: does not show 'Copy Your ID'")
+          }
+          # MA2 is KILLED only by the words screen's black capture: the leg's own, and the setup
+          # flow's step on the same screen. Any other failed check is a different reason.
+          $own = @('words captures black (', 'flow-setup step 2, words captures black (')
+          $mine = @($failed | Where-Object { $f = $_; @($own | Where-Object { $f.StartsWith($_) }).Count -gt 0 })
+          $other = @($failed | Where-Object { $f = $_; @($own | Where-Object { $f.StartsWith($_) }).Count -eq 0 })
+          $both = @($own | Where-Object { $o = $_; @($failed | Where-Object { $_.StartsWith($o) }).Count -gt 0 })
+          if ($code -ne 0 -and $both.Count -eq $own.Count -and $other.Count -eq 0) {
+            Write-Host "MA2 KILLED by its own check, and by nothing else: $($mine -join ' | ')"
+            exit 0
+          }
+          Write-Host "::error::MA2 not killed for its own reason: own checks failed $($both.Count)/$($own.Count); other failures $($other.Count): $($other -join ' | ')"
+          exit 1
+
+      - name: Upload the screenshots, the names and the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: i1-shots-${{ matrix.variant }}
+          path: i1out/
+          if-no-files-found: warn
