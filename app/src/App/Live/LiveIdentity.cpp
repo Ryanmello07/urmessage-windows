@@ -303,6 +303,23 @@ void Wipe(std::string& s) {
   s.clear();
 }
 
+// NOT BUILT YET (the round's tests come first): what the app did before, which read the json
+// alone, and a leave whose every unnamed answer was a refusal.
+IdentityRoad RoadFor(bool jsonRead, bool hasIdentity, int32_t) {
+  if (!jsonRead) return IdentityRoad::Unreadable;
+  return hasIdentity ? IdentityRoad::Made : IdentityRoad::SetUp;
+}
+const char* IdentityStateName(int32_t) { return "unread"; }
+ForgetOutcome ForgetOutcomeOf(int32_t kind) {
+  switch (kind) {
+    case URNET_MESSAGE_FORGET_OK: return ForgetOutcome::Left;
+    case URNET_MESSAGE_FORGET_UNFINISHED: return ForgetOutcome::LeftUnfinished;
+    case URNET_MESSAGE_FORGET_FAILED: return ForgetOutcome::NotHeld;
+    default: return ForgetOutcome::Refused;
+  }
+}
+ForgetOutcome AfterUnknownLeave(bool) { return ForgetOutcome::Refused; }
+
 void WriteWordCellName(size_t position, std::wstring const& word, std::wstring& out) {
   // appended in place, the word last: a buffer too small to hold it grows before any of it is in
   out.clear();

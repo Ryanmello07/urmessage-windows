@@ -137,6 +137,26 @@ void Wipe(std::string& s);
 void Wipe(std::wstring& s);
 void Wipe(std::vector<std::wstring>& words);
 
+// THE FIRST SCREEN'S ROAD (R89 item 1). urnet_message_device_identity_state answers which of four
+// states this device's identity is in, and it is asked before setup is offered: an identity whose
+// identity record was moved away (an antivirus quarantine, a sync tool) is UNREADABLE, and setting
+// up over it would replace it. Setup is offered for exactly one answer, NONE with a json that read
+// and holds no identity. Anything else that is not MADE with an identity is the Unreadable step:
+// UNREADABLE, FAILED (which a recovered panic answers), a value this build does not know, and a
+// state and a json that disagree. Never setup on a doubt.
+enum class IdentityRoad { SetUp, Made, Unreadable };
+IdentityRoad RoadFor(bool jsonRead, bool hasIdentity, int32_t state);
+// The state's name, for the log line.
+const char* IdentityStateName(int32_t state);
+
+// WHAT A LEAVE ANSWERED (R89 item 5; urnet_message_device_forget_group's KINDS). UNKNOWN (a
+// recovered panic inside the leave) is never "left": the group may still be held, so its handles
+// are kept and the device's groups are read again, and that answer decides (AfterUnknownLeave).
+enum class ForgetOutcome { Left, LeftUnfinished, NotHeld, Refused, Unknown };
+ForgetOutcome ForgetOutcomeOf(int32_t kind);
+// After an UNKNOWN: still held is not left; no longer held is as good as left.
+ForgetOutcome AfterUnknownLeave(bool stillHeld);
+
 // A WORD'S CELL NAME ON THE WORDS SCREEN ("Word 7: <word>", what UI Automation reads), written into
 // `out`, which the caller reserved and wipes once the name is set (R89, X2-3). Nothing is built in
 // a temporary: a buffer that grew or was swapped in would be let go unwiped.

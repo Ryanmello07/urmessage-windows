@@ -233,6 +233,66 @@ std::vector<std::wstring> LiveIdentityDiagnostics() {
         YesNo(joinOk), joined.size(), YesNo(wipesOk), left));
   }
 
+  // 1b. THE FIRST SCREEN'S ROAD (R89 item 1): setup is offered for exactly one answer of the
+  // identity's state, NONE with a json that read and holds no identity; UNREADABLE (an identity
+  // record moved away), FAILED (a recovered panic), a value this build does not know, and a state
+  // and a json that disagree are all the Unreadable step. Every combination is asked, and the
+  // complement is printed: how many offer setup, and which.
+  {
+    const int32_t states[] = {URNET_MESSAGE_IDENTITY_NONE, URNET_MESSAGE_IDENTITY_MADE,
+                              URNET_MESSAGE_IDENTITY_UNREADABLE, URNET_MESSAGE_IDENTITY_FAILED, 7};
+    size_t setUp = 0, made = 0, unreadable = 0;
+    bool setUpOnlyNone = true, madeOnlyMade = true;
+    for (bool read : {false, true})
+      for (bool has : {false, true})
+        for (int32_t st : states) {
+          const IdentityRoad r = RoadFor(read, has, st);
+          if (r == IdentityRoad::SetUp) {
+            ++setUp;
+            setUpOnlyNone = setUpOnlyNone && read && !has && st == URNET_MESSAGE_IDENTITY_NONE;
+          } else if (r == IdentityRoad::Made) {
+            ++made;
+            madeOnlyMade = madeOnlyMade && read && has && st == URNET_MESSAGE_IDENTITY_MADE;
+          } else {
+            ++unreadable;
+          }
+        }
+    const bool named = std::string(IdentityStateName(URNET_MESSAGE_IDENTITY_UNREADABLE)) == "UNREADABLE" &&
+                       std::string(IdentityStateName(URNET_MESSAGE_IDENTITY_FAILED)) == "FAILED";
+    const bool ok = setUp == 1 && setUpOnlyNone && made == 1 && madeOnlyMade && unreadable == 18 &&
+                    named;
+    lines.push_back(std::format(
+        L"  id live road     : {}  of 20 (json read, holds an identity, state) answers, setup is "
+        L"offered for {} (want 1: read, none, NONE): {}; the identity opens for {} (want 1: read, "
+        L"held, MADE): {}; the Unreadable step for {} (UNREADABLE, FAILED, an unknown state, and "
+        L"every disagreement); the states named in the log: {}   [query: RoadFor over every "
+        L"combination of the json and urnet_message_device_identity_state]",
+        Verdict(ok), setUp, YesNo(setUpOnlyNone), made, YesNo(madeOnlyMade), unreadable,
+        YesNo(named)));
+  }
+
+  // 1c. WHAT A LEAVE ANSWERED (R89 item 5): UNKNOWN, a recovered panic inside forget_group, is
+  // never "left" -- the handles are kept and the groups read again -- and after that read, a group
+  // still held is not left and one no longer held is. CONTROLS: OK and UNFINISHED are left, FAILED
+  // holds no such group, REFUSED and a kind this build does not know are refusals.
+  {
+    const bool known = ForgetOutcomeOf(URNET_MESSAGE_FORGET_OK) == ForgetOutcome::Left &&
+                       ForgetOutcomeOf(URNET_MESSAGE_FORGET_UNFINISHED) == ForgetOutcome::LeftUnfinished &&
+                       ForgetOutcomeOf(URNET_MESSAGE_FORGET_FAILED) == ForgetOutcome::NotHeld &&
+                       ForgetOutcomeOf(URNET_MESSAGE_FORGET_REFUSED) == ForgetOutcome::Refused &&
+                       ForgetOutcomeOf(9) == ForgetOutcome::Refused;
+    const bool unknown = ForgetOutcomeOf(URNET_MESSAGE_FORGET_UNKNOWN) == ForgetOutcome::Unknown;
+    const bool reread = AfterUnknownLeave(true) == ForgetOutcome::Refused &&
+                        AfterUnknownLeave(false) == ForgetOutcome::NotHeld;
+    const bool ok = known && unknown && reread;
+    lines.push_back(std::format(
+        L"  id live leave    : {}  UNKNOWN (a recovered panic) is its own answer, never left: {}; "
+        L"after the groups are read again, still held is not left and no longer held is: {}; OK, "
+        L"UNFINISHED, FAILED, REFUSED and an unknown kind as the header says: {}   [query: "
+        L"ForgetOutcomeOf over URNET_MESSAGE_FORGET_*, and AfterUnknownLeave]",
+        Verdict(ok), YesNo(unknown), YesNo(reread), YesNo(known)));
+  }
+
   // 2a. THE WINDOW'S OTHER COPIES (R89, X2-3). The words screen names each word's cell in a buffer
   // the caller reserved: written in place, never swapped for a temporary, and wiped once read. And
   // forgetting the words takes the type-back's fields as last sent along with the screen's inputs.
