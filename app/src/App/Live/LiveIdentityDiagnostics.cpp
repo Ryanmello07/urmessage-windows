@@ -264,7 +264,7 @@ std::vector<std::wstring> LiveIdentityDiagnostics() {
     lines.push_back(std::format(
         L"  id live road     : {}  of 20 (json read, holds an identity, state) answers, setup is "
         L"offered for {} (want 1: read, none, NONE): {}; the identity opens for {} (want 1: read, "
-        L"held, MADE): {}; the Unreadable step for {} (UNREADABLE, FAILED, an unknown state, and "
+        L"held, MADE): {}; the Unreadable step for {} (UNREADABLE, the failed state, an unknown state, and "
         L"every disagreement); the states named in the log: {}   [query: RoadFor over every "
         L"combination of the json and urnet_message_device_identity_state]",
         Verdict(ok), setUp, YesNo(setUpOnlyNone), made, YesNo(madeOnlyMade), unreadable,
@@ -288,7 +288,7 @@ std::vector<std::wstring> LiveIdentityDiagnostics() {
     lines.push_back(std::format(
         L"  id live leave    : {}  UNKNOWN (a recovered panic) is its own answer, never left: {}; "
         L"after the groups are read again, still held is not left and no longer held is: {}; OK, "
-        L"UNFINISHED, FAILED, REFUSED and an unknown kind as the header says: {}   [query: "
+        L"UNFINISHED, no such group, REFUSED and an unknown kind as the header says: {}   [query: "
         L"ForgetOutcomeOf over URNET_MESSAGE_FORGET_*, and AfterUnknownLeave]",
         Verdict(ok), YesNo(unknown), YesNo(reread), YesNo(known)));
   }
