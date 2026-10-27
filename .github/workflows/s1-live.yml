@@ -1,0 +1,239 @@
+# THROWAWAY, NEVER MERGE, NEVER IN AN UPSTREAM PULL REQUEST. identity/i1-slice1 (PLAN Task 16): the
+# live setup up to "Your ID" with the app alone, on R67's rig: the app as built, a plain launch, the
+# DIRECT route to the alpha's own pinned endpoint, CI's placeholder credential, no account, no JWT
+# and no secret (.github/s1/s1-live.ps1). The words are read off the screen by UI Automation and are
+# never printed; every file uploaded is scanned for them first. One job per variant:
+#   pass     every check passes
+#   a list   a mutant: exactly those checks fail, and nothing else
+# The checkout is the tested head plus CI files only (the first step proves it).
+name: Slice 1 live setup (throwaway)
+
+on:
+  push:
+    branches:
+      - 'ci/s1-live**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: s1-live-alpha
+  cancel-in-progress: false
+
+env:
+  TESTED_HEAD: 3eb35da8d8ea64cf896c7e83b6162139fcb40a4d
+
+jobs:
+  live:
+    name: Slice 1 live (${{ matrix.variant }})
+    runs-on: windows-2022
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        variant: [as-built, ma3, mx-copy, ma-listcheck, ma-sessionup, ma-wts, ma-wtsreg, ma-trust, ma-nogroup, ma-unreadable]
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Prove the checkout is the tested head plus CI files only
+        shell: pwsh
+        run: |
+          Write-Host "checkout $(git rev-parse HEAD)"
+          Write-Host "tested   $(git rev-parse HEAD^)"
+          if ((git rev-parse HEAD^) -ne $env:TESTED_HEAD) { Write-Host "::error::the tested head is not $env:TESTED_HEAD"; exit 1 }
+          $changed = @(git diff --name-only HEAD^ HEAD)
+          $changed | ForEach-Object { Write-Host "  added by the CI commit: $_" }
+          $outside = @($changed | Where-Object { $_ -notlike '.github/*' })
+          if ($outside.Count -gt 0) { Write-Host "::error::the CI commit changes files outside .github: $($outside -join ', ')"; exit 1 }
+          exit 0
+
+      - name: Read the alpha the app is built to dial, from its own source
+        shell: pwsh
+        run: |
+          $src = Get-Content -Raw app/src/App/Live/LiveMesh.cpp
+          $endpoint = [regex]::Match($src, 'kServerEndpoint = "([^"]+)"').Groups[1].Value
+          $pin = [regex]::Match($src, 'kServerEndpointPin =\s*"([0-9a-f]{64})"').Groups[1].Value
+          $server = [regex]::Match($src, 'kServerClientId = "([^"]+)"').Groups[1].Value
+          Write-Host "kServerEndpoint    $endpoint"
+          Write-Host "kServerEndpointPin $pin"
+          Write-Host "kServerClientId    $server"
+          if ($endpoint -ne 'wss://74.50.11.53/urmessage/v1') { Write-Host "::error::the app does not dial the alpha's own endpoint"; exit 1 }
+          if ($pin -notmatch '^[0-9a-f]{64}$' -or $server -eq '') { Write-Host '::error::no pin or no server id in the source'; exit 1 }
+          "LIVE_ENDPOINT=$endpoint" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "LIVE_PIN=$pin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "LIVE_SERVER=$server" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          exit 0
+
+      - name: Put the defect back (${{ matrix.variant }})
+        shell: pwsh
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          $edits = @(
+            @{ v = 'ma3'; path = 'app/src/App/MainWindow.xaml.cpp'; old = '  const bool asks = model.excludedFromCapture;'; new = '  const bool asks = model.excludedFromCapture && screen != id::Screen::TypeBack;' },
+            @{ v = 'mx-copy'; path = 'app/src/App/Demo/IdentityDemo.h'; old = 'inline constexpr FieldPolicy kLiveWordFieldPolicy{true, true, false, false, true, false};'; new = 'inline constexpr FieldPolicy kLiveWordFieldPolicy{true, true, false, false, true, true};' },
+            @{ v = 'ma-listcheck'; path = 'app/src/App/MainWindow.xaml.cpp'; old = '          typed, [](std::wstring const& word) { return urmsg::live::CheckWord(word); });'; new = '          typed, [](std::wstring const&) { return true; });' },
+            @{ v = 'ma-sessionup'; path = 'app/src/App/Live/LiveMesh.cpp'; old = 'bool SessionConnected() { return g_sessionConnected.load(std::memory_order_acquire); }'; new = 'bool SessionConnected() { return false && g_sessionConnected.load(std::memory_order_acquire); }' },
+            @{ v = 'ma-wts'; path = 'app/src/App/MainWindow.xaml.cpp'; old = '  if (msg == WM_WTSSESSION_CHANGE) {'; new = '  if (false && msg == WM_WTSSESSION_CHANGE) {' },
+            @{ v = 'ma-wtsreg'; path = 'app/src/App/MainWindow.xaml.cpp'; old = '  const bool watched = ::WTSRegisterSessionNotification(hwnd_, NOTIFY_FOR_THIS_SESSION) != FALSE;'; new = '  const bool watched = false;' },
+            @{ v = 'ma-trust'; path = 'app/src/App/MainWindow.xaml.cpp'; old = '  const bool remoteNow = RemoteSessionNow();'; new = '  const bool remoteNow = event == WTS_REMOTE_CONNECT || RemoteSessionNow();' },
+            @{ v = 'ma-nogroup'; path = 'app/src/App/Views/ThreadView.cpp'; old = '      winrt::hstring{ComposerSendNameFor(state, parts->noteNoSession, hasText, replying, overLimit)});'; new = '      winrt::hstring{ComposerSendNameFor(state, false, hasText, replying, overLimit)});' },
+            @{ v = 'ma-nogroup'; path = 'app/src/App/Views/ThreadView.cpp'; old = '      winrt::hstring{ComposerBoxNameFor(state, parts->noteNoSession, replying)});'; new = '      winrt::hstring{ComposerBoxNameFor(state, false, replying)});' },
+            @{ v = 'ma-unreadable'; path = 'app/src/App/Live/LiveMesh.cpp'; old = '    const int32_t state = urnet_message_device_identity_state(s.device, &stateErr);'; new = '    const int32_t state = ((void)stateErr, URNET_MESSAGE_IDENTITY_NONE);' }
+          )
+          $mine = @($edits | Where-Object { $_.v -eq $env:VARIANT })
+          Write-Host "edits for $env:VARIANT`: $($mine.Count)"
+          foreach ($e in $mine) {
+            $path = $e.path
+            $text = [IO.File]::ReadAllText($path)
+            $n = ([regex]::Matches($text, [regex]::Escape($e.old))).Count
+            if ($n -ne 1) { Write-Host "::error::'$($e.old)' occurs $n times in $path, not once"; exit 1 }
+            [IO.File]::WriteAllText($path, $text.Replace($e.old, $e.new), (New-Object Text.UTF8Encoding($false)))
+          }
+          git --no-pager diff
+          exit 0
+
+      - name: Make the screen wide enough for the inspector rail (1920 x 1080)
+        shell: powershell
+        run: |
+          $code = @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class NamesDisplay {
+            [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+            public struct DEVMODE {
+              [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+              public short dmSpecVersion; public short dmDriverVersion; public short dmSize; public short dmDriverExtra;
+              public int dmFields; public int dmPositionX; public int dmPositionY; public int dmDisplayOrientation;
+              public int dmDisplayFixedOutput; public short dmColor; public short dmDuplex; public short dmYResolution;
+              public short dmTTOption; public short dmCollate;
+              [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+              public short dmLogPixels; public int dmBitsPerPel; public int dmPelsWidth; public int dmPelsHeight;
+              public int dmDisplayFlags; public int dmDisplayFrequency; public int dmICMMethod; public int dmICMIntent;
+              public int dmMediaType; public int dmDitherType; public int dmReserved1; public int dmReserved2;
+              public int dmPanningWidth; public int dmPanningHeight;
+            }
+            [DllImport("user32.dll", CharSet = CharSet.Ansi)] public static extern int EnumDisplaySettings(string deviceName, int modeNum, ref DEVMODE devMode);
+            [DllImport("user32.dll", CharSet = CharSet.Ansi)] public static extern int ChangeDisplaySettings(ref DEVMODE devMode, int flags);
+            [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
+            public static string Size() { return GetSystemMetrics(0) + " x " + GetSystemMetrics(1); }
+            public static int Set(int w, int h) {
+              DEVMODE dm = new DEVMODE();
+              dm.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
+              if (EnumDisplaySettings(null, -1, ref dm) == 0) return -100;
+              dm.dmPelsWidth = w; dm.dmPelsHeight = h; dm.dmFields = 0x80000 | 0x100000;
+              return ChangeDisplaySettings(ref dm, 0);
+            }
+          }
+          '@
+          Add-Type -TypeDefinition $code
+          # GetSystemMetrics reads the screen as it is NOW; System.Windows.Forms.Screen caches it per
+          # process, which is why the first run printed 1024 x 768 after a change that had worked
+          Write-Host "the primary screen was $([NamesDisplay]::Size()) (GetSystemMetrics)"
+          try { Set-DisplayResolution -Width 1920 -Height 1080 -Force -ErrorAction Stop; Write-Host 'Set-DisplayResolution answered' } catch { Write-Host "Set-DisplayResolution: $_" }
+          Write-Host "after Set-DisplayResolution: $([NamesDisplay]::Size())"
+          if ([NamesDisplay]::GetSystemMetrics(0) -lt 1920) {
+            Write-Host "ChangeDisplaySettings answered $([NamesDisplay]::Set(1920, 1080)) (0 is DISP_CHANGE_SUCCESSFUL)"
+            Write-Host "after ChangeDisplaySettings: $([NamesDisplay]::Size())"
+          }
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Check out the pinned commits
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\build-sdk-dll.ps1 -Workspace "$env:RUNNER_TEMP\sdk" -CheckoutOnly
+          exit $LASTEXITCODE
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ runner.temp }}/sdk/message/go.mod
+          cache: false
+
+      - name: Build the dll from the composition and stage it
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File app\tools\build-sdk-dll.ps1 -Workspace "$env:RUNNER_TEMP\sdk" -Stage
+          exit $LASTEXITCODE
+
+      - name: Build the app (Release x64, the dll required)
+        shell: pwsh
+        working-directory: app
+        run: |
+          $pin = '10.0.22621.0'
+          $roots = @("${env:ProgramFiles(x86)}\Windows Kits\10", "$env:ProgramFiles\Windows Kits\10") | Where-Object { Test-Path -LiteralPath $_ }
+          $usable = @(foreach ($r in $roots) {
+            Get-ChildItem (Join-Path $r 'Include') -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' -and
+                (Test-Path -LiteralPath (Join-Path $r "Include\$($_.Name)\um\windows.h")) -and
+                (Test-Path -LiteralPath (Join-Path $r "Lib\$($_.Name)\um\x64\kernel32.lib")) } |
+              Select-Object -ExpandProperty Name
+          }) | Select-Object -Unique | Sort-Object { [version]$_ }
+          $usable = @($usable)
+          $sdk = if ($usable -contains $pin) { $pin } else { $usable[-1] }
+          msbuild URmessage.sln /restore /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=$sdk /p:UrmRequireSdkDll=true /m /v:minimal /clp:Summary
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path -LiteralPath build\x64\Release\URnetworkSdk.dll)) { Write-Host '::error::no URnetworkSdk.dll beside the exe'; exit 1 }
+          Get-Item build\x64\Release\URmessage.exe, build\x64\Release\URnetworkSdk.dll | Format-Table Name, Length | Out-String | Write-Host
+
+      - name: The live setup (${{ matrix.variant }})
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github\s1\s1-live.ps1 `
+            -Exe "$env:GITHUB_WORKSPACE\app\build\x64\Release\URmessage.exe" `
+            -Work "$env:RUNNER_TEMP\s1" -Out "$env:GITHUB_WORKSPACE\s1out" -Variant '${{ matrix.variant }}' | Tee-Object -FilePath "$env:RUNNER_TEMP\s1.out"
+          $code = $LASTEXITCODE
+          Set-Content -LiteralPath "$env:RUNNER_TEMP\s1.code" -Value $code
+          Write-Host "the driver exited $code"
+          exit 0
+
+      - name: Judge (${{ matrix.variant }})
+        shell: powershell
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          $expect = @{
+            'ma-unreadable' = @('quarantine: the log names the state UNREADABLE', 'putback: the log names the state MADE', 'putback: the identity opens, with no Unreadable step and no setup')
+            'ma-nogroup' = @('setup: the composer says no group yet', 'setup: the composer does not say there is no live session')
+            'as-built' = 'pass'
+            'ma3' = @('typeback captures black', 'boxes-empty captures black')
+            'mx-copy' = @('typeback: every word field is a password field', 'typeback: the reveal switch is there', 'boxes: the empty box 7 is marked in its own field', 'boxes: the doubled box 7 is marked in its own field', 'boxes: box 7 off the list is marked in its own field', 'typeback-wrong: word 1 is marked in its own field')
+            'ma-listcheck' = @('boxes: the app names box 7, whose word the library''s fold splits', 'boxes: box 7 off the list is marked in its own field', 'boxes: with box 7 off the list, nothing was sent to the library')
+            'ma-sessionup' = @('setup: the strip reads Connected', 'account: the strip reads Connected')
+            'ma-wts' = @('session: a forged WTS_REMOTE_CONNECT is read again')
+            'ma-wtsreg' = @('session: the window watches session changes')
+            'ma-trust' = @('session: a forged WTS_REMOTE_CONNECT is read again', 'session: the window still holds WDA_EXCLUDEFROMCAPTURE', 'words-after-a-forged-session-change captures black', 'session: no remote warning after the forged message')
+          }
+          $code = [int](Get-Content -LiteralPath "$env:RUNNER_TEMP\s1.code")
+          $failedFile = Join-Path (Join-Path $env:GITHUB_WORKSPACE 's1out') "$env:VARIANT-failed.txt"
+          $failed = @(Get-Content -LiteralPath $failedFile -Encoding UTF8 | Where-Object { $_ -ne '' })
+          Write-Host "the driver exited $code, with $($failed.Count) failed check(s):"
+          $failed | ForEach-Object { Write-Host "  $_" }
+          $e = $expect[$env:VARIANT]
+          if ($e -is [string] -and $e -eq 'pass') {
+            if ($code -eq 0 -and $failed.Count -eq 0) { Write-Host "$env:VARIANT`: every check passed"; exit 0 }
+            Write-Host "::error::$env:VARIANT`: the driver failed"; exit 1
+          }
+          $own = @($e)
+          $other = @($failed | Where-Object { $f = $_; @($own | Where-Object { $f.StartsWith($_) }).Count -eq 0 })
+          $hit = @($own | Where-Object { $o = $_; @($failed | Where-Object { $_.StartsWith($o) }).Count -gt 0 })
+          if ($code -ne 0 -and $hit.Count -eq $own.Count -and $other.Count -eq 0) {
+            Write-Host "$env:VARIANT KILLED by its own checks, and by nothing else: $($hit -join ' | ')"
+            exit 0
+          }
+          Write-Host "::error::$env:VARIANT not killed for its own reason: own checks failed $($hit.Count)/$($own.Count); other failures $($other.Count): $($other -join ' | ')"
+          exit 1
+
+      - name: Upload the captures, the names and the log (scanned for the words by the driver)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s1-live-${{ matrix.variant }}
+          path: s1out/
+          if-no-files-found: warn
