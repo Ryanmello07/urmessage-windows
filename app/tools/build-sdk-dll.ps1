@@ -28,9 +28,7 @@
 #
 # WHAT IT CHECKS. Every check runs, each failure is named, and the exit code is 1 if any failed.
 #   1. composition.txt: each line is a name, a url under https://github.com/urnetwork/ and a full
-#      commit SHA; no name twice; message is pinned. A url outside urnetwork is accepted only when it
-#      is EXACTLY one of $script:ReviewSources below (a pull request head on a fork, until that pull
-#      request merges), and every check that names the pin prints FORK beside it.
+#      commit SHA; no name twice; message is pinned.
 #   2. each checkout is at its pin, made with core.autocrlf=false, with no local change.
 #   3. the pinned names other than message are exactly the sibling checkouts message's
 #      sdk/cgo/go.mod replaces by path (../../../<name>), both ways.
@@ -166,22 +164,7 @@ function Write-Utf8([string]$path, [string]$text) {
 # is returned, with Problem set when it is not a usable pin, so a caller can say which.
 #
 # -AnySource reads message's file, and only there is the url free. This script fetches from
-# composition.txt's urls and from no other, so those are held to https://github.com/urnetwork/,
-# with ONE designed exception, the review sources below.
-#
-# THE REVIEW SOURCES: THE FORKS A PIN MAY FETCH FROM WHILE ITS PULL REQUEST IS OPEN (the lead's ruling
-# R69, applied to this app on 2026-10-18; message-server's scripts/siblings.sh has the same list for
-# the same reason). Each is an exact url, compared case for case: the same fork without .git, another
-# fork of the same owner, another owner, http, and any path trick stay refused. A row fetched from
-# one is marked Fork and printed FORK. The rules that come with it:
-#   - a pull request whose composition.txt names a review source says so in its first line, and
-#     merges only after the pull request that makes that commit part of urnetwork's repository;
-#   - before it is ready, a commit moves the line back to urnetwork at the merged commit and
-#     deletes the source from this list, so that the list is empty again;
-#   - no other source is ever added without a ruling.
-# Today: identity phase 1's slice 1 pins message at W-lib's slice-1 head on the owner's fork
-# (identity/i1); composition.txt names the commit, and is the one place that does.
-$script:ReviewSources = @('https://github.com/Ryanmello07/urmessage.git')
+# composition.txt's urls and from no other, so those are held to https://github.com/urnetwork/.
 # message's file is read for its commits: where message fetches a commit from is message's rule
 # (its scripts/siblings.sh lists the forks a pull request head may come from, and at the commit
 # pinned since the pull requests that moved messaging merged, that list is empty), and a commit
@@ -194,7 +177,7 @@ function Read-PinRows([string]$text, [switch]$AnySource) {
     $line = $raw.TrimEnd("`r")
     if ($line -match '^\s*(#|$)') { continue }
     $fields = @($line.Trim() -split '\s+')
-    $row = [pscustomobject]@{ Line = $n; Name = $fields[0]; Url = ''; Commit = ''; Problem = ''; Fork = $false }
+    $row = [pscustomobject]@{ Line = $n; Name = $fields[0]; Url = ''; Commit = ''; Problem = '' }
     if ($fields.Count -ne 3) {
       $row.Problem = "line $n has $($fields.Count) fields, want 3 (name url commit)"
     } else {
@@ -202,11 +185,6 @@ function Read-PinRows([string]$text, [switch]$AnySource) {
       $row.Commit = $fields[2]
       if ($row.Name -cnotmatch '^[a-z][a-z0-9-]*$') {
         $row.Problem = "line ${n}: '$($row.Name)' is not a sibling name"
-      } elseif (-not $AnySource -and $script:ReviewSources -ccontains $row.Url) {
-        $row.Fork = $true
-        if ($row.Commit -cnotmatch '^[0-9a-f]{40}$') {
-          $row.Problem = "line ${n}: '$($row.Name)' is pinned to '$($row.Commit)', not a full commit SHA"
-        }
       } elseif (-not $AnySource -and ($row.Url -cnotmatch '^https://github\.com/urnetwork/[A-Za-z0-9_-][A-Za-z0-9_.-]*\.git$' -or $row.Url.Contains('..'))) {
         $row.Problem = "line ${n}: '$($row.Name)' fetches from $($row.Url), outside https://github.com/urnetwork/"
       } elseif ($row.Commit -cnotmatch '^[0-9a-f]{40}$') {
@@ -498,13 +476,7 @@ function Invoke-SelfTest {
   $bad = @(
     @("message https://github.com/urnetwork/message.git f3f8f2bd", 'not a full commit SHA'),
     @("message https://github.com/urnetwork/message.git FILL_IN_THE_PIN", 'not a full commit SHA'),
-    @("message https://github.com/Ryanmello07/urmessage $sha", 'outside https://github.com/urnetwork/'),
-    @("message https://github.com/ryanmello07/urmessage.git $sha", 'outside https://github.com/urnetwork/'),
-    @("message https://github.com/Ryanmello07/connect.git $sha", 'outside https://github.com/urnetwork/'),
-    @("message https://github.com/someone/urmessage.git $sha", 'outside https://github.com/urnetwork/'),
-    @("message http://github.com/Ryanmello07/urmessage.git $sha", 'outside https://github.com/urnetwork/'),
-    @("message https://github.com/Ryanmello07/urmessage.git/../x.git $sha", 'outside https://github.com/urnetwork/'),
-    @("message https://github.com/Ryanmello07/urmessage.git FILL_IN_THE_PIN", 'not a full commit SHA'),
+    @("message https://github.com/Ryanmello07/urmessage.git $sha", 'outside https://github.com/urnetwork/'),
     @("message https://github.com/urnetwork/../x.git $sha", 'outside https://github.com/urnetwork/'),
     @("message https://github.com/urnetwork/message.git $sha extra", 'want 3'),
     @("message https://github.com/urnetwork/message.git $sha`nmessage https://github.com/urnetwork/message.git $sha", 'pinned twice'),
@@ -514,13 +486,6 @@ function Invoke-SelfTest {
     $problems = Test-PinSet (Read-PinRows $case[0])
     Expect "pins: refused, '$($case[1])'" (@($problems | Where-Object { $_ -like "*$($case[1])*" }).Count -gt 0)
   }
-
-  # THE REVIEW SOURCE (R69, applied to the app): the listed fork is accepted, exactly, and marked so
-  # that it prints FORK; every other spelling of it is refused above, and the list holds that one url
-  Expect 'pins: the review sources are exactly the one url the lead ruled' (($script:ReviewSources.Count -eq 1) -and ($script:ReviewSources[0] -ceq 'https://github.com/Ryanmello07/urmessage.git'))
-  $listed = Read-PinRows "message https://github.com/Ryanmello07/urmessage.git $sha`nglog https://github.com/urnetwork/glog.git $sha`n"
-  Expect 'pins: the listed review source is accepted' ((Test-PinSet $listed).Count -eq 0)
-  Expect 'pins: the listed review source is marked a fork, and an urnetwork pin is not' ($listed[0].Fork -and -not $listed[1].Fork)
 
   # message's own file: the url is free there, and nothing else is.
   $forkUrl = 'https://github.com/Ryanmello07/connect.git'
@@ -636,10 +601,7 @@ if ($problems.Count -gt 0) {
 }
 $pin = @{}
 foreach ($row in $rows) { $pin[$row.Name] = $row }
-Pass '1' "composition.txt pins $(@($rows | ForEach-Object { "$($_.Name)@$($_.Commit.Substring(0, 12))$(if ($_.Fork) { ' FORK' })" }) -join ', ')"
-foreach ($row in @($rows | Where-Object { $_.Fork })) {
-  Write-Host "FORK $($row.Name)@$($row.Commit) is fetched from $($row.Url), a review source (R69): the pull request that pins it merges only after that commit's own pull request has merged"
-}
+Pass '1' "composition.txt pins $(@($rows | ForEach-Object { "$($_.Name)@$($_.Commit.Substring(0, 12))" }) -join ', ')"
 
 # 2. the checkouts
 New-Item -ItemType Directory -Force -Path $Workspace | Out-Null

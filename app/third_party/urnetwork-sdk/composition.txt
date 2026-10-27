@@ -18,9 +18,7 @@
 # never come from another composition than the one named here.
 #
 # A line is: name url commit. The commit is a full SHA; the url is under
-# https://github.com/urnetwork/, or EXACTLY a review source build-sdk-dll.ps1 lists (a pull request
-# head on a fork, until it merges: the lead's ruling R69, applied to this app), which every check
-# prints as FORK. The names other than message are exactly the sibling checkouts
+# https://github.com/urnetwork/. The names other than message are exactly the sibling checkouts
 # message's sdk/cgo/go.mod replaces by path (../../../<name>), and each commit must equal the one
 # message's own scripts/siblings.txt pins at the message commit, so this builds the combination
 # message's test.sh tests. build-sdk-dll.ps1 refuses all of these otherwise.
@@ -43,33 +41,26 @@
 # checked at. A branch that moves on is ahead of its pin, and the pin stays until it is moved.
 #
 # message: sdk/cgo, the messaging half, its .def, its header, and the scripts that compose, build
-# and check the library.
-#
-# PINNED TO A FORK COMMIT, 732d8c1eb616, ON Ryanmello07/urmessage's identity/i1: W-lib's slice 1 of
-# identity phase 1, the C exports for slice 1 (urnet_message_device_identity, _identity_state,
-# _create_identity, _confirm_words and _check_word, and the member json's device_id and identity),
-# after slice 1's two review rounds (LRI R84 and R89). The library's fork-ci 40339238609 is green
-# on all four legs at this commit. The app's slice 1 (Task 16) is built on them. From the pin
-# before, c6b186cf6b91, the header adds urnet_message_device_identity_state and its four
-# URNET_MESSAGE_IDENTITY_* states, and URNET_MESSAGE_FORGET_UNKNOWN for a leave whose outcome is not
-# known; the .def adds the one export; scripts/siblings.txt and go.mod are the same. THIS PIN MERGES
-# ONLY AFTER THE LIBRARY'S SLICE-1 PULL REQUEST HAS
-# MERGED: before this app's pull request is ready, a commit moves the line to urnetwork/message at
-# that merge and deletes the review source from build-sdk-dll.ps1 (R69). At this commit message's
-# scripts/siblings.txt pins sdk, connect, glog, gvisor and goidenticons at exactly the commits below,
-# so no other line moves. The two vendored files it changes (urnetwork_message.h and the .def, four
-# names more) are copied in with this line; urnetwork_sdk.h is the core's and does not change.
+# and check the library. Pinned to 252573d4b295, the merge of pull request 9 on urnetwork/message's
+# main: identity phase 1's slice 1, the C exports it is built on (urnet_message_device_identity,
+# _identity_state, _create_identity, _confirm_words and _check_word, and the member json's device_id
+# and identity), after slice 1's two review rounds (LRI R84 and R89). Its tree is that of 732d8c1e,
+# that pull request's head, which this app was built and checked on from the owner's fork while the
+# pull request was open (R69); its first parent is 03192c2b. Against the pin before, the two
+# vendored files it changes (urnetwork_message.h and the .def) are copied in with this line, and
+# urnetwork_sdk.h is the core's and does not change. Its scripts/siblings.txt pins sdk, connect,
+# glog, gvisor and goidenticons at exactly the commits below, so no other line moves.
 #
 # The pin before this one: c7949cfdf9a6, the merge of pull request 7 on urnetwork/message's
 # main: the hardening plan's phase T1, the join seal. Task 58's refusal copy answers its sentences.
 # Its tree is that of c7501a19, T1's last commit (FIX 6c), and its first parent is 215a0696 (the
-# merge of pull request 6, phase T1a), the pin main had. The pin before this one, e4eb247d4840 (T1
+# merge of pull request 6, phase T1a), the pin main had. The pin before that, e4eb247d4840 (T1
 # after its sixth fix round and FIX 6b), is an ancestor of it. Between e4eb247 and this pin,
 # sdk/cgo (its .def, its header and its scripts) and scripts/siblings.txt did not change, and no
 # library sentence changed: FIX 6c changed the store's internals. The composition job holds the
 # vendored export list and headers to the composition's, byte for byte. Its own pins are the two
 # merge commits below.
-message https://github.com/Ryanmello07/urmessage.git 732d8c1eb6166b8904f01d24fe609e08649019ec
+message https://github.com/urnetwork/message.git 252573d4b2956bc97086860ae5e5e10cd241f795
 #
 # sdk: the core SDK. Pinned to urnetwork/sdk main as the removal of messaging merged there
 # (b8209d9d, 2026-10-09 12:25 UTC). compose.sh refuses a core that still carries the messaging
