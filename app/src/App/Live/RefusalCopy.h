@@ -321,6 +321,17 @@ inline constexpr std::string_view kSayLeaveMarkForeign =
 
 // ── the join dialog's own copy ─────────────────────────────────────────────────────────────────
 
+// THE DIALOG'S TITLE, BY ITS ROAD (the lead's ruling on item 4, 2026-10-18). A title must not
+// contradict the sentence under it: a store that cannot make a join code was titled "Join a group"
+// over "This installation cannot make a join code, so it cannot join a group". Each title names its
+// own state, in the person's words, and only the join road is titled "Join a group". --diagnose's
+// dialog title line holds each against its sentence.
+inline constexpr wchar_t kNoCredentialTitle[] = L"URmessage needs its credential";
+inline constexpr wchar_t kNoJoinCodeTitle[] = L"URmessage cannot make a join code";
+inline constexpr wchar_t kJoinTitle[] = L"Join a group";
+// The title for a state: no credential, a store that cannot make a join code, or the join road.
+std::wstring_view OnboardTitle(bool noCredential, bool noJoinCode);
+
 // The intro on the join road, as it was before this file.
 inline constexpr std::wstring_view kJoinIntro =
     L"This device is connected but is not in a group yet. A group is opened by somebody who is "

@@ -2780,6 +2780,37 @@ std::vector<std::wstring> RefusalCopyDiagnostics() {
         Verdict(ok), held, heldTrue, joinKept, adderVerbatim, adder, pasteTrue));
   }
 
+  // 6b. THE DIALOG'S TITLE AGAINST THE SENTENCE UNDER IT (the lead's ruling on item 4). A store
+  //     that cannot make a join code is titled by that state, as its sentence (kSayNoDeviceWrapKey)
+  //     names it, and is not offered the join the sentence says it cannot make; a computer with no
+  //     credential is titled by the credential; only the join road keeps "Join a group".
+  {
+    auto lower = [](std::wstring s) {
+      for (auto& c : s)
+        if (L'A' <= c && c <= L'Z') c = static_cast<wchar_t>(c - L'A' + L'a');
+      return s;
+    };
+    const std::wstring credTitle(OnboardTitle(true, false));
+    const std::wstring codeTitle(OnboardTitle(false, true));
+    const std::wstring joinTitle(OnboardTitle(false, false));
+    const std::wstring codeSentence = lower(std::wstring(kSayNoDeviceWrapKey.begin(), kSayNoDeviceWrapKey.end()));
+    const bool codeAgrees = lower(codeTitle).find(L"join code") != std::wstring::npos &&
+                            codeSentence.find(L"join code") != std::wstring::npos &&
+                            lower(codeTitle).find(L"join a group") == std::wstring::npos &&
+                            codeSentence.find(L"cannot join a group") != std::wstring::npos;
+    const bool credAgrees = lower(credTitle).find(L"credential") != std::wstring::npos &&
+                            lower(credTitle).find(L"join") == std::wstring::npos;
+    const bool joinKept = joinTitle == L"Join a group";
+    const bool distinct = credTitle != codeTitle && codeTitle != joinTitle && credTitle != joinTitle;
+    const bool ok = codeAgrees && credAgrees && joinKept && distinct;
+    out.push_back(std::format(
+        L"  dialog title     : {}  no join code: '{}' names the join code its sentence names, and "
+        L"offers no join the sentence says cannot happen: {} | no credential: '{}' names the "
+        L"credential and no join: {} | the join road keeps 'Join a group': {} | three titles: {}   "
+        L"[query: OnboardTitle for the three roads, against kSayNoDeviceWrapKey]",
+        Verdict(ok), codeTitle, codeAgrees, credTitle, credAgrees, joinKept, distinct));
+  }
+
   // 7. "Make a new join code" (R25 Q2): offered on exactly the two rows that ask for one.
   {
     const JoinCopy rows[] = {JoinCopy::Other,         JoinCopy::JoinRefused,

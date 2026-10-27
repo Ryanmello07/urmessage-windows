@@ -165,8 +165,8 @@ std::wstring LockHeaderNote(RunMode mode);
 // expectation is keyed on the role's NAME so the mapping cannot mark its own paper.
 //
 // AND A THIRD ARM, FOR A STATE THAT DID NOT EXIST WHEN THE PAIR WAS WRITTEN. `noSession` is true on
-// a --live launch that is drawing the EMPTY world: the mesh is dialling, or has answered and this
-// device is in no group yet. Both wordings above are false there and in different ways. "Demo
+// a --live launch that is drawing the EMPTY world: the mesh is dialling, or has answered and no
+// group is on the screen. Both wordings above are false there and in different ways. "Demo
 // model - nothing is sent, and no message leaves this window" is false because there is no demo:
 // no fabricated row is on screen, the list is empty, and the sentence invites a reader to think
 // the thing they are looking at is a mock-up. "Live session - these messages are real" is false
@@ -176,8 +176,13 @@ std::wstring LockHeaderNote(RunMode mode);
 // whose mesh has not answered draws the FABRICATED world, so the fabricated wording is true there
 // - and that held for exactly as long as --live implied --demo. It does not any more.
 //
-// The true sentence names the absence and says what to do about it, and it claims nothing about
-// encryption in either direction, because nothing has been encrypted or decrypted yet.
+// The true sentence names the absence ON THE SCREEN and claims nothing about this device. The
+// empty world is drawn for a device in no group, and also for one whose group is on its disk and
+// did not open (R25 Q4), one that cannot make a join code, and a launch whose mesh has not
+// answered, which knows none of this yet. So it neither says "no group" of the device nor tells
+// it to join one - the onboarding dialog says the right thing for each (Live/RefusalCopy.h) -
+// and RunModeCopyDiagnostics' `run mode held` holds every third arm to that. It claims nothing
+// about encryption in either direction, because nothing has been encrypted or decrypted yet.
 std::wstring ComposerNote(RunMode mode, bool maySend, bool noSession = false);
 
 // The Network page's relay-path caption (chrome voice, letterspaced uppercase) and the status
@@ -276,7 +281,7 @@ std::wstring PhraseChangedLine(RunMode mode, std::wstring const& device);
 // every launch; the mode of the RUN is irrelevant to it, because it evaluates BOTH arms by passing
 // the enum explicitly. That is the only way a fabricated launch can gate the live copy at all.
 //
-// THREE CLAUSES BEYOND THE PAIRS, each one a property the pair test cannot see:
+// THE CLAUSES BEYOND THE PAIRS, each one a property the pair test cannot see:
 //   * the DUMP line, whose two arms deliberately share a prefix;
 //   * the SEND clause, asserted PER (MODE, ROLE) since item 242 R4 - the fabricated arm must deny
 //     the send path whatever the role and must be ONE string across the roles; the live arm must
@@ -295,7 +300,10 @@ std::wstring PhraseChangedLine(RunMode mode, std::wstring const& device);
 //   * the NO-SESSION clause, over EVERY third arm (the composer's and the six above): each differs
 //     from both of its function's arms, names neither mode, and the disclosure's keeps the live
 //     absence list word for word; and the LAUNCH table, DrawnRunModeFor and NoSessionFor over all
-//     four (launch, latch) pairs.
+//     four (launch, latch) pairs;
+//   * the HELD clause - no third arm says this device is in no group, or tells it to join one: the
+//     empty world is also a device whose group did not open (R25 Q4) and a store that cannot make a
+//     join code (Task 58). Its control is in the same query, both ways.
 std::vector<std::wstring> RunModeCopyDiagnostics();
 
 }  // namespace urmsg

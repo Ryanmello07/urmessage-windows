@@ -237,6 +237,12 @@ std::string WaitingText(std::string_view note, bool holdsGroup) {
   return out;
 }
 
+std::wstring_view OnboardTitle(bool noCredential, bool noJoinCode) {
+  if (noCredential) return kNoCredentialTitle;
+  if (noJoinCode) return kNoJoinCodeTitle;
+  return kJoinTitle;
+}
+
 std::wstring_view OnboardIntro(bool offerLeaveHeldGroup, bool founded, bool holdsGroup) {
   return offerLeaveHeldGroup || founded || holdsGroup ? kHeldIntro : kJoinIntro;
 }

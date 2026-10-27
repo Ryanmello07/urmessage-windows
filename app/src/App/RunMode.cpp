@@ -18,6 +18,10 @@
 // DemoWorld.h is pure C++ and compiled NotUsing the pch for the same reason this file is, so the
 // "no winrt before init_apartment" property survives the include.
 #include "Demo/DemoWorld.h"
+// RefusalCopy's sentences for the held-group clause below (R25 Q4): kWaitingNotInAGroup, the one
+// that is false of a device whose group did not open, and kHeldIntro, the one that is true of it.
+// Pure C++ like this file (<string> and <string_view> only), so the property above survives.
+#include "Live/RefusalCopy.h"
 
 namespace urmsg {
 namespace {
@@ -245,8 +249,14 @@ std::wstring ComposerNote(RunMode mode, bool maySend, bool noSession) {
   // THE THIRD ARM FIRST, because it is about whether there is anything to send TO, and the two
   // below are about what happens when there is. See the header for why both of them are false
   // while the empty world is on screen.
-  if (noSession)
-    return L"No group yet \u2014 there is nothing to send to. Join a group to start a conversation.";
+  //
+  // IT SAYS WHAT THE SCREEN HAS, AND NOTHING OF WHAT THIS DEVICE HOLDS. It said "No group yet ...
+  // Join a group to start a conversation". "No group yet" is false of a device whose group is on its
+  // disk and did not open (R25 Q4), and "join a group" is advice that a store which cannot make a
+  // join code cannot take (Task 58: such an installation "cannot join a group"). The onboarding
+  // dialog's sentences say the right thing for each (Live/RefusalCopy.h); this line says what
+  // Settings' disclosure says over the same world.
+  if (noSession) return L"No group is on these screens yet, so there is nothing to send to.";
   if (mode != RunMode::Live) return L"Demo model \u2014 nothing is sent, and no message leaves this window.";
   if (!maySend)
     return L"Live session \u2014 these messages are real. You can read this group but not send "
@@ -788,6 +798,98 @@ std::vector<std::wstring> RunModeCopyDiagnostics() {
         L"AbsenceList(body(Live, true)) == AbsenceList(body(Live))]",
         ok ? L"PASS" : L"FAIL", good, std::size(thirds), firstBad, absencesKept ? L"yes" : L"NO",
         printed));
+  }
+
+  // THE EMPTY WORLD SAYS NOTHING OF WHAT THIS DEVICE HOLDS. Every third arm is drawn over the empty
+  // world, and that world is not only a device in no group: it is also a device whose group is on
+  // its disk and did not open (it predates the join seal, or its record could not be read just
+  // now), a store that cannot make a join code, and a launch whose mesh has not answered, which
+  // knows none of this yet. So no third arm may say that this device is in no group, nor tell it to
+  // join one. EACH NEEDLE COMES FROM A SENTENCE THAT SAID IT, AND IS FALSE OF A STATE THE EMPTY WORLD
+  // DRAWS: "no group yet" (the composer's own third arm until fix/advanced-figure-held-group, kept
+  // here as the control's text) and "not in a group" (RefusalCopy's kWaitingNotInAGroup) are false
+  // of a device whose group did not open (R25 Q4); "join a group" is advice a store that cannot make
+  // a join code cannot take (Task 58's kSayNoDeviceWrapKey: it "cannot join a group").
+  //
+  // THE CONTROL IS IN THE SAME QUERY, BOTH WAYS. Every needle must find a sentence that said it, and
+  // none may find a sentence that is TRUE of the empty world: kHeldIntro, the dialog's sentence for a
+  // device that holds a group, and the two screen-scoped phrasings the third arms use, "No group is
+  // on these screens yet" in the composer's and the disclosure's ("In a group, ..."). So a needle
+  // widened until it also hits the true ones ("no group", "in a group") fails the control, and is
+  // not read as two bad arms.
+  //
+  // A LIST OF PHRASES IS A BLACKLIST, AND THAT IS ADMITTED, as the send clause admits it: "No groups
+  // yet", "isn't in a group" or "join one" would pass it. It holds the sentences that have been
+  // written; add to it when a new one is. Every arm a needle finds is printed.
+  {
+    const std::wstring needles[] = {L"no group yet", L"not in a group", L"join a group"};
+    const std::wstring oldComposer =
+        L"No group yet \u2014 there is nothing to send to. Join a group to start a conversation.";
+    const std::wstring waiting(live::kWaitingNotInAGroup.begin(), live::kWaitingNotInAGroup.end());
+    const std::wstring noJoinCode(live::kSayNoDeviceWrapKey.begin(), live::kSayNoDeviceWrapKey.end());
+    const std::wstring held(live::kHeldIntro);
+    // what must NOT match: sentences that are true of the empty world, as literals, so that a change
+    // to an arm cannot move the control with it
+    const std::wstring trueSamples[] = {
+        held,
+        L"No group is on these screens yet, so there is nothing to send to.",
+        L"No group is on these screens yet, so no message is either. In a group, the messages here "
+        L"are records this device fetches from the message server and opens under MLS.",
+    };
+    struct Arm {
+      std::wstring_view what;
+      std::wstring text;
+    };
+    const Arm arms[] = {
+        {L"composer", ComposerNote(RunMode::Live, true, true)},
+        {L"composer (observer)", ComposerNote(RunMode::Live, false, true)},
+        {L"composer (fabricated)", ComposerNote(RunMode::Fabricated, true, true)},
+        {L"relay title", RelayPathGroupTitle(RunMode::Live, true)},
+        {L"drawer name", RelayDrawerName(RunMode::Live, true)},
+        {L"key name +", ServerKeyStateName(true, RunMode::Live, true)},
+        {L"key name -", ServerKeyStateName(false, RunMode::Live, true)},
+        {L"disclosure caption", DisclosureCaption(RunMode::Live, true)},
+        {L"disclosure title", DisclosureTitle(RunMode::Live, true)},
+        {L"disclosure body", DisclosureBody(RunMode::Live, true)},
+    };
+    size_t clean = 0;
+    std::wstring found;
+    for (auto const& a : arms) {
+      bool hit = false;
+      for (auto const& n : needles) {
+        if (!ContainsWord(a.text, n)) continue;
+        hit = true;
+        if (!found.empty()) found += L" | ";
+        found += std::wstring(a.what) + L" says \"" + n + L"\": \"" + AsciiOnly(a.text) + L"\"";
+      }
+      clean += hit ? 0 : 1;
+    }
+    size_t fired = 0;
+    for (auto const& n : needles)
+      fired += (ContainsWord(oldComposer, n) || ContainsWord(waiting, n) ||
+                ContainsWord(noJoinCode, n))
+                   ? 1
+                   : 0;
+    size_t quiet = 0;
+    std::wstring hitTrue;
+    for (auto const& t : trueSamples) {
+      bool hit = t.empty();
+      for (auto const& n : needles) hit = hit || ContainsWord(t, n);
+      if (hit && hitTrue.empty()) hitTrue = L" (first hit: \"" + AsciiOnly(t) + L"\")";
+      quiet += hit ? 0 : 1;
+    }
+    const bool controlHolds = fired == std::size(needles) && quiet == std::size(trueSamples);
+    const bool ok = clean == std::size(arms) && controlHolds;
+    lines.push_back(std::format(
+        L"  run mode held    : {}  {}/{} third arms say nothing of what this device holds{}{}; "
+        L"control: {}/{} needles find a sentence that said it (the composer's old third arm, "
+        L"kWaitingNotInAGroup, kSayNoDeviceWrapKey), and {}/{} sentences true of the empty world "
+        L"(the held intro and the two screen-scoped phrasings) are found by none{}   [query: no third "
+        L"arm may contain \"no group yet\" or \"not in a group\" (R25 Q4: false of a group that did not "
+        L"open) or \"join a group\" (Task 58: advice a store with no join code cannot take), "
+        L"case-insensitive; a list of phrases, admitted as one]",
+        ok ? L"PASS" : L"FAIL", clean, std::size(arms), found.empty() ? L"" : L" - FOUND: ",
+        found, fired, std::size(needles), quiet, std::size(trueSamples), hitTrue));
   }
 
   // THE LAUNCH TABLE: which arm each (launch, latch) pair takes. Written out from RunMode.h's
