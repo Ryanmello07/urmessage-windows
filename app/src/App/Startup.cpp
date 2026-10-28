@@ -50,6 +50,7 @@
 #include "Live/RefusalCopy.h"     // the refusal copy lines below (pure; Task 58)
 #include "Demo/DemoSwitches.h"
 #include "Demo/IdentityDemo.h"  // the identity screens' pure gate (Task 6)
+#include "Live/LiveIdentity.h"  // the first identity's pure gate (identity phase 1, Task 16)
 #include "Demo/DemoStress.h"
 
 // The Windows App SDK version this binary was BUILT against, injected from the
@@ -979,6 +980,47 @@ std::vector<std::wstring> ObserverDiagnostics() {
         Verdict(ok), EscapeNonAscii(darkSend), EscapeNonAscii(darkBox), EscapeNonAscii(obsSend),
         EscapeNonAscii(obsBox), EscapeNonAscii(obsHint), EscapeNonAscii(liveSend),
         EscapeNonAscii(liveEmpty), EscapeNonAscii(liveBox), boxState ? L"yes" : L"NO"));
+  }
+
+  // 1b. THE EMPTY WORLD'S NAMES (R89, X2-7): with no group yet the composer's two names say there
+  // is no group yet, as the caption does, and never "no live session", which is false while the
+  // session is up. CONTROLS: without the empty world's bit every arm keeps its shipped name, and
+  // the bit changes no other arm.
+  {
+    constexpr std::wstring_view kSessionDenial = L"no live session";
+    constexpr std::wstring_view kNoGroup = L"no group yet";
+    const std::wstring send = ComposerSendNameFor(ComposerState::NoSession, true, true, false, false);
+    const std::wstring sendEmpty =
+        ComposerSendNameFor(ComposerState::NoSession, true, false, false, false);
+    const std::wstring box = ComposerBoxNameFor(ComposerState::NoSession, true, false);
+    const bool saysNoGroup = send.find(kNoGroup) != std::wstring::npos &&
+                             sendEmpty.find(kNoGroup) != std::wstring::npos &&
+                             box.find(kNoGroup) != std::wstring::npos;
+    const bool noDenial = send.find(kSessionDenial) == std::wstring::npos &&
+                          sendEmpty.find(kSessionDenial) == std::wstring::npos &&
+                          box.find(kSessionDenial) == std::wstring::npos;
+    bool shipped = true;
+    for (ComposerState s : {ComposerState::NoSession, ComposerState::ObserverOnly,
+                            ComposerState::MaySend}) {
+      for (bool text : {false, true}) {
+        shipped = shipped && ComposerSendNameFor(s, false, text, false, false) ==
+                                 ComposerSendNameAt(s, text, false, false);
+        if (s != ComposerState::NoSession)
+          shipped = shipped && ComposerSendNameFor(s, true, text, false, false) ==
+                                   ComposerSendNameAt(s, text, false, false);
+      }
+      shipped = shipped && ComposerBoxNameFor(s, false, false) == ComposerBoxName(s, false);
+      if (s != ComposerState::NoSession)
+        shipped = shipped && ComposerBoxNameFor(s, true, false) == ComposerBoxName(s, false);
+    }
+    const bool ok = saysNoGroup && noDenial && shipped;
+    out.push_back(std::format(
+        L"  composer nogroup : {}  no group yet: send \"{}\" (empty box \"{}\") / box \"{}\"; they say "
+        L"\"no group yet\": {}, and never \"no live session\": {}; without the bit, and in every other "
+        L"arm, the shipped names: {}   [query: ComposerSendNameFor and ComposerBoxNameFor with the "
+        L"empty world's bit, against ComposerSendNameAt and ComposerBoxName]",
+        Verdict(ok), EscapeNonAscii(send), EscapeNonAscii(sendEmpty), EscapeNonAscii(box),
+        saysNoGroup ? L"yes" : L"NO", noDenial ? L"yes" : L"NO", shipped ? L"yes" : L"NO"));
   }
 
   // 2. the hidden row, over the fabricated world, with BOTH sets printed
@@ -3941,6 +3983,11 @@ std::vector<std::wstring> CollectDiagnostics() {
   // the lines above; the copy pairs these screens use are gated in RunModeCopyDiagnostics.
   for (auto& line : urmsg::demo::identity::IdentityDemoDiagnostics())
     lines.push_back(std::move(line));
+  // ...and over the library's identity (identity phase 1, slice 1: PLAN Task 16): the json, the
+  // words both ways, the gate that lets the setup go on, the live screens and their capture flags,
+  // the word fields' settings, the remote-session warning, the typed-back states, "Your ID", the
+  // roster by identity, and the store folder. Pure, like the lines above.
+  for (auto& line : urmsg::live::LiveIdentityDiagnostics()) lines.push_back(std::move(line));
   {
     using namespace urmsg::demo;
     World const& w = GetWorld();
@@ -4035,6 +4082,35 @@ std::vector<std::wstring> CollectDiagnostics() {
   // lines above are: it builds no world and names no hostname, so a plain
   // launch's log gains nothing fabricated by carrying it.
   lines.push_back(StatusStripFieldsAssertion());
+  // THE STRIP'S STATE WORD AS A PAIR (identity phase 1, Task 16: the lead's note on the preview).
+  // Each of the three words: the fabricated arm names the demo and not a live session, the live arm
+  // is the word itself, naming no demo, and the two differ.
+  {
+    namespace demo = urmsg::demo;
+    size_t good = 0;
+    std::wstring printed;
+    for (demo::ConnectState state : {demo::ConnectState::Connected, demo::ConnectState::Connecting,
+                                     demo::ConnectState::Offline}) {
+      const std::wstring word(urmsg::views::StatusStateWord(state));
+      const std::wstring fab = urmsg::StatusStateText(urmsg::RunMode::Fabricated, word);
+      const std::wstring live = urmsg::StatusStateText(urmsg::RunMode::Live, word);
+      auto has = [](std::wstring s, std::wstring const& needle) {
+        for (auto& c : s)
+          if (L'A' <= c && c <= L'Z') c = static_cast<wchar_t>(c - L'A' + L'a');
+        return s.find(needle) != std::wstring::npos;
+      };
+      const bool ok = has(fab, L"demo") && !has(fab, L"live") && live == word &&
+                      !has(live, L"demo") && fab != live;
+      good += ok ? 1 : 0;
+      if (!printed.empty()) printed += L" | ";
+      printed += L"'" + fab + L"' / '" + live + L"'";
+    }
+    lines.push_back(std::format(
+        L"  run mode strip   : {}  {}/3 state words framed by the mode (fabricated / live): {}   "
+        L"[query: StatusStateText over StatusStateWord's three words; the fabricated arm names the "
+        L"demo, the live arm is the word and names none, and the two differ]",
+        good == 3 ? L"PASS" : L"FAIL", good, printed));
+  }
   // S3: the relay drawer's rows and the strip fit their own width. The same terms: a typed
   // client_id and platform url, and stand-in widths, so nothing fabricated reaches the log.
   lines.push_back(RelayRowFitAssertion());

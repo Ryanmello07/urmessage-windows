@@ -164,6 +164,11 @@ struct LiveMember {
   std::string identityPub;   // lower-case hex; what set_role / transfer_ownership name
   std::string role;          // "owner" | "admin" | "member" | "observer"
   bool mine = false;         // this device's own leaf; exactly one row per leaf it holds
+  // IDENTITY PHASE 1 (Task 14's member json): the leaf's device ID, 19 characters, and the root of
+  // the identity it binds to, 64 lower-case hex. Both empty for a leaf no identity binds. A roster
+  // is direct or a group by how many identities it holds, not leaves (Views/RosterRules.h).
+  std::string deviceId;
+  std::string identity;
 };
 
 // A ROLE CHANGE THIS DEVICE ASKED FOR that the library has not yet answered, or answered with

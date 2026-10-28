@@ -45,6 +45,16 @@ std::wstring RoleWord(std::wstring_view role);
 // so a collapsed roster already answers who may do what.
 std::wstring MemberRowTitle(demo::MemberRef const& member);
 
+// THE ROSTER BY IDENTITY (identity phase 1, PLAN Task 16; SCOPE H6). How many PEOPLE a roster
+// holds: its distinct identities, where a member's identity is the root its leaf binds to (the
+// member json's `identity`). A leaf no identity binds counts as a person of its own, since nothing
+// says whose it is. A conversation of two people is DIRECT WHATEVER ITS NUMBER OF LEAVES: one
+// person's two devices are one party, and a phrase change never splits a person in two, because the
+// root stays (PLAN P14). The library makes no "direct" decision (PLAN Task 16), so this is the
+// app's rule, and Live/LiveWorld.cpp draws a conversation's kind from it.
+size_t IdentityCount(std::vector<demo::MemberRef> const& members);
+demo::ConversationKind KindByIdentities(std::vector<demo::MemberRef> const& members);
+
 // The five verbs a roster control can ask for. The first three are
 // urnet_message_group_set_role with the role named; the fourth is
 // urnet_message_group_transfer_ownership; the fifth is

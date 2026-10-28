@@ -23,6 +23,7 @@
 #include "Demo/DemoAutoplayLoop.h"
 #include "Demo/DemoShellState.h"
 #include "Demo/DemoSwitches.h"
+#include "Live/LiveMesh.h"
 #include "Live/LiveWorld.h"
 #include "UrComponents.h"
 #include "Views/ConversationListView.h"
@@ -75,6 +76,10 @@ struct MainWindow : MainWindowT<MainWindow> {
   // capture exclusion (Task 6) is a property of the HWND, and a screen opened by the constructor
   // asks for it before there is one to ask.
   void SetNativeHandle(HWND hwnd);
+
+  // WM_WTSSESSION_CHANGE, from the window's procedure: the session kind is read again on the
+  // dispatcher, never inside the procedure (RecheckSessionKind).
+  void QueueSessionRecheck(unsigned event);
 
  private:
   // Every label in the window, from the localization store. One place, so a
@@ -235,6 +240,9 @@ struct MainWindow : MainWindowT<MainWindow> {
   // The generation this window has already drawn. A publish that lands while an earlier beat is
   // still queued collapses into one redraw rather than N.
   std::uint64_t liveDrawn_ = 0;
+  // The world the status strip was last built off. Before a live world lands that is one of
+  // EmptyWorld()'s three, and the strip is built again when the answer changes (X-APP-7).
+  urmsg::demo::World const* stripWorldDrawn_ = nullptr;
 
   urmsg::views::ThreadView thread_{};
   urmsg::views::InspectRailView rail_{};
@@ -282,6 +290,23 @@ struct MainWindow : MainWindowT<MainWindow> {
   void ShowIdentity(urmsg::demo::identity::Screen screen,
                     urmsg::demo::identity::Selection const& sel);
   void CloseIdentity();
+  // THE LIVE IDENTITY (identity phase 1, slice 1: PLAN Task 16). The worker's IdentityState, drawn:
+  // "Set up this device", the 25 words, the type-back and the setup done, over the library's own
+  // identity (BuildLiveScreen), and Settings' Account group from that identity once it is made.
+  // PresentIdentity is the one place either kind of screen is hosted, with Property 2's ask first.
+  void ApplyIdentity();
+  void ShowLiveIdentity(urmsg::demo::identity::Screen screen, urmsg::demo::identity::LiveInputs in);
+  // ShowLiveIdentity's drawing, with the session kind already read into `in`.
+  void DrawLiveIdentity(urmsg::demo::identity::Screen screen, urmsg::demo::identity::LiveInputs in);
+  // THE SESSION KIND, READ AGAIN WHEN IT CHANGES (Spec C section 6.2; the lead's addition to LRI
+  // R84): WatchSessionKind asks for WM_WTSSESSION_CHANGE once there is a window, and
+  // RecheckSessionKind builds a words screen again when the kind it was built for has changed.
+  void WatchSessionKind();
+  void RecheckSessionKind(unsigned event);
+  void PresentIdentity(urmsg::demo::identity::ScreenModel model, urmsg::demo::identity::Screen screen,
+                       urmsg::demo::identity::Selection const& sel);
+  // Overwrite every copy of the words and of the typed words this window owns.
+  void ForgetLiveWords();
   void OnIdentityAction(urmsg::demo::identity::Button const& button);
   void QueueIdentityAction(urmsg::demo::identity::Button const& button);
   // The mode the identity screens and Settings' Account group are built in: RunMode.h's
@@ -296,6 +321,15 @@ struct MainWindow : MainWindowT<MainWindow> {
   winrt::Microsoft::UI::Xaml::Controls::Grid identityHost_{nullptr};
   urmsg::views::IdentityScreenView identityView_{};
   urmsg::demo::identity::Selection identitySel_{};
+  urmsg::live::IdentityPtr identityState_;
+  uint64_t identityDrawn_ = 0;
+  uint64_t identityWordsTaken_ = 0;
+  bool liveIdentityShown_ = false;  // the identity view on screen was built by BuildLiveScreen
+  // what that view was built from: the words while the words screen is up. WIPED when it goes.
+  urmsg::demo::identity::LiveInputs liveIdentityInputs_{};
+  // the type-back's fields as last sent, kept so a wrong word is named with every field as it was
+  // typed (nothing corrected). WIPED once the identity is made, and on the way back to the words.
+  std::vector<std::wstring> identityTyped_;
   bool captureExcluded_ = false;
   winrt::event_token captureRelease_{};
   int captureReleaseFrames_ = 0;

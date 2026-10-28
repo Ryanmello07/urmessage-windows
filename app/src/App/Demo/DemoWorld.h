@@ -89,6 +89,10 @@ struct MemberRef {
   std::wstring role;            // kRoleOwner | kRoleAdmin | kRoleMember | kRoleObserver
   bool mine = false;
   std::wstring identityPubHex;  // the ABI's identity_pub, lower-case hex; "" when unsourced
+  // IDENTITY PHASE 1: the leaf's device ID and its identity's root, as the member json has them;
+  // "" for the fixture and for a leaf no identity binds. Views/RosterRules.h counts people by them.
+  std::wstring deviceId;
+  std::wstring identity;
   std::vector<DeviceRef> devices;
   // The change this device asked for on this member and its state; see RoleActionState. `verb`
   // is the role asked for (kRoleAdmin / kRoleMember / kRoleObserver, or kRoleOwner for a transfer)

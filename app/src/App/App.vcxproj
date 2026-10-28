@@ -290,6 +290,11 @@
          dependency. It maps what the protocol hands over onto the World the
          existing views already read. -->
     <ClCompile Include="Live\LiveWorld.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <!-- NotUsing for RunMode.cpp's reason: identity phase 1's first identity, read and handed over
+         (Task 16), and its diagnose cases, which CollectDiagnostics runs before
+         winrt::init_apartment. -->
+    <ClCompile Include="Live\LiveIdentity.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="Live\LiveIdentityDiagnostics.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="Live\LocalNames.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="MainWindow.xaml.cpp"><DependentUpon>MainWindow.xaml</DependentUpon></ClCompile>
     <ClCompile Include="Localization.cpp" />
@@ -367,6 +372,7 @@
     <ClInclude Include="Live\RefusalCopy.h" />
     <ClInclude Include="Live\LiveMesh.h" />
     <ClInclude Include="Live\LiveWorld.h" />
+    <ClInclude Include="Live\LiveIdentity.h" />
     <ClInclude Include="Live\LocalNames.h" />
     <ClInclude Include="MainWindow.xaml.h"><DependentUpon>MainWindow.xaml</DependentUpon></ClInclude>
     <ClInclude Include="Localization.h" />

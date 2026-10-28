@@ -401,6 +401,10 @@ Route ChosenRoute() {
   return RouteThroughUrnetwork() ? Route::Urnetwork : Route::Direct;
 }
 
+// THIS RUN'S SESSION HAS CONNECTED and not closed (X-APP-7): set when device_connect answers, and
+// cleared when the session closes. The strip's empty world reads Connected while it holds.
+std::atomic<bool> g_sessionConnected{false};
+
 struct Session {
   uint64_t ctx = 0;
   uint64_t client = 0;
@@ -415,6 +419,7 @@ struct Session {
   uint64_t group = 0;
 
   void Close() {
+    g_sessionConnected.store(false, std::memory_order_release);
     char* err = nullptr;
     if (group != 0) {
       if (!urnet_message_group_close(group, &err)) {
@@ -725,6 +730,47 @@ bool g_holdsUnopenedGroup = false;
 // Guarded by g_onboardMutex.
 urmsg::live::ReadClass g_lastRestoreClass = urmsg::live::ReadClass::None;
 
+// ── the identity (identity phase 1, slice 1: PLAN Task 16) ──────────────────
+// THE FIRST IDENTITY IS MADE HERE, ON THE WORKER, BETWEEN THE RESTORE AND THE JOIN ROAD: a device with
+// no identity has no key package (urnetwork_message.h), so no join code until it has one. The window
+// asks for the words and hands the typed ones back through the two requests below; the worker
+// answers each by publishing an IdentityState, rung on the same bell as the world.
+//
+// THE WORDS ARE THE ACCOUNT. They cross this file in exactly two strings: the octets
+// urnet_message_device_create_identity wrote (g_offeredWords, until TakeOfferedWords empties it) and
+// the octets typed back (g_typedWords, until the worker takes them, and then the worker's own copy,
+// until confirm_words returns). Each is overwritten (Wipe) the moment it is done with. Neither is
+// ever logged: a log line about them says what happened and never how long they were.
+// The library is loaded (RunSession's first step), so the window may call the one export that
+// takes no device (CheckWord).
+std::atomic<bool> g_sdkLoaded{false};
+std::mutex g_identityMutex;
+urmsg::live::IdentityPtr g_identity;        // guarded by g_identityMutex
+std::atomic<uint64_t> g_identityGeneration{0};
+std::condition_variable g_identityWake;     // the setup waits on it for the window's next request
+bool g_identitySetUpOpen = false;           // guarded: the worker is waiting for a setup request
+bool g_makeWordsAsked = false;              // guarded; consumed by the worker
+bool g_confirmAsked = false;                // guarded; consumed by the worker
+std::string g_typedWords;                   // guarded; THE TYPED WORDS, wiped by the worker
+std::string g_offeredWords;                 // guarded; THE WORDS, wiped by TakeOfferedWords
+uint64_t g_wordsSerial = 0;                 // guarded
+
+void PublishIdentity(urmsg::live::IdentityStep step, urmsg::live::IdentityInfo info,
+                     std::vector<int> wrong = {}, std::string failure = {}) {
+  auto next = std::make_shared<urmsg::live::IdentityState>();
+  next->step = step;
+  next->info = std::move(info);
+  next->wrong = std::move(wrong);
+  next->failure = std::move(failure);
+  {
+    std::lock_guard<std::mutex> lock(g_identityMutex);
+    next->wordsSerial = g_wordsSerial;
+    g_identity = std::move(next);
+  }
+  g_identityGeneration.fetch_add(1, std::memory_order_release);
+  urmsg::live::NotifyPublished();
+}
+
 void PublishOnboard(urmsg::live::OnboardStep step, std::string joinCode, std::string message,
                     std::string inviteCode = {}, bool offerLeaveHeldGroup = false,
                     bool addRoad = false, bool offerNewJoinCode = false) {
@@ -930,6 +976,26 @@ struct HeldRestore {
   std::string error;
 };
 
+// THE DEVICE'S GROUPS, READ AGAIN after a leave whose outcome is not known (R89 item 5,
+// URNET_MESSAGE_FORGET_UNKNOWN): whether `gid` is among them. Every handle the list gave is released.
+bool StillHolds(Session& s, const uint8_t* gid, int32_t gidLen) {
+  const uint64_t groups = urnet_message_device_groups(s.device);
+  const int32_t count = urnet_message_group_list_count(groups);
+  bool held = false;
+  for (int32_t i = 0; i < count; ++i) {
+    const uint64_t group = urnet_message_group_list_at(groups, i);
+    if (group == 0) continue;
+    uint8_t id[urmsg::live::kGroupIdOctets] = {};
+    int32_t len = static_cast<int32_t>(sizeof(id));
+    if (urnet_message_group_id(group, id, &len) && len == gidLen &&
+        std::memcmp(id, gid, static_cast<size_t>(len)) == 0)
+      held = true;
+    urnet_release(group);
+  }
+  if (groups != 0) urnet_release(groups);
+  return held;
+}
+
 HeldRestore RestoreHeldGroup(Session& s, HeldInvite const& held) {
   char* err = nullptr;
   const int32_t gidLen = static_cast<int32_t>(held.groupId.size());
@@ -1039,23 +1105,38 @@ HeldLeave LeaveHeldGroup(Session& s, HeldInvite const& held, std::string const& 
     kind = urnet_message_device_forget_group(s.device, held.groupId.data(), gidLen, &err);
     why = TakeError(&err);
   }
-  switch (kind) {
-    case URNET_MESSAGE_FORGET_OK:
+  // DECIDED BY ForgetOutcomeOf (Live/LiveIdentity.h), the one reading of the leave's kinds
+  switch (urmsg::live::ForgetOutcomeOf(kind)) {
+    case urmsg::live::ForgetOutcome::Left:
       urnw::LogInfo("live: *** LEFT *** the old copy of group {}: its record and its epoch states are "
                     "erased; opening the same invitation again",
                     gidHex);
       return HeldLeave::Left;
-    case URNET_MESSAGE_FORGET_UNFINISHED:
+    case urmsg::live::ForgetOutcome::LeftUnfinished:
       urnw::LogWarn("live: held leave: left group {}, and the erase is still unfinished ({}); the join "
                     "finishes it",
                     gidHex, why);
       return HeldLeave::Left;
-    case URNET_MESSAGE_FORGET_FAILED:
+    case urmsg::live::ForgetOutcome::NotHeld:
       urnw::LogWarn("live: held leave: the library holds no group {} any more ({}); opening the "
                     "invitation again",
                     gidHex, why);
       return HeldLeave::Left;
-    default:
+    case urmsg::live::ForgetOutcome::Unknown: {
+      // NOT KNOWN TO BE LEFT (R89 item 5): the handles stay, and the device's groups decide
+      const bool stillHeld = StillHolds(s, held.groupId.data(), gidLen);
+      const urmsg::live::ForgetOutcome after = urmsg::live::AfterUnknownLeave(stillHeld);
+      urnw::LogWarn("live: held leave: whether group {} was left is not known ({}); the device's "
+                    "groups, read again, {} it",
+                    gidHex, why, stillHeld ? "still hold" : "no longer hold");
+      if (after == urmsg::live::ForgetOutcome::NotHeld) return HeldLeave::Left;
+      PublishOnboard(urmsg::live::OnboardStep::Refused, joinCode,
+                     "URmessage could not tell whether it left the old copy of this group, and "
+                     "this computer still holds it. Try leaving it again.",
+                     {}, true);
+      return HeldLeave::Offered;
+    }
+    case urmsg::live::ForgetOutcome::Refused:
       break;
   }
 
@@ -1186,6 +1267,175 @@ Mint MintJoinCode(Session& s, std::string& joinCode, size_t& octets, std::string
 // this device can open it (R40 A12). It still names the group and its members, so
 // it is never logged, and the invite is deleted the moment it has been used. The
 // key package is deleted by the peer that consumes it.
+// The identity as the library has it now. Never logs an ID or the json: what it says is whether
+// the json read and what it holds, by kind.
+urmsg::live::IdentityInfo ReadIdentity(Session& s) {
+  char* err = nullptr;
+  char* json = urnet_message_device_identity(s.device, &err);
+  const std::string failure = TakeError(&err);
+  urmsg::live::IdentityInfo info;
+  if (json == nullptr) {
+    info.problem = failure.empty() ? std::string("urnet_message_device_identity answered nothing")
+                                   : failure;
+  } else {
+    info = urmsg::live::ParseIdentityJson(TakeString(json));
+  }
+  urnw::LogInfo("live: identity read: {}; has_identity {}, phrase device {}, {} device(s) on the list",
+                info.read ? std::string("the json read")
+                          : std::string("the json did NOT read (") + info.problem + ")",
+                info.hasIdentity, info.phraseDevice, info.devices.size());
+  return info;
+}
+
+// The 25 words, by the buffer-out pattern: the size, then the copy, into a string that only
+// TakeOfferedWords hands on. False with `why` when the library refused either call.
+bool MakeWords(Session& s, std::string& why) {
+  char* err = nullptr;
+  int32_t needed = 0;
+  (void)urnet_message_device_create_identity(s.device, nullptr, &needed, &err);
+  why = TakeError(&err);
+  if (needed <= 0 || needed > 4096) {
+    if (why.empty()) why = std::format("the library answered a size of {} octets", needed);
+    return false;
+  }
+  std::string words(static_cast<size_t>(needed), '0');
+  int32_t capacity = needed;
+  const bool copied = urnet_message_device_create_identity(
+      s.device, reinterpret_cast<uint8_t*>(words.data()), &capacity, &err);
+  why = TakeError(&err);
+  if (!copied || capacity != needed) {
+    urmsg::live::Wipe(words);
+    if (why.empty()) why = "the words did not fit the size the library gave";
+    return false;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_identityMutex);
+    urmsg::live::Wipe(g_offeredWords);
+    g_offeredWords = std::move(words);
+    ++g_wordsSerial;
+  }
+  urmsg::live::Wipe(words);  // what the move left, if anything
+  return true;
+}
+
+// THE SETUP, until the identity is made. Answers true once the library has made it and it reads
+// back; false only when the session cannot go on (the identity cannot be read at all).
+bool RunIdentitySetUp(Session& s, urmsg::live::IdentityInfo info) {
+  using urmsg::live::IdentityStep;
+  {
+    std::lock_guard<std::mutex> lock(g_identityMutex);
+    g_identitySetUpOpen = true;
+    g_makeWordsAsked = false;
+    g_confirmAsked = false;
+    urmsg::live::Wipe(g_typedWords);
+  }
+  auto close = [] {
+    std::lock_guard<std::mutex> lock(g_identityMutex);
+    g_identitySetUpOpen = false;
+    g_makeWordsAsked = false;
+    g_confirmAsked = false;
+    urmsg::live::Wipe(g_typedWords);
+    urmsg::live::Wipe(g_offeredWords);
+  };
+  urnw::LogInfo("live: this device has no identity: the window shows 'Set up this device', and the "
+                "join road waits for the identity");
+  PublishIdentity(IdentityStep::NeedsSetUp, info);
+  for (;;) {
+    bool make = false;
+    bool confirm = false;
+    std::string typed;
+    {
+      std::unique_lock<std::mutex> lock(g_identityMutex);
+      g_identityWake.wait(lock, [] { return g_makeWordsAsked || g_confirmAsked; });
+      make = g_makeWordsAsked;
+      g_makeWordsAsked = false;
+      confirm = g_confirmAsked;
+      g_confirmAsked = false;
+      if (confirm) {
+        typed = std::move(g_typedWords);
+        urmsg::live::Wipe(g_typedWords);
+      }
+    }
+    if (make) {
+      PublishIdentity(IdentityStep::MakingWords, info);
+      std::string why;
+      if (MakeWords(s, why)) {
+        urnw::LogInfo("live: the 25 words were made, and wait for the window to take them once");
+        PublishIdentity(IdentityStep::WordsReady, info);
+      } else {
+        urnw::LogError("live: create_identity refused: {}", why);
+        info = ReadIdentity(s);
+        if (info.read && info.hasIdentity) {
+          close();
+          PublishIdentity(IdentityStep::Done, info);
+          return true;
+        }
+        PublishIdentity(IdentityStep::Failed, info, {},
+                        "Your words could not be made just now. Try again.");
+      }
+    }
+    if (confirm) {
+      PublishIdentity(IdentityStep::Checking, info);
+      char* err = nullptr;
+      std::vector<int32_t> positions(urmsg::live::kPhraseWords, 0);
+      int32_t count = static_cast<int32_t>(positions.size());
+      // BLOCKS: when the words match, the identity is made and its self group founded under this
+      // device's connection (urnetwork_message.h)
+      const int32_t kind = urnet_message_device_confirm_words(
+          s.device, s.ctx, reinterpret_cast<const uint8_t*>(typed.data()),
+          static_cast<int32_t>(typed.size()), positions.data(), &count, &err);
+      urmsg::live::Wipe(typed);
+      const std::string why = TakeError(&err);
+      const std::vector<int> named = urmsg::live::NamedPositions(positions, count);
+      if (urmsg::live::ConfirmAccepted(kind, named.size()) ||
+          kind == URNET_MESSAGE_WORDS_IDENTITY_EXISTS || kind == URNET_MESSAGE_WORDS_FAILED) {
+        // OK, or an answer after which the identity may stand all the same (a FAILED after the
+        // records were written): the identity as it reads now decides, never the answer alone
+        info = ReadIdentity(s);
+        if (info.read && info.hasIdentity) {
+          urnw::LogInfo("live: confirm_words answered {}; the identity is made, and the join road "
+                        "goes on", kind);
+          close();
+          PublishIdentity(IdentityStep::Done, info);
+          return true;
+        }
+        if (!info.read) {
+          urnw::LogError("live: the identity could not be read after confirm_words: {}", info.problem);
+          close();
+          PublishIdentity(IdentityStep::Unreadable, info, {},
+                          "URmessage could not read this device's identity. Close it and open it "
+                          "again.");
+          return false;
+        }
+        urnw::LogError("live: confirm_words answered {} ({}); the identity is not made", kind,
+                       why.empty() ? "no reason given" : why);
+        PublishIdentity(IdentityStep::Failed, info, {},
+                        "The words could not be checked just now. Try again.");
+      } else if (kind == URNET_MESSAGE_WORDS_WRONG && named.empty()) {
+        // A WRONG WITH NO POSITION TO MARK (X-APP-1's last case; X-LIB-2): drawn as a sentence, never
+        // as a wrong-word screen that names nothing
+        urnw::LogWarn("live: confirm_words answered WRONG with {} position(s), none of them a box "
+                      "from 1 to 25; nothing was made", count);
+        PublishIdentity(IdentityStep::Failed, info, {},
+                        "The words could not be checked just now. Try again.");
+      } else if (kind == URNET_MESSAGE_WORDS_WRONG) {
+        urnw::LogInfo("live: confirm_words answered WRONG, naming {} word(s); nothing was made",
+                      named.size());
+        PublishIdentity(IdentityStep::Wrong, info, named);
+      } else if (kind == URNET_MESSAGE_WORDS_NOT_OFFERED) {
+        urnw::LogWarn("live: confirm_words answered NOT_OFFERED: no words were offered in this run");
+        PublishIdentity(IdentityStep::NeedsSetUp, info, {},
+                        "Those words were not offered in this run of URmessage. Make new ones.");
+      } else {
+        urnw::LogError("live: confirm_words answered an unknown kind {} ({})", kind,
+                       why.empty() ? "no reason given" : why);
+        PublishIdentity(IdentityStep::Failed, info, {},
+                        "The words could not be checked just now. Try again.");
+      }
+    }
+  }
+}
+
 bool JoinFromPeer(Session& s) {
   char* err = nullptr;
   const std::filesystem::path dir = HandshakeDir();
@@ -1743,6 +1993,9 @@ void CollectMembers(uint64_t group, std::vector<urmsg::live::LiveMember>& out) {
       m.identityPub = j.value("identity_pub", std::string{});
       m.role = j.value("role", std::string{});
       m.mine = j.value("mine", false);
+      // identity phase 1 (Task 14's member json): "" for a leaf no identity binds
+      m.deviceId = j.value("device_id", std::string{});
+      m.identity = j.value("identity", std::string{});
     } catch (const std::exception& e) {
       urnw::LogWarn("live: member[{}] info did not parse ({}); the row is kept with what parsed",
                     i, e.what());
@@ -1928,11 +2181,12 @@ bool LeaveGroup(Session& s, std::string const& transferTo, std::string& refusal)
     kind = urnet_message_device_forget_group(s.device, gid, gidLen, &err);
     why = TakeError(&err);
   }
-  switch (kind) {
-    case URNET_MESSAGE_FORGET_OK:
+  // DECIDED BY ForgetOutcomeOf (Live/LiveIdentity.h), the one reading of the leave's kinds
+  switch (urmsg::live::ForgetOutcomeOf(kind)) {
+    case urmsg::live::ForgetOutcome::Left:
       urnw::LogInfo("live: *** LEFT *** this device's copy of the group is erased; nobody was told");
       break;
-    case URNET_MESSAGE_FORGET_UNFINISHED: {
+    case urmsg::live::ForgetOutcome::LeftUnfinished: {
       urnw::LogWarn("live: *** LEFT *** but the erase is still unfinished: {}", why);
       std::lock_guard<std::mutex> lock(g_onboardMutex);
       g_afterLeaveNote =
@@ -1940,11 +2194,22 @@ bool LeaveGroup(Session& s, std::string const& transferTo, std::string& refusal)
           "URmessage finishes that the next time it starts.";
       break;
     }
-    case URNET_MESSAGE_FORGET_FAILED:
+    case urmsg::live::ForgetOutcome::NotHeld:
       // the library holds no such group, so there is nothing left to leave: this handle is stale
       urnw::LogWarn("live: leave: the library holds no such group ({}); treating it as left", why);
       break;
-    default:
+    case urmsg::live::ForgetOutcome::Unknown: {
+      // NOT KNOWN TO BE LEFT (R89 item 5): the handles stay, and the device's groups decide
+      const bool stillHeld = StillHolds(s, gid, gidLen);
+      urnw::LogWarn("live: leave: whether the group was left is not known ({}); the device's groups, "
+                    "read again, {} it",
+                    why, stillHeld ? "still hold" : "no longer hold");
+      if (urmsg::live::AfterUnknownLeave(stillHeld) == urmsg::live::ForgetOutcome::NotHeld) break;
+      refusal = "URmessage could not tell whether this computer left the conversation, and it is "
+                "still in it. Try leaving again.";
+      return false;
+    }
+    case urmsg::live::ForgetOutcome::Refused:
       refusal = why.empty() ? std::string("the library refused to leave and gave no reason") : why;
       urnw::LogError("live: leave: forget_group refused: {}", refusal);
       return false;
@@ -1972,6 +2237,7 @@ void RunSession() {
     return;
   }
   urnw::LogInfo("live: URnetworkSdk.dll loaded; sdk version {}", TakeString(urnet_version()));
+  g_sdkLoaded.store(true, std::memory_order_release);
 
   // The leak check this used to close with is gone WITH THE ONE-SHOT SESSION:
   // the fetch loop below never returns, so there is no "at end" to compare
@@ -2006,8 +2272,11 @@ void RunSession() {
   // nonce under a reused record key. It lives under StorageRoot() so the
   // per-worktree %URMESSAGE_APP_ROOT% override isolates concurrent worktrees too.
   const std::filesystem::path liveRoot = urnw::StorageRoot() / L"live";
-  const std::filesystem::path streamDir = liveRoot / L"stream";
-  const std::filesystem::path stateDir = liveRoot / L"state";
+  // IN THIS SLICE'S OWN FOLDER (identity phase 1, PLAN Task 16; P6; REDTEAM M1): build 03's
+  // live/stream and live/state, and an earlier slice's folder, are never opened by this build
+  const std::filesystem::path storeDir = urmsg::live::SliceStoreFolder(liveRoot);
+  const std::filesystem::path streamDir = storeDir / L"stream";
+  const std::filesystem::path stateDir = storeDir / L"state";
   std::error_code ec;
   std::filesystem::create_directories(streamDir, ec);
   std::filesystem::create_directories(stateDir, ec);
@@ -2096,7 +2365,7 @@ void RunSession() {
     s.Close();
     return;
   }
-  urnw::LogInfo("live: device built; durable state in {}", Utf8Path(liveRoot));
+  urnw::LogInfo("live: device built; durable state in {}", Utf8Path(storeDir));
 
   // ── say Hello, across the reconnect window ──────────────────────────────────
   const int64_t connectStartedMs = NowMs();
@@ -2139,6 +2408,8 @@ void RunSession() {
       "live: *** CONNECTED to the alpha mesh *** after {} device_connect call(s), {} unanswered "
       "Hello(s), {} ms",
       connectCalls, hellos.unanswered.load(), connectMs);
+  g_sessionConnected.store(true, std::memory_order_release);
+  urmsg::live::NotifyPublished();
 
   // ── restore, or join ────────────────────────────────────────────────────────
   const uint64_t restored = urnet_message_device_restore(s.device, s.ctx, &err);
@@ -2174,6 +2445,43 @@ void RunSession() {
   {
     std::lock_guard<std::mutex> lock(g_onboardMutex);
     g_lastRestoreClass = urmsg::live::RestoreReadClass(restoreError);
+  }
+
+  // THE IDENTITY BEFORE THE JOIN ROAD (identity phase 1, PLAN Task 16). A device with no identity
+  // makes no key package, so no join code: the setup comes first, and the worker stays in it until
+  // the library has made the identity and it reads back.
+  // AND THE IDENTITY'S STATE IS ASKED BEFORE SETUP IS OFFERED (R89 item 1): an identity whose
+  // identity record was moved away reads as no identity in the json, and setting up over it would
+  // replace it. Setup only for NONE; UNREADABLE, FAILED and every disagreement are the Unreadable
+  // step (Live/LiveIdentity.h, RoadFor).
+  {
+    urmsg::live::IdentityInfo identity = ReadIdentity(s);
+    char* stateErr = nullptr;
+    const int32_t state = urnet_message_device_identity_state(s.device, &stateErr);
+    const std::string stateWhy = TakeError(&stateErr);
+    urnw::LogInfo("live: identity state {} ({}){}", state, urmsg::live::IdentityStateName(state),
+                  stateWhy.empty() ? std::string() : ": " + stateWhy);
+    switch (urmsg::live::RoadFor(identity.read, identity.hasIdentity, state)) {
+      case urmsg::live::IdentityRoad::Unreadable:
+        urnw::LogError("live: the identity could not be read (json {}, state {}): {}; setup is not "
+                       "offered",
+                       identity.read ? "read" : "not read", urmsg::live::IdentityStateName(state),
+                       stateWhy.empty() ? identity.problem : stateWhy);
+        PublishIdentity(urmsg::live::IdentityStep::Unreadable, identity, {},
+                        "URmessage could not read this device's identity. Close it and open it "
+                        "again.");
+        s.Close();
+        return;
+      case urmsg::live::IdentityRoad::SetUp:
+        if (!RunIdentitySetUp(s, std::move(identity))) {
+          s.Close();
+          return;
+        }
+        break;
+      case urmsg::live::IdentityRoad::Made:
+        PublishIdentity(urmsg::live::IdentityStep::Done, std::move(identity));
+        break;
+    }
   }
 
   // ONE PASS PER GROUP THIS DEVICE HOLDS (ledger 273). A pass ends only when the device LEAVES its
@@ -2811,6 +3119,10 @@ bool StartIfEnabled() {
     // it, and the failure mode of missing it is an enabled Send whose clicks vanish.
     g_canSend.store(false, std::memory_order_relaxed);
     g_hasGroup.store(false, std::memory_order_relaxed);
+    // and the session is not up: the strip, drawn off the session before a live world lands
+    // (X-APP-7), is told, so it never says Connected after the session has gone
+    g_sessionConnected.store(false, std::memory_order_release);
+    urmsg::live::NotifyPublished();
   });
 
   // DETACHED, AND NOT AS A SHORTCUT. This is called from the UI thread of a
@@ -2931,6 +3243,58 @@ bool QueueTransferOwnership(std::string identityPubHex) {
   out.pass = pass;
   Enqueue(std::move(out));
   return true;
+}
+
+IdentityPtr IdentitySnapshot() {
+  std::lock_guard<std::mutex> lock(g_identityMutex);
+  return g_identity;
+}
+
+uint64_t IdentityGeneration() { return g_identityGeneration.load(std::memory_order_acquire); }
+
+bool QueueMakeWords() {
+  {
+    std::lock_guard<std::mutex> lock(g_identityMutex);
+    if (!g_identitySetUpOpen) return false;
+    g_makeWordsAsked = true;
+  }
+  g_identityWake.notify_all();
+  return true;
+}
+
+bool QueueConfirmWords(std::string typedUtf8) {
+  {
+    std::lock_guard<std::mutex> lock(g_identityMutex);
+    if (!g_identitySetUpOpen || g_confirmAsked) {
+      Wipe(typedUtf8);
+      return false;
+    }
+    Wipe(g_typedWords);
+    g_typedWords = std::move(typedUtf8);
+    g_confirmAsked = true;
+  }
+  Wipe(typedUtf8);
+  g_identityWake.notify_all();
+  return true;
+}
+
+bool SessionConnected() { return g_sessionConnected.load(std::memory_order_acquire); }
+
+bool CheckWord(std::wstring const& word) {
+  if (!g_sdkLoaded.load(std::memory_order_acquire)) return true;
+  // one word, with no copy of it but this one (X-APP-2: an initializer list made a second)
+  std::string utf8 = OneWordUtf8(word);
+  const bool onList = urnet_message_device_check_word(reinterpret_cast<const uint8_t*>(utf8.data()),
+                                                      static_cast<int32_t>(utf8.size()));
+  Wipe(utf8);
+  return onList;
+}
+
+std::string TakeOfferedWords() {
+  std::lock_guard<std::mutex> lock(g_identityMutex);
+  std::string words = std::move(g_offeredWords);
+  Wipe(g_offeredWords);
+  return words;
 }
 
 OnboardPtr OnboardSnapshot() {

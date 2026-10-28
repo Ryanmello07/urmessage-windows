@@ -636,7 +636,9 @@ StatusStripView MakeStatusStrip(urmsg::demo::World const& world) {
   // kit's 6 DIP gap to the right of the dot.
   auto state = kit::MakeStatusField(winrt::hstring{L""}, /*withDot=*/false,
                                     winrt::hstring{kStateName});
-  kit::SetStatusFieldValue(state, winrt::hstring{StatusStateWord(world.connectState)});
+  // FRAMED BY THE MODE (Task 16): a fabricated launch's word names the demo (RunMode.h)
+  kit::SetStatusFieldValue(state, winrt::hstring{urmsg::StatusStateText(
+                                      urmsg::DrawnRunMode(), StatusStateWord(world.connectState))});
   fields.Children().Append(state.root);
 
   fields.Children().Append(kit::MakeStatusSeparator());
