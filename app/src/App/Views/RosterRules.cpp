@@ -10,6 +10,8 @@
 
 #include "Views/InspectRailFields.h"  // OnlineDeviceCount
 
+#include <algorithm>
+
 namespace urmsg::views {
 
 std::wstring RoleWord(std::wstring_view role) {
@@ -269,6 +271,26 @@ std::wstring LocalNameUnset() { return L"not set"; }
 
 std::wstring LocalNameMarked(std::wstring const& label) {
   return label + L" (your name for them)";
+}
+
+// THE ROSTER BY IDENTITY (identity phase 1, Task 16). The header says why it is the app's rule.
+size_t IdentityCount(std::vector<demo::MemberRef> const& members) {
+  std::vector<std::wstring> seen;
+  size_t unbound = 0;
+  for (auto const& m : members) {
+    if (m.identity.empty()) {
+      ++unbound;  // nothing says whose leaf it is: a person of its own
+      continue;
+    }
+    if (std::find(seen.begin(), seen.end(), m.identity) == seen.end()) seen.push_back(m.identity);
+  }
+  return seen.size() + unbound;
+}
+
+demo::ConversationKind KindByIdentities(std::vector<demo::MemberRef> const& members) {
+  // three people make a group; two are a direct conversation, whatever their number of leaves
+  return 3 <= IdentityCount(members) ? demo::ConversationKind::Group
+                                     : demo::ConversationKind::Direct;
 }
 
 }  // namespace urmsg::views

@@ -24,6 +24,7 @@
 #include <functional>
 
 #include "Demo/DemoWorld.h"
+#include "Live/LiveIdentity.h"
 #include "Demo/IdentityDemo.h"
 #include "RunMode.h"
 
@@ -62,6 +63,7 @@ SettingsView MakeSettings(urmsg::demo::World const& world,
                           std::function<void(bool)> onAdvancedChanged, bool advanced,
                           std::function<void(bool)> onRouteChanged,
                           bool routeThroughUrnetwork, urmsg::RunMode identityMode,
-                          std::function<void(urmsg::demo::identity::Button const&)> onIdentity);
+                          std::function<void(urmsg::demo::identity::Button const&)> onIdentity,
+                          urmsg::live::IdentityInfo const* liveIdentity = nullptr);
 
 }  // namespace urmsg::views

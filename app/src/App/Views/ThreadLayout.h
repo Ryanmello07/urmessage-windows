@@ -657,6 +657,15 @@ std::wstring ComposerTooLongNote(std::size_t octets, std::size_t limit);
 // changes; the other two states are dark for reasons of their own, which come first.
 std::wstring ComposerSendNameAt(ComposerState state, bool hasText, bool replying, bool overLimit);
 
+// THE EMPTY WORLD'S NAMES (R89, X2-7). With no group yet the composer is dark because there is
+// nothing to send TO, whether a session is up or still dialling, and its two names say that, as
+// the caption does ("No group yet"). They never say "no live session", which is false while the
+// session is up and the strip reads Connected. `noGroup` is the empty world's bit (the caption's
+// own, DrawnNoSession); it changes only the no-session arm, the one the empty world draws.
+std::wstring ComposerSendNameFor(ComposerState state, bool noGroup, bool hasText, bool replying,
+                                 bool overLimit);
+std::wstring ComposerBoxNameFor(ComposerState state, bool noGroup, bool replying);
+
 // ---- the four per-message send affordances ----------------------------------
 // What the controls that act on ONE MESSAGE ROW say, as data, so --diagnose can
 // check every arm of every name from a launch that can reach none of them.

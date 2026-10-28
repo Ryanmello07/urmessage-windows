@@ -754,7 +754,8 @@ NetworkPageView MakeNetworkPage(urmsg::demo::World const& world) {
   TextBlock stateMeta;
   if (auto style = StyleByKey(L"UrPaneMetaStyle")) stateMeta.Style(style);
   stateMeta.HorizontalAlignment(HorizontalAlignment::Right);
-  stateMeta.Text(winrt::hstring{StatusStateWord(world.connectState)});
+  stateMeta.Text(winrt::hstring{
+      urmsg::StatusStateText(urmsg::DrawnRunMode(), StatusStateWord(world.connectState))});
   headerGrid.Children().Append(stateMeta);
   header.Child(headerGrid);
   Grid::SetRow(header, 0);

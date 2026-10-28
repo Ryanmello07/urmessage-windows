@@ -9,6 +9,8 @@
 #include <array>
 #include <utility>
 
+#include <wtsapi32.h>  // WTSRegisterSessionNotification: the session kind, watched
+
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
 #include <winrt/Windows.Foundation.h>
 
@@ -26,6 +28,7 @@
 #include "Log.h"
 #include "RunMode.h"  // ActiveRunMode / SetActiveRunMode - this file is the latch's one writer
 #include "Strings.h"
+#include "Views/StatusStripRules.h"  // EmptyWorldConnectState: the strip before a live world
 #include "UrColors.h"
 #include "UrComponents.h"  // urnw::kit::kIconFontFamily
 #include "UrMotion.h"
@@ -34,6 +37,8 @@
 #include "Views/NetworkPageView.h"
 #include "Views/StatusStripView.h"
 #include "Views/ThreadView.h"
+
+#pragma comment(lib, "wtsapi32.lib")
 
 using namespace winrt;
 using namespace winrt::Microsoft::UI::Xaml;
@@ -101,6 +106,31 @@ constexpr std::array kSampleConversations{
     SampleConversation{L"Sample conversation 9", L"Placeholder", L"Sun"},
     SampleConversation{L"Sample conversation 10", L"Placeholder", L"Sat"},
 };
+
+// THE RULE EVERY LIVE IDENTITY SCREEN IS BUILT BY (Spec C section 6.2), and the one the re-check
+// reads again: a remote session skips the capture exclusion and shows the warning.
+bool RemoteSessionNow() { return ::GetSystemMetrics(SM_REMOTESESSION) != 0; }
+
+// THE SESSION KIND, WATCHED. The window's procedure is wrapped once, by WatchSessionKind, for one
+// message: WM_WTSSESSION_CHANGE, which WTSRegisterSessionNotification asks for. Every message goes
+// on to the procedure it wraps.
+WNDPROC g_sessionNextProc = nullptr;
+winrt::weak_ref<MainWindow> g_sessionWindow;
+
+LRESULT CALLBACK SessionKindProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+  const WNDPROC next = g_sessionNextProc;
+  if (msg == WM_WTSSESSION_CHANGE) {
+    // A CUE, NEVER AN ANSWER. Anything on this desktop can post this message, with any event, so
+    // the event decides nothing: the window reads the kind again (RecheckSessionKind).
+    if (auto self = g_sessionWindow.get()) self->QueueSessionRecheck(static_cast<unsigned>(wParam));
+  } else if (msg == WM_NCDESTROY) {
+    ::WTSUnRegisterSessionNotification(hwnd);
+    if (next) ::SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(next));
+    g_sessionNextProc = nullptr;
+  }
+  return next ? ::CallWindowProcW(next, hwnd, msg, wParam, lParam)
+              : ::DefWindowProcW(hwnd, msg, wParam, lParam);
+}
 
 }  // namespace
 
@@ -227,10 +257,14 @@ MainWindow::MainWindow() {
 
 void MainWindow::SetNativeHandle(HWND hwnd) {
   hwnd_ = hwnd;
+  WatchSessionKind();
   // A screen the constructor opened asked before there was a window to ask, so it was drawn
   // without the words. Draw it again now, before Activate shows the window: ShowIdentity asks
   // with the handle, and draws the words only if the window holds the exclusion.
-  if (captureExcluded_ && identityView_.root) ShowIdentity(identityView_.screen, identitySel_);
+  if (captureExcluded_ && identityView_.root) {
+    if (liveIdentityShown_) ShowLiveIdentity(identityView_.screen, liveIdentityInputs_);
+    else ShowIdentity(identityView_.screen, identitySel_);
+  }
 }
 
 // ---- the identity screens (identity phase 1, Task 6) -------------------------------------------
@@ -256,6 +290,42 @@ void MainWindow::ShowIdentity(urmsg::demo::identity::Screen screen,
     CloseIdentity();
     return;
   }
+  ForgetLiveWords();
+  liveIdentityShown_ = false;
+  PresentIdentity(std::move(model), screen, sel);
+}
+
+// THE LIVE SCREENS (Task 16), built from what the worker published and nothing else, for the
+// session's kind as it is read now.
+void MainWindow::ShowLiveIdentity(urmsg::demo::identity::Screen screen,
+                                  urmsg::demo::identity::LiveInputs in) {
+  in.remoteSession = RemoteSessionNow();
+  DrawLiveIdentity(screen, std::move(in));
+}
+
+void MainWindow::DrawLiveIdentity(urmsg::demo::identity::Screen screen,
+                                  urmsg::demo::identity::LiveInputs in) {
+  namespace id = urmsg::demo::identity;
+  id::ScreenModel model = id::BuildLiveScreen(screen, in);
+  if (!model.built) {
+    urnw::LogInfo("identity: no live {} screen; nothing is drawn",
+                  urnw::Narrow(std::wstring{id::ScreenName(screen)}));
+    return;
+  }
+  // the words stay in exactly one place this window owns, for as long as their screen is up, and
+  // every copy that goes is overwritten first: the old inputs, words and typed phrase alike
+  if (screen != id::Screen::Words) urmsg::live::Wipe(in.words);
+  id::WipeLiveInputs(liveIdentityInputs_);
+  liveIdentityInputs_ = std::move(in);
+  liveIdentityShown_ = true;
+  PresentIdentity(std::move(model), screen, id::Selection{});
+}
+
+// THE ONE PLACE AN IDENTITY SCREEN IS HOSTED, fabricated or live.
+void MainWindow::PresentIdentity(urmsg::demo::identity::ScreenModel model,
+                                 urmsg::demo::identity::Screen screen,
+                                 urmsg::demo::identity::Selection const& sel) {
+  namespace id = urmsg::demo::identity;
   // PROPERTY 2, AND IT FAILS CLOSED. The exclusion is asked for BEFORE the screen is drawn, and the
   // words are drawn only into a window that holds it: one that cannot be kept out of captures
   // draws the refusal in their place (IdentityDemo.h's CaptureRefusal). A screen without the words
@@ -265,7 +335,11 @@ void MainWindow::ShowIdentity(urmsg::demo::identity::Screen screen,
   const std::wstring name{id::ScreenName(screen)};
   const bool asks = model.excludedFromCapture;
   const bool held = !asks || ApplyCaptureExclusion(true, name);
-  if (!held) model = id::CaptureRefusal(model);
+  if (!held) {
+    id::ScreenModel refusal = id::CaptureRefusal(model);
+    id::WipeScreenWords(model);
+    model = std::move(refusal);
+  }
   if (!identityHost_) {
     identityHost_ = Grid();
     // rows 1 and 2 of RevealRoot: the destinations and the status strip, and NOT the title bar,
@@ -276,10 +350,18 @@ void MainWindow::ShowIdentity(urmsg::demo::identity::Screen screen,
     RevealRoot().Children().Append(identityHost_);
   }
   identitySel_ = sel;
+  if (identityView_.root) urmsg::views::ClearIdentityFields(identityView_);
+  // a live field marks a word that is not on the list as it is left, by the list's own check
+  urmsg::views::CheckWordFn checkWord;
+  if (liveIdentityShown_) checkWord = [](std::wstring const& w) { return urmsg::live::CheckWord(w); };
   identityView_ = urmsg::views::MakeIdentityScreen(
-      model, [weak = get_weak()](id::Button const& button) {
+      model,
+      [weak = get_weak()](id::Button const& button) {
         if (auto self = weak.get()) self->QueueIdentityAction(button);
-      });
+      },
+      checkWord);
+  // the model's copies of the words are drawn now: overwrite them before it goes (X-APP-2)
+  id::WipeScreenWords(model);
   identityView_.screen = screen;
   identityHost_.Children().Clear();
   identityHost_.Children().Append(identityView_.root);
@@ -295,12 +377,164 @@ void MainWindow::ShowIdentity(urmsg::demo::identity::Screen screen,
 }
 
 void MainWindow::CloseIdentity() {
+  if (identityView_.root) urmsg::views::ClearIdentityFields(identityView_);
   if (identityHost_) {
     identityHost_.Children().Clear();
     identityHost_.Visibility(Visibility::Collapsed);
   }
   identityView_ = {};
+  ForgetLiveWords();
+  const bool wasLive = liveIdentityShown_;
+  liveIdentityShown_ = false;
   if (captureExcluded_) ApplyCaptureExclusion(false, L"closed");
+  // the join dialog waited for the live setup to be closed (ApplyOnboard)
+  if (wasLive) {
+    onboardDrawn_ = 0;
+    ApplyOnboard();
+  }
+}
+
+void MainWindow::ForgetLiveWords() {
+  urmsg::demo::identity::ForgetWindowWords(liveIdentityInputs_, identityTyped_);
+}
+
+// THE SESSION KIND, WATCHED (Spec C section 6.2; the lead's addition to LRI R84). Asked for once,
+// with the window: its procedure is wrapped for WM_WTSSESSION_CHANGE, and the session's changes are
+// sent to it. Without either, the kind is still read whenever a screen is built.
+void MainWindow::WatchSessionKind() {
+  if (!hwnd_ || g_sessionNextProc) return;
+  g_sessionWindow = get_weak();
+  g_sessionNextProc = reinterpret_cast<WNDPROC>(::GetWindowLongPtrW(hwnd_, GWLP_WNDPROC));
+  if (!g_sessionNextProc ||
+      !::SetWindowLongPtrW(hwnd_, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&SessionKindProc))) {
+    g_sessionNextProc = nullptr;
+    urnw::LogWarn("window: session changes are NOT watched (the window procedure could not be "
+                  "wrapped, error {})",
+                  ::GetLastError());
+    return;
+  }
+  const bool watched = ::WTSRegisterSessionNotification(hwnd_, NOTIFY_FOR_THIS_SESSION) != FALSE;
+  if (watched) {
+    urnw::LogInfo("window: session changes are watched (WTSRegisterSessionNotification)");
+  } else {
+    urnw::LogWarn("window: session changes are NOT watched (WTSRegisterSessionNotification "
+                  "failed, error {})",
+                  ::GetLastError());
+  }
+}
+
+void MainWindow::QueueSessionRecheck(unsigned event) {
+  const bool queued =
+      winrt::Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread().TryEnqueue(
+          [weak = get_weak(), event] {
+            if (auto self = weak.get()) self->RecheckSessionKind(event);
+          });
+  if (!queued) urnw::LogWarn("identity: a session change (WTS event {}) could not be queued", event);
+}
+
+// THE KIND, READ AGAIN. A words screen built for one kind is built again for the other, by the very
+// rule it was built by: on the machine itself the exclusion is asked for at once, before it is drawn
+// again (PresentIdentity), and in a remote session it is given back and the warning shown. What is
+// typed stays typed, and the kind read here is the kind it is built for: it is not read twice.
+void MainWindow::RecheckSessionKind(unsigned event) {
+  namespace id = urmsg::demo::identity;
+  const bool remoteNow = RemoteSessionNow();
+  const id::Screen shown =
+      liveIdentityShown_ && identityView_.root ? identityView_.screen : id::Screen::None;
+  const bool rebuild = id::RebuildForSessionKind(shown, liveIdentityShown_,
+                                                 liveIdentityInputs_.remoteSession, remoteNow);
+  urnw::LogInfo("identity: the session changed (WTS event {}); it is {} now, {}", event,
+                remoteNow ? "remote" : "local",
+                rebuild ? "so the words screen is built again for it" : "and nothing is built again");
+  if (!rebuild) return;
+  id::LiveInputs in = liveIdentityInputs_;
+  if (shown == id::Screen::TypeBack || shown == id::Screen::TypeBackWrong) {
+    urmsg::live::Wipe(in.typed);
+    in.typed = urmsg::views::ReadIdentityFields(identityView_);
+  }
+  in.remoteSession = remoteNow;
+  DrawLiveIdentity(shown, std::move(in));
+}
+
+// THE WORKER'S IDENTITY STATE, DRAWN (identity phase 1, slice 1: PLAN Task 16). The worker reads the
+// identity before the join road; a device without one gets "Set up this device", and each later
+// state the worker publishes - the words made, the check out, a wrong word named, the identity made
+// - draws its screen. The words are taken from the worker once, split, and kept in one place
+// (liveIdentityInputs_) for as long as their screen is up.
+void MainWindow::ApplyIdentity() {
+  if (!urmsg::live::IsEnabled()) return;
+  const uint64_t generation = urmsg::live::IdentityGeneration();
+  if (generation == identityDrawn_) return;
+  auto state = urmsg::live::IdentitySnapshot();
+  if (!state) return;
+  identityDrawn_ = generation;
+  namespace id = urmsg::demo::identity;
+  using urmsg::live::IdentityStep;
+  const bool settingUp = identityState_ && identityState_->step != IdentityStep::Done &&
+                         identityState_->step != IdentityStep::Unknown;
+  identityState_ = state;
+  const id::Screen on = liveIdentityShown_ ? identityView_.screen : id::Screen::None;
+  id::LiveInputs in;
+  in.failure = urnw::Widen(state->failure);
+  switch (state->step) {
+    case IdentityStep::Unknown:
+      break;
+    case IdentityStep::NeedsSetUp:
+      ShowLiveIdentity(id::Screen::SetUp, std::move(in));
+      break;
+    case IdentityStep::MakingWords:
+      in.waiting = true;
+      ShowLiveIdentity(id::Screen::SetUp, std::move(in));
+      break;
+    case IdentityStep::WordsReady: {
+      if (state->wordsSerial == identityWordsTaken_) break;
+      identityWordsTaken_ = state->wordsSerial;
+      std::string octets = urmsg::live::TakeOfferedWords();
+      in.words = urmsg::live::SplitOfferedWords(octets);
+      urmsg::live::Wipe(octets);
+      if (in.words.empty()) {
+        urnw::LogError("identity: the words the library offered could not be read, so none is drawn");
+        in.failure = L"Your words could not be shown. Make them again.";
+        ShowLiveIdentity(id::Screen::SetUp, std::move(in));
+        break;
+      }
+      urmsg::live::Wipe(identityTyped_);
+      ShowLiveIdentity(id::Screen::Words, std::move(in));
+      break;
+    }
+    case IdentityStep::Checking:
+      in.typed = identityTyped_;
+      in.waiting = true;
+      ShowLiveIdentity(id::Screen::TypeBack, std::move(in));
+      break;
+    case IdentityStep::Wrong:
+      in.typed = identityTyped_;
+      in.wrong = state->wrong;
+      ShowLiveIdentity(id::Screen::TypeBackWrong, std::move(in));
+      break;
+    case IdentityStep::Failed:
+      if (on == id::Screen::TypeBack || on == id::Screen::TypeBackWrong) {
+        in.typed = identityTyped_;
+        ShowLiveIdentity(id::Screen::TypeBack, std::move(in));
+      } else {
+        ShowLiveIdentity(id::Screen::SetUp, std::move(in));
+      }
+      break;
+    case IdentityStep::Done:
+      urmsg::live::Wipe(identityTyped_);
+      // the setup ran in this session: say so, then Settings shows "Your ID"
+      if (settingUp || liveIdentityShown_) ShowLiveIdentity(id::Screen::SetUpDone, std::move(in));
+      BuildSettings();
+      break;
+    case IdentityStep::Unreadable:
+      // THE SENTENCE IS DRAWN (X-APP-3): the session has ended, and the screen says why
+      urnw::LogError("identity: this device's identity could not be read; the window says so");
+      // the setup is over: every copy of the words and of the typed phrase goes now (R89, X2-3)
+      ForgetLiveWords();
+      in.stopped = true;
+      ShowLiveIdentity(id::Screen::SetUp, std::move(in));
+      break;
+  }
 }
 
 void MainWindow::QueueIdentityAction(urmsg::demo::identity::Button const& button) {
@@ -323,6 +557,12 @@ void MainWindow::OnIdentityAction(urmsg::demo::identity::Button const& button) {
   switch (button.action) {
     case id::Action::Go: {
       const auto to = static_cast<id::Screen>(button.arg);
+      // the live words screen's "I wrote them down": the words go from this window's memory now
+      if (liveIdentityShown_) {
+        id::LiveInputs in;
+        ShowLiveIdentity(to, std::move(in));
+        break;
+      }
       id::Selection sel = id::PresetSelection(to);
       if (button.device >= 0 && button.device < 32) {
         if (to == id::Screen::Rename) {
@@ -345,6 +585,44 @@ void MainWindow::OnIdentityAction(urmsg::demo::identity::Button const& button) {
     case id::Action::FillWords:
       urmsg::views::FillIdentityWords(identityView_);
       break;
+    case id::Action::MakeWords:
+      // "This is my first device", or "Back to the words": the library answers with the same
+      // words until the identity is made. What was typed is let go.
+      urmsg::live::Wipe(identityTyped_);
+      if (!urmsg::live::QueueMakeWords())
+        urnw::LogWarn("identity: the words were asked for while the worker waits for no setup");
+      break;
+    case id::Action::ConfirmWords: {
+      // THE FIELDS, JOINED, TO THE LIBRARY: it checks them and names every wrong word. Kept as
+      // typed, so a wrong word is named with nothing corrected.
+      std::vector<std::wstring> typed = urmsg::views::ReadIdentityFields(identityView_);
+      // ONE WORD OF THE LIST IN EACH BOX FIRST (X-APP-1): the library keeps no empty position, so an
+      // empty box or a box of several words would shift every later word onto the wrong number. The
+      // app names such a box itself, and sends nothing; and a box of one word goes to the list's own
+      // check, which reads it in the library's fold (Live/LiveIdentity.h, CheckBoxes).
+      std::vector<urmsg::live::BoxIssue> issues = urmsg::live::CheckBoxes(
+          typed, [](std::wstring const& word) { return urmsg::live::CheckWord(word); });
+      if (!issues.empty()) {
+        urnw::LogInfo("identity: {} box(es) do not hold exactly one word of the list; the words "
+                      "are not sent",
+                      issues.size());
+        id::LiveInputs in;
+        in.typed = typed;
+        in.boxes = std::move(issues);
+        urmsg::live::Wipe(identityTyped_);
+        identityTyped_ = std::move(typed);
+        ShowLiveIdentity(id::Screen::TypeBack, std::move(in));
+        break;
+      }
+      std::string joined = urmsg::live::JoinTypedWords(typed);
+      urmsg::live::Wipe(identityTyped_);
+      identityTyped_ = std::move(typed);
+      if (!urmsg::live::QueueConfirmWords(std::move(joined)))
+        urnw::LogWarn("identity: the words were sent while the worker waits for no setup, or a "
+                      "check was already out");
+      urmsg::live::Wipe(joined);
+      break;
+    }
     case id::Action::CheckWords:
       if (urmsg::views::CheckIdentityWords(identityView_, IdentityRunMode())) {
         ShowIdentity(static_cast<id::Screen>(button.arg));
@@ -634,13 +912,23 @@ urmsg::demo::World MakeEmptyWorld(urmsg::demo::ConnectState state) {
 urmsg::demo::World const& EmptyWorld() {
   static const urmsg::demo::World dialling = MakeEmptyWorld(urmsg::demo::ConnectState::Connecting);
   static const urmsg::demo::World stuck = MakeEmptyWorld(urmsg::demo::ConnectState::Offline);
+  static const urmsg::demo::World connected = MakeEmptyWorld(urmsg::demo::ConnectState::Connected);
   auto onboard = urmsg::live::OnboardSnapshot();
+  auto identity = urmsg::live::IdentitySnapshot();
   // A launch that cannot make a join code (Task 58) has closed its session as well: nothing is
-  // dialling there either.
-  return onboard && (onboard->step == urmsg::live::OnboardStep::NoCredential ||
-                     onboard->step == urmsg::live::OnboardStep::NoJoinCode)
-             ? stuck
-             : dialling;
+  // dialling there either. Nor is anything after an identity that could not be read: the worker
+  // ended the session, and the window says so (X-APP-3).
+  const bool cannotGoOn =
+      (onboard && (onboard->step == urmsg::live::OnboardStep::NoCredential ||
+                   onboard->step == urmsg::live::OnboardStep::NoJoinCode)) ||
+      (identity && identity->step == urmsg::live::IdentityStep::Unreadable);
+  // A SESSION THAT IS UP IS CONNECTED (X-APP-7): the setup and the account run under it, before any
+  // live world has landed (Views/StatusStripRules.h, EmptyWorldConnectState)
+  switch (urmsg::views::EmptyWorldConnectState(cannotGoOn, urmsg::live::SessionConnected())) {
+    case urmsg::demo::ConnectState::Offline: return stuck;
+    case urmsg::demo::ConnectState::Connected: return connected;
+    default: return dialling;
+  }
 }
 
 urmsg::demo::World const& MainWindow::ActiveWorld() const {
@@ -998,6 +1286,9 @@ void MainWindow::ApplyOnboard() {
   // ONLY A LIVE LAUNCH HAS AN ONBOARDING STATE. A fabricated one is already in a group that was
   // never joined.
   if (!urmsg::live::IsEnabled()) return;
+  // THE LIVE SETUP FIRST (Task 16): the join dialog is not drawn over "Set up this device", the
+  // words or the setup done. Left unconsumed, it is drawn when the setup is closed.
+  if (liveIdentityShown_ && identityView_.root) return;
   const uint64_t generation = urmsg::live::OnboardGeneration();
   if (generation == onboardDrawn_) return;
   auto state = urmsg::live::OnboardSnapshot();
@@ -1162,10 +1453,16 @@ void MainWindow::ApplyOnboard() {
 }
 
 void MainWindow::ApplyLiveWorld() {
-  // THE ONBOARDING HALF FIRST, and unconditionally: it has its own generation and its own early
-  // return, and the world below may have nothing to say for minutes while a person is reading a
-  // join code off the screen.
+  // THE IDENTITY, THEN THE ONBOARDING HALF, both unconditionally: each has its own generation and
+  // its own early return, and the world below may have nothing to say for minutes while a person is
+  // writing down their words or reading a join code off the screen.
+  ApplyIdentity();
   ApplyOnboard();
+  // THE STRIP FOLLOWS THE SESSION (X-APP-7). Before a live world lands it is drawn off EmptyWorld(),
+  // whose answer moves with the session: dialling, connected (the setup and the account run under a
+  // connected session), or a launch that cannot go on. It is built again whenever that answer
+  // changes, whatever else this beat brings.
+  if (!liveWorld_ && &ActiveWorld() != stripWorldDrawn_) BuildStatusStrip();
   const std::uint64_t generation = urmsg::live::Generation();
   if (generation == liveDrawn_) return;
   auto snapshot = urmsg::live::Snapshot();
@@ -2037,7 +2334,10 @@ void MainWindow::BuildSettings() {
       urmsg::live::RouteThroughUrnetwork(), IdentityRunMode(),
       [weak = get_weak()](urmsg::demo::identity::Button const& button) {
         if (auto self = weak.get()) self->QueueIdentityAction(button);
-      });
+      },
+      identityState_ && identityState_->step == urmsg::live::IdentityStep::Done
+          ? &identityState_->info
+          : nullptr);
   // SettingsHost, NOT a Grid of this task's own: MainWindow.xaml:284 already
   // declares it and ShowDestination's settings arm routes to it (the d7
   // audit's A3 override — do not add a SettingsPage Grid; that is "mounted
@@ -2076,6 +2376,7 @@ void MainWindow::BuildDeveloper() {
 }
 
 void MainWindow::BuildStatusStrip() {
+  stripWorldDrawn_ = &ActiveWorld();  // what ApplyLiveWorld compares with (X-APP-7)
   // The whole surface is demo-only. Design 8: without --demo "the app behaves
   // exactly as it does today", and design 2's hard constraint is that nothing
   // may overstate what exists — a strip reading "Connected | server

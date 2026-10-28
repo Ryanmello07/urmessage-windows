@@ -1008,6 +1008,189 @@ std::wstring WordCheckLine(RunMode mode, int firstWrong, bool empty) {
                : std::format(L"Demo check: word {} is not the word you were shown.", firstWrong + 1);
 }
 
+// ---- the live screens (PLAN Task 16: slice 1) --------------------------------------------------
+//
+// BUILT FROM WHAT THE LIBRARY ANSWERED AND NOTHING ELSE: no fixture value and no banner, since there
+// is no demo here to frame. Every string is chrome, a pair's live arm (RunMode.h's PhraseWordsLabel,
+// PhraseWordsCaveat and AccountIdNote, gated in RunModeCopyDiagnostics), or a fact the library
+// handed over. Live/LiveIdentityDiagnostics.cpp holds that no string here names the demo, that the
+// screens which show or take the words are excluded from capture, and that "Your ID" is the
+// library's account ID character for character.
+
+namespace {
+
+constexpr wchar_t kLiveFieldsLabel[] =
+    L"Type each word in its box, in order, from your paper. A word is hidden when you leave its box.";
+
+Block LiveRemoteBlock() {
+  return TextBlock(urmsg::live::kRemoteSessionWarning, TextKind::Fact, TextStyle::Error);
+}
+
+std::wstring AsciiWide(std::string const& s) { return std::wstring(s.begin(), s.end()); }
+
+}  // namespace
+
+ScreenModel BuildLiveScreen(Screen s, LiveInputs const& in) {
+  ScreenModel m;
+  m.screen = s;
+  auto failure = [&] {
+    if (!in.failure.empty()) m.blocks.push_back(TextBlock(in.failure, TextKind::Fact, TextStyle::Error));
+  };
+  switch (s) {
+    case Screen::SetUp: {
+      // THE IDENTITY COULD NOT BE READ (X-APP-3): the session has ended, and the screen says why, in
+      // the worker's sentence, with nothing to press. Not "Set up this device": that would claim
+      // this device has no identity, which nothing has read.
+      if (in.stopped) {
+        m.built = true;
+        m.blocks.push_back(TitleBlock(L"URmessage cannot go on"));
+        failure();
+        break;
+      }
+      // SCOPE E1's second road only: the code road, which adds this computer to an account that
+      // already exists, is slice 2's (Task 28), so this screen says it cannot, and shows no code
+      m.built = true;
+      m.blocks.push_back(TitleBlock(L"Set up this device"));
+      m.blocks.push_back(TextBlock(L"New to URmessage?", TextKind::Chrome, TextStyle::Strong));
+      m.blocks.push_back(TextBlock(
+          L"Your account is made on this device. It comes with a recovery phrase of 25 words: you "
+          L"write them down, then type them back.",
+          TextKind::Chrome));
+      m.blocks.push_back(TextBlock(
+          L"This build cannot add this computer to an account you already use.", TextKind::Fact,
+          TextStyle::Muted));
+      failure();
+      if (in.waiting) {
+        m.blocks.push_back(TextBlock(L"Making your words...", TextKind::Chrome, TextStyle::Muted));
+      } else {
+        m.blocks.push_back(ButtonsBlock({Act(Action::MakeWords, L"This is my first device", true)}));
+      }
+      break;
+    }
+    case Screen::Words: {
+      m.built = true;
+      // BY SESSION KIND (Spec C section 6.2; X-APP-5): on the machine itself, excluded from
+      // capture; in a remote session the exclusion would black the window for the only person who
+      // can read it, so it is skipped, and the inline warning says what that means
+      m.excludedFromCapture = !in.remoteSession;
+      m.blocks.push_back(TitleBlock(L"Write down these 25 words"));
+      if (in.remoteSession) m.blocks.push_back(LiveRemoteBlock());
+      m.blocks.push_back(WordsBlock(RunMode::Live, in.words));
+      m.blocks.push_back(TextBlock(PhraseWordsCaveat(RunMode::Live), TextKind::Fact, TextStyle::Muted));
+      m.blocks.push_back(TextBlock(
+          L"Write them on paper, in order. They are shown here once, and URmessage never stores "
+          L"them.",
+          TextKind::Chrome));
+      m.blocks.push_back(ButtonsBlock({Go(Screen::TypeBack, L"I wrote them down", true)}));
+      break;
+    }
+    case Screen::TypeBack:
+    case Screen::TypeBackWrong: {
+      m.built = true;
+      m.excludedFromCapture = !in.remoteSession;  // by session kind, as the words screen
+      m.blocks.push_back(TitleBlock(L"Type the 25 words back"));
+      if (in.remoteSession) m.blocks.push_back(LiveRemoteBlock());
+      Block fields;
+      fields.type = BlockType::WordFields;
+      fields.label = kLiveFieldsLabel;
+      fields.labelKind = TextKind::Chrome;
+      // 25 fields; the words they are checked against are the library's, and never here
+      fields.words = std::vector<std::wstring>(urmsg::live::kPhraseWords);
+      fields.fields = kLiveWordFieldPolicy;
+      // WHAT WAS TYPED STAYS AS TYPED: a wrong word is named, and nothing is corrected (SCOPE A1)
+      fields.prefill = in.typed;
+      if (s == Screen::TypeBackWrong) {
+        fields.wrongPositions = in.wrong;
+        fields.text = urmsg::live::WrongWordsLine(in.wrong);
+        fields.markNote = L"Not the word you were shown.";
+      } else if (!in.boxes.empty()) {
+        // THE APP NAMED THESE BEFORE SENDING (X-APP-1): an empty box, a box of several words, or one
+        // whose word the list's own check refuses. Nothing was sent.
+        for (auto const& issue : in.boxes) fields.wrongPositions.push_back(issue.position);
+        fields.text = urmsg::live::BoxesLine(in.boxes);
+        fields.markNote = L"Type one word from your paper in this box.";
+      }
+      m.blocks.push_back(std::move(fields));
+      failure();
+      if (in.waiting) {
+        m.blocks.push_back(TextBlock(L"Checking the words...", TextKind::Chrome, TextStyle::Muted));
+      } else {
+        m.blocks.push_back(ButtonsBlock({Act(Action::ConfirmWords, L"Check the words", true),
+                                         Act(Action::MakeWords, L"Back to the words")}));
+      }
+      break;
+    }
+    case Screen::SetUpDone: {
+      m.built = true;
+      m.blocks.push_back(TitleBlock(L"This device is set up"));
+      m.blocks.push_back(TextBlock(
+          L"Your account and this device have their IDs now, and this device keeps your recovery "
+          L"phrase's key.",
+          TextKind::Fact));
+      m.blocks.push_back(ButtonsBlock({Act(Action::OpenAccount, L"See Your ID in Settings", true),
+                                       Act(Action::Close, L"Open the app")}));
+      break;
+    }
+    default:
+      break;
+  }
+  return m;
+}
+
+void WipeScreenWords(ScreenModel& m) {
+  for (auto& b : m.blocks) {
+    urmsg::live::Wipe(b.words);
+    urmsg::live::Wipe(b.prefill);
+  }
+}
+
+void WipeLiveInputs(LiveInputs& in) {
+  urmsg::live::Wipe(in.words);
+  urmsg::live::Wipe(in.typed);
+}
+
+void ForgetWindowWords(LiveInputs& in, std::vector<std::wstring>& typed) {
+  WipeLiveInputs(in);
+  urmsg::live::Wipe(typed);
+}
+
+bool RebuildForSessionKind(Screen shown, bool liveShown, bool builtRemote, bool remoteNow) {
+  if (!liveShown || builtRemote == remoteNow) return false;
+  // exactly the screens whose build turns on the kind: the ones that show or take the words
+  return shown == Screen::Words || shown == Screen::TypeBack || shown == Screen::TypeBackWrong;
+}
+
+AccountModel BuildLiveAccount(urmsg::live::IdentityInfo const& id) {
+  AccountModel a;
+  if (!id.read || !id.hasIdentity) return a;
+  a.built = true;
+  a.caption = L"ACCOUNT";
+  a.idTitle = L"Your ID";
+  a.idNote = AccountIdNote(RunMode::Live);
+  // PROPERTY 3: the library's account ID, character for character, and Copy puts exactly that on
+  // the clipboard
+  a.idValue = AsciiWide(id.accountId);
+  a.copied = a.idValue;
+  a.copy = Act(Action::Close, L"Copy");
+  // "Change my recovery phrase" (slice 4) and "Add a device" (slice 2) are not in this build, so
+  // they are not drawn; nor are Rename and Remove (slices 2 and 3)
+  a.devicesCaption = L"DEVICES";
+  a.devicesNote = L"The devices on your account, as your account's newest device list names them.";
+  for (size_t i = 0; i < id.devices.size(); ++i) {
+    urmsg::live::IdentityDevice const& d = id.devices[i];
+    AccountDevice row;
+    row.index = static_cast<int>(i);
+    row.name = d.thisDevice ? L"This device" : L"Another device";
+    row.detail = L"Device ID " + AsciiWide(d.deviceId);
+    if (d.thisDevice) row.detail += L" \u00B7 this device";
+    if (d.phraseDevice) row.detail += L" \u00B7 phrase device";
+    row.thisDevice = d.thisDevice;
+    row.phraseDevice = d.phraseDevice;
+    a.devices.push_back(std::move(row));
+  }
+  return a;
+}
+
 // ---- the gate ---------------------------------------------------------------------------------
 
 std::vector<std::wstring> IdentityDemoDiagnostics() {
@@ -1381,8 +1564,9 @@ std::vector<std::wstring> IdentityDemoDiagnostics() {
         L"Fabricated: {}/{}, and the Account group: {}; after a live world lands, plain or --live "
         L"--demo: {} screens, and the Account group: {} (control: --demo, nothing latched, builds "
         L"{}/{} overlays, Account being Settings', and the Account group: {}); the live screens "
-        L"are Tasks 16, 28, 38 and 45, and every launch but a fabricated one keeps the inert "
-        L"ACCOUNT group   [query: BuildScreen and BuildAccount in DrawnRunModeFor(fabricated "
+        L"are BuildLiveScreen and BuildLiveAccount over the library's identity (Task 16; Tasks "
+        L"28, 38 and 45 to come), so no made-up screen or ACCOUNT group reaches any launch but a "
+        L"fabricated one   [query: BuildScreen and BuildAccount in DrawnRunModeFor(fabricated "
         L"launch, ActiveRunMode()) for each pair]",
         ok ? L"PASS" : L"FAIL", liveBuilt, asked, accountLive ? L"BUILT (wrong)" : L"not built",
         plainBuilt, asked, accountPlain ? L"BUILT (wrong)" : L"not built", latchedBuilt,

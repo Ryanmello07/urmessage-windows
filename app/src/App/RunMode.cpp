@@ -308,6 +308,13 @@ std::wstring WorldDumpFramingLine(RunMode mode) {
              : L"Demo model: fabricated data, no crypto in this build";
 }
 
+std::wstring StatusStateText(RunMode mode, std::wstring_view liveWord) {
+  if (mode == RunMode::Live || liveWord.empty()) return std::wstring(liveWord);
+  std::wstring word(liveWord);
+  if (L'A' <= word[0] && word[0] <= L'Z') word[0] = static_cast<wchar_t>(word[0] - L'A' + L'a');
+  return L"Demo: " + word;
+}
+
 std::wstring RosterNote(RunMode mode) {
   // The live arm says what is real and what is not IN ONE SENTENCE, because the roster is the
   // one card where both are on screen together: real roles beside placeholder names.

@@ -83,7 +83,13 @@ std::string SerializeLocalNames(LocalNames const& names);
 LocalNames LoadLocalNamesFrom(std::filesystem::path const& path);
 bool SaveLocalNamesTo(std::filesystem::path const& path, LocalNames const& names);
 
-// THE PROCESS'S LABELS: StorageRoot()/local_names.json, loaded on first use. Safe from any thread.
+// WHERE THE NAMES ARE KEPT, given StorageRoot() (identity phase 1's slice 1; X-APP-6): in this
+// slice's own folder, beside its conversations, so that this build reads nothing an older build
+// kept. Build 03's local_names.json at the top of the folder is left where it is, and the
+// read-me says how to delete it by hand.
+std::filesystem::path LocalNamesFile(std::filesystem::path const& storageRoot);
+
+// THE PROCESS'S LABELS: LocalNamesFile(StorageRoot()), loaded on first use. Safe from any thread.
 LocalNames CurrentLocalNames();
 
 // Store `utf8` as the label for one key, or remove the key's label when `utf8` is empty. `utf8`

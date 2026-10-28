@@ -309,6 +309,18 @@ std::wstring ComposerSendNameAt(ComposerState state, bool hasText, bool replying
   return ComposerSendName(state, hasText, replying);
 }
 
+std::wstring ComposerSendNameFor(ComposerState state, bool noGroup, bool hasText, bool replying,
+                                 bool overLimit) {
+  if (noGroup && state == ComposerState::NoSession)
+    return L"Send: no group yet, so there is nothing to send to";
+  return ComposerSendNameAt(state, hasText, replying, overLimit);
+}
+std::wstring ComposerBoxNameFor(ComposerState state, bool noGroup, bool replying) {
+  if (noGroup && state == ComposerState::NoSession)
+    return L"Message: no group yet, so nothing is sent";
+  return ComposerBoxName(state, replying);
+}
+
 std::wstring ComposerTooLongNote(std::size_t octets, std::size_t limit) {
   // U+2014 EM DASH as an escape, never a pasted glyph (the house non-ASCII rule)
   return std::format(L"Too long to send \u2014 {} of {} bytes. Shorten it, or send it in parts.",

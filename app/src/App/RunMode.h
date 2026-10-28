@@ -220,6 +220,15 @@ std::wstring WorldDumpFramingLine(RunMode mode);
 // the lock header, so a crop keeps the framing.
 std::wstring RosterNote(RunMode mode);
 
+// THE STATUS STRIP'S STATE WORD, FRAMED BY THE MODE (identity phase 1, Task 16: the lead's note on
+// Task 6's preview, 2026-10-16). The preview's strip said "Connected" beside a read-me saying the
+// build never connects, and a state word is read as a fact. So the word is a pair, the way the
+// identity screens' strings are: the fabricated arm names the demo ("Demo: connected"), the live
+// arm is the word itself and names no demo, and the two differ. `liveWord` is StatusStripRules.h's
+// StatusStateWord, its one owner; the strip and the Network page's header both draw this.
+// --diagnose's run mode strip line gates it over the three words.
+std::wstring StatusStateText(RunMode mode, std::wstring_view liveWord);
+
 // Settings' disclosure block: the caption, the row that opens it, and the paragraph inside.
 // The fabricated paragraph's "No protocol, no store, no network and no cryptography are running"
 // is the single most false sentence in the app when a live world is on screen.

@@ -26,6 +26,11 @@ std::wstring_view StatusStateWord(demo::ConnectState state) {
   return L"Offline";
 }
 
+demo::ConnectState EmptyWorldConnectState(bool stuck, bool sessionConnected) {
+  if (stuck) return demo::ConnectState::Offline;
+  return sessionConnected ? demo::ConnectState::Connected : demo::ConnectState::Connecting;
+}
+
 std::wstring StatusLockGlyph(bool keyVerified) {
   // Code points of the one icon font (App.xaml's UrIconFontFamily,
   // UrComponents.h's kIconFontFamily): Segoe Fluent Icons, falling back to
